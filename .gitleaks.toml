@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "A test-only credential key: config_test.go checks that Load accepts and redacts it, and it protects nothing"
+paths = [
+ '''internal/config/config_test\.go$'''
+]
+
+[[allowlists]]
+description = "Idempotency keys in send tests and their contract fixture: UUIDs a client invents per message, which authorize nothing"
+paths = [
+ '''internal/api/send_test\.go$''',
+ '''internal/api/contract_test\.go$''',
+ '''internal/api/testdata/contract/send_status\.json$'''
+]

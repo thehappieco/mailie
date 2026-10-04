@@ -1,0 +1,12 @@
+From: Ana <ana@example.org>
+To: Bruno <bruno@example.org>
+Subject: LF only
+Date: Thu, 24 Sep 2026 10:00:00 -0300
+Message-ID: <lf-only@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Primeira linha =
+continua.
+Segunda linha =C3=A9 UTF-8.

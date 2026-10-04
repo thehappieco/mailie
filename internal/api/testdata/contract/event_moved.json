@@ -1,0 +1,17 @@
+{
+  "account_id": "acc_0000000000000004",
+  "at": 1790000000,
+  "payload": {
+    "account_id": "acc_0000000000000004",
+    "folder_id": 2,
+    "folder_role": "",
+    "from_folder_id": 1,
+    "message_id": 2,
+    "new_copy": false,
+    "primary_id": 2,
+    "to": 2,
+    "to_folder_id": 2
+  },
+  "seq": 11,
+  "type": "message.moved"
+}

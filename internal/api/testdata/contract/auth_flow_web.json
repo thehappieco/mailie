@@ -1,0 +1,6 @@
+{
+  "auth_url": "https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=google-web-client&code_challenge=fixed-pkce-challenge&code_challenge_method=S256&login_hint=ana%40gmail.com&prompt=consent&redirect_uri=http%3A%2F%2Flocalhost%3A5174%2Foauth%2Freturn&response_type=code&scope=https%3A%2F%2Fmail.google.com%2F&state=fixed-oauth-state",
+  "expires_at": 1790000600,
+  "flow": "web",
+  "state": "fixed-oauth-state"
+}

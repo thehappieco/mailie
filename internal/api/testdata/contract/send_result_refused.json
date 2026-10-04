@@ -1,0 +1,9 @@
+{
+  "message_id": "00000000-0000-4000-8000-000000000001@work.example",
+  "reason": "recipients_refused",
+  "rejected": [
+    "nobody@example.org"
+  ],
+  "replayed": false,
+  "state": "failed"
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="109.314165294pt" height="109.314165294pt" viewBox="0 0 109.314165294 109.314165294" color-interpolation="sRGB">
+<title>Mailie - provisional</title>
+<desc>Provisional mark, built with the family's rules until the official kit exists. W=12u; I=3πu; R=πu; envelope 6u by W/e, corners u/2; flap at t/2 from the centres of the top corners to the golden section of the height; RGB=round(18π²,24π,11e).</desc>
+<rect width="109.314165294" height="109.314165294" fill="#B24B1E"/><g transform="translate(9.657082647 9.657082647)">
+<path id="frame" fill="#FFFFFF" d="M 23.561944902 0 H 66.438055098 A 23.561944902 23.561944902 0 0 1 90 23.561944902 V 66.438055098 A 23.561944902 23.561944902 0 0 1 66.438055098 90 H 23.561944902 A 23.561944902 23.561944902 0 0 1 0 66.438055098 V 23.561944902 A 23.561944902 23.561944902 0 0 1 23.561944902 0 Z"/>
+<path id="interior" fill="#B24B1E" d="M 23.561944902 9.657082647 H 66.438055098 A 13.904862255 13.904862255 0 0 1 80.342917353 23.561944902 V 66.438055098 A 13.904862255 13.904862255 0 0 1 66.438055098 80.342917353 H 23.561944902 A 13.904862255 13.904862255 0 0 1 9.657082647 66.438055098 V 23.561944902 A 13.904862255 13.904862255 0 0 1 23.561944902 9.657082647 Z"/>
+<path id="envelope" fill="#FFFFFF" d="M 26.25 28.445425147 H 63.75 A 3.75 3.75 0 0 1 67.5 32.195425147 V 57.804574853 A 3.75 3.75 0 0 1 63.75 61.554574853 H 26.25 A 3.75 3.75 0 0 1 22.5 57.804574853 V 32.195425147 A 3.75 3.75 0 0 1 26.25 28.445425147 Z"/>
+<path id="flap" fill="none" stroke="#B24B1E" stroke-width="4.828541324" stroke-linecap="round" stroke-linejoin="round" d="M 26.25 32.195425147 L 45 48.908005004 L 63.75 32.195425147"/></g></svg>

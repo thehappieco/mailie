@@ -1,0 +1,13 @@
+{
+  "account_ids": [
+    "acc_0000000000000004"
+  ],
+  "created_at": 1790000000,
+  "expires_at": 1797776000,
+  "key": "0a0b0c01.S0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0s",
+  "name": "Claude Code",
+  "prefix": "0a0b0c01",
+  "restricted": true,
+  "scope": "read",
+  "terms_version": "2026-10-open-api-keys"
+}

@@ -1,0 +1,26 @@
+[
+  {
+    "account_ids": [],
+    "created_at": 1790000000,
+    "expires_at": 1792592000,
+    "name": "Assistant",
+    "prefix": "0a0b0c02",
+    "restricted": false,
+    "revoked_at": 1790000000,
+    "scope": "write",
+    "terms_version": "2026-10-open-api-keys"
+  },
+  {
+    "account_ids": [
+      "acc_0000000000000004"
+    ],
+    "created_at": 1790000000,
+    "expires_at": 1797776000,
+    "last_used_at": 1790003600,
+    "name": "Claude Code",
+    "prefix": "0a0b0c01",
+    "restricted": true,
+    "scope": "read",
+    "terms_version": "2026-10-open-api-keys"
+  }
+]

@@ -1,0 +1,27 @@
+{
+  "events": [
+    {
+      "account_id": "acc_0000000000000002",
+      "at": 1790000000,
+      "payload": {
+        "account_id": "acc_0000000000000002",
+        "first_copy": true,
+        "first_inbox_copy": true,
+        "folder_id": 1,
+        "folder_role": "inbox",
+        "from": {
+          "email": "bea@example.com",
+          "name": "Bea Lima"
+        },
+        "internal_date": 1790000000,
+        "message_id": 1284,
+        "subject": "Lunch on Friday?"
+      },
+      "seq": 7,
+      "type": "message.new"
+    }
+  ],
+  "lagged": false,
+  "next_cursor": 7,
+  "timed_out": false
+}

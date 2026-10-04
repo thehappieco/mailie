@@ -1,0 +1,364 @@
+package service
+
+import (
+	"context"
+	"crypto/rand"
+	"errors"
+	"log/slog"
+	"net/url"
+	"time"
+
+	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/config"
+	"github.com/thehappieco/mailie/internal/events"
+	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/store"
+)
+
+// Service is the use-case layer.
+//
+// A concrete struct, not an interface. There is one implementation and there
+// will be one implementation; an interface here would buy nothing except a
+// second place to keep the method set in step, and would push the transports
+// towards testing against a fake service — which is exactly how REST and MCP
+// drift apart. They are tested against this, wired to a temporary database and
+// a fake mailbox.
+type Service struct {
+	accounts *account.Registry
+	keys     *auth.Keys
+	users    *auth.Users
+	store    *store.Store
+	bus      *events.Bus
+	sync     SyncController
+	log      *slog.Logger
+	now      func() time.Time
+
+	// publicURL is the console's origin: the base of every invite link.
+	publicURL string
+	// localConsole is whether a browser using the console runs on this
+	// machine, which is the only place a loopback OAuth listener can be
+	// reached from.
+	localConsole bool
+	// downloads bounds what originals and attachments hold in the spool.
+	downloads *downloadBudget
+
+	// spoolDir is where a send's attachments are held while it runs.
+	spoolDir string
+	// sendSpool bounds what sends in flight hold there.
+	sendSpool *downloadBudget
+	// sendRetry is how long to wait before each new attempt at a send the
+	// server said to try later.
+	sendRetry []time.Duration
+	// pacer keeps each account under its provider's submission rate.
+	pacer *sendPacer
+	// sendHashKey keys the hash that identifies a message to its send
+	// record (composeHash).
+	sendHashKey []byte
+	// consent names the revisions of the texts a person agrees to, every
+	// one set.
+	consent config.ConsentVersions
+	// mcpHTTP is whether this server answers MCP over HTTP at /mcp.
+	mcpHTTP bool
+}
+
+// Deps is what the service needs.
+type Deps struct {
+	Accounts *account.Registry
+	Keys     *auth.Keys
+	Users    *auth.Users
+	// Store is the database, for what belongs to no repository of its own:
+	// consent to sync and the index it governs.
+	Store *store.Store
+	Bus   *events.Bus
+	// Sync is the sync engine. nil runs without one: every account's sync
+	// is off, and asking for a pass says sync is unavailable.
+	Sync SyncController
+	Log  *slog.Logger
+	Now  func() time.Time
+	// PublicURL is MAIL_PUBLIC_URL, already validated. Empty means the
+	// console, if there is one, is only ever reached on this machine.
+	PublicURL string
+	// DownloadSpoolBytes bounds what downloads in flight may hold in the
+	// spool at once (MAIL_DOWNLOAD_SPOOL_MAX_BYTES); 0 is
+	// DefaultDownloadSpoolBytes. DownloadsPerCaller is how many one caller
+	// may have in flight; 0 is DefaultDownloadsPerCaller.
+	DownloadSpoolBytes int64
+	DownloadsPerCaller int
+	// SpoolDir is where a send's attachments are held while it runs
+	// (<data>/tmp, beside the provider's spooled sections); the daemon's
+	// start removes any a crash left. Empty is the system's temporary
+	// directory.
+	SpoolDir string
+	// SendSpoolBytes bounds what sends in flight may hold there at once; 0
+	// is DefaultSendSpoolBytes.
+	SendSpoolBytes int64
+	// SendHashKey keys the hash a send record keeps of what was composed,
+	// so that neither the record nor a log line holding a key made from it
+	// can confirm a guess of the message without it. The daemon derives it
+	// from the credential key, which never sits beside the database. Empty
+	// is a random key for this process: a record is then recognised only
+	// until it restarts.
+	SendHashKey []byte
+	// ConsentVersions are the revisions of the texts a person agrees to
+	// (MAIL_CONSENT_VERSION_*); an empty one is its default.
+	ConsentVersions config.ConsentVersions
+	// MCPHTTP is whether the daemon serves MCP over Streamable HTTP at /mcp
+	// (MAIL_MCP_HTTP), which the service only reports (MCPAccess): the
+	// transport decides what it mounts.
+	MCPHTTP bool
+}
+
+// New builds the service.
+func New(d Deps) *Service {
+	now := d.Now
+	if now == nil {
+		now = time.Now
+	}
+	log := d.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	local := d.PublicURL == ""
+	if u, err := url.Parse(d.PublicURL); err == nil && d.PublicURL != "" {
+		local = config.IsLoopbackHost(u.Hostname())
+	}
+	if d.Accounts != nil && d.Users != nil {
+		// Who may still have a grant or an account stored for them is a
+		// rule about people, which the registry cannot know by itself. It
+		// runs in the transaction that stores, so a consent finishing while
+		// its person is being disabled stores nothing.
+		d.Accounts.CheckOwnersWith(d.Users.RequireActiveTx)
+	}
+	hashKey := d.SendHashKey
+	if len(hashKey) == 0 {
+		hashKey = make([]byte, 32)
+		//nolint:errcheck // crypto/rand.Read never returns an error
+		_, _ = rand.Read(hashKey)
+	}
+	return &Service{
+		accounts: d.Accounts, keys: d.Keys, users: d.Users, store: d.Store, bus: d.Bus, sync: d.Sync, log: log, now: now,
+		publicURL: d.PublicURL, localConsole: local,
+		downloads: newDownloadBudget(d.DownloadSpoolBytes, d.DownloadsPerCaller),
+		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
+		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
+		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP,
+	}
+}
+
+// Principal is the authenticated caller.
+type Principal = auth.Principal
+
+// Authenticate identifies the caller behind a bearer token.
+//
+// Here rather than in a transport so REST and MCP accept exactly the same
+// credentials. The shape of the token picks the check — a key has a dot, a
+// session token never does — so a session costs a SHA-256, never the Argon2id a
+// key's secret needs.
+//
+// unknownKey is asked before a key whose prefix matches nothing is hashed:
+// the transport's per-address limit on checks that can only fail. nil admits
+// every one.
+func (s *Service) Authenticate(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
+	var (
+		p   Principal
+		err error
+	)
+	switch {
+	case auth.IsAPIKey(token):
+		p, err = s.keys.Authenticate(ctx, token, unknownKey)
+	case s.users != nil:
+		p, err = s.users.AuthenticateSession(ctx, token)
+	default:
+		err = auth.ErrInvalidSession
+	}
+	if err != nil {
+		return Principal{}, fromCredential(err)
+	}
+	if !p.IsSession() && p.UserID != "" && p.TermsVersion == "" {
+		// A key acting as a person reaches their mail only if they created
+		// it in the console, agreeing to what a tool holding it can do. One
+		// somebody else made for them — an administrator, before keys had
+		// terms — is refused on every transport, not only on the tools'.
+		return Principal{}, errKeyNotAgreed
+	}
+	return p, nil
+}
+
+// AuthenticateTool identifies the caller behind a bearer token presented by a
+// tool: the MCP server's credential check.
+//
+// Stricter than Authenticate, because a tool is somebody's AI assistant or
+// script, and the privacy promise is that a tool reaches a person's mailbox
+// only through a key that person created in the console:
+//
+//   - A console session is not a tool's credential. It stands for a person
+//     at a keyboard, and copying one out of a browser into an assistant's
+//     configuration must not work.
+//   - A key acting as a person works only if that person created it, agreeing
+//     to the key terms; one an administrator made for them does not — here as
+//     everywhere (Authenticate).
+//   - An instance key sees only the mailboxes nobody owns — the operator's —
+//     never a person's (see visibility).
+func (s *Service) AuthenticateTool(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
+	if !auth.IsAPIKey(token) {
+		return Principal{}, errToolNeedsKey
+	}
+	p, err := s.Authenticate(ctx, token, unknownKey)
+	if err != nil {
+		return Principal{}, err
+	}
+	p.Tool = true
+	return p, nil
+}
+
+// Errors of Authenticate and AuthenticateTool.
+var (
+	errToolNeedsKey = E(CodeUnauthorized,
+		"the MCP server takes an API key created in the console (API and MCP), not a console session", nil)
+	errKeyNotAgreed = E(CodeNotAuthorized,
+		"this key was not created by its person in the console; they create one there (API and MCP) for a tool to use", nil)
+)
+
+// Recheck re-reads a caller that already authenticated, immediately before a
+// response is written: a key revoked or a session ended while the request ran
+// must not see its answer.
+func (s *Service) Recheck(ctx context.Context, p Principal) error {
+	var err error
+	if p.IsSession() {
+		err = s.users.RecheckSession(ctx, p)
+	} else {
+		err = s.keys.Recheck(ctx, p)
+	}
+	if err != nil {
+		return fromCredential(err)
+	}
+	return nil
+}
+
+// fromCredential renders an authentication failure. One message per kind of
+// credential and never which check failed: saying "revoked" rather than
+// "unknown" would confirm to a thief that the thing they hold was once real.
+func fromCredential(err error) error {
+	var throttled *auth.ThrottledError
+	switch {
+	case errors.As(err, &throttled):
+		// The same words as every other limit on this path: which limit bit
+		// is not the caller's business.
+		return Retryable("too many requests", throttled.RetryAfter, err)
+	case errors.Is(err, auth.ErrHashBusy), errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		// The check never ran, so this says nothing about the credential.
+		return Retryable("the server is busy checking other credentials; try again shortly", hashWaitRetry, err)
+	case errors.Is(err, auth.ErrInvalidKey):
+		return E(CodeUnauthorized, "invalid or expired api key", err)
+	case errors.Is(err, auth.ErrInvalidSession):
+		return E(CodeUnauthorized, "the session has ended; sign in again", err)
+	default:
+		return E(CodeInternal, "checking the credential failed", err)
+	}
+}
+
+// authorize checks the scope and returns the error a transport should render.
+//
+// Authorisation lives here rather than in the transports so that REST and MCP
+// cannot disagree about who may do what — which they would, eventually, if
+// each carried its own copy of the rule.
+func (s *Service) authorize(p Principal, need auth.Scope) error {
+	if !p.Scope.Covers(need) {
+		return Ef(CodeNotAuthorized, nil, "this key has %s scope; %s is required", p.Scope, need)
+	}
+	return nil
+}
+
+// authorizeAccount checks the scope and that the caller may touch this
+// account, and returns the account.
+//
+// Two rules, both answered with not_found rather than forbidden, so that
+// nobody can learn which account ids exist by probing: a key restricted to
+// other accounts, and an account that belongs to somebody else. Ownership is
+// visibility — an instance key sees everything, a person sees what they
+// connected, and the owner role also sees what the CLI connected.
+func (s *Service) authorizeAccount(ctx context.Context, p Principal, need auth.Scope, accountID string) (account.Account, error) {
+	if err := s.authorize(p, need); err != nil {
+		return account.Account{}, err
+	}
+	if !p.MayAccess(accountID) {
+		return account.Account{}, E(CodeNotFound, "no such account", nil)
+	}
+	a, err := s.accounts.Repo().GetVisible(ctx, accountID, visibility(p))
+	switch {
+	case errors.Is(err, account.ErrNotFound):
+		return account.Account{}, E(CodeNotFound, "no such account", err)
+	case err != nil:
+		return account.Account{}, E(CodeInternal, "reading the account failed", err)
+	}
+	return a, nil
+}
+
+// visibility is the ownership rule, as the repository applies it in SQL.
+//
+// An instance key sees every account, except when a tool presents it: then
+// only the accounts nobody owns. A person's mailbox is reached by a tool only
+// through a key that person created, never through the operator's.
+func visibility(p Principal) account.Visibility {
+	if p.IsInstance() {
+		if p.Tool {
+			return account.Visibility{Unowned: true}
+		}
+		return account.Visibility{All: true}
+	}
+	return account.Visibility{UserID: p.UserID, Unowned: p.UserRole == auth.RoleOwner}
+}
+
+// requireSession guards what only a signed-in person may do: their own
+// profile, password and sessions. A key acting as a user is still not that
+// user at a keyboard.
+func requireSession(p Principal) error {
+	if !p.IsSession() {
+		return E(CodeNotAuthorized, "this needs a signed-in user; an API key cannot use it", nil)
+	}
+	return nil
+}
+
+// fromProvider maps a provider failure onto the transport vocabulary. The
+// provider's error always goes along as the cause: the caller's message is
+// this layer's, and what the server actually said belongs in the log.
+func fromProvider(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, provider.ErrNeedsReauth):
+		return needsReauth(err)
+	case errors.Is(err, provider.ErrNotConnected):
+		return E(CodeConflict,
+			"the server authenticated the account but refused to open the mailbox; "+
+				"check that IMAP is enabled for it", err)
+	case errors.Is(err, provider.ErrAuthFailed):
+		return E(CodeConflict, "the mail server rejected the stored credentials", err)
+	case errors.Is(err, provider.ErrTooManyConnections):
+		return Retryable("the account has too many open connections to its mail server", time.Minute, err)
+	case errors.Is(err, provider.ErrRateLimited):
+		return Retryable("the mail server is throttling this account", time.Minute, err)
+	case errors.Is(err, provider.ErrFolderNotFound):
+		return E(CodeNotFound, "no such folder", err)
+	case errors.Is(err, provider.ErrMessageGone):
+		return E(CodeNotFound, "that message no longer exists on the server", err)
+	case errors.Is(err, provider.ErrTooLarge):
+		return E(CodeBadRequest, "the message is larger than the provider accepts", err)
+	case errors.Is(err, provider.ErrUnsupported):
+		return E(CodeBadRequest, "the mail server does not support that operation", err)
+	default:
+		// Deliberately "upstream": the fault is not ours, and a caller reading
+		// the message should be able to tell.
+		return E(CodeInternal, "upstream: the mail server could not be reached", err)
+	}
+}
+
+// ctxWithDeadline bounds a provider call so a slow server cannot hold a
+// request open past its own timeout.
+func ctxWithDeadline(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < d {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, d)
+}

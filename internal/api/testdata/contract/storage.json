@@ -1,0 +1,33 @@
+{
+  "database_bytes": 1048576,
+  "mailboxes": [
+    {
+      "account_id": "acc_0000000000000001",
+      "bytes": 0,
+      "email": "ana@gmail.com",
+      "messages": 0
+    },
+    {
+      "account_id": "acc_0000000000000003",
+      "bytes": 0,
+      "email": "ana@icloud.com",
+      "messages": 0
+    },
+    {
+      "account_id": "acc_0000000000000002",
+      "bytes": 0,
+      "email": "ana@mail.example",
+      "messages": 0
+    },
+    {
+      "account_id": "acc_0000000000000004",
+      "bytes": 1037,
+      "email": "ana@work.example",
+      "messages": 2
+    }
+  ],
+  "total": {
+    "bytes": 1037,
+    "messages": 2
+  }
+}

@@ -1,0 +1,21 @@
+From: Ana <ana@example.org>
+To: Bruno <bruno@example.org>
+Subject: Broken base64
+Date: Thu, 24 Sep 2026 10:00:00 -0300
+Message-ID: <broken-base64@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="b64"
+
+--b64
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+SGVsbG8s
+ IHdvcmxk!!
+	IQ
+--b64
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: BASE64
+
+T2zDoQ==IG11bmRv
+--b64--

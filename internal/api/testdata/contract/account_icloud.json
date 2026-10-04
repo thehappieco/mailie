@@ -1,0 +1,27 @@
+{
+  "actions": {
+    "archive": false,
+    "trash": false
+  },
+  "auth_kind": "password",
+  "created_at": 1790000000,
+  "display_name": "Ana (iCloud)",
+  "email": "ana@icloud.com",
+  "id": "acc_0000000000000003",
+  "provider": "icloud",
+  "save_sent_copy": true,
+  "send": {
+    "available": true,
+    "from_name": "Ana Lima"
+  },
+  "state": "active",
+  "sync": {
+    "enabled": false,
+    "folders_synced": 0,
+    "folders_total": 0,
+    "initial_progress": 0,
+    "messages": 0,
+    "running": false,
+    "state": "off"
+  }
+}

@@ -1,0 +1,20 @@
+From: Ana <ana@example.org>
+To: Bruno <bruno@example.org>
+Subject: Alternative
+Date: Thu, 24 Sep 2026 10:00:00 -0300
+Message-ID: <alternative@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt-1"
+
+--alt-1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: base64
+
+T2zDoSwgbXVuZG8g4oCUIGHDp8OjbyDinJMNClNlZ3VuZGEgbGluaGEuDQo=
+--alt-1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<html><body><p style=3D"color:red">Ol=C3=A1, mundo =E2=80=94 a=C3=A7=C3=A3o =
+=E2=9C=93</p><script>alert(1)</script></body></html>
+--alt-1--

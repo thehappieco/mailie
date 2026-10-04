@@ -1,0 +1,34 @@
+{
+  "messages": [
+    {
+      "account_id": "acc_0000000000000004",
+      "answered": false,
+      "copies": 0,
+      "date": 1789996400,
+      "draft": false,
+      "flagged": false,
+      "folder_id": 1,
+      "folder_name": "INBOX",
+      "folder_role": "inbox",
+      "from": [
+        {
+          "email": "bea@example.org",
+          "name": "Bea Lima"
+        }
+      ],
+      "has_attachments": true,
+      "id": 1,
+      "internal_date": 1789996400,
+      "seen": false,
+      "size": 821,
+      "subject": "Re: Lunch on Friday?",
+      "to": [
+        {
+          "email": "ana@work.example",
+          "name": "Ana Lima"
+        }
+      ]
+    }
+  ],
+  "next_cursor": "AAAAAGqxLXAAAAAAAAAAAQ"
+}

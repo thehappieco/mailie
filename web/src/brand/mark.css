@@ -1,0 +1,55 @@
+/* Colour system and choreography for the brand mark, the same structure the
+   sibling consoles carry for their own kit. Every colour decision is a class or
+   data-attribute rule, never a style attribute, so the markup stays
+   theme-neutral and the theme switch is just <html data-theme>. The hex is the
+   provisional Mailie colour, the same literal brand/mark.ts carries. */
+
+.bm { display: block; overflow: visible; }
+.bm[data-brand="mailie"] { --bm-color: #B24B1E; }
+
+/* outline = coloured frame and symbol on a white interior (the brand kit's cut-out outline variant).
+   auto falls back to outline unconditionally, so a document without data-theme still renders a valid mark. */
+.bm[data-mode="outline"],
+.bm[data-mode="auto"],
+[data-theme="light"] .bm[data-mode="auto"] {
+  --bm-frame: var(--bm-color);
+  --bm-interior: #FFFFFF;
+  --bm-symbol: var(--bm-color);
+}
+/* tile = white frame and symbol on a coloured interior (the brand kit's cut-out tile variant). */
+.bm[data-mode="tile"],
+[data-theme="dark"] .bm[data-mode="auto"] {
+  --bm-frame: #FFFFFF;
+  --bm-interior: var(--bm-color);
+  --bm-symbol: #FFFFFF;
+}
+
+.bm path { transition: fill .3s, stroke .3s; }
+.bm-frame    { fill: var(--bm-frame); }
+.bm-interior { fill: var(--bm-interior); }
+.bm-fill     { fill: var(--bm-symbol); }
+.bm-cut      { fill: none; stroke: var(--bm-interior); } /* the kits stroke "cut" parts in the interior colour */
+
+/* ---------- choreography (only while .bm--play) ----------
+   The timeline ends about 1.1s after play(); the pop over 0–.65s is shared with
+   the other marks in the family. transform-box: fill-box makes
+   transform-origin relative to the part's own bounding box. */
+.bm--play { transform-origin: 50% 50%; animation: bm-pop .65s var(--ease) both; }
+.bm--play .bm-part, .bm--play .bm-part-wrap { transform-box: fill-box; transform-origin: 50% 50%; }
+
+@keyframes bm-pop  { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
+/* Generic draw-in: `from` is the stroke-dashoffset presentation attribute the component writes (draw() in mark.ts). */
+@keyframes bm-draw { to { stroke-dashoffset: 0; } }
+
+/* The envelope pops with overshoot, then its flap folds down: the V is drawn
+   from one top corner through the point to the other. */
+.bm--play .bm-mailie-body { animation: bm-body .45s var(--pop) .25s both; }
+.bm--play .bm-mailie-flap { animation: bm-draw .45s ease-out .6s both; }
+@keyframes bm-body { from { transform: scale(.6); } to { transform: scale(1); } }
+
+/* Reduced motion: no animation at all, and no dash pattern — the dash
+   attributes would otherwise leave the flap permanently undrawn. */
+@media (prefers-reduced-motion: reduce) {
+  .bm, .bm * { animation: none !important; }
+  .bm [stroke-dasharray] { stroke-dasharray: none !important; }
+}

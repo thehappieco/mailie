@@ -1,0 +1,31 @@
+[
+  {
+    "flows": [
+      "web",
+      "loopback"
+    ],
+    "id": "gmail",
+    "oauth": true,
+    "password": false
+  },
+  {
+    "flows": [
+      "loopback"
+    ],
+    "id": "microsoft",
+    "oauth": true,
+    "password": false
+  },
+  {
+    "flows": [],
+    "id": "icloud",
+    "oauth": false,
+    "password": true
+  },
+  {
+    "flows": [],
+    "id": "imap",
+    "oauth": false,
+    "password": true
+  }
+]

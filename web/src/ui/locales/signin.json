@@ -1,0 +1,17 @@
+{
+  "Create your account": ["Crie sua conta", "Crea tu cuenta", "Créez votre compte", "Konto erstellen"],
+  "Sign in": ["Entrar", "Iniciar sesión", "Se connecter", "Anmelden"],
+  "The passwords do not match.": ["As senhas não conferem.", "Las contraseñas no coinciden.", "Les mots de passe ne correspondent pas.", "Die Passwörter stimmen nicht überein."],
+  "This invitation is for the address below. Choose your name and a password to finish.": ["Este convite é para o endereço abaixo. Escolha seu nome e uma senha para concluir.", "Esta invitación es para la dirección de abajo. Elige tu nombre y una contraseña para terminar.", "Cette invitation est destinée à l’adresse ci-dessous. Choisissez votre nom et un mot de passe pour terminer.", "Diese Einladung gilt für die Adresse unten. Wählen Sie Ihren Namen und ein Passwort, um abzuschließen."],
+  "Your email accounts, connected in one place. Sign in to continue.": ["Suas contas de email, conectadas em um só lugar. Entre para continuar.", "Tus cuentas de correo, conectadas en un solo lugar. Inicia sesión para continuar.", "Vos comptes e-mail, connectés en un seul endroit. Connectez-vous pour continuer.", "Ihre E-Mail-Konten, an einem Ort verbunden. Melden Sie sich an, um fortzufahren."],
+  "Your session ended. Sign in again.": ["Sua sessão terminou. Entre novamente.", "Tu sesión terminó. Inicia sesión de nuevo.", "Votre session a pris fin. Reconnectez-vous.", "Ihre Sitzung ist beendet. Melden Sie sich erneut an."],
+  "Sign in to finish connecting your email account.": ["Entre para concluir a conexão da sua conta de email.", "Inicia sesión para terminar de conectar tu cuenta de correo.", "Connectez-vous pour terminer la connexion de votre compte e-mail.", "Melden Sie sich an, um die Verbindung Ihres E-Mail-Kontos abzuschließen."],
+  "The invitation only works for this address.": ["O convite só vale para este endereço.", "La invitación solo sirve para esta dirección.", "L’invitation ne fonctionne que pour cette adresse.", "Die Einladung gilt nur für diese Adresse."],
+  "Use at least {count} characters.": ["Use pelo menos {count} caracteres.", "Usa al menos {count} caracteres.", "Utilisez au moins {count} caractères.", "Verwenden Sie mindestens {count} Zeichen."],
+  "Repeat the password": ["Repita a senha", "Repite la contraseña", "Répétez le mot de passe", "Passwort wiederholen"],
+  "Creating your account…": ["Criando sua conta…", "Creando tu cuenta…", "Création de votre compte…", "Konto wird erstellt…"],
+  "Signing in…": ["Entrando…", "Iniciando sesión…", "Connexion…", "Anmeldung…"],
+  "I already have an account": ["Já tenho uma conta", "Ya tengo una cuenta", "J’ai déjà un compte", "Ich habe bereits ein Konto"],
+  "Use my invitation": ["Usar meu convite", "Usar mi invitación", "Utiliser mon invitation", "Meine Einladung verwenden"],
+  "Accounts are created by invitation. Ask the administrator of this server for a link.": ["As contas são criadas por convite. Peça um link ao administrador deste servidor.", "Las cuentas se crean por invitación. Pide un enlace al administrador de este servidor.", "Les comptes sont créés sur invitation. Demandez un lien à l’administrateur de ce serveur.", "Konten werden per Einladung erstellt. Bitten Sie die Administration dieses Servers um einen Link."]
+}

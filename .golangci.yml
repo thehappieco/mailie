@@ -1,0 +1,79 @@
+version: "2"
+
+linters:
+  enable:
+    # errcheck first, and with the strict settings: an ignored error in this
+    # codebase means a message that was never indexed, a token that was never
+    # persisted, or an email that was sent twice. None of those announce
+    # themselves.
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+    - contextcheck
+    - errorlint
+    - nilerr
+    - noctx
+    - gosec
+    - misspell
+    - unconvert
+    - wastedassign
+    - depguard
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    staticcheck:
+      checks: ["all"]
+    depguard:
+      rules:
+        # go-imap and go-mail are wire-protocol libraries with sharp edges
+        # (UID vs sequence sets, connection-bound readers, handlers that run on
+        # the read goroutine). Exactly one package is allowed to know them, so
+        # an upgrade of a beta dependency touches one directory.
+        provider-only:
+          list-mode: lax
+          files:
+            - "!**/internal/provider/imap/**"
+            - "!**/internal/provider/providertest/**"
+          deny:
+            - pkg: github.com/emersion/go-imap/v2/imapclient
+              desc: only internal/provider/imap may drive an IMAP connection
+            - pkg: github.com/wneessen/go-mail
+              desc: only internal/provider/imap may build and submit SMTP messages
+        # The transports are adapters. If one of them reaches into the store or
+        # the sync engine, REST and MCP start to diverge, which is the single
+        # thing this project promises not to do.
+        transports-call-service:
+          list-mode: lax
+          files:
+            # Tests wire a real store to build the handler under test; the rule
+            # is about production code not growing a second implementation.
+            - "!**/*_test.go"
+            - "**/internal/api/**"
+            - "**/internal/mcp/**"
+            - "**/internal/webui/**"
+          deny:
+            - pkg: github.com/thehappieco/mailie/internal/store
+              desc: transports go through internal/service
+            - pkg: github.com/thehappieco/mailie/internal/sync
+              desc: transports go through internal/service
+            - pkg: github.com/thehappieco/mailie/internal/provider
+              desc: transports go through internal/service
+            - pkg: github.com/thehappieco/mailie/internal/account
+              desc: account ownership is decided in internal/service
+            - pkg: github.com/thehappieco/mailie/internal/auth/authtest
+              desc: test helper; mints users and keys straight into the store
+
+  exclusions:
+    rules:
+      # Tests assert on unchecked calls, use fixed keys, build requests without
+      # a context, and close response bodies through t.Cleanup, which bodyclose
+      # cannot see. Production code gets none of these exemptions.
+      - path: _test\.go
+        linters: [errcheck, gosec, noctx, bodyclose]

@@ -1,0 +1,28 @@
+{
+  "actions": {
+    "archive": false,
+    "trash": false
+  },
+  "auth_kind": "password",
+  "created_at": 1790000000,
+  "email": "ana@mail.example",
+  "id": "acc_0000000000000002",
+  "provider": "imap",
+  "save_sent_copy": true,
+  "send": {
+    "available": true,
+    "from_name": "Ana Lima"
+  },
+  "state": "active",
+  "sync": {
+    "enabled": true,
+    "folders_synced": 3,
+    "folders_total": 7,
+    "initial_progress": 42,
+    "last_synced_at": 1790000000,
+    "messages": 1284,
+    "running": true,
+    "state": "initial",
+    "tier": "condstore"
+  }
+}

@@ -1,0 +1,115 @@
+name: ci
+
+on:
+  push: {branches: [main]}
+  pull_request:
+
+# Every job only reads the repository.
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27.1"
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: go build ./...
+      # On Linux the race detector needs cgo: this run alone turns it on, and
+      # nothing it builds ships (the Makefile's test-race does the same).
+      - run: go test -race -coverprofile=coverage.out ./...
+        env: {CGO_ENABLED: "1"}
+      - name: Fuzz smoke
+        run: make fuzz
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - run: make fmt
+      - run: make vet
+      - run: make lint-layout
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with: {version: v2.13.2}
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # CONDSTORE, SPECIAL-USE and a real XOAUTH2 handshake cannot be exercised by
+  # the in-process fake server, so this job is the only place those code paths
+  # run at all. It is required, not optional.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - name: Integration tier
+        run: make it
+
+  # The open console, on its own: the Go jobs above never need Node, and a
+  # broken console build must not hide behind a green Go suite or the other
+  # way round.
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run: {working-directory: web}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  # The public source as scripts/export-public.py exports it, built and
+  # tested out of this checkout: a root left off the exporter's allowlist, or
+  # anything that needs commercial/, fails here rather than in the public
+  # repository.
+  distribution:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: {go-version: "${{ env.GO_VERSION }}", cache: true}
+      - uses: actions/setup-node@v4
+        with: {node-version: "24"}
+      - name: Export the public source
+        run: python3 scripts/export-public.py --output "$RUNNER_TEMP/mailie-source.tar.gz"
+      - name: Build and test the export alone
+        run: |
+          mkdir "$RUNNER_TEMP/mailie-source"
+          tar -xzf "$RUNNER_TEMP/mailie-source.tar.gz" -C "$RUNNER_TEMP/mailie-source"
+          cd "$RUNNER_TEMP/mailie-source"
+          go build ./...
+          go test ./...
+          cd web
+          npm ci
+          npm run typecheck
+          npm test
+          npm run build
+
+  # The gitleaks CLI, pinned, over the full history: a secret committed once
+  # and deleted since still fails.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - name: Scan source history for secrets
+        run: |
+          curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks git --redact --config .gitleaks.toml .

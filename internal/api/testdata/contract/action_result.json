@@ -1,0 +1,35 @@
+{
+  "messages": [
+    {
+      "account_id": "acc_0000000000000004",
+      "answered": false,
+      "copies": 0,
+      "date": 1789992800,
+      "draft": false,
+      "flagged": false,
+      "folder_id": 2,
+      "folder_name": "Receipts",
+      "from": [
+        {
+          "email": "calendar@example.org",
+          "name": "Calendar"
+        }
+      ],
+      "has_attachments": false,
+      "id": 2,
+      "internal_date": 1789992800,
+      "seen": true,
+      "size": 216,
+      "subject": "Your week",
+      "to": [
+        {
+          "email": "ana@work.example",
+          "name": ""
+        }
+      ]
+    }
+  ],
+  "removed": [
+    3
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "Role": ["Função", "Rol", "Rôle", "Rolle"],
+  "Saving…": ["Salvando…", "Guardando…", "Enregistrement…", "Wird gespeichert…"],
+  "Save name": ["Salvar nome", "Guardar nombre", "Enregistrer le nom", "Namen speichern"],
+  "Name saved.": ["Nome salvo.", "Nombre guardado.", "Nom enregistré.", "Name gespeichert."],
+  "Password changed. Every other session of your account has ended.": ["Senha alterada. Todas as outras sessões da sua conta foram encerradas.", "Contraseña cambiada. Todas las demás sesiones de tu cuenta se cerraron.", "Mot de passe modifié. Toutes les autres sessions de votre compte ont été fermées.", "Passwort geändert. Alle anderen Sitzungen Ihres Kontos wurden beendet."],
+  "Change the password you sign in with": ["Troque a senha que você usa para entrar", "Cambia la contraseña con la que inicias sesión", "Modifiez votre mot de passe de connexion", "Ändern Sie Ihr Anmeldepasswort"],
+  "Sessions": ["Sessões", "Sesiones", "Sessions", "Sitzungen"],
+  "This session lasts until {date}. Signing out everywhere ends the sessions of your account on every browser.": ["Esta sessão vale até {date}. Sair de todos os lugares encerra as sessões da sua conta em todos os navegadores.", "Esta sesión dura hasta el {date}. Cerrar sesión en todas partes cierra las sesiones de tu cuenta en todos los navegadores.", "Cette session dure jusqu’au {date}. Se déconnecter partout ferme les sessions de votre compte dans tous les navigateurs.", "Diese Sitzung gilt bis {date}. „Überall abmelden“ beendet die Sitzungen Ihres Kontos in allen Browsern."],
+  "Signing out…": ["Saindo…", "Cerrando sesión…", "Déconnexion…", "Abmeldung…"],
+  "Sign out everywhere now": ["Sair de todos os lugares agora", "Cerrar sesión en todas partes ahora", "Se déconnecter partout maintenant", "Jetzt überall abmelden"],
+  "Sign out everywhere": ["Sair de todos os lugares", "Cerrar sesión en todas partes", "Se déconnecter partout", "Überall abmelden"],
+  "Change password": ["Trocar senha", "Cambiar contraseña", "Changer le mot de passe", "Passwort ändern"],
+  "The new passwords do not match.": ["As novas senhas não conferem.", "Las contraseñas nuevas no coinciden.", "Les nouveaux mots de passe ne correspondent pas.", "Die neuen Passwörter stimmen nicht überein."],
+  "Use at least {count} characters. Changing the password signs you out of every other browser.": ["Use pelo menos {count} caracteres. Trocar a senha encerra sua sessão em todos os outros navegadores.", "Usa al menos {count} caracteres. Cambiar la contraseña cierra tu sesión en todos los demás navegadores.", "Utilisez au moins {count} caractères. Changer le mot de passe vous déconnecte de tous les autres navigateurs.", "Verwenden Sie mindestens {count} Zeichen. Eine Passwortänderung meldet Sie in allen anderen Browsern ab."],
+  "Current password": ["Senha atual", "Contraseña actual", "Mot de passe actuel", "Aktuelles Passwort"],
+  "New password": ["Nova senha", "Contraseña nueva", "Nouveau mot de passe", "Neues Passwort"],
+  "Repeat the new password": ["Repita a nova senha", "Repite la contraseña nueva", "Répétez le nouveau mot de passe", "Neues Passwort wiederholen"],
+  "Changing…": ["Trocando…", "Cambiando…", "Modification…", "Wird geändert…"]
+}

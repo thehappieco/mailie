@@ -1,0 +1,32 @@
+# The integration tier. These services exist because the in-process IMAP
+# server cannot speak CONDSTORE, SPECIAL-USE or a real XOAUTH2 handshake —
+# those are missing from the server library itself, not merely unimplemented.
+# Without this tier those paths ship untested, which is why CI runs it.
+services:
+  dovecot:
+    # Closest thing to Gmail's capability set that can be run locally:
+    # CONDSTORE, MOVE, UIDPLUS, SPECIAL-USE, ESEARCH, and XOAUTH2 validated
+    # against a local key.
+    image: dovecot/dovecot:2.4.5-dev
+    environment:
+      # A static passdb: every test can use a fresh username with this
+      # password, which gives per-test isolation with nothing to clean up.
+      USER_PASSWORD: "{plain}integration"
+    volumes:
+      # One file, not the directory: mounting over conf.d would hide the
+      # image's own auth.conf and leave Dovecot with no passdb.
+      - ./dovecot/conf.d/90-mailserver.conf:/etc/dovecot/conf.d/90-mailserver.conf:ro
+    ports:
+      # The rootless image listens on 31143 inside the container, not 143.
+      - "127.0.0.1:31143:31143"
+
+  mailpit:
+    # An SMTP sink with a REST API, so a test can assert on what was actually
+    # transmitted rather than on what the client believes it sent.
+    image: axllent/mailpit:v1.31.2
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
+    ports:
+      - "127.0.0.1:31025:1025"
+      - "127.0.0.1:31080:8025"

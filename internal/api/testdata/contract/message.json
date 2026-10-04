@@ -1,0 +1,71 @@
+{
+  "account_id": "acc_0000000000000004",
+  "answered": false,
+  "bcc": [],
+  "body": {
+    "charset_fallback": false,
+    "html": "<p>Friday works. The menu is attached &mdash; see you at <b>noon</b>.</p>",
+    "html_unsafe": true,
+    "text": "Friday works. The menu is attached — see you at noon.",
+    "truncated": false
+  },
+  "cc": [
+    {
+      "email": "caio@example.org",
+      "name": ""
+    }
+  ],
+  "copies": 0,
+  "date": 1789996400,
+  "draft": false,
+  "flagged": false,
+  "folder_id": 1,
+  "folder_name": "INBOX",
+  "folder_role": "inbox",
+  "from": [
+    {
+      "email": "bea@example.org",
+      "name": "Bea Lima"
+    }
+  ],
+  "has_attachments": true,
+  "id": 1,
+  "in_reply_to": "menu-1@work.example",
+  "internal_date": 1789996400,
+  "message_id": "menu-2@example.org",
+  "parts": [
+    {
+      "is_attachment": false,
+      "mime_type": "text/plain",
+      "path": "1.1",
+      "size": 61
+    },
+    {
+      "is_attachment": false,
+      "mime_type": "text/html",
+      "path": "1.2",
+      "size": 73
+    },
+    {
+      "disposition": "attachment",
+      "filename": "Cardápio.pdf",
+      "is_attachment": true,
+      "mime_type": "application/pdf",
+      "path": "2",
+      "size": 12
+    }
+  ],
+  "references": [
+    "menu-1@work.example"
+  ],
+  "reply_to": [],
+  "seen": false,
+  "size": 821,
+  "subject": "Re: Lunch on Friday?",
+  "to": [
+    {
+      "email": "ana@work.example",
+      "name": "Ana Lima"
+    }
+  ]
+}

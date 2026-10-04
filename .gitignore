@@ -1,0 +1,43 @@
+# Build output
+/bin/
+# `go build ./cmd/mailserver` run from the root drops the binary here.
+/mailserver
+/dist/
+*.test
+*.out
+
+# The open console's dependencies and build, which `make web-build` recreates
+node_modules/
+/web/dist/
+
+# Local runtime state — never commit mail databases or cached attachments
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets. Configuration is environment-only; .env is for local development
+# and holds the credential key that decrypts every stored refresh token.
+.env
+.env.*
+!.env.example
+*.local.*
+# An npm token, when there is one.
+.npmrc
+
+.DS_Store
+# Local tools' settings: Claude Code's (settings.local.json, launch.json) and
+# editors'.
+/.claude/
+/.vscode/
+/.idea/
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc
+
+# The private cloud: a development checkout nests its own repository here.
+/commercial/
+# Claude Code's local, untracked instructions; a development checkout imports
+# the private repository's CLAUDE.md from it.
+/CLAUDE.local.md

@@ -1,0 +1,32 @@
+[
+  {
+    "display_name": "INBOX",
+    "id": 1,
+    "messages": 2,
+    "name": "INBOX",
+    "role": "inbox",
+    "role_source": "inbox",
+    "selectable": true,
+    "sync_state": "live",
+    "synced": true,
+    "unseen": 1
+  },
+  {
+    "display_name": "Sent",
+    "id": 3,
+    "name": "Sent",
+    "role": "sent",
+    "role_source": "special-use",
+    "selectable": true,
+    "sync_state": "live",
+    "synced": true
+  },
+  {
+    "display_name": "Receipts",
+    "id": 2,
+    "name": "Receipts",
+    "selectable": true,
+    "sync_state": "live",
+    "synced": true
+  }
+]
