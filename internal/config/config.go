@@ -330,8 +330,12 @@ func publicURL(env Env, errs *[]error) string {
 		return bad("%q must be an origin, without a query or fragment", raw)
 	case u.Path != "" && u.Path != "/":
 		return bad("%q must be an origin, without a path: the console is served at the root", raw)
-	case u.Scheme == "http" && !IsLoopbackHost(u.Hostname()):
-		return bad("http is only allowed for localhost, 127.0.0.1 or [::1]; use https for %q", u.Host)
+	case u.Scheme == "http" && !IsLoopbackHost(u.Hostname()) && !localhostName(u.Hostname()):
+		// A name under .localhost never leaves the machine either (RFC 6761,
+		// and browsers treat it as a secure context), as MAIL_CONNECT_SRC
+		// accepts; it lets a development console share a parent domain with
+		// another development site.
+		return bad("http is only allowed for localhost, a name under .localhost, 127.0.0.1 or [::1]; use https for %q", u.Host)
 	case u.Scheme == "http" && env.IsProd():
 		return bad("prod requires https")
 	}
@@ -455,6 +459,14 @@ func IsLoopbackHost(host string) bool {
 	}
 	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
 	return err == nil && addr.Unmap().IsLoopback()
+}
+
+// localhostName reports whether host is a DNS name under .localhost, which
+// never leaves the machine (RFC 6761): app.example.localhost, never
+// localhost.example.com.
+func localhostName(host string) bool {
+	host = strings.ToLower(host)
+	return strings.HasSuffix(host, ".localhost") && validHost(host)
 }
 
 // dataDir resolves where the database and the attachment cache live.

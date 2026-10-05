@@ -21,6 +21,10 @@ func TestThePublicURLIsAnOriginAndNothingElse(t *testing.T) {
 		"https://console.example:443":  "https://console.example",
 		"http://localhost:80":          "http://localhost",
 		"https://console.example:8443": "https://console.example:8443",
+		// A name under .localhost resolves only to this machine, as
+		// localhost does.
+		"http://app.example.localhost:5174":  "http://app.example.localhost:5174",
+		"http://App.Example.LOCALHOST:5174/": "http://app.example.localhost:5174",
 	} {
 		setenv(t, map[string]string{
 			"MAIL_CREDENTIAL_KEY_HEX": validKey, "MAIL_DATA_DIR": t.TempDir(), "MAIL_PUBLIC_URL": raw,
@@ -45,6 +49,8 @@ func TestThePublicURLIsAnOriginAndNothingElse(t *testing.T) {
 		"https://user:pass@console.example":         "credentials",
 		"https://":                                  "no host",
 		"http://localhost.evil.example:5174":        "only allowed for localhost",
+		"http://evil.example.localhost.com:5174":    "only allowed for localhost",
+		"http://under_score.localhost:5174":         "only allowed for localhost",
 		"http://127.0.0.1.nip.io:5174/oauth/return": "without a path",
 		"https://console.example:":                  "empty port",
 		"https://console.example:/":                 "empty port",
