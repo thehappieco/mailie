@@ -523,6 +523,32 @@ func TestAStrayCallbackDoesNotEndTheLoopbackFlow(t *testing.T) {
 	}
 }
 
+func TestALoopbackFlowDoesNotExpireAtOnceUnderAClockHeldInThePast(t *testing.T) {
+	// A flow's expiry is an instant on the registry's clock, which a test
+	// holds still. Its listener used to wait for that instant on the real
+	// clock — long gone — so every attempt expired the moment it started, on
+	// a goroutine of its own racing the request that started it, and the
+	// events a test journaled depended on which won and on the date it ran.
+	f, _ := consentFixture(t, "")
+	held := time.Now().Add(-time.Hour)
+	f.repo.WithClock(func() time.Time { return held })
+
+	added, err := f.svc.AddAccount(t.Context(), admin(), service.AddAccountRequest{Email: "person@gmail.com", Flow: "loopback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := f.stateOfAccount(t, added.Account.ID); a.State != account.StatePendingAuth {
+		t.Fatalf("account = %s %q right after the flow started, want pending_auth", a.State, a.StateReason)
+	}
+	reply := getRedirect(t, added.Auth, url.Values{"code": {"the-code"}, "state": {stateOf(t, added.Auth)}})
+	if reply.status != http.StatusOK || reply.body != "Authorization complete. You can close this tab.\n" {
+		t.Fatalf("the redirect: %d %q", reply.status, reply.body)
+	}
+	if a := f.stateOfAccount(t, added.Account.ID); a.State != account.StateActive {
+		t.Errorf("account = %s %q, want active", a.State, a.StateReason)
+	}
+}
+
 func TestRemovingAPendingAccountClosesItsListener(t *testing.T) {
 	f, idp := consentFixture(t, "")
 	loop, err := f.svc.AddAccount(t.Context(), admin(), service.AddAccountRequest{Email: "person@gmail.com", Flow: "loopback"})
