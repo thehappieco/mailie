@@ -41,6 +41,13 @@ export interface Edition {
   actions: PermissionText
   /** What a tool holding a new API key can do: agreed to by creating the key. Takes a `write` prop. */
   keyTerms: AgreementText
+  /** What the frame (components/ConsoleShell.vue) calls what it holds. Translated, or a name, which never is. */
+  shell: {
+    /** The root of the header's breadcrumb, before the section shown, and the lockup's name beside the product's. */
+    rootLabel(): string
+    /** The accessible name of the sidebar, which holds the sections. */
+    navLabel(): string
+  }
   /** Sentences of core screens whose words depend on the edition. */
   copy: {
     /** The section with the person's own settings and permissions, as other sentences name it. */

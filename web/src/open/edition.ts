@@ -26,6 +26,11 @@ export const openEdition: Edition = {
     changedSince: date => t('Paused: this server’s text about actions changed since you allowed them on {date}. Review the new text and agree to use them again.', { date }),
   },
   keyTerms: { version: KEY_TERMS_VERSION, component: KeyTermsText },
+  // A self-hosted server's interface is its console.
+  shell: {
+    rootLabel: () => t('Console'),
+    navLabel: () => t('Console navigation'),
+  },
   copy: {
     accountSection: () => t('Account'),
     mailboxesIntro: () => t('Gmail, Microsoft 365 or Outlook, iCloud Mail, or any provider that offers IMAP. This server checks the sign-in, lists the mailbox’s folders and, once you turn sync on, keeps an index of its messages’ details for your tools to search.'),

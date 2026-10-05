@@ -50,8 +50,10 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
 `web/src` is a **core** that every edition shares, plus the open edition in `web/src/open`. An
 edition calls `configureEdition()` (`web/src/edition.ts`) before mounting: the console component
 built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, actions, a new key's
-terms) with their revisions, a few sentences it words its own way, whether to show how to connect
-over MCP, and optional extras (a byline, legal components, more translations). Other extension
+terms) with their revisions, what the frame calls itself (`shell`: the breadcrumb's root and the
+sidebar's name; the open edition's is the server's "Console"), a few sentences it words its own
+way, whether to show how to connect over MCP, and optional extras (a byline, legal components, more
+translations). The core's own sentences never name the frame: they say "this page". Other extension
 points are `onLiveEvent()`/`onLiveLagged()` (`state/live.ts`), `addDescriber()` for an edition's own
 operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account section's
 pieces (`AccountPanel`, `SyncPermission`, `ActionsPermission`, `PermissionRow`).

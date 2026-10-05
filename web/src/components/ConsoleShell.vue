@@ -22,13 +22,15 @@ export interface ConsoleSection {
 // sections exist (a list that may change while the console is open: a
 // section that goes away takes the person home), which one is the person's
 // own account, and where the console opens once it knows the person's
-// mailboxes. Anything else the edition keeps on screen across sections goes
-// in the default slot.
+// mailboxes; and what the frame is called (edition().shell): the open
+// edition's is a console, another's may be an app. Anything else the edition
+// keeps on screen across sections goes in the default slot.
 //
 // While the console is on screen it reads the mailboxes, the providers, and
 // where the person stands on sync and on actions, and keeps the event stream
 // open.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { edition } from '../edition'
 import { accounts, loadAccounts, loadProviders } from '../state/accounts'
 import { actionsConsent, loadActionsConsent } from '../state/actionsConsent'
 import { server } from '../state/connection'
@@ -62,6 +64,11 @@ const signingOut = ref(false)
 const current = computed(() => props.sections.find(item => item.id === section.value) ?? props.sections[0]!)
 const accountLabel = computed(() => props.sections.find(item => item.id === props.account)?.label ?? '')
 const profileName = computed(() => session.user?.name || session.user?.email || '')
+/** What the edition calls what this frame holds: the breadcrumb's root. */
+const rootLabel = computed(() => edition().shell.rootLabel())
+/** The lockup's name: the product, and the edition's root beside it unless the root is the product itself. */
+const brandLabel = computed(() => rootLabel.value === 'Mailie' ? 'Mailie' : `Mailie · ${rootLabel.value}`)
+const navLabel = computed(() => edition().shell.navLabel())
 
 function show(id: string) {
   navigated = true
@@ -110,8 +117,8 @@ onBeforeUnmount(() => {
 <template>
   <a class="skip-link" href="#console-content" @click.prevent="content?.focus()">{{ t('Skip to content') }}</a>
   <div class="console console-app">
-    <aside class="console-sidebar" :aria-label="t('Console navigation')">
-      <div class="console-brand"><BrandLockup :size="34" animate="load" :label="`Mailie · ${t('Console')}`" /></div>
+    <aside class="console-sidebar" :aria-label="navLabel">
+      <div class="console-brand"><BrandLockup :size="34" animate="load" :label="brandLabel" /></div>
       <nav class="console-nav" :aria-label="t('Sections')">
         <button v-for="item in sections" :key="item.id" type="button" class="console-nav-item"
           :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined"
@@ -129,7 +136,7 @@ onBeforeUnmount(() => {
     <div class="console-main">
       <header class="console-header">
         <button class="icon-btn mobile-menu" type="button" :aria-label="t('Open menu')" aria-haspopup="dialog" :aria-expanded="mobileNav" @click="mobileNav = true"><AppIcon name="menu" :size="23" /></button>
-        <div class="grow"><div class="console-breadcrumb">{{ t('Console') }} <span>/</span> {{ current.label }}</div><h1>{{ current.label }}</h1></div>
+        <div class="grow"><div class="console-breadcrumb">{{ rootLabel }} <span>/</span> {{ current.label }}</div><h1>{{ current.label }}</h1></div>
         <AppearanceMenu />
         <button class="mobile-profile" type="button" :aria-label="accountLabel" @click="show(account)"><span aria-hidden="true">{{ initials(profileName) }}</span></button>
       </header>
