@@ -4,31 +4,34 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 
-	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/store"
 )
 
-// Closing a person's account, on their request, is the operator's job: the
-// console cannot do it yet. It is two steps, as the privacy policy promises.
-// Disabling ends every session and revokes every key the person holds;
-// deleting removes their mailboxes and those mailboxes' credentials, their
-// sessions, their keys and their invite, in one transaction.
+// Closing a person's account, on their request, is two steps, as the privacy
+// policy promises. Disabling ends every session and revokes every key the
+// person holds; deleting removes the mailboxes they linked and those
+// mailboxes' credentials, their sessions, their keys, their invite and their
+// personal workspace, in one transaction.
 //
-// Both are for an unrestricted instance admin key and nobody else. An owner
-// signed in to the console administers people, but closing an account is the
-// answer to a request that arrives by email and has to be verified first, and
-// that is the operator's.
+// Both are for an unrestricted instance admin key — the operator, answering a
+// request that arrived by email and was verified — and for an owner of the
+// instance signed in to the console, who administers its people, never on
+// themselves. A person their teams depend on — a team's last active owner, or
+// the linker of a team mailbox another member reads — is refused unless the
+// caller insists (force), as the last owner of the instance is.
 
 // CloseUserRequest names the person whose account is being closed. Their
 // address travels in the body, never in the URL, where every proxy on the way
 // would log it.
 type CloseUserRequest struct {
 	Email string `json:"email"`
-	// Force allows disabling or deleting the last active owner, which leaves
-	// nobody able to invite people or see the instance's own accounts from
-	// the console.
+	// Force allows disabling or deleting the last active owner of the
+	// instance, which leaves nobody able to invite people from the console,
+	// and a person their teams depend on: a team can then be left without
+	// an owner, and the team mailboxes they linked go with them.
 	Force bool `json:"force,omitempty"`
 }
 
@@ -49,11 +52,16 @@ type DeletedUser struct {
 	SessionsDeleted int    `json:"sessions_deleted"`
 	KeysDeleted     int    `json:"keys_deleted"`
 	InvitesDeleted  int    `json:"invites_deleted"`
+	// TeamsDeleted counts the teams whose only member they were, deleted
+	// with them.
+	TeamsDeleted int `json:"teams_deleted"`
 }
 
 // DisableUser switches a person off: every session they have ends, every key
 // issued for them is revoked, and every consent attempt they started stops.
-// Disabling someone already disabled is not an error.
+// Their memberships and grants stay, and count for nothing while they are
+// off; the mailboxes they linked stop syncing. Disabling someone already
+// disabled is not an error.
 func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserRequest) (DisabledUser, error) {
 	user, err := s.closing(ctx, p, req.Email)
 	if err != nil {
@@ -63,16 +71,18 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 	if err != nil {
 		return DisabledUser{}, fromClosure(err, "disabling the user failed")
 	}
+	// Whatever they could read, they no longer can.
+	s.accessChanged()
 	// After the commit rather than in it: the person can no longer start
 	// or finish anything, and a listener still open for them would take a
 	// redirect nobody may complete.
 	if err := s.accounts.StopFlowsBy(ctx, user.ID); err != nil {
 		return DisabledUser{}, E(CodeInternal, "the user is disabled, but stopping their pending authorisations failed", err)
 	}
-	// Their mailboxes stop syncing: a disabled person's mail is not indexed
-	// any further. The accounts themselves did not change, so the registry
-	// has not told the engine; this does.
-	owned, err := s.accounts.Repo().ListVisible(ctx, account.Visibility{UserID: user.ID})
+	// The mailboxes they linked stop syncing: nothing is indexed any further
+	// under the consent of a person who is off. The accounts themselves did
+	// not change, so the registry has not told the engine; this does.
+	owned, err := s.accounts.Repo().LinkedBy(ctx, user.ID)
 	if err != nil {
 		return DisabledUser{}, E(CodeInternal, "the user is disabled, but listing their mailboxes to stop them failed", err)
 	}
@@ -84,11 +94,13 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 	}, nil
 }
 
-// DeleteUser deletes a person and everything kept about them: the accounts
-// they own with those accounts' credentials, folders and everything else
-// indexed for them; their sessions; their keys; every invite for their
-// address. One transaction, so an interruption leaves the person whole rather
-// than half deleted.
+// DeleteUser deletes a person and everything kept about them: the mailboxes
+// they linked, in every workspace, with those mailboxes' credentials, folders
+// and everything else indexed for them, since the consent they synced under
+// goes with them; their sessions; their keys; every invite for their address;
+// their personal workspace, and every team they were the only member of. One
+// transaction, so an interruption leaves the person whole rather than half
+// deleted.
 //
 // An address with no account but with invites — somebody invited who never
 // signed up — has those invites deleted.
@@ -103,7 +115,10 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 	}
 
 	var removed auth.Removed
-	accounts, err := s.accounts.RemoveOwner(ctx, user.ID, func(tx *sql.Tx) error {
+	// Their teams are asked about before their mailboxes go: afterwards,
+	// the team mailboxes they linked would no longer be there to refuse on.
+	blocks := func(tx *sql.Tx) error { return s.users.RequireNoBlocksTx(ctx, tx, user.ID, req.Force) }
+	accounts, err := s.accounts.RemoveOwner(ctx, user.ID, blocks, func(tx *sql.Tx) error {
 		// The records of what they sent from a mailbox nobody owns stay
 		// with that mailbox, without saying who asked.
 		if err := store.ForgetSenderTx(ctx, tx, user.ID); err != nil {
@@ -116,12 +131,14 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 	if err != nil {
 		return DeletedUser{}, fromClosure(err, "deleting the user failed")
 	}
+	s.accessChanged()
 	s.compact(ctx)
 	s.log.Info("user deleted", "user", user.ID, "accounts", accounts,
-		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites)
+		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites, "teams", removed.Teams)
 	return DeletedUser{
 		ID: user.ID, Email: user.Email, AccountsRemoved: accounts,
 		SessionsDeleted: removed.Sessions, KeysDeleted: removed.Keys, InvitesDeleted: removed.Invites,
+		TeamsDeleted: removed.Teams,
 	}, nil
 }
 
@@ -152,13 +169,15 @@ func (s *Service) scrub(ctx context.Context) {
 	}
 }
 
-// closing authorises closing an account and finds the person by address.
+// closing authorises closing an account and finds the person by address: the
+// operator, or an owner of the instance signed in, never on themselves.
 func (s *Service) closing(ctx context.Context, p Principal, email string) (auth.User, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return auth.User{}, err
 	}
-	if !p.IsInstance() || len(p.AccountIDs) > 0 {
-		return auth.User{}, E(CodeNotAuthorized, "closing an account needs an unrestricted instance admin key", nil)
+	if !isOperator(p) && !isInstanceOwner(p) {
+		return auth.User{}, E(CodeNotAuthorized,
+			"closing an account needs an owner of this server signed in, or an unrestricted instance admin key", nil)
 	}
 	email, err := auth.NormalizeEmail(email)
 	if err != nil {
@@ -171,16 +190,46 @@ func (s *Service) closing(ctx context.Context, p Principal, email string) (auth.
 	case err != nil:
 		return auth.User{}, E(CodeInternal, "reading the user failed", err)
 	}
+	if p.IsSession() && user.ID == p.UserID {
+		return auth.User{}, E(CodeBadRequest,
+			"you cannot close your own account here; another owner, or the operator, can", nil)
+	}
 	return user, nil
+}
+
+// isOperator reports whether the caller is the operator: an unrestricted
+// instance admin key, what the command line holds.
+func isOperator(p Principal) bool {
+	return p.IsInstance() && len(p.AccountIDs) == 0 && p.Scope.Covers(auth.ScopeAdmin)
+}
+
+// isInstanceOwner reports whether the caller is an owner of the instance,
+// signed in: the self-hosted server's own administration. It reaches no
+// mailbox by being one.
+func isInstanceOwner(p Principal) bool {
+	return p.IsSession() && p.UserRole == auth.RoleOwner
 }
 
 // fromClosure maps a failure closing an account onto the transport
 // vocabulary.
 func fromClosure(err error, what string) error {
+	var blocked *auth.BlockedError
 	switch {
+	case errors.As(err, &blocked):
+		// The ids, so whoever is closing the account can see to each first:
+		// make another member an owner, take a link over, or insist.
+		var parts []string
+		if len(blocked.LastOwnerOf) > 0 {
+			parts = append(parts, "the last active owner of the teams "+strings.Join(blocked.LastOwnerOf, ", "))
+		}
+		if len(blocked.Linked) > 0 {
+			parts = append(parts, "the linker of team mailboxes others read, "+strings.Join(blocked.Linked, ", "))
+		}
+		return E(CodeConflict, "that person is "+strings.Join(parts, ", and ")+
+			"; make another member an owner or take the links over first, or pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people "+
-			"or see the instance's own accounts. Pass force to do it anyway", err)
+			"from the console. Pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrUserNotFound):
 		return E(CodeNotFound, "no account has that address", err)
 	default:

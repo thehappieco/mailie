@@ -83,8 +83,9 @@ func TestASendingRowBecomesUnknownAtBoot(t *testing.T) {
 	if row, _ := f.db.SendOf(context.Background(), "acc_1", "done"); row.State != store.SendSent {
 		t.Fatalf("a finished send became %s", row.State)
 	}
+	// Each names its sender, who alone hears of it (internal/service).
 	finished := finishedEvents(t, f.db)
-	if len(finished) != 2 || finished[1] != (store.SendFinished{AccountID: "acc_1", Key: "in-flight", State: "unknown"}) {
+	if len(finished) != 2 || finished[1] != (store.SendFinished{AccountID: "acc_1", Key: "in-flight", State: "unknown", UserID: "usr_1"}) {
 		t.Fatalf("send.finished = %+v", finished)
 	}
 	// The key it held is not free: the message may have gone.
@@ -93,6 +94,30 @@ func TestASendingRowBecomesUnknownAtBoot(t *testing.T) {
 	}
 	if n, err := f.db.InterruptSends(context.Background()); err != nil || n != 0 {
 		t.Fatalf("a second start found %d (%v)", n, err)
+	}
+}
+
+func TestASendTheSentFolderConfirmsStillNamesItsSender(t *testing.T) {
+	// An unknown send turns sent when its copy appears in Sent, in the
+	// sync's transaction; that notice is the sender's as much as the first,
+	// and names them, so that it reaches them alone.
+	f := newIndex(t)
+	reserve(t, f.db, "lost", "h1")
+	if _, _, err := f.db.FinishSend(context.Background(), store.SendOutcome{
+		AccountID: "acc_1", Key: "lost", State: store.SendUnknown, Attempts: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ids := f.gmailFolders()
+	copyInSent := mail(1, "lost")
+	copyInSent.Envelope.MessageID = "lost@example.com"
+	f.live(ids["[Gmail]/Sent Mail"], copyInSent)
+	if row, err := f.db.SendOf(context.Background(), "acc_1", "lost"); err != nil || row.State != store.SendSent {
+		t.Fatalf("the send after its copy appeared: %+v, %v", row, err)
+	}
+	finished := finishedEvents(t, f.db)
+	if len(finished) != 2 || finished[1] != (store.SendFinished{AccountID: "acc_1", Key: "lost", State: "sent", UserID: "usr_1"}) {
+		t.Fatalf("send.finished = %+v", finished)
 	}
 }
 

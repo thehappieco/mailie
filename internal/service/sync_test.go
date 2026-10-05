@@ -172,7 +172,7 @@ func TestNothingIsStoredBeforeConsent(t *testing.T) {
 	if !status.Enabled {
 		t.Errorf("status after consent = %+v, want enabled", status)
 	}
-	listed, err := f.svc.ListAccounts(t.Context(), ana)
+	listed, err := f.svc.ListAccounts(t.Context(), ana, "")
 	if err != nil || len(listed) != 1 || !listed[0].Sync.Enabled {
 		t.Errorf("the account listing does not show sync on: %+v (%v)", listed, err)
 	}
@@ -193,16 +193,18 @@ func TestAMailboxNobodyOwnsSyncsOnlyWhenAnInstanceAdminSwitchesItOn(t *testing.T
 	if f.eligible(t, shared) {
 		t.Fatal("a mailbox nobody owns syncs before anyone switched it on")
 	}
-	// An owner sees the instance's mailboxes in the console, but switching
-	// sync on for one is the operator's, and so is it for a restricted key.
+	// Switching sync on for one is the operator's: not a restricted key's,
+	// not a reader's, and not an owner of the instance, who does not even
+	// see the operator workspace's mailboxes.
 	restricted := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, AccountIDs: []string{shared}}
 	for name, p := range map[string]service.Principal{"owner": owner, "restricted key": restricted, "reader": reader()} {
 		if _, err := f.svc.EnableInstanceAccountSync(t.Context(), p, shared, true); service.CodeOf(err) != service.CodeNotAuthorized {
 			t.Errorf("%s switched sync on: %v", name, err)
 		}
 	}
-	// Nor may the operator decide for a person.
-	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), mine, true); service.CodeOf(err) != service.CodeConflict {
+	// Nor may the operator decide for a person, whose mailbox it does not
+	// reach.
+	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), mine, true); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("the operator switched sync on for a person's mailbox: %v", err)
 	}
 	if f.eligible(t, mine) {
@@ -461,9 +463,14 @@ func TestAPersonNeverSeesAnotherPersonsEvents(t *testing.T) {
 	if got := subjects(collect(t, stream, 1)); !slices.Equal(got, []string{"ana before"}) {
 		t.Errorf("ana's replay = %v", got)
 	}
-	// The owner role sees the instance's mailbox, never a member's.
-	if got := subjects(collect(t, ownerStream, 1)); !slices.Equal(got, []string{"shared before"}) {
-		t.Errorf("the owner's replay = %v", got)
+	// The owner role sees neither a member's mailbox nor the operator's.
+	operatorStream, err := f.svc.Subscribe(t.Context(), admin(), start, mail)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer operatorStream.Close()
+	if got := subjects(collect(t, operatorStream, 1)); !slices.Equal(got, []string{"shared before"}) {
+		t.Errorf("the operator's replay = %v", got)
 	}
 
 	later := f.mailbox(t, ana, "ana.later@mail.example")
@@ -472,26 +479,28 @@ func TestAPersonNeverSeesAnotherPersonsEvents(t *testing.T) {
 	if got := subjects(collect(t, stream, 2)); !slices.Equal(got, []string{"ana live", "ana's new mailbox"}) {
 		t.Errorf("ana's live events = %v", got)
 	}
-	if got := subjects(collect(t, ownerStream, 1)); !slices.Equal(got, []string{"shared live"}) {
-		t.Errorf("the owner's live events = %v", got)
+	if got := subjects(collect(t, operatorStream, 1)); !slices.Equal(got, []string{"shared live"}) {
+		t.Errorf("the operator's live events = %v", got)
 	}
-	select {
-	case ev := <-stream.Events():
-		t.Errorf("ana received %s of account %s", ev.Type, ev.AccountID)
-	case <-time.After(100 * time.Millisecond):
+	for name, st := range map[string]*service.Stream{"ana": stream, "the owner": ownerStream} {
+		select {
+		case ev := <-st.Events():
+			t.Errorf("%s received %s of account %s", name, ev.Type, ev.AccountID)
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 
 	// Naming someone else's mailbox is not_found, as everywhere else.
 	if _, err := f.svc.Subscribe(t.Context(), ana, 0, service.EventFilter{AccountIDs: []string{bobs}}); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("subscribing to bob's mailbox: %v", err)
 	}
-	if _, err := f.svc.WaitForNewMail(t.Context(), ana, 0, time.Second, []string{bobs}); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.WaitForNewMail(t.Context(), ana, 0, time.Second, service.EventFilter{AccountIDs: []string{bobs}}); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("waiting on bob's mailbox: %v", err)
 	}
 
 	// The long poll: bob's mail never ends ana's wait.
 	cursor := past[len(past)-1].Seq
-	result, err := f.svc.WaitForNewMail(t.Context(), ana, cursor, time.Second, nil)
+	result, err := f.svc.WaitForNewMail(t.Context(), ana, cursor, time.Second, service.EventFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +516,7 @@ func TestTheLongPollAnswersWithNewMailAndACursorToResumeFrom(t *testing.T) {
 
 	// From now, with nothing arriving: a timeout that says where to resume.
 	f.publish(t, newMail(t, anas, "inbox", "before the wait"))
-	quiet, err := f.svc.WaitForNewMail(t.Context(), ana, 0, time.Second, nil)
+	quiet, err := f.svc.WaitForNewMail(t.Context(), ana, 0, time.Second, service.EventFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +526,7 @@ func TestTheLongPollAnswersWithNewMailAndACursorToResumeFrom(t *testing.T) {
 
 	done := make(chan service.WaitResult, 1)
 	go func() {
-		result, err := f.svc.WaitForNewMail(context.Background(), ana, quiet.NextCursor, 5*time.Second, nil)
+		result, err := f.svc.WaitForNewMail(context.Background(), ana, quiet.NextCursor, 5*time.Second, service.EventFilter{})
 		if err != nil {
 			t.Error(err)
 		}
@@ -541,11 +550,11 @@ func TestTheLongPollAnswersWithNewMailAndACursorToResumeFrom(t *testing.T) {
 	}
 
 	// Resuming from it finds nothing new.
-	again, err := f.svc.WaitForNewMail(t.Context(), ana, result.NextCursor, time.Second, nil)
+	again, err := f.svc.WaitForNewMail(t.Context(), ana, result.NextCursor, time.Second, service.EventFilter{})
 	if err != nil || !again.TimedOut {
 		t.Errorf("resuming replayed something: %+v (%v)", again, err)
 	}
-	if _, err := f.svc.WaitForNewMail(t.Context(), ana, 0, 56*time.Second, nil); service.CodeOf(err) != service.CodeBadRequest {
+	if _, err := f.svc.WaitForNewMail(t.Context(), ana, 0, 56*time.Second, service.EventFilter{}); service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("a 56-second wait: %v", err)
 	}
 }

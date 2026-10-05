@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // exec runs a statement against the fixture's database, for the rows no use
@@ -222,13 +224,56 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	bobs := f.mailbox(t, bob, "bob@mail.example")
 	shared := f.mailbox(t, admin(), "shared@mail.example")
 
+	// A team bob owns, where ana administers, reads bob's team mailbox, and
+	// gave dan access to it; and a team nobody but ana is in.
+	workspaces := workspace.NewRepository(f.db, nil)
+	support, err := workspaces.CreateTeam(t.Context(), "Support", bob.UserID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dan := f.person(t, "dan@example.com", auth.RoleMember)
+	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
+		if err := workspaces.AddMemberTx(t.Context(), tx, support.ID, ana.UserID, workspace.RoleAdmin, time.Now()); err != nil {
+			return err
+		}
+		return workspaces.AddMemberTx(t.Context(), tx, support.ID, dan.UserID, workspace.RoleMember, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	teamBox, err := f.repo.Create(t.Context(), account.Account{ID: "acc_00000000000000aa", Email: "team@mail.example",
+		Provider: "imap", AuthKind: "password", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "team", OwnerUserID: bob.UserID, WorkspaceID: support.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaces.SetGrant(t.Context(), teamBox.ID, ana.UserID, workspace.Flags{Read: true}, bob.UserID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workspaces.SetGrant(t.Context(), teamBox.ID, dan.UserID, workspace.Flags{Manage: true}, ana.UserID, nil); err != nil {
+		t.Fatal(err)
+	}
+	anaAlone, err := workspaces.CreateTeam(t.Context(), "Ana alone", ana.UserID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	anaPersonal, err := workspaces.PersonalOf(t.Context(), ana.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	anaEvent := f.seedMailbox(t, anaHome, "zebra quarterly")
 	f.seedMailbox(t, anaWork, "zebra annual")
 	bobEvent := f.seedMailbox(t, bobs, "giraffe weekly")
 
 	anaKey, _ := f.issue(t, ana.UserID, anaHome)
-	onlyAnas, onlyAnasSecret := f.issue(t, "", anaHome)
-	mixed, mixedSecret := f.issue(t, "", anaHome, bobs)
+	// Instance keys restricted to people's mailboxes, as a schema-7 server
+	// may still hold: an instance key is made now only for the operator
+	// workspace's, so their rows are written as the migration kept them.
+	onlyAnas, onlyAnasSecret := f.issue(t, "", shared)
+	mixed, mixedSecret := f.issue(t, "", shared)
+	f.exec(t, `INSERT INTO api_key_accounts(key_prefix, account_id) VALUES (?, ?), (?, ?), (?, ?)`,
+		onlyAnas, anaHome, mixed, anaHome, mixed, bobs)
+	f.exec(t, `DELETE FROM api_key_accounts WHERE account_id = ?`, shared)
 
 	// A consent attempt ana started on an account that is not hers (she was
 	// an owner once), and one somebody else started on hers.
@@ -243,6 +288,9 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	f.exec(t, `INSERT INTO sends(account_id, idempotency_key, compose_hash, message_id_hdr, state, created_by, user_id,
 		created_at, updated_at) VALUES (?, 'k-ana', 'h', 'm@x', 'sent', ?, ?, ?, ?)`,
 		shared, ana.UserID, ana.UserID, time.Now().Unix(), time.Now().Unix())
+	// And its notice in the journal, which names its sender too.
+	f.exec(t, `INSERT INTO events(type, account_id, payload_json, created_at) VALUES ('send.finished', ?, ?, ?)`,
+		shared, `{"account_id":"`+shared+`","key":"k-ana","state":"sent","user_id":"`+ana.UserID+`"}`, time.Now().Unix())
 
 	f.webhook(t, "whk_onlyanas", []string{anaHome}, anaEvent)
 	f.webhook(t, "whk_mixed", []string{anaHome, bobs}, anaEvent, bobEvent)
@@ -258,8 +306,8 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		{"02", "ana@example.com", "cli", "", 0},                // a second one, never used
 		{"03", "carol@example.com", ana.UserID, "", 0},         // one she sent
 	} {
-		f.exec(t, `INSERT INTO invites(code_hash, email, role, created_by, created_at, expires_at, used_at, used_by)
-			VALUES (?, ?, 'member', ?, ?, ?, ?, ?)`,
+		f.exec(t, `INSERT INTO invites(id, code_hash, email, role, created_by, created_at, expires_at, used_at, used_by)
+			VALUES (?, ?, ?, 'member', ?, ?, ?, ?, ?)`, "inv_00000000000000"+inv.hash,
 			[]byte(strings.Repeat(inv.hash, 32)[:32]), inv.email, inv.createdBy, now, now+3600, inv.usedAt, inv.usedBy)
 	}
 
@@ -285,6 +333,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	want := service.DeletedUser{
 		ID: ana.UserID, Email: "ana@example.com",
 		AccountsRemoved: 2, SessionsDeleted: 1, KeysDeleted: 1, InvitesDeleted: 2,
+		TeamsDeleted: 1, // "Ana alone", whose only member she was
 	}
 	if deleted != want {
 		t.Errorf("deleted = %+v, want %+v", deleted, want)
@@ -293,7 +342,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	needles := []string{
 		ana.UserID, "ana@example.com", ana.SessionID, anaKey,
 		anaHome, anaWork, "ana@mail.example", "ana.work@mail.example",
-		"state-by-ana", "state-on-anas",
+		"state-by-ana", "state-on-anas", anaPersonal.ID, anaAlone.ID, "Ana alone",
 	}
 	if found := f.mentions(t, needles); len(found) > 0 {
 		t.Errorf("rows still name ana or her mailboxes:\n  %s", strings.Join(found, "\n  "))
@@ -310,18 +359,23 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 
 	// Everything that was not hers is still there.
 	for what, n := range map[string]int{
-		"bob":                f.count(t, `SELECT count(*) FROM users WHERE id = ?`, bob.UserID),
-		"bob's session":      f.count(t, `SELECT count(*) FROM sessions WHERE user_id = ?`, bob.UserID),
-		"bob's mailbox":      f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, bobs),
-		"the shared mailbox": f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared),
-		"bob's credentials":  f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, bobs),
-		"bob's message":      f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'giraffe'`),
-		"bob's event":        f.count(t, `SELECT count(*) FROM events WHERE seq = ?`, bobEvent),
-		"carol's invite":     f.count(t, `SELECT count(*) FROM invites WHERE email = 'carol@example.com' AND created_by = ''`),
-		"the mixed hook":     f.count(t, `SELECT count(*) FROM webhooks WHERE id = 'whk_mixed' AND accounts_json = ?`, `["`+bobs+`"]`),
-		"the hook for all":   f.count(t, `SELECT count(*) FROM webhook_deliveries WHERE webhook_id = 'whk_every' AND event_seq = ?`, bobEvent),
+		"bob":                              f.count(t, `SELECT count(*) FROM users WHERE id = ?`, bob.UserID),
+		"bob's session":                    f.count(t, `SELECT count(*) FROM sessions WHERE user_id = ?`, bob.UserID),
+		"bob's mailbox":                    f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, bobs),
+		"the shared mailbox":               f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared),
+		"bob's credentials":                f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, bobs),
+		"bob's message":                    f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'giraffe'`),
+		"bob's event":                      f.count(t, `SELECT count(*) FROM events WHERE seq = ?`, bobEvent),
+		"carol's invite":                   f.count(t, `SELECT count(*) FROM invites WHERE email = 'carol@example.com' AND created_by = ''`),
+		"the mixed hook":                   f.count(t, `SELECT count(*) FROM webhooks WHERE id = 'whk_mixed' AND accounts_json = ?`, `["`+bobs+`"]`),
+		"the hook for all":                 f.count(t, `SELECT count(*) FROM webhook_deliveries WHERE webhook_id = 'whk_every' AND event_seq = ?`, bobEvent),
+		"bob's team":                       f.count(t, `SELECT count(*) FROM workspaces WHERE id = ?`, support.ID),
+		"the team mailbox":                 f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, teamBox.ID),
+		"the grant she gave dan, unsigned": f.count(t, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND manage AND granted_by = ''`, teamBox.ID, dan.UserID),
 		"her send from the shared mailbox": f.count(t,
 			`SELECT count(*) FROM sends WHERE account_id = ? AND idempotency_key = 'k-ana' AND user_id = '' AND created_by = ''`, shared),
+		"its notice, unsigned": f.count(t, `SELECT count(*) FROM events WHERE type = 'send.finished' AND account_id = ?
+			AND json_extract(payload_json, '$.key') = 'k-ana' AND json_extract(payload_json, '$.user_id') IS NULL`, shared),
 	} {
 		if n != 1 {
 			t.Errorf("%s: %d rows, want 1", what, n)
@@ -343,8 +397,8 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a key that also reached another mailbox stopped working: %v", err)
 	}
-	if got := ids(t, f, p); !slices.Equal(got, []string{bobs}) || p.KeyPrefix != mixed {
-		t.Errorf("the mixed key now sees %v, want only %s", got, bobs)
+	if !slices.Equal(p.AccountIDs, []string{bobs}) || p.KeyPrefix != mixed {
+		t.Errorf("the mixed key is now restricted to %v, want only %s", p.AccountIDs, bobs)
 	}
 }
 
@@ -427,19 +481,19 @@ func TestTheLastActiveOwnerIsOnlyClosedOnPurpose(t *testing.T) {
 	}
 }
 
-func TestOnlyAnUnrestrictedInstanceAdminKeyClosesAnAccount(t *testing.T) {
+func TestOnlyTheOperatorOrAnInstanceOwnerSignedInClosesAnAccount(t *testing.T) {
 	f := newFixture(t)
 	owner := f.person(t, "owner@example.com", auth.RoleOwner)
+	f.person(t, "keeper@example.com", auth.RoleOwner)
 	member := f.person(t, "member@example.com", auth.RoleMember)
 	f.person(t, "ana@example.com", auth.RoleMember)
 	req := service.CloseUserRequest{Email: "ana@example.com"}
 
 	for name, p := range map[string]service.Principal{
-		"owner in the console": owner,
-		"member":               member,
-		"read key":             reader(),
-		"restricted admin":     {KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{"acc_x"}},
-		"key acting as owner":  {KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, UserID: owner.UserID, UserRole: auth.RoleOwner},
+		"member":              member,
+		"read key":            reader(),
+		"restricted admin":    {KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{"acc_x"}},
+		"key acting as owner": {KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, UserID: owner.UserID, UserRole: auth.RoleOwner},
 	} {
 		if _, err := f.svc.DisableUser(t.Context(), p, req); service.CodeOf(err) != service.CodeNotAuthorized {
 			t.Errorf("%s could disable: %v", name, err)
@@ -450,6 +504,18 @@ func TestOnlyAnUnrestrictedInstanceAdminKeyClosesAnAccount(t *testing.T) {
 	}
 	if _, err := f.users.GetByEmail(t.Context(), "ana@example.com"); err != nil {
 		t.Fatalf("a refused caller removed ana: %v", err)
+	}
+	// An owner of the instance signed in administers its people, never
+	// herself: another owner, or the operator, closes her account.
+	self := service.CloseUserRequest{Email: "owner@example.com"}
+	if _, err := f.svc.DisableUser(t.Context(), owner, self); service.CodeOf(err) != service.CodeBadRequest {
+		t.Errorf("an owner disabling herself: %v", err)
+	}
+	if _, err := f.svc.DisableUser(t.Context(), owner, req); err != nil {
+		t.Errorf("an owner signed in disabling a person: %v", err)
+	}
+	if _, err := f.svc.DeleteUser(t.Context(), owner, req); err != nil {
+		t.Errorf("an owner signed in deleting a person: %v", err)
 	}
 	if _, err := f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "not an address"}); service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("a malformed address: %v", err)
@@ -494,9 +560,22 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 	// A listener left open for a person who is gone, or switched off, would
 	// still take a redirect and answer it.
 	f, _ := consentFixture(t, "")
-	f.person(t, "keeper@example.com", auth.RoleOwner)
-	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-	bea := f.person(t, "bea@example.com", auth.RoleOwner)
+	keeper := f.person(t, "keeper@example.com", auth.RoleOwner)
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	bea := f.person(t, "bea@example.com", auth.RoleMember)
+	// A team keeper links a mailbox in, which ana and bea manage too.
+	workspaces := workspace.NewRepository(f.db, nil)
+	team, err := workspaces.CreateTeam(t.Context(), "Support", keeper.UserID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []service.Principal{ana, bea} {
+		if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
+			return workspaces.AddMemberTx(t.Context(), tx, team.ID, p.UserID, workspace.RoleMember, time.Now())
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	listening := func(flow *service.AuthFlow) string {
 		t.Helper()
@@ -523,11 +602,19 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, err := f.svc.AddAccount(t.Context(), admin(), service.AddAccountRequest{Email: "team@gmail.com", Flow: "pasted"})
+	shared, err := f.svc.AddAccount(t.Context(), keeper, service.AddAccountRequest{
+		Email: "team@gmail.com", Flow: "loopback", WorkspaceID: team.ID,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	onShared, err := f.svc.StartOAuth(t.Context(), ana, instance.Account.ID, "loopback")
+	for _, p := range []service.Principal{ana, bea} {
+		if _, err := workspaces.SetGrant(t.Context(), shared.Account.ID, p.UserID,
+			workspace.Flags{Read: true, Manage: true}, keeper.UserID, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	onShared, err := f.svc.StartOAuth(t.Context(), ana, shared.Account.ID, "loopback")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -537,12 +624,12 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	closed(ownHost, "the listener for her deleted mailbox")
-	closed(sharedHost, "the listener for her attempt on the instance's mailbox")
-	if _, err := f.repo.Get(t.Context(), instance.Account.ID); err != nil {
-		t.Errorf("the instance's mailbox went with her: %v", err)
+	closed(sharedHost, "the listener for her attempt on the team's mailbox")
+	if _, err := f.repo.Get(t.Context(), shared.Account.ID); err != nil {
+		t.Errorf("the team's mailbox went with her: %v", err)
 	}
 
-	beas, err := f.svc.StartOAuth(t.Context(), bea, instance.Account.ID, "loopback")
+	beas, err := f.svc.StartOAuth(t.Context(), bea, shared.Account.ID, "loopback")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -158,9 +158,12 @@ func runEngine(t *testing.T, mb provider.Mailbox, tier string) *realEngine {
 	}
 	exec(`INSERT INTO users(id, email, password_hash, role, password_changed_at, created_at, updated_at,
 		sync_consent_at, sync_consent_version) VALUES ('usr_1', 'p@example.com', '$argon2id$', 'owner', 1, 1, 1, 1, 'test')`)
-	exec(`INSERT INTO accounts(id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port, smtp_tls,
+	exec(`INSERT INTO workspaces(id, kind, person_id, created_at, updated_at) VALUES ('wsp_personal', 'personal', 'usr_1', 1, 1)`)
+	exec(`INSERT INTO workspace_members(workspace_id, user_id, role, created_at, updated_at)
+		VALUES ('wsp_personal', 'usr_1', 'owner', 1, 1)`)
+	exec(`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port, smtp_tls,
 		login_user, save_sent_copy, state, state_changed_at, created_at, updated_at, owner_user_id, initial_days, sync_tier)
-		VALUES ('acc_1', 'p@example.com', 'imap', 'password', '127.0.0.1', 31143, '127.0.0.1', 31025, 'starttls',
+		VALUES ('acc_1', 'wsp_personal', 'p@example.com', 'imap', 'password', '127.0.0.1', 31143, '127.0.0.1', 31025, 'starttls',
 		'p@example.com', 1, 'active', 1, 1, 1, 'usr_1', 90, ?)`, tier)
 	e := &realEngine{t: t, db: db, bus: events.NewBus(events.NewJournal(db))}
 	e.engine = syncengine.New(syncengine.Deps{

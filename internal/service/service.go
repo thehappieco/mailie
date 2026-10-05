@@ -3,9 +3,11 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/thehappieco/mailie/internal/account"
@@ -14,6 +16,7 @@ import (
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Service is the use-case layer.
@@ -25,14 +28,23 @@ import (
 // drift apart. They are tested against this, wired to a temporary database and
 // a fake mailbox.
 type Service struct {
-	accounts *account.Registry
-	keys     *auth.Keys
-	users    *auth.Users
-	store    *store.Store
-	bus      *events.Bus
-	sync     SyncController
-	log      *slog.Logger
-	now      func() time.Time
+	accounts   *account.Registry
+	keys       *auth.Keys
+	users      *auth.Users
+	workspaces *workspace.Repository
+	store      *store.Store
+	bus        *events.Bus
+	sync       SyncController
+	log        *slog.Logger
+	now        func() time.Time
+
+	// accessEpoch counts the commits that may have given or taken read
+	// access to a mailbox from somebody: a grant set or revoked, a
+	// membership disabled or removed, a mailbox linked or removed, a person
+	// disabled or deleted. One daemon writes the database, so a counter in
+	// memory sees every one; an event subscription reads again what its
+	// caller may read whenever it moved (access.go).
+	accessEpoch atomic.Int64
 
 	// publicURL is the console's origin: the base of every invite link.
 	publicURL string
@@ -67,6 +79,10 @@ type Deps struct {
 	Accounts *account.Registry
 	Keys     *auth.Keys
 	Users    *auth.Users
+	// Workspaces is the repository of workspaces, their members and the
+	// grants on their mailboxes, with the workspace source the daemon runs
+	// with. nil is one over Store with the local source.
+	Workspaces *workspace.Repository
 	// Store is the database, for what belongs to no repository of its own:
 	// consent to sync and the index it governs.
 	Store *store.Store
@@ -130,14 +146,27 @@ func New(d Deps) *Service {
 		// its person is being disabled stores nothing.
 		d.Accounts.CheckOwnersWith(d.Users.RequireActiveTx)
 	}
+	if d.Accounts != nil {
+		// And who may finish a consent attempt: whoever started it must
+		// still manage the mailbox when its grant is stored, which nothing
+		// else re-checks for an attempt the daemon completes by itself.
+		d.Accounts.CheckFlowsWith(func(ctx context.Context, tx *sql.Tx, accountID, owner string) error {
+			return workspace.ManagesTx(ctx, tx, accountID, owner)
+		})
+	}
 	hashKey := d.SendHashKey
 	if len(hashKey) == 0 {
 		hashKey = make([]byte, 32)
 		//nolint:errcheck // crypto/rand.Read never returns an error
 		_, _ = rand.Read(hashKey)
 	}
+	workspaces := d.Workspaces
+	if workspaces == nil && d.Store != nil {
+		workspaces = workspace.NewRepository(d.Store, nil)
+	}
 	return &Service{
-		accounts: d.Accounts, keys: d.Keys, users: d.Users, store: d.Store, bus: d.Bus, sync: d.Sync, log: log, now: now,
+		accounts: d.Accounts, keys: d.Keys, users: d.Users, workspaces: workspaces,
+		store: d.Store, bus: d.Bus, sync: d.Sync, log: log, now: now,
 		publicURL: d.PublicURL, localConsole: local,
 		downloads: newDownloadBudget(d.DownloadSpoolBytes, d.DownloadsPerCaller),
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
@@ -198,8 +227,8 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 //   - A key acting as a person works only if that person created it, agreeing
 //     to the key terms; one an administrator made for them does not — here as
 //     everywhere (Authenticate).
-//   - An instance key sees only the mailboxes nobody owns — the operator's —
-//     never a person's (see visibility).
+//   - An instance key sees only the operator workspace's mailboxes, here as
+//     over REST, never a person's (see visibility).
 func (s *Service) AuthenticateTool(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
 	if !auth.IsAPIKey(token) {
 		return Principal{}, errToolNeedsKey
@@ -251,6 +280,12 @@ func fromCredential(err error) error {
 		return Retryable("the server is busy checking other credentials; try again shortly", hashWaitRetry, err)
 	case errors.Is(err, auth.ErrInvalidKey):
 		return E(CodeUnauthorized, "invalid or expired api key", err)
+	case errors.Is(err, auth.ErrKeyNarrowed):
+		// The key works; what was opened with it no longer matches it. Not
+		// unauthorized, which tells a client its key is dead: it connects
+		// again, and goes on with what the key still names.
+		return E(CodeConflict, "this key no longer reaches a mailbox it was authenticated with; "+
+			"authenticate again: reconnect the stream, or restart the session", err)
 	case errors.Is(err, auth.ErrInvalidSession):
 		return E(CodeUnauthorized, "the session has ended; sign in again", err)
 	default:
@@ -271,15 +306,15 @@ func (s *Service) authorize(p Principal, need auth.Scope) error {
 }
 
 // authorizeAccount checks the scope and that the caller may touch this
-// account, and returns the account.
+// account with the flags need names, and returns the account.
 //
-// Two rules, both answered with not_found rather than forbidden, so that
-// nobody can learn which account ids exist by probing: a key restricted to
-// other accounts, and an account that belongs to somebody else. Ownership is
-// visibility — an instance key sees everything, a person sees what they
-// connected, and the owner role also sees what the CLI connected.
-func (s *Service) authorizeAccount(ctx context.Context, p Principal, need auth.Scope, accountID string) (account.Account, error) {
-	if err := s.authorize(p, need); err != nil {
+// Not found rather than forbidden, so that nobody can learn which account ids
+// exist by probing: a key restricted to other accounts, a mailbox of a
+// workspace the caller is not an active member of, or one they hold no grant
+// on. A mailbox the caller does see, without a flag the operation needs, is
+// not_authorized: they already know it exists. See visibility.
+func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.Scope, accountID string, need workspace.Flags) (account.Account, error) {
+	if err := s.authorize(p, scope); err != nil {
 		return account.Account{}, err
 	}
 	if !p.MayAccess(accountID) {
@@ -292,22 +327,33 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, need auth.S
 	case err != nil:
 		return account.Account{}, E(CodeInternal, "reading the account failed", err)
 	}
+	if err := s.requireFlags(ctx, p, a, need); err != nil {
+		return account.Account{}, err
+	}
 	return a, nil
 }
 
-// visibility is the ownership rule, as the repository applies it in SQL.
+// visibility is the rule for which mailboxes a caller may know exist, as the
+// repository applies it in SQL, the same for listing and for fetching one.
 //
-// An instance key sees every account, except when a tool presents it: then
-// only the accounts nobody owns. A person's mailbox is reached by a tool only
-// through a key that person created, never through the operator's.
+// An instance key — the operator's, over REST and MCP alike — sees the
+// operator workspace's mailboxes and nothing else. A person, signed in or
+// through a key they made, sees a mailbox when they are an active member of
+// its workspace and hold a grant on it. Nobody's role reaches further: an
+// owner of a team or of the instance gets no mailbox by being one.
 func visibility(p Principal) account.Visibility {
 	if p.IsInstance() {
-		if p.Tool {
-			return account.Visibility{Unowned: true}
-		}
-		return account.Visibility{All: true}
+		return account.Visibility{Unowned: true}
 	}
-	return account.Visibility{UserID: p.UserID, Unowned: p.UserRole == auth.RoleOwner}
+	return account.Visibility{UserID: p.UserID}
+}
+
+// readable is visibility narrowed to the mailboxes whose index the caller may
+// open: a person's read flag. An instance key reads every mailbox it sees.
+func readable(p Principal) account.Visibility {
+	v := visibility(p)
+	v.Need = workspace.Flags{Read: true}
+	return v
 }
 
 // requireSession guards what only a signed-in person may do: their own

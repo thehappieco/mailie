@@ -47,6 +47,24 @@ func (s *Store) SyncConsentOf(ctx context.Context, userID string) (SyncConsent, 
 	return c, nil
 }
 
+// SyncConsentedTx reports, inside the caller's transaction, whether a person
+// is active and agreed to sync: the half of the eligibility rule a mailbox
+// they link syncs under (syncPermitted). Taking a link over asks it where the
+// link changes hands, so a mailbox never moves to someone whose consent does
+// not cover its index.
+func SyncConsentedTx(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
+	var at int64
+	err := tx.QueryRowContext(ctx,
+		`SELECT sync_consent_at FROM users WHERE id = ? AND status = 'active'`, userID).Scan(&at)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("store: read sync consent: %w", err)
+	}
+	return at != 0, nil
+}
+
 // GrantSyncConsent records that a person agreed to version of the policy and
 // returns the accounts they own, which may now start syncing.
 //

@@ -149,9 +149,10 @@ func (s *Service) CreateMyAPIKey(ctx context.Context, p Principal, req PersonalK
 		if id == "" || slices.Contains(accountIDs, id) {
 			continue
 		}
-		// Only mailboxes the person may see: somebody else's is answered
-		// as one that does not exist.
-		if _, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id); err != nil {
+		// Only mailboxes the person may read: one they do not see is
+		// answered as one that does not exist, one they see without read
+		// as not theirs to hand a tool.
+		if _, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id, needRead); err != nil {
 			return CreatedPersonalKey{}, err
 		}
 		accountIDs = append(accountIDs, id)

@@ -53,6 +53,14 @@ var argon2id = argon2.IDKey
 // for enumerating which keys exist.
 var ErrInvalidKey = errors.New("auth: invalid api key")
 
+// ErrKeyNarrowed is a principal held since it authenticated, whose key no
+// longer reaches a mailbox the principal still names: its person lost read
+// on it, and the key's restriction lost it with them (Keys.Recheck). The key
+// itself works on for what it still names; authenticating again gives a
+// principal without the lost mailbox. Only a key that has already proved its
+// secret can get it, so it tells nobody anything about which keys exist.
+var ErrKeyNarrowed = errors.New("auth: the key no longer reaches a mailbox it was authenticated with")
+
 // Generate returns a new key and the PHC hash to store for it.
 func Generate() (key, prefix, hash string, err error) {
 	prefixBytes := make([]byte, prefixLen/2)

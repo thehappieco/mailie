@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Closing a person's account is two steps, as the privacy policy describes
@@ -37,6 +38,37 @@ var (
 	// ErrUserDisabled is a person who has been switched off.
 	ErrUserDisabled = errors.New("auth: that person is disabled")
 )
+
+// BlockedError is a person whose teams depend on them: the last active owner
+// of a team other active members remain in, or the person a team mailbox
+// another member reads syncs under. Disabling or deleting them is refused
+// unless the caller insists; Blocks says which teams and mailboxes.
+type BlockedError struct {
+	workspace.Blocks
+}
+
+func (e *BlockedError) Error() string {
+	return fmt.Sprintf("auth: that person is the last owner of %d team(s) and linked %d team mailbox(es) others read",
+		len(e.LastOwnerOf), len(e.Linked))
+}
+
+// RequireNoBlocksTx refuses, inside the caller's transaction and unless
+// force, a person whose teams depend on them (BlockedError). Deleting a
+// person runs it before their mailboxes go, which is when the mailboxes they
+// linked can still be asked about.
+func (u *Users) RequireNoBlocksTx(ctx context.Context, tx *sql.Tx, id string, force bool) error {
+	if force {
+		return nil
+	}
+	blocks, err := workspace.BlocksTx(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if blocks.Any() {
+		return &BlockedError{Blocks: blocks}
+	}
+	return nil
+}
 
 // RequireActiveTx reports, inside the caller's transaction, whether a person
 // may still have anything stored on their behalf: ErrUserNotFound once they
@@ -70,7 +102,8 @@ type Ended struct {
 // on, would not be disabled.
 //
 // Disabling someone already disabled changes nothing and is not an error. The
-// only active owner is not switched off unless force says so.
+// only active owner is not switched off unless force says so, nor somebody
+// their teams depend on (BlockedError).
 func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, error) {
 	var out Ended
 	now := u.now().Unix()
@@ -85,6 +118,11 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		}
 		if status == userActive && Role(role) == RoleOwner && !force {
 			if err := requireAnotherOwnerTx(ctx, tx, id); err != nil {
+				return err
+			}
+		}
+		if status == userActive {
+			if err := u.RequireNoBlocksTx(ctx, tx, id, force); err != nil {
 				return err
 			}
 		}
@@ -116,18 +154,23 @@ type Removed struct {
 	Sessions int
 	Keys     int
 	Invites  int
+	// Teams counts the teams deleted with the person, who was their only
+	// member.
+	Teams int
 }
 
 // DeleteTx deletes a person inside the caller's transaction: their sessions,
 // the keys issued for them together with those keys' account restrictions,
 // every invite for their address — the one they signed up with and any other,
-// used or not — and then the person.
+// used or not — their personal workspace and every team whose only member
+// they are, their memberships and grants elsewhere, and then the person.
 //
-// The accounts they own must already be gone from the same transaction: the
-// row cannot be deleted while an account names it, which is ErrOwnsAccounts,
-// and it is deliberately not a cascade (see migration 0002). Invites they sent
-// to other people stay, since each is the record of how that person arrived;
-// who sent it does not.
+// The accounts they linked must already be gone from the same transaction:
+// the row cannot be deleted while an account names it, which is
+// ErrOwnsAccounts, and it is deliberately not a cascade (see migration 0002);
+// nor can a workspace that still holds one. Invites they sent to other people,
+// and grants they gave, stay, since each is the record of how that person
+// arrived or got access; who sent or gave it does not.
 //
 // The only active owner is not deleted unless force says so, disabled or not.
 func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool) (Removed, error) {
@@ -161,6 +204,18 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	if _, err := tx.ExecContext(ctx, `UPDATE invites SET created_by = '' WHERE created_by = ?`, id); err != nil {
 		return Removed{}, fmt.Errorf("auth: forget who sent invites: %w", err)
 	}
+	var linked int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE owner_user_id = ?`, id).Scan(&linked); err != nil {
+		return Removed{}, fmt.Errorf("auth: delete user: %w", err)
+	}
+	if linked > 0 {
+		return Removed{}, ErrOwnsAccounts
+	}
+	teams, err := workspace.DeletePersonTx(ctx, tx, id)
+	if err != nil {
+		return Removed{}, err
+	}
+	out.Teams = len(teams)
 	_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, id)
 	switch {
 	case store.IsForeignKey(err):

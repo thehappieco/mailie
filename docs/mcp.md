@@ -23,11 +23,24 @@ same consent. No authorization rule lives in `internal/mcp`.
   their agreement to what a tool holding it can do, and the key records the revision of the text
   they saw (`terms_version`). A key an administrator issued for a person, with no such agreement, is
   refused here and over REST (`403`).
-- **Instance keys** (the operator's, from `mailserver apikey create`) reach only the mailboxes
-  nobody owns. Over REST they keep seeing every mailbox.
+- **What a person's key reaches** is what its person can, at each call: the mailboxes of the
+  workspaces they are an active member of on which they hold `read` (`docs/workspaces.md`), within
+  the key's own restriction. A grant revoked, or a membership ended, takes the mailbox away from
+  the very next call, and out of the key's restriction for good: a key made for that mailbox alone
+  is revoked. Every account a tool lists carries its `workspace_id` and the caller's `access`.
+- **A key that lost a mailbox it was opened with.** What holds the key as it was when it
+  authenticated — a `serve --mcp-stdio` session, and the resource subscriptions of any session —
+  stops reaching that mailbox at once, even once `read` is granted back. A stdio session is refused
+  at every call with `conflict: this key no longer reaches a mailbox it was authenticated with`:
+  restart it (the client relaunches the daemon), and the new session goes on with what the key
+  still names. Over HTTP each request authenticates afresh, so calls go on; the session's
+  subscriptions stop, and a new session subscribes again. A key that no longer works at all is
+  `unauthorized` instead.
+- **Instance keys** (the operator's, from `mailserver apikey create`) reach only the operator
+  workspace's mailboxes, here and over REST alike, never a person's.
 - **Scopes:** `read` searches and reads; `write` also marks read, stars, moves, archives and
-  trashes. Actions still need the mailbox owner's permission for actions in the console, checked
-  before every command that changes the mailbox, as over REST.
+  trashes. Actions still need the `act` flag on the mailbox and the key's person's own permission
+  for actions in the console, checked before every command that changes the mailbox, as over REST.
 - **Every request and every tool checks the key again.** Each HTTP request is authenticated in full,
   through the same rate limiter as REST. Each tool reads the key again before it starts and before
   it answers, so a key revoked mid-call never sees its result, and a revoked key loses its session
@@ -82,11 +95,12 @@ call. The cursor carries from step to step, so nothing that arrives between two 
 | `mail://{account}/folder/{folder}` | the folder's 50 newest messages, from the index; `folder` is an id or a role (`inbox`, `sent`, `trash`, …) |
 | `mail://{account}/message/{id}` | the message with its text body (up to 64 KiB), fetched from the server; not marked as read |
 
-`resources/subscribe` accepts only `mail://{account}/folder/inbox` of a mailbox the key sees, and
-sends `notifications/resources/updated` when new mail reaches that inbox. It is computed with the
-session's own key, so it never speaks of another mailbox, and it stops when the key stops working:
-the key is checked before each wait on the journal and again before announcing what arrived during
-it. Few clients act on that notification today; `wait_for_new_mail` is what hands new mail to a
+`resources/subscribe` accepts only `mail://{account}/folder/inbox` of a mailbox the key may read
+(a grant that only shows the mailbox is not enough), and sends `notifications/resources/updated`
+when new mail reaches that inbox. It is computed with the session's own key, so it never speaks of
+another mailbox, and it stops when the key stops working: the key is checked before each wait on
+the journal and again before announcing what arrived during it, and so is read access to each
+inbox subscribed to, so one the key can no longer read is dropped rather than announced. Few clients act on that notification today; `wait_for_new_mail` is what hands new mail to a
 model.
 
 Every result carries `cacheScope: "private"` and `ttlMs: 0`. The protocol's default, `"public"`,
@@ -269,8 +283,10 @@ For a client that launches the whole daemon itself, such as Claude Desktop's
 This runs the whole daemon (sync included), so it cannot share a data directory with another
 running daemon: the second refuses the lock. With `--mcp-stdio` every log line goes to standard
 error (standard output is the client's), `MAIL_MCP_KEY` is required and checked like a bearer key
-when the daemon starts, and the daemon exits when the client hangs up. Beside a daemon that is
-already running, use `mcp connect` instead.
+when the daemon starts, and the daemon exits when the client hangs up. The session holds that key
+as it was when the daemon started: once the key's restriction loses a mailbox (its person lost
+`read` on it), every call answers `conflict`, and the client has to restart the server to go on with
+what the key still names. Beside a daemon that is already running, use `mcp connect` instead.
 
 ### Switching HTTP off
 

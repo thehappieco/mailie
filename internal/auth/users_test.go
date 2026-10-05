@@ -184,48 +184,14 @@ func TestAnExpiredInviteIsRefused(t *testing.T) {
 	}
 }
 
-func TestTheFirstUserIsAlwaysAnOwner(t *testing.T) {
-	// Otherwise a daemon whose first invite said "member" would have nobody
-	// able to invite anyone else.
+func TestTheFirstSignUpIsNoOwnerUnlessInvitedAsOne(t *testing.T) {
+	// The invite decides the role, when it is made; signing up first
+	// decides nothing. An operator who invites a colleague as a member before
+	// inviting themselves as the owner gets exactly that.
 	cheapKDF(t)
 	users, _, _ := newUsers(t)
-	code, inv, err := users.CreateInvite(t.Context(), auth.NewInvite{Email: "first@example.com", Role: auth.RoleMember})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if inv.Role != auth.RoleMember {
-		t.Errorf("the first invite says %q, want the member it was asked for", inv.Role)
-	}
-	_, _, first, err := users.SignUp(t.Context(), auth.SignUpRequest{
-		Invite: code, Email: "first@example.com", Password: "long enough password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if first.Role != auth.RoleOwner {
-		t.Fatalf("first user role = %q, want owner", first.Role)
-	}
-
-	code = invite(t, users, "second@example.com", auth.RoleMember)
-	_, _, second, err := users.SignUp(t.Context(), auth.SignUpRequest{
-		Invite: code, Email: "second@example.com", Password: "long enough password",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second.Role != auth.RoleMember {
-		t.Fatalf("second user role = %q, want the member the invite asked for", second.Role)
-	}
-}
-
-func TestOnlyTheFirstPersonIsPromotedToOwner(t *testing.T) {
-	// An operator who invites themselves and a colleague before anyone has
-	// signed up asked for one owner, not two: the promotion belongs to
-	// whoever signs up first, not to every invite written before then.
-	cheapKDF(t)
-	users, _, _ := newUsers(t)
-	first := invite(t, users, "first@example.com", auth.RoleMember)
 	colleague := invite(t, users, "colleague@example.com", auth.RoleMember)
+	owner := invite(t, users, "owner@example.com", auth.RoleOwner)
 
 	signUp := func(code, email string) auth.User {
 		t.Helper()
@@ -237,11 +203,11 @@ func TestOnlyTheFirstPersonIsPromotedToOwner(t *testing.T) {
 		}
 		return user
 	}
-	if got := signUp(first, "first@example.com"); got.Role != auth.RoleOwner {
-		t.Errorf("the first person is %q, want owner", got.Role)
-	}
 	if got := signUp(colleague, "colleague@example.com"); got.Role != auth.RoleMember {
-		t.Errorf("the colleague invited as a member before anyone signed up is %q", got.Role)
+		t.Errorf("the first person to sign up, invited as a member, is %q", got.Role)
+	}
+	if got := signUp(owner, "owner@example.com"); got.Role != auth.RoleOwner {
+		t.Errorf("the person invited as an owner is %q", got.Role)
 	}
 }
 

@@ -241,6 +241,9 @@ describe('the HTTP contract the Go handlers answer with', () => {
     // By address, as the section lists them.
     const emails = storage.mailboxes.map(item => item.email)
     expect(emails).toEqual([...emails].sort())
+    // Summed per workspace, over the same mailboxes and nothing else.
+    expect(storage.workspaces?.reduce((sum, item) => sum + item.mailboxes, 0)).toBe(storage.mailboxes.length)
+    expect(storage.workspaces?.reduce((sum, item) => sum + item.bytes, 0)).toBe(storage.total.bytes)
   })
 
   it('says on every account whether it can send, and why not only when it cannot', () => {

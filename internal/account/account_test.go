@@ -70,9 +70,11 @@ func TestAnAccountRoundTripsThroughTheDatabase(t *testing.T) {
 	}
 }
 
-func TestTheSameAddressCannotBeRegisteredTwice(t *testing.T) {
-	// Two rows for one mailbox would each open their own IMAP sessions and
-	// index the same messages under different ids.
+func TestAnAddressIsLinkedOnceInAWorkspace(t *testing.T) {
+	// Two rows for one mailbox in one workspace would each open their own
+	// IMAP sessions and index the same messages under different ids, for the
+	// same people. (In another workspace it is another mailbox: see
+	// TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes.)
 	repo, _ := newRepo(t)
 	seed(t, repo, "person@example.com", provider.KindGmail)
 

@@ -101,6 +101,12 @@ func run(argv []string) error {
 		return apikeyCommand(ctx, cfg, args)
 	case "user":
 		return userCommand(ctx, cfg, args)
+	case "workspace":
+		return workspaceCommand(ctx, cfg, args)
+	case "member":
+		return memberCommand(ctx, cfg, args)
+	case "access":
+		return accessCommand(ctx, cfg, args)
 	case "migrate":
 		return migrateCommand(ctx, cfg, args)
 	case "rewrap-credentials":
@@ -123,15 +129,33 @@ Usage:
   mailserver account folders ID           List an account's folders
   mailserver account authorize ID         Authorise again after a grant expires
   mailserver account sync ID status|now   Show an account's sync, or ask for a pass
-  mailserver account sync ID on|off       Switch sync for an account nobody owns
+  mailserver account sync ID on|off       Switch sync for a mailbox of the operator workspace
   mailserver account remove ID            Forget an account and its index
   mailserver apikey create --scope SCOPE --name NAME
                                           Issue an instance key (the daemon needs MAIL_ADMIN_API=true)
   mailserver apikey list                  List instance keys, including revoked ones (the same)
   mailserver apikey revoke PREFIX         Revoke an instance key (the same)
-  mailserver user invite --email ADDR     Invite a person to the web console
+  mailserver user invite --email ADDR [--role owner|member]
+                                          Invite a person to this server and its web console
+  mailserver user invite --email ADDR --workspace ID [--role owner|admin|member]
+                                          Invite a person into a team
   mailserver user disable --email ADDR    End a person's sessions and revoke their keys
-  mailserver user delete --email ADDR     Delete a person, their mailboxes, sessions, keys and invite
+  mailserver user delete --email ADDR     Delete a person, the mailboxes they linked, sessions, keys and invite
+  mailserver workspace list               List every workspace: personal, teams and the operator's
+  mailserver workspace create --name NAME --owner ADDR
+                                          Create a team owned by an existing person
+  mailserver workspace rename --workspace ID --name NAME
+                                          Rename a team
+  mailserver member list --workspace ID   List a workspace's members
+  mailserver member role --workspace ID --email ADDR --role owner|admin|member
+                                          Change a member's role in a team
+  mailserver member remove --workspace ID --email ADDR
+                                          Remove a member from a team, with their access there
+  mailserver access list --workspace ID   List a workspace's mailboxes and who holds what on each
+  mailserver access grant --account ID --email ADDR --manage
+                                          Let a member manage a mailbox (the operator grants nothing else)
+  mailserver access revoke --account ID --email ADDR [--read] [--act] [--send] [--manage]
+                                          Take flags away from a member's grant; none named: every flag
   mailserver user password --bootstrap --email ADDR
                                           Set a forgotten console password and end every session
                                           (daemon stopped; typed twice at a terminal, or one line piped)
@@ -173,9 +197,9 @@ routes off, issue a key with the daemon stopped:
 
   mailserver apikey create --bootstrap --scope admin --name cli
 
-and, for the web console, invite its first person (always an owner) with:
+and, for the web console, invite its first person, who administers it, with:
 
-  mailserver user invite --bootstrap --email you@example.com
+  mailserver user invite --bootstrap --role owner --email you@example.com
 
 A forgotten console password is set again only that way, with the daemon
 stopped, since no route sets a password; it ends every session the person has:

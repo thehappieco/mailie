@@ -8,11 +8,13 @@ import (
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 )
 
-func TestClosingAnAccountOverRESTIsForAnInstanceAdminKeyOnly(t *testing.T) {
+func TestClosingAnAccountOverRESTIsForTheOperatorOrAnInstanceOwnerSignedIn(t *testing.T) {
 	h := newHarness(t, false)
 	authtest.NewUser(t, h.store, "owner@example.com", auth.RoleOwner)
+	authtest.NewUser(t, h.store, "mo@example.com", auth.RoleMember)
 	ana := authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
 	owner := h.signIn(t, "owner@example.com", authtest.Password).Token
+	member := h.signIn(t, "mo@example.com", authtest.Password).Token
 	anas := h.signIn(t, "ana@example.com", authtest.Password).Token
 	body := `{"email":"ana@example.com"}`
 	admin := h.key(t, auth.ScopeAdmin)
@@ -25,7 +27,7 @@ func TestClosingAnAccountOverRESTIsForAnInstanceAdminKeyOnly(t *testing.T) {
 	decodeInto(t, added, &created)
 
 	for name, token := range map[string]string{
-		"an owner's session": owner,
+		"a member's session": member,
 		"a read key":         h.key(t, auth.ScopeRead),
 		"a restricted key":   h.key(t, auth.ScopeAdmin, created.Account.ID),
 	} {
@@ -36,7 +38,8 @@ func TestClosingAnAccountOverRESTIsForAnInstanceAdminKeyOnly(t *testing.T) {
 		}
 	}
 
-	resp := h.do(t, http.MethodPost, "/v1/users/disable", admin, body)
+	// An owner of the instance signed in administers its people.
+	resp := h.do(t, http.MethodPost, "/v1/users/disable", owner, body)
 	if resp.StatusCode != http.StatusOK {
 		code, message := decodeError(t, resp)
 		t.Fatalf("disable: %d %s %s", resp.StatusCode, code, message)

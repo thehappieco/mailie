@@ -275,6 +275,55 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// has: ana's mailboxes, as an owner signed in sees them, with the size
 	// of the whole database.
 	capture("storage", http.StatusOK, http.MethodGet, "/v1/me/storage", token, "")
+
+	// Workspaces, after everything else for the same reason: a team ana
+	// creates, which she lists beside her personal workspace; a person she
+	// invites who signs up with the link, one who already has an account
+	// and accepts, and one still on the way; a mailbox she links into the
+	// team, what she grants on it, and who holds what.
+	team := capture("workspace_created", http.StatusCreated, http.MethodPost, "/v1/workspaces", token,
+		`{"name":"Support"}`)
+	teamID, _ := team["id"].(string)
+	capture("workspaces", http.StatusOK, http.MethodGet, "/v1/workspaces", token, "")
+	invited := capture("team_invite", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
+		`{"email":"bea@example.com","role":"member"}`)
+	link, err := url.Parse(invited["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment, err := url.ParseQuery(link.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signedUp := capture("", http.StatusCreated, http.MethodPost, "/v1/auth/signup", "",
+		fmt.Sprintf(`{"invite":%q,"email":"bea@example.com","name":"Bea Lima","password":%q}`,
+			fragment.Get("invite"), authtest.Password))
+	beaID, _ := signedUp["user"].(map[string]any)["id"].(string)
+	carol := authtest.NewUser(t, h.store, "carol@example.com", auth.RoleMember)
+	toCarol := capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
+		`{"email":"carol@example.com","role":"admin"}`)
+	carolLink, err := url.Parse(toCarol["url"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolCode, err := url.ParseQuery(carolLink.Fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture("invite_accepted", http.StatusOK, http.MethodPost, "/v1/auth/invites/accept",
+		authtest.SignIn(t, h.users, "carol@example.com"), fmt.Sprintf(`{"invite":%q}`, carolCode.Get("invite")))
+	capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
+		`{"email":"dan@example.com","role":"admin"}`)
+	capture("team_invites", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/invites", token, "")
+	capture("member", http.StatusOK, http.MethodPatch, "/v1/workspaces/"+teamID+"/members/"+carol.ID, token,
+		`{"role":"member"}`)
+	capture("members", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/members", token, "")
+	shared := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
+		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID))
+	sharedID, _ := shared["account"].(map[string]any)["id"].(string)
+	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
+		`{"read":true,"act":false,"send":true,"manage":false}`)
+	capture("access", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
 }
 
 // capsWithoutUIDPlus is a server with MOVE and without UIDPLUS: a move
@@ -414,7 +463,7 @@ func (n *normalizer) normalizeString(key, v string, inFlow bool) string {
 		if inFlow {
 			return "fixed-oauth-state"
 		}
-	case "id", "account_id", "account_ids":
+	case "id", "account_id", "account_ids", "workspace_id", "linked_by", "user_id", "granted_by", "created_by":
 		return n.id(v)
 	case "message_id":
 		// The Message-ID a send generates: a random UUID at the sender's

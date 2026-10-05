@@ -27,6 +27,7 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // The MCP server is tested against the real service, a temporary database
@@ -131,8 +132,15 @@ func (h *harness) key(pp person, scope string, accounts ...string) string {
 // ownerID, or nobody's (and switched on by the operator) when it is empty.
 func (h *harness) mailbox(id, ownerID, email string) *providertest.FakeMailbox {
 	h.t.Helper()
+	return h.mailboxIn(id, "", ownerID, email)
+}
+
+// mailboxIn is mailbox linked into a workspace of the linker's: empty is
+// their personal workspace.
+func (h *harness) mailboxIn(id, workspaceID, ownerID, email string) *providertest.FakeMailbox {
+	h.t.Helper()
 	if _, err := account.NewRepository(h.store, nil).Create(h.t.Context(), account.Account{
-		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ownerID,
+		ID: id, WorkspaceID: workspaceID, Email: email, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ownerID,
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
 	}); err != nil {
@@ -149,6 +157,25 @@ func (h *harness) mailbox(id, ownerID, email string) *providertest.FakeMailbox {
 	h.engine.boxes[id] = box
 	h.engine.mu.Unlock()
 	return box
+}
+
+// team creates a team owned by owner, with members as members of it, and
+// returns it with the repository that changes it.
+func (h *harness) team(owner person, members ...person) (string, *workspace.Repository) {
+	h.t.Helper()
+	ws := workspace.NewRepository(h.store, nil)
+	team, err := ws.CreateTeam(h.t.Context(), "Support", owner.user.ID, nil)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	for _, m := range members {
+		if err := h.store.Write(h.t.Context(), func(tx *sql.Tx) error {
+			return ws.AddMemberTx(h.t.Context(), tx, team.ID, m.user.ID, workspace.RoleMember, time.Now())
+		}); err != nil {
+			h.t.Fatal(err)
+		}
+	}
+	return team.ID, ws
 }
 
 // deliver puts a message in the mailbox's inbox, indexes the mailbox as

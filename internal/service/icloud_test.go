@@ -82,7 +82,7 @@ func TestAnICloudAccountIsPresentedAsICloud(t *testing.T) {
 		"acc_00000000000000a3": "imap",
 	}
 
-	listed, err := f.svc.ListAccounts(t.Context(), admin())
+	listed, err := f.svc.ListAccounts(t.Context(), admin(), "")
 	if err != nil {
 		t.Fatal(err)
 	}

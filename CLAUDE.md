@@ -34,8 +34,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   binding account and field; rotation by key id.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
   restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id password
-  on the server, roles `owner`/`member`), sessions (a 43-character opaque token stored as SHA-256,
-  14 days) and single-use invites. `authtest` creates cheap users and keys for tests.
+  on the server, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as
+  SHA-256, 14 days) and single-use invites, to the instance or into a team. `authtest` creates cheap
+  users and keys for tests.
 - `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix. An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
   is never charged to the whole address, which would refuse valid credentials behind the same NAT.
@@ -56,9 +57,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/mime` — a lenient parser over go-message; parts ↔ IMAP sections.
 - `internal/account` — accounts, their encrypted credentials, OAuth flows and the registry of
   token sources.
+- `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
+  per-mailbox grants (`read`, `act`, `send`, `manage`), the protections each write keeps (last
+  owner, linker, last manager) and the workspace `Source` (local; the platform's is a stub). See
+  `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
-- `internal/service` — the use cases and all authorization, account ownership included; a
+- `internal/service` — the use cases and all authorization, access to mailboxes included; a
   concrete struct, not an interface.
 - `internal/api` — REST `/v1/...`, SSE and the long poll. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
@@ -110,7 +115,7 @@ export MAIL_ADMIN_KEY=<the printed key>
 ```
 
 Console: `MAIL_PUBLIC_URL=http://localhost:5174` in `.env`,
-`./bin/mailserver user invite --bootstrap --email you@example.com` (with the daemon stopped), the
+`./bin/mailserver user invite --bootstrap --role owner --email you@example.com` (with the daemon stopped), the
 daemon, and `make web-install && make web-dev`. Open the invite link with `localhost`, never
 `127.0.0.1`. Details, and registering the OAuth clients, in `README.md` and `docs/console.md`.
 
@@ -141,7 +146,7 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `modernc.org/libc` move together or not at all.
 - **Zero duplicated logic between REST and MCP.** Handlers and tools are thin adapters over
   `internal/service`; all authorization lives there. `depguard` stops a transport from importing
-  `store`, `sync`, `provider` or `account` (account ownership is decided in the service). If a rule
+  `store`, `sync`, `provider`, `account` or `workspace` (access is decided in the service). If a rule
   appears on both sides, it is in the wrong place.
 - **Sending needs confirmation.** `confirm: true` is required on every send; the two-step
   draft → send path is the planned alternative for MCP. Never relax this in a test or behind a
@@ -175,9 +180,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and
   API keys are told apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API
   keys.
-- **Account ownership is decided in `internal/service`.** Another person's account is `not_found`,
-  never `forbidden`; listing filters in SQL with the same rule as fetching one. An `owner` also sees
-  accounts nobody owns (created by an instance key); a `member` only their own.
+- **Access to a mailbox is decided in `internal/service`.** A person sees one as an active member
+  of its workspace holding a grant on it, and each use needs its flag; an instance key reaches only
+  the operator workspace's. Another workspace's mailbox, or one the caller holds nothing on, is
+  `not_found`, never `forbidden`; listing filters in SQL with the same rule as fetching one. No role
+  reads mail by being one: owners and admins grant, and `read`, `act` and `send` pass only from a
+  holder. The linker's consent syncs the mailbox (`accounts.owner_user_id` means "linked by").
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a

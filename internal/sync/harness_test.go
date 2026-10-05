@@ -109,16 +109,19 @@ func newHarness(t *testing.T, s setup) *harness {
 	h.exec(`INSERT INTO users(id, email, password_hash, role, password_changed_at, created_at, updated_at,
 		sync_consent_at, sync_consent_version) VALUES (?, 'person@example.com', '$argon2id$', 'owner', 1, 1, 1, ?, 'test')`,
 		h.user, consentAt)
+	h.exec(`INSERT INTO workspaces(id, kind, person_id, created_at, updated_at) VALUES ('wsp_personal', 'personal', ?, 1, 1)`, h.user)
+	h.exec(`INSERT INTO workspace_members(workspace_id, user_id, role, created_at, updated_at)
+		VALUES ('wsp_personal', ?, 'owner', 1, 1)`, h.user)
 	var owner any = h.user
-	enabledAt := 0
+	enabledAt, ws := 0, "wsp_personal"
 	if s.unowned {
-		owner, enabledAt = nil, 1
+		owner, enabledAt, ws = nil, 1, "wsp_operator"
 	}
-	h.exec(`INSERT INTO accounts(id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
+	h.exec(`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
 		smtp_tls, login_user, save_sent_copy, state, state_changed_at, created_at, updated_at, owner_user_id, initial_days,
 		sync_enabled_at)
-		VALUES (?, 'person@mail.example', ?, 'oauth2', 'imap.mail.example', 993, 'smtp.mail.example', 465, 'implicit',
-		'person@mail.example', 0, 'active', 1, 1, 1, ?, ?, ?)`, h.account, string(s.kind), owner, s.initialDays, enabledAt)
+		VALUES (?, ?, 'person@mail.example', ?, 'oauth2', 'imap.mail.example', 993, 'smtp.mail.example', 465, 'implicit',
+		'person@mail.example', 0, 'active', 1, 1, 1, ?, ?, ?)`, h.account, ws, string(s.kind), owner, s.initialDays, enabledAt)
 	h.box = providertest.NewFakeMailbox(providertest.FakeOptions{Kind: s.kind, Caps: s.caps, SharedFlags: s.sharedFlags})
 	h.bus = events.NewBus(events.NewJournal(db))
 	h.engine = syncengine.New(syncengine.Deps{

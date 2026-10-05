@@ -306,7 +306,7 @@ type accountsResult struct {
 }
 
 func (ss *session) listAccounts(ctx context.Context, c *call, _ noArgs) (accountsResult, error) {
-	accounts, err := ss.svc.ListAccounts(ctx, c.p)
+	accounts, err := ss.svc.ListAccounts(ctx, c.p, "")
 	if err != nil {
 		return accountsResult{}, err
 	}
@@ -470,7 +470,7 @@ func (ss *session) waitForNewMail(ctx context.Context, c *call, in waitArgs) (wa
 		if step < time.Second {
 			break
 		}
-		res, err := ss.svc.WaitForNewMail(ctx, c.p, cursor, step, accounts)
+		res, err := ss.svc.WaitForNewMail(ctx, c.p, cursor, step, service.EventFilter{AccountIDs: accounts})
 		if err != nil {
 			return waitResult{}, err
 		}

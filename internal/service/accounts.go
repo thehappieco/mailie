@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -14,6 +15,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/netguard"
 	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // liveListTimeout bounds a folder listing that talks to the mail server.
@@ -21,7 +23,13 @@ const liveListTimeout = 45 * time.Second
 
 // Account is how an account is presented to a caller.
 type Account struct {
-	ID          string `json:"id"`
+	ID string `json:"id"`
+	// WorkspaceID is the workspace the mailbox belongs to, which never
+	// changes: a person's personal workspace, a team, or the operator's.
+	WorkspaceID string `json:"workspace_id"`
+	// LinkedBy is the person who linked the mailbox, under whose consent to
+	// sync it syncs. Absent for a mailbox of the operator workspace.
+	LinkedBy    string `json:"linked_by,omitempty"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name,omitempty"`
 	Provider    string `json:"provider"`
@@ -46,6 +54,9 @@ type Account struct {
 	// Send says whether the account can send for this caller, consent
 	// aside: a console lists it as a From only when it can.
 	Send AccountSend `json:"send"`
+	// Access is what this caller may do with the mailbox: their grant, as
+	// far as their credential's scope reaches.
+	Access AccountAccess `json:"access"`
 }
 
 // Folder is how a folder is presented.
@@ -86,6 +97,10 @@ type AddAccountRequest struct {
 	Flow        string `json:"flow,omitempty"`
 	InitialDays int    `json:"initial_days,omitempty"`
 	SaveSent    *bool  `json:"save_sent_copy,omitempty"`
+	// WorkspaceID is where the mailbox goes: empty is the person's personal
+	// workspace, or the operator workspace for an instance key. A team takes
+	// a mailbox from its owners and admins.
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 // AuthFlow is what a caller needs to finish consent.
@@ -112,12 +127,20 @@ type AddAccountResult struct {
 	Auth    *AuthFlow `json:"auth,omitempty"`
 }
 
-// ListAccounts returns the accounts this caller may see.
-func (s *Service) ListAccounts(ctx context.Context, p Principal) ([]Account, error) {
+// ListAccounts returns the accounts this caller may see: every one they hold
+// a grant on in a workspace they are an active member of, or, for an instance
+// key, the operator workspace's. workspaceID narrows to one workspace; empty
+// is every one.
+func (s *Service) ListAccounts(ctx context.Context, p Principal, workspaceID string) ([]Account, error) {
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
 	}
-	all, err := s.accounts.Repo().ListVisible(ctx, visibility(p))
+	if err := s.inWorkspace(ctx, p, workspaceID); err != nil {
+		return nil, err
+	}
+	v := visibility(p)
+	v.Workspace = workspaceID
+	all, err := s.accounts.Repo().ListVisible(ctx, v)
 	if err != nil {
 		return nil, E(CodeInternal, "listing accounts failed", err)
 	}
@@ -130,9 +153,9 @@ func (s *Service) ListAccounts(ctx context.Context, p Principal) ([]Account, err
 	return s.present(ctx, p, mayAccess...), nil
 }
 
-// GetAccount returns one account.
+// GetAccount returns one account: its card, which any grant shows.
 func (s *Service) GetAccount(ctx context.Context, p Principal, id string) (Account, error) {
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id, needCard)
 	if err != nil {
 		return Account{}, err
 	}
@@ -155,6 +178,20 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 		s.log.Warn("reading whether sync is on failed; showing it off", "err", err)
 		permitted = map[string]bool{}
 	}
+	ids := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		ids = append(ids, a.ID)
+	}
+	grants, err := s.grantsOf(ctx, p, ids...)
+	if err != nil {
+		// Shown as no access, which is what the caller is then allowed:
+		// every use asks again, and would refuse the same way.
+		s.log.Warn("reading the caller's access failed; showing none", "err", err)
+		grants = map[string]workspace.Flags{}
+	}
+	// The sender's own name: a message goes out under the name of whoever
+	// sends it, whoever linked the mailbox.
+	fromName := s.fromName(ctx, p)
 	for _, a := range accounts {
 		shown := presentAccount(a)
 		st, err := s.syncOf(ctx, a.ID, permitted[a.ID])
@@ -162,19 +199,26 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 			s.log.Warn("reading an account's sync status failed; showing it off", "account", a.ID, "err", err)
 			st = AccountSync{Enabled: permitted[a.ID], State: syncOff}
 		}
+		held := intersect(grants[a.ID], scopeFlags(p.Scope))
 		shown.Sync = st
 		shown.Actions = s.actionsOf(ctx, a)
-		shown.Send = sendOf(p, a)
-		shown.Send.FromName = s.fromName(ctx, a)
+		shown.Access = presentAccess(held)
+		shown.Send = sendOf(a, held)
+		if shown.Send.Available {
+			shown.Send.FromName = fromName
+		}
 		out = append(out, shown)
 	}
 	return out
 }
 
-// AddAccount registers an account and starts consent where needed.
+// AddAccount links a mailbox and starts consent where needed.
 //
-// The account belongs to whoever adds it: the signed-in person, the person a
-// key acts as, or nobody for an instance key.
+// It is linked by whoever adds it — the signed-in person, under whose consent
+// to sync it then syncs, who gets every flag on it — or by nobody for an
+// instance key. It goes into the workspace the request names, or the
+// person's personal workspace, or the operator workspace for an instance key
+// (linkInto says who may link where).
 func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountRequest) (AddAccountResult, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AddAccountResult{}, err
@@ -189,8 +233,16 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 	if err != nil {
 		return AddAccountResult{}, err
 	}
+	if add.WorkspaceID, add.Check, err = s.linkInto(ctx, p, strings.TrimSpace(req.WorkspaceID)); err != nil {
+		return AddAccountResult{}, err
+	}
 
 	created, flow, err := s.accounts.Add(ctx, add)
+	if created.ID != "" {
+		// The mailbox exists, and its linker reads it, whether or not its
+		// consent could be started.
+		s.accessChanged()
+	}
 	if err != nil {
 		// The account row may exist in pending_auth even when consent could
 		// not be started; that is recoverable through oauth/start.
@@ -328,9 +380,10 @@ func chooseProvider(email, named string) (kind provider.Kind, icloud bool, err e
 	return kind, false, nil
 }
 
-// StartOAuth begins consent again, for an account that needs it.
+// StartOAuth begins consent again, for an account that needs it: whoever
+// manages it may re-authorise it, and the attempt is theirs alone.
 func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind string) (*AuthFlow, error) {
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +431,7 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, redirectURL st
 	if err != nil {
 		return Account{}, fromCompletion(err)
 	}
-	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID); err != nil {
+	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage); err != nil {
 		return Account{}, err
 	}
 
@@ -394,9 +447,10 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, redirectURL st
 func fromCompletion(err error) error {
 	switch {
 	case errors.Is(err, account.ErrNotFound), errors.Is(err, account.ErrFlowExpired),
-		errors.Is(err, account.ErrOwnerInactive):
-		// A person disabled mid-exchange has their attempts dropped, and
-		// this one is answered as those are.
+		errors.Is(err, account.ErrOwnerInactive), errors.Is(err, account.ErrStarterLostAccess):
+		// A person disabled, or who stopped managing the mailbox,
+		// mid-exchange has their attempts dropped, and this one is answered
+		// as those are.
 		return E(CodeNotFound, "that authorisation attempt is no longer open; start again", err)
 	case errors.Is(err, account.ErrConsentDeclined):
 		return E(CodeBadRequest, "consent was declined at the provider; start again to connect the account", err)
@@ -422,9 +476,10 @@ func fromCompletion(err error) error {
 	}
 }
 
-// RemoveAccount forgets an account and everything indexed for it.
+// RemoveAccount forgets an account and everything indexed for it: whoever
+// manages it may.
 func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string) error {
-	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id); err != nil {
+	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage); err != nil {
 		return err
 	}
 	err := s.accounts.Remove(ctx, id)
@@ -434,18 +489,72 @@ func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string) err
 	case err != nil:
 		return E(CodeInternal, "removing the account failed", err)
 	}
+	s.accessChanged()
 	s.compact(ctx)
 	return nil
 }
 
-// ListFolders returns the account's folders with their roles resolved.
+// linkInto decides where a new mailbox goes and who may put it there, and
+// returns the workspace for the registry (empty: its default) and the check
+// its transaction runs.
+//
+// A person links into their personal workspace, and into a team they are an
+// active owner or admin of: a link puts a mailbox's index in a space the
+// team shares, so a member asks one of them. An instance key links into the
+// operator workspace only. The role is read again inside the transaction
+// that creates the mailbox.
+func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID string) (string, func(*sql.Tx) error, error) {
+	if p.IsInstance() {
+		if workspaceID == "" || workspaceID == workspace.OperatorID {
+			return workspaceID, nil, nil
+		}
+		return "", nil, E(CodeNotAuthorized, "an instance key links mailboxes into the operator workspace only", nil)
+	}
+	if workspaceID == "" {
+		return "", nil, nil
+	}
+	if s.workspaces == nil {
+		return "", nil, errNoWorkspace
+	}
+	w, err := s.workspaces.Get(ctx, workspaceID)
+	switch {
+	case errors.Is(err, workspace.ErrNotFound):
+		return "", nil, errNoWorkspace
+	case err != nil:
+		return "", nil, E(CodeInternal, "reading the workspace failed", err)
+	}
+	check := func(tx *sql.Tx) error {
+		m, err := workspace.MemberTx(ctx, tx, w.ID, p.UserID)
+		switch {
+		case errors.Is(err, workspace.ErrNotMember):
+			return errNoWorkspace
+		case err != nil:
+			return err
+		case !m.Active():
+			return errNoWorkspace
+		case w.Kind == workspace.KindTeam && m.Role != workspace.RoleOwner && m.Role != workspace.RoleAdmin:
+			return errLinkTeam
+		}
+		return nil
+	}
+	if err := s.precheck(ctx, check); err != nil {
+		return "", nil, fromWorkspace(err, "reading the workspace failed")
+	}
+	return w.ID, check, nil
+}
+
+var errLinkTeam = E(CodeNotAuthorized,
+	"only an owner or an admin of the team links mailboxes into it; ask one of them", nil)
+
+// ListFolders returns the account's folders with their roles resolved, for a
+// caller who may read it.
 //
 // Once sync has listed the account's folders, the index answers, with its
 // counts. Before that — sync not yet consented to, switched off, or not yet
 // through its first listing — it asks the server, which is also how a person
 // confirms an account works right after authorising it.
 func (s *Service) ListFolders(ctx context.Context, p Principal, id string) ([]Folder, error) {
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id, needRead)
 	if err != nil {
 		return nil, err
 	}
@@ -638,9 +747,18 @@ func parseFlow(s string) (account.FlowKind, error) {
 
 // fromAccount maps a registry failure onto the transport vocabulary. Anything
 // it does not recognise is internal, with a fixed message: the registry's own
-// text can quote a database constraint.
+// text can quote a database constraint. A refusal this layer wrote — the check
+// a link runs again inside the transaction that creates the mailbox — goes
+// through unchanged.
 func fromAccount(err error, what string) error {
+	var se *Error
 	switch {
+	case errors.As(err, &se):
+		return err
+	case errors.Is(err, account.ErrNoWorkspace), errors.Is(err, workspace.ErrNotMember):
+		// The workspace, or the linker's place in it, went while the
+		// request ran: what the check above would have said.
+		return E(CodeNotFound, "no such workspace", err)
 	case errors.Is(err, account.ErrNotFound):
 		return E(CodeNotFound, "no such account", err)
 	case errors.Is(err, account.ErrDuplicate):
@@ -701,7 +819,7 @@ func fromMailbox(err error) error {
 
 func presentAccount(a account.Account) Account {
 	out := Account{
-		ID: a.ID, Email: a.Email, DisplayName: a.DisplayName,
+		ID: a.ID, WorkspaceID: a.WorkspaceID, LinkedBy: a.OwnerUserID, Email: a.Email, DisplayName: a.DisplayName,
 		Provider: a.ProviderName(), AuthKind: a.AuthKind,
 		State: string(a.State), StateReason: a.StateReason,
 		SyncTier: a.SyncTierResolved, SaveSentCopy: a.SaveSentCopy,

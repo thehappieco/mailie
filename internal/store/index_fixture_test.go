@@ -42,11 +42,19 @@ func (f *indexFixture) addAccount(id, owner string) {
 	var ownerArg any
 	if owner != "" {
 		ownerArg = owner
+		// The person's personal workspace, as signing up makes it, once.
+		f.exec(`INSERT OR IGNORE INTO workspaces(id, kind, person_id, created_at, updated_at)
+			VALUES ('wsp_' || ?1, 'personal', ?1, 1, 1)`, owner)
+		f.exec(`INSERT OR IGNORE INTO workspace_members(workspace_id, user_id, role, created_at, updated_at)
+			VALUES ('wsp_' || ?1, ?1, 'owner', 1, 1)`, owner)
 	}
-	f.exec(`INSERT INTO accounts(id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
+	// A person's mailbox in their personal workspace, one nobody linked in
+	// the operator's.
+	f.exec(`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
 		smtp_tls, login_user, save_sent_copy, state, state_changed_at, created_at, updated_at, owner_user_id)
-		VALUES (?, ?, 'gmail', 'oauth2', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'implicit', ?, 0, 'active', 1, 1, 1, ?)`,
-		id, id+"@example.com", id+"@example.com", ownerArg)
+		VALUES (?1, coalesce((SELECT id FROM workspaces WHERE person_id = ?3), 'wsp_operator'), ?1 || '@example.com',
+		'gmail', 'oauth2', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'implicit', ?2, 0, 'active', 1, 1, 1, ?3)`,
+		id, id+"@example.com", ownerArg)
 }
 
 func (f *indexFixture) exec(query string, args ...any) {

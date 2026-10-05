@@ -9,6 +9,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func invitesFor(t *testing.T, db *store.Store, email string) int {
@@ -75,10 +76,10 @@ func TestAPersonIsNotDeletedWhileAnAccountStillNamesThem(t *testing.T) {
 	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	if _, err := db.Writer().ExecContext(t.Context(),
-		`INSERT INTO accounts(id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port, smtp_tls,
+		`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port, smtp_tls,
 		 login_user, save_sent_copy, state, state_changed_at, created_at, updated_at, owner_user_id)
-		 VALUES ('acc_0000000000000001', 'ana@mail.example', 'imap', 'password', 'h', 993, 'h', 465, 'implicit',
-		 'ana', 1, 'active', 0, 0, 0, ?)`, ana.ID); err != nil {
+		 VALUES ('acc_0000000000000001', ?, 'ana@mail.example', 'imap', 'password', 'h', 993, 'h', 465, 'implicit',
+		 'ana', 1, 'active', 0, 0, 0, ?)`, authtest.Personal(t, db, ana.ID), ana.ID); err != nil {
 		t.Fatal(err)
 	}
 
@@ -91,5 +92,75 @@ func TestAPersonIsNotDeletedWhileAnAccountStillNamesThem(t *testing.T) {
 	}
 	if _, err := users.Get(t.Context(), ana.ID); err != nil {
 		t.Fatalf("the refused deletion was not rolled back: %v", err)
+	}
+}
+
+func TestAnotherPersonsUsedTeamInviteOutlivesTheTeamDeletedWithItsLastMember(t *testing.T) {
+	// Ana's team brought Bea onto the server; Bea left it, and Ana, its last
+	// member, is deleted, the team with her. Bea's invite is the record of
+	// how she arrived, and stays until she goes; the one still waiting for
+	// Cid goes with the team, and never becomes an instance invite.
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	authtest.NewUser(t, db, "owner@example.org", auth.RoleOwner)
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleOwner)
+	team := teamOf(t, db, ana.ID)
+	code, _ := teamInviteBy(t, users, ana.ID, "bea@example.org", team.ID, workspace.RoleMember)
+	bea := signUp(t, users, code, "bea@example.org")
+	teamInviteBy(t, users, ana.ID, "cid@example.org", team.ID, workspace.RoleMember)
+	if err := workspace.NewRepository(db, nil).RemoveMember(t.Context(), team.ID, bea.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	var removed auth.Removed
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		var err error
+		removed, err = users.DeleteTx(t.Context(), tx, ana.ID, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if removed.Teams != 1 {
+		t.Fatalf("deleted %+v, want the team with its last member", removed)
+	}
+	var used, workspaceRole string
+	var n int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*), coalesce(max(used_by), ''), coalesce(max(workspace_role), '')
+		FROM invites WHERE email = 'bea@example.org' AND workspace_id IS NULL`).Scan(&n, &used, &workspaceRole); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || used != bea.ID || workspaceRole != string(workspace.RoleMember) {
+		t.Errorf("Bea's used invite after the team went: %d row(s), used by %q, role %q", n, used, workspaceRole)
+	}
+	if n := invitesFor(t, db, "cid@example.org"); n != 0 {
+		t.Errorf("%d invites still wait for Cid after the team went", n)
+	}
+	if pending, err := users.PendingInvites(t.Context(), ""); err != nil || len(pending) != 0 {
+		t.Errorf("the instance's pending invites: %+v, %v", pending, err)
+	}
+	// And it goes with Bea, as every used invite goes with its person.
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		_, err := users.DeleteTx(t.Context(), tx, bea.ID, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := invitesFor(t, db, "bea@example.org"); n != 0 {
+		t.Errorf("%d invites for Bea after she was deleted", n)
+	}
+}
+
+func TestATeamDeletedByAnyWayTakesTheInvitesStillWaitingToJoinIt(t *testing.T) {
+	// Whatever deletes a team, the schema does not let an unused invite to
+	// it outlive it, where it would read as an instance invite.
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleOwner)
+	team := teamOf(t, db, ana.ID)
+	teamInvite(t, users, "cid@example.org", team.ID, workspace.RoleAdmin)
+	if _, err := db.Writer().ExecContext(t.Context(), `DELETE FROM workspaces WHERE id = ?`, team.ID); err != nil {
+		t.Fatal(err)
+	}
+	if n := invitesFor(t, db, "cid@example.org"); n != 0 {
+		t.Errorf("%d unused invites outlived their team", n)
 	}
 }

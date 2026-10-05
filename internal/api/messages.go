@@ -27,14 +27,14 @@ const (
 
 // searchMessages serves GET /v1/messages.
 func (h *Handler) searchMessages(q *request) {
-	params, err := q.query("account", "folder", "q", "from", "unseen", "flagged", "has_attachments",
+	params, err := q.query("account", "workspace", "folder", "q", "from", "unseen", "flagged", "has_attachments",
 		"since", "until", "cursor", "limit")
 	if err != nil {
 		q.fail(err)
 		return
 	}
 	req := service.SearchRequest{
-		AccountID: params["account"], Query: params["q"], From: params["from"],
+		AccountID: params["account"], Workspace: params["workspace"], Query: params["q"], From: params["from"],
 		Since: params["since"], Until: params["until"], Cursor: params["cursor"],
 	}
 	if raw := params["folder"]; raw != "" {

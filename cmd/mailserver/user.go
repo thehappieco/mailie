@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,6 +23,7 @@ import (
 	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // stdin is where --email - reads the address from. A variable so a test can
@@ -82,18 +84,40 @@ func userCommand(ctx context.Context, cfg config.Config, args []string) error {
 func userInvite(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("user invite", flag.ContinueOnError)
 	emailFlag := fs.String("email", "", "the address the invite is for; nobody else can use it"+emailFlagUsage)
-	roleFlag := fs.String("role", string(auth.RoleMember), "owner or member (the first person on a daemon is always an owner)")
+	roleFlag := fs.String("role", "",
+		"without --workspace, owner or member, the person's role on this server: member by default, and with "+
+			"--bootstrap owner while the server has no active owner and no owner invite waiting; "+
+			"with --workspace, owner, admin or member, the role in that team (member by default)")
+	workspaceFlag := fs.String("workspace", "", "a team's id: invite into that team (an existing person accepts "+
+		"it signed in; anyone else signs up with it)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, for the first person, when no daemon is running")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("user invite: unexpected argument %q", fs.Arg(0))
 	}
 	email, err := emailArg("user invite", *emailFlag)
 	if err != nil {
 		return err
 	}
-	role, err := auth.ParseRole(*roleFlag)
-	if err != nil {
-		return fmt.Errorf("user invite: --role: %w", err)
+	team := strings.TrimSpace(*workspaceFlag)
+	var (
+		role     auth.Role
+		teamRole workspace.Role
+	)
+	switch {
+	case team != "":
+		teamRole = workspace.RoleMember
+		if *roleFlag != "" {
+			if teamRole, err = workspace.ParseRole(*roleFlag); err != nil {
+				return fmt.Errorf("user invite: --role: %w", err)
+			}
+		}
+	case *roleFlag != "":
+		if role, err = auth.ParseRole(*roleFlag); err != nil {
+			return fmt.Errorf("user invite: --role: %w", err)
+		}
 	}
 
 	if *bootstrap {
@@ -111,22 +135,46 @@ func userInvite(ctx context.Context, cfg config.Config, args []string) error {
 		}
 
 		users := auth.NewUsers(db)
+		if team == "" && role == "" {
+			// The invite decides the role, at creation; signing up never
+			// does. The first person invited from here, with no owner yet
+			// and none on the way, is the one who administers the server.
+			first, err := users.NeedsFirstOwner(ctx)
+			if err != nil {
+				return err
+			}
+			role = auth.RoleMember
+			if first {
+				role = auth.RoleOwner
+			}
+		}
 		code, invite, err := users.CreateInvite(ctx, auth.NewInvite{
-			Email: email, Role: role, CreatedBy: "cli",
+			Email: email, Role: role, WorkspaceID: team, WorkspaceRole: teamRole, CreatedBy: "cli",
 		})
 		if err != nil {
 			return err
 		}
-		printInvite(auth.InviteLink(base, code, invite.Email), invite.Email, string(invite.Role), invite.ExpiresAt)
-		if n, err := users.Count(ctx); err == nil && n == 0 && invite.Role != auth.RoleOwner {
-			// The invite says what was asked for; sign-up promotes whoever
-			// arrives first, so which invite is used first decides it.
-			fmt.Fprintln(os.Stderr, "Nobody has signed up yet: the first person to sign up on this daemon "+
-				"becomes an owner, whatever their invite says.")
+		shown := string(invite.Role)
+		if team != "" {
+			shown = string(invite.WorkspaceRole) + " of the team " + team
 		}
+		printInvite(auth.InviteLink(base, code, invite.Email), invite.Email, shown, invite.ExpiresAt)
 		return nil
 	}
 
+	if team != "" {
+		var created service.TeamInvite
+		if err := adminCall(ctx, cfg, "/v1/workspaces/"+url.PathEscape(team)+"/invites",
+			map[string]any{"email": email, "role": string(teamRole)}, &created); err != nil {
+			return err
+		}
+		printInvite(created.URL, created.Email, created.Role+" of the team "+created.WorkspaceID,
+			time.Unix(created.ExpiresAt, 0))
+		return nil
+	}
+	if role == "" {
+		role = auth.RoleMember
+	}
 	body, err := adminPost(ctx, cfg, "/v1/users/invites", map[string]any{"email": email, "role": string(role)})
 	if err != nil {
 		return err
@@ -156,10 +204,13 @@ func printInvite(link, email, role string, expires time.Time) {
 // through the daemon with an admin key, or with --bootstrap while the daemon
 // is stopped: `user disable --email ADDRESS` first, which ends every session
 // and revokes every key they hold at once, and then `user delete --email
-// ADDRESS`, which removes their mailboxes with those mailboxes' credentials
-// and everything indexed for them, their sessions, their keys and their
-// invites, in one transaction. Disabling or deleting the last active owner
-// needs --force: nobody would be left to invite people from the console.
+// ADDRESS`, which removes the mailboxes they linked with those mailboxes'
+// credentials and everything indexed for them, their sessions, their keys,
+// their invites and their personal workspace, in one transaction. Disabling
+// or deleting the last active owner needs --force: nobody would be left to
+// invite people from the console. So does someone their teams depend on —
+// a team's last active owner, or the person a team mailbox others read syncs
+// under — and the daemon's refusal names those teams and mailboxes.
 
 func userDisable(ctx context.Context, cfg config.Config, args []string) error {
 	req, bootstrap, err := parseCloseFlags("disable", args)
@@ -206,9 +257,9 @@ func userDelete(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Printf("%s had no account; deleted %s\n", out.Email, plural(out.InvitesDeleted, "invite"))
 		return nil
 	}
-	fmt.Printf("deleted %s (%s): %s, %s, %s, %s\n", out.Email, out.ID,
+	fmt.Printf("deleted %s (%s): %s, %s, %s, %s, %s\n", out.Email, out.ID,
 		plural(out.AccountsRemoved, "mailbox"), plural(out.SessionsDeleted, "session"),
-		plural(out.KeysDeleted, "API key"), plural(out.InvitesDeleted, "invite"))
+		plural(out.KeysDeleted, "API key"), plural(out.InvitesDeleted, "invite"), plural(out.TeamsDeleted, "team"))
 	return nil
 }
 
@@ -216,7 +267,9 @@ func parseCloseFlags(name string, args []string) (service.CloseUserRequest, bool
 	fs := flag.NewFlagSet("user "+name, flag.ContinueOnError)
 	email := fs.String("email", "", "the address the person signs in with"+emailFlagUsage)
 	force := fs.Bool("force", false, "go ahead even if this is the last active owner, "+
-		"which leaves nobody to invite people from the console")
+		"which leaves nobody to invite people from the console, or someone teams depend on: "+
+		"the last active owner of a team (give it another with `member role`), or the person "+
+		"a team mailbox others read syncs under (deleting them removes it)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, when no daemon is running")
 	if err := fs.Parse(args); err != nil {
 		return service.CloseUserRequest{}, false, err

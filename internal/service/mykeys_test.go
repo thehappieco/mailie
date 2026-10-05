@@ -206,10 +206,10 @@ func TestAToolReachesAPersonsMailboxOnlyThroughAKeyThatPersonCreated(t *testing.
 	}
 	unowned := f.mailbox(t, opP, "ops@mail.example")
 
-	// The operator's key reaches every mailbox over REST, and only the
-	// unowned ones when a tool presents it.
-	if got := ids(t, f, opP); len(got) != 2 {
-		t.Fatalf("over REST the instance key sees %v", got)
+	// The operator's key reaches the operator workspace's mailboxes, over
+	// REST as when a tool presents it, and never a person's.
+	if got := ids(t, f, opP); len(got) != 1 || got[0] != unowned {
+		t.Fatalf("over REST the instance key sees %v, want only %s", got, unowned)
 	}
 	tool, err := f.svc.AuthenticateTool(t.Context(), operator, nil)
 	if err != nil {
@@ -240,9 +240,10 @@ func TestAToolReachesAPersonsMailboxOnlyThroughAKeyThatPersonCreated(t *testing.
 	if err != nil {
 		t.Fatalf("her own key: %v", err)
 	}
-	// An owner's key also sees the mailboxes nobody owns, as she does.
-	if got := ids(t, f, hers); len(got) != 2 {
-		t.Errorf("her key's tool sees %v", got)
+	// Her key sees what she does, which is her own mailbox: being an owner
+	// of the instance reaches no other.
+	if got := ids(t, f, hers); len(got) != 1 || got[0] != anas {
+		t.Errorf("her key's tool sees %v, want only %s", got, anas)
 	}
 }
 

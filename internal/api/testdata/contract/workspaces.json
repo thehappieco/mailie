@@ -1,0 +1,20 @@
+[
+  {
+    "created_at": 1790000000,
+    "id": "wsp_0000000000000001",
+    "kind": "personal",
+    "name": "",
+    "role": "owner",
+    "source": "local",
+    "status": "active"
+  },
+  {
+    "created_at": 1790000000,
+    "id": "wsp_0000000000000002",
+    "kind": "team",
+    "name": "Support",
+    "role": "owner",
+    "source": "local",
+    "status": "active"
+  }
+]

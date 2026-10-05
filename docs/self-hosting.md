@@ -67,7 +67,7 @@ chmod 600 deploy/.env
 # Edit deploy/.env: MAIL_CREDENTIAL_KEY_HEX, MAIL_PUBLIC_URL, MAIL_ENV=prod, MAIL_TRUSTED_PROXIES.
 cd deploy
 docker compose build
-docker compose run --rm mailie user invite --bootstrap --email you@example.com   # the first owner
+docker compose run --rm mailie user invite --bootstrap --role owner --email you@example.com   # the first owner
 docker compose up -d
 curl -fsS http://127.0.0.1:8080/v1/healthz
 ```
@@ -290,19 +290,19 @@ Docker publishes ports past host firewalls such as ufw and firewalld: that is wh
 
 ## The first owner
 
-The first person is invited from the command line, with the daemon stopped. Whoever signs up
-first becomes an owner, whatever the invite says. Set `MAIL_PUBLIC_URL` first: the invite link is
-built from it.
+The first person is invited from the command line, with the daemon stopped, as an owner: the
+invite decides the role, and signing up first makes nobody an owner. Set `MAIL_PUBLIC_URL` first:
+the invite link is built from it.
 
 ```sh
 # Compose, from deploy/:
 docker compose stop mailie
-docker compose run --rm mailie user invite --bootstrap --email you@example.com
+docker compose run --rm mailie user invite --bootstrap --role owner --email you@example.com
 docker compose start mailie
 
 # systemd, with the helper above:
 sudo systemctl stop mailie
-mailie-admin user invite --bootstrap --email you@example.com
+mailie-admin user invite --bootstrap --role owner --email you@example.com
 sudo systemctl start mailie
 ```
 
@@ -377,7 +377,18 @@ data directory.
 The daemon applies pending schema migrations when it starts (`mailserver migrate --dry-run` lists
 them). An older binary does not know a newer schema, so **copy the data directory before every
 upgrade**, with the daemon stopped, and keep the version you are leaving: going back is that copy
-and that version, together.
+and that version, together, never the binary alone. Since the release that added workspaces
+(migrations 0008 and 0009) a binary refuses to open a database a newer one migrated, and says which
+schema each knows; binaries from before it have no such check, and one started on a migrated
+database runs on it, creates people without a personal workspace and cannot link a mailbox for
+anyone. Should that have happened, the next start of a current binary gives those people their
+personal workspace and logs a warning.
+
+That release also changes who becomes the server's first owner: the invite decides
+(`user invite --bootstrap --role owner`), never the order of sign-ups. A server upgraded with
+invites waiting and nobody signed up yet gets its oldest invite turned into an owner's, the one the
+quick start of earlier releases had you make for yourself. If the daemon logs at start that nobody
+administers the server, invite an owner, with an address that has no account yet.
 
 ```sh
 # Compose, from deploy/:

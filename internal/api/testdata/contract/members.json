@@ -1,0 +1,32 @@
+[
+  {
+    "email": "ana@example.com",
+    "joined_at": 1790000000,
+    "last_owner": true,
+    "links": 0,
+    "name": "Ana Lima",
+    "role": "owner",
+    "status": "active",
+    "user_id": "usr_0000000000000001"
+  },
+  {
+    "email": "bea@example.com",
+    "joined_at": 1790000000,
+    "last_owner": false,
+    "links": 0,
+    "name": "Bea Lima",
+    "role": "member",
+    "status": "active",
+    "user_id": "usr_0000000000000003"
+  },
+  {
+    "email": "carol@example.com",
+    "joined_at": 1790000000,
+    "last_owner": false,
+    "links": 0,
+    "name": "",
+    "role": "member",
+    "status": "active",
+    "user_id": "usr_0000000000000002"
+  }
+]

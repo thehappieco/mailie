@@ -101,18 +101,32 @@ records the role asked for.
   `MAIL_ADMIN_KEY` (an unrestricted instance admin key; a signed-in owner may call the route too)
   and prints the link, `<MAIL_PUBLIC_URL>/#invite=…&email=…`. The code travels in the fragment,
   which the browser never sends to a server, and the page removes it as soon as it reads it.
+- `mailserver user invite --email X --workspace ID [--role owner|admin|member]` is a **team
+  invite** (`POST /v1/workspaces/{id}/invites`): a person who already has an account accepts it
+  signed in (`POST /v1/auth/invites/accept`). A new address signs up with it, and joins the team,
+  only when the operator or an instance owner (still active) made it: any person may create a team
+  and invite into it, and that must not be a way to create an account for someone else's address.
+  Anyone else's team invite offered at sign-up is `403` ("sign in with that address and accept
+  it"), whether or not the address has an account, and is not spent. Joining a team gives access to
+  no mailbox. See [Workspaces](#workspaces).
 - `--bootstrap` writes to the database directly, for the first person, while no daemon runs.
   Without `MAIL_PUBLIC_URL` its link points at `http://localhost:5174` and the command says so.
   Without `MAIL_PUBLIC_URL` the route answers `409`: a link is never built from a request's `Host`.
-- The first person to sign up on a daemon becomes an `owner`, whatever the invitation said.
+- The invitation decides the role, when it is made; signing up first or last changes nothing. The
+  first owner comes from `user invite --bootstrap --role owner`. Without `--role`, `--bootstrap`
+  makes an `owner` invitation while the server has no active owner and no owner invitation waiting,
+  and a `member` one otherwise; the route's default is `member`.
 - Unused invitations are deleted within 30 days of expiring; a used one stays with the person and
   goes when they are deleted.
 
-Closing someone's account is the operator's: `mailserver user disable --email X` ends their
-sessions and revokes their keys; `mailserver user delete --email X` deletes the person, their
-mailboxes with their credentials and index, their sessions, keys and invitation. Both take
-`--email -` to read the address from standard input, which keeps it out of `sudo` logs and shell
-history, and refuse to remove the last active owner without `--force`.
+Closing someone's account is the operator's, or an instance owner's signed in (never on
+themselves): `mailserver user disable --email X` ends their sessions and revokes their keys;
+`mailserver user delete --email X` deletes the person, the mailboxes they linked with their
+credentials and index, their sessions, keys, invitation and personal workspace, and every team
+whose only member they were. Both take `--email -` to read the address from standard input, which
+keeps it out of `sudo` logs and shell history, and refuse without `--force` to remove the last
+active owner of the server, the last active owner of a team others remain in, or the person a team
+mailbox others read syncs under; the refusal names those teams and mailboxes.
 
 ### Keys and scopes
 
@@ -120,9 +134,9 @@ A key is `<prefix>.<secret>`: eight hex characters, then 32 random bytes in base
 Argon2id hash is stored; the prefix names it in lists and logs. Scopes are ordered,
 `read < write < send < admin`. There are two kinds:
 
-- **Instance keys**, the operator's: any scope, optionally restricted to some mailboxes
-  (`--accounts`), at most 365 days. Over REST they see every mailbox; they never change a person's
-  messages or send from a person's mailbox. They are managed through the `/v1/apikeys` routes,
+- **Instance keys**, the operator's: any scope, optionally restricted to some of the operator
+  workspace's mailboxes (`--accounts`), at most 365 days. Over REST and MCP alike they reach the
+  operator workspace's mailboxes and nothing else: never a person's. They are managed through the `/v1/apikeys` routes,
   which the daemon mounts only with `MAIL_ADMIN_API=true` (off by default; otherwise they answer
   404). `mailserver apikey create --scope SCOPE --name NAME`, `apikey list` and
   `apikey revoke PREFIX` are clients of those routes, so they need it too. Without it the only way
@@ -133,7 +147,7 @@ Argon2id hash is stored; the prefix names it in lists and logs. Scopes are order
   a person's mailbox.
 
 A session counts as a person with every scope; what it may do to a mailbox still depends on
-ownership and consent.
+their grant on it and their consent.
 
 ### Rate limits
 
@@ -145,18 +159,37 @@ address, consulted only once the prefix is not found. No failure is charged to t
 whole: behind a NAT, or a proxy missing from `MAIL_TRUSTED_PROXIES`, one address is a whole office.
 IPv6 addresses count per /64. A throttled request gets `429` with `Retry-After`.
 
-## Ownership
+## Workspaces
 
-Every mailbox has at most one owner (`accounts.owner_user_id`). Whoever connects it in the console
-owns it; one created with an instance key (the command line) has no owner. Roles:
+Every mailbox belongs to a **workspace** (`docs/workspaces.md` is the long form): a person's
+**personal** workspace, made with them; a **team**, whose members are `owner`, `admin` or `member`;
+or the one **operator** workspace, which has no members and holds the mailboxes the command line
+adds with an instance key.
 
-- **`owner`** runs the instance: sees, besides their own, the mailboxes nobody owns, and invites
-  people.
-- **`member`** sees only their own mailboxes.
+- **Seeing a mailbox** takes active membership in its workspace and a **grant** on it, with four
+  flags: `read` (its index: folders, messages, events, storage), `act` (needs `read`), `send` and
+  `manage` (re-authorize, remove, administer who has access). Any grant shows the mailbox's card;
+  each use needs its flag. Whoever links a mailbox gets all four, and the mailbox syncs under their
+  consent (`linked_by`).
+- **Owners and admins get no automatic read.** They see the access directory (addresses and
+  grants), invite and administer people, and grant `manage`; `read`, `act` and `send` pass only
+  from someone who holds them. A member who manages a mailbox may grant on it too.
+- Another workspace's mailbox, and one the caller holds nothing on, answer `not_found`, never
+  `forbidden`; a mailbox the caller sees without the flag an operation needs answers
+  `not_authorized`. The rule lives in `internal/service` and runs in SQL on every call, so listing
+  filters with the same rule as fetching one, and a person's key never reaches a mailbox its person
+  lost.
+- `users.role` is the **instance** role of a self-hosted server: an `owner` invites people to the
+  server and disables or deletes them, and sees no mailbox by being one. The `member` role is
+  everybody else.
+- An address is linked at most once per workspace; the same address linked in two workspaces is
+  two independent mailboxes.
 
-The rule lives in `internal/service` and is applied in SQL, so listing filters with the same rule
-as fetching one. Another person's mailbox answers `not_found`, never `forbidden`. A mailbox address
-is unique across the daemon: a mailbox is connected once.
+Protections, each `409` and marked in advance in the listings (`last_owner`, `links`,
+`linked_by`): a team keeps an active owner; the person a mailbox syncs under is neither removed nor
+disabled, nor their grant changed, while it is linked — another member with every flag, who may
+link there and agreed to sync, **takes the link over** (`POST /v1/accounts/{id}/take-over`) and
+keeps the index; a linked mailbox keeps a holder of `manage`.
 
 ## Errors
 
@@ -184,42 +217,67 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 |---|---|---|
 | `GET /v1/healthz` | anyone | `{status, version, uptime_seconds}` |
 | `POST /v1/auth/login` | anyone | `{email, password}` → `Session` |
-| `POST /v1/auth/signup` | anyone | `{invite, email, name, password}` → `Session` (201) |
+| `POST /v1/auth/signup` | anyone | `{invite, email, name, password}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
 | `GET /v1/auth/me` | session | `{user, session}` |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password` | session | `{current, next}` → a new `Session`; every other session ends |
 | `PUT /v1/auth/profile` | session | `{name}` → `User` |
-| `POST /v1/users/invites` | owner, or unrestricted instance admin key | `{email, role?}` → `Invite` |
-| `POST /v1/users/disable` | unrestricted instance admin key | `{email, force?}`: sessions ended, keys revoked |
-| `POST /v1/users/delete` | unrestricted instance admin key | `{email, force?}` → what was deleted |
+| `POST /v1/users/invites` | instance owner signed in, or unrestricted instance admin key | `{email, role?}` → `Invite` |
+| `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins the team with the invite's role |
+| `POST /v1/users/disable` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}`: sessions ended, keys revoked |
+| `POST /v1/users/delete` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}` → what was deleted |
 | `GET /v1/providers` | read | which providers and flows **this** caller can use, the default first |
-| `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller sees |
-| `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s) |
-| `DELETE /v1/accounts/{id}` | admin | remove it, with its index |
-| `POST /v1/accounts/{id}/oauth/start` | admin | start (or restart) its authorization |
-| `POST /v1/accounts/oauth/callback` | admin | `{redirect_url}` → `Account` (45 s) |
-| `GET /v1/accounts/{id}/folders` | read | folders, from the index or from the server |
+| `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts |
+| `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team |
+| `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
+| `GET /v1/workspaces/{id}/members` | member; operator | `[Member]` |
+| `PATCH /v1/workspaces/{id}/members/{user}` | owner: anyone's; admin: members', never to admin or owner; operator | `{role?, status?}` → `Member` |
+| `DELETE /v1/workspaces/{id}/members/{user}` | owner: anyone; admin: members; the member themselves; operator | 204; their grants there go |
+| `GET/POST /v1/workspaces/{id}/invites`, `DELETE …/invites/{invite}` | owner; admin (member invites); operator | team invites: `{email, role?}` → `TeamInvite` with its `url` (201) |
+| `GET /v1/workspaces/{id}/access` | owner, admin: every mailbox; a member: those they manage; operator | `[MailboxAccess]`: addresses and grants, never the index |
+| `PUT /v1/accounts/{id}/access/{user}` | see [Workspaces](#workspaces); operator: `manage` only | `{read, act, send, manage}`, all four → `Grant` |
+| `DELETE /v1/accounts/{id}/access/{user}?flags=` | the same, or the person themselves | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it |
+| `POST /v1/accounts/{id}/take-over` | session, with every flag | → `Account`: the caller becomes its linker |
+| `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller holds a grant on; `?workspace=` narrows the list |
+| `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers |
+| `DELETE /v1/accounts/{id}` | admin, `manage` | remove it, with its index |
+| `POST /v1/accounts/{id}/oauth/start` | admin, `manage` | start (or restart) its authorization |
+| `POST /v1/accounts/oauth/callback` | admin, `manage` | `{redirect_url}` → `Account` (45 s) |
+| `GET /v1/accounts/{id}/folders` | read, `read` | folders, from the index or from the server |
 | `GET /v1/accounts/{id}/sync` | read | `AccountSync` |
-| `POST /v1/accounts/{id}/sync` | write | ask for a pass now → `AccountSync` (202) |
-| `PUT /v1/accounts/{id}/sync` | unrestricted instance admin key | `{enabled}`, only for a mailbox nobody owns |
+| `POST /v1/accounts/{id}/sync` | write, `read` | ask for a pass now → `AccountSync` (202) |
+| `PUT /v1/accounts/{id}/sync` | unrestricted instance admin key | `{enabled}`, only for a mailbox of the operator workspace |
 | `GET/POST/DELETE /v1/me/sync-consent` | see [Sync](#sync-and-consent) | the person's consent to sync |
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
-| `GET /v1/me/storage` | read | what the caller's mailboxes take up in the index |
+| `GET /v1/me/storage` | read | what the mailboxes the caller may read take up in the index; `?workspace=` narrows |
 | `GET /v1/me/mcp` | read | `{http}`: whether this server answers MCP over HTTP at `/mcp` |
 | `GET/POST /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the person's own keys |
-| `GET /v1/events` | read | Server-Sent Events of the mailboxes the caller sees |
-| `GET /v1/events/wait` | read | long poll for new mail |
-| `GET /v1/messages` | read | search the index |
+| `GET /v1/events` | read | Server-Sent Events of the mailboxes the caller may read; `?workspace=` narrows |
+| `GET /v1/events/wait` | read | long poll for new mail; `?workspace=` narrows |
+| `GET /v1/messages` | read | search the index; `?workspace=` narrows |
 | `GET /v1/messages/{id}` | read | a message, its body fetched from the mail server now |
 | `GET /v1/messages/{id}/raw` | read | the original (`message/rfc822`), always as an attachment |
 | `GET /v1/messages/{id}/attachments/{path}` | read | one part, by its IMAP section, always as an attachment |
 | `PATCH /v1/messages/{id}`, `POST /v1/messages/{flags,move,trash}` | write | actions |
 | `POST /v1/messages/send` | send | send a message |
-| `GET /v1/sends/{key}?account=` | send | a send's record |
+| `GET /v1/sends/{key}?account=` | send | the record of one of the caller's own sends |
 | `GET/POST /v1/apikeys`, `DELETE /v1/apikeys/{prefix}` | admin, only with `MAIL_ADMIN_API=true` | instance keys; `mailserver apikey create\|list\|revoke` without `--bootstrap` call these |
 
 `/v1/users/disable` and `/v1/users/delete` carry the address in the body, never in the URL.
+
+There is no current workspace on the server: a session or a key reaches the caller's mailboxes in
+every workspace they belong to, and every account (and every storage entry) carries its
+`workspace_id`. The console keeps the workspace it shows itself — per tab, remembered in local
+storage — and passes `?workspace=ID` to `GET /v1/accounts`, `GET /v1/messages`,
+`GET /v1/me/storage`, `GET /v1/events` and `GET /v1/events/wait`, which narrows them to that
+workspace's mailboxes, so a view never fetches another workspace's data; a workspace the caller is
+not an active member of is `404`, and with `account` as well the account must be in it
+(`docs/workspaces.md`, "Choosing the workspace in a request").
+
+An account carries `workspace_id`, `linked_by` (absent for the operator's mailboxes) and `access`,
+the caller's own flags as far as their credential's scope reaches; `send.reason` `not_granted` is
+a mailbox the caller may not send from.
 
 ## Mailboxes
 
@@ -328,8 +386,9 @@ testing a password login) logs a `WARN` line with `account`, `provider`, `class`
 Nothing from a person's messages is stored until they agree in the console, and turning sync off
 deletes what was stored:
 
-- **The consent is the person's**, given once for every mailbox they own
-  (`users.sync_consent_at` and `users.sync_consent_version`). Connecting and authorizing a mailbox
+- **The consent is the person's**, given once for every mailbox they link, in whichever workspace
+  (`users.sync_consent_at` and `users.sync_consent_version`): a mailbox syncs under its linker's
+  consent, whoever else reads it. Connecting and authorizing a mailbox
   is **not** consenting. Only a session gives or withdraws it (`POST`/`DELETE` with any key is
   `403`); a person's key may read it (`GET`); an instance key may not (`403`: there is no person to
   answer for).
@@ -339,20 +398,23 @@ deletes what was stored:
   console compares it with `version` to ask again when the text changes, and with its own text's
   revision so it never agrees to a text it did not show.
 - **Having agreed to an earlier revision does not stop sync**: eligibility looks only at
-  `sync_consent_at`. A mailbox whose owner agreed to an earlier revision keeps syncing, and its
-  index keeps being served, until the owner turns sync off.
+  `sync_consent_at`. A mailbox whose linker agreed to an earlier revision keeps syncing, and its
+  index keeps being served, until the linker turns sync off.
 - **Withdrawing deletes.** `DELETE /v1/me/sync-consent` clears the consent and, **in the same
-  transaction**, deletes everything sync stored for the person's mailboxes: messages (with their
-  parts and full-text rows), folders and those mailboxes' events. Mailboxes, credentials and
+  transaction**, deletes everything sync stored for every mailbox the person linked, team
+  mailboxes other members read included: messages (with their parts and full-text rows), folders
+  and those mailboxes' events. The console says so before the person confirms; taking a link over
+  first is how a team keeps its index. Mailboxes, credentials and
   settings stay. After the commit the daemon compacts the full-text index and checkpoints the WAL,
   so the deleted words are gone from the files too. The engine checks eligibility inside every
   transaction that writes to the index, so a batch already on its way writes nothing.
-- **A mailbox nobody owns** has no person to consent: it syncs only when the operator switches it
+- **A mailbox of the operator workspace** has no person to consent: it syncs only when the operator switches it
   on, `mailserver account sync ID on` (`PUT /v1/accounts/{id}/sync {"enabled": true}`, unrestricted
   instance admin key). `off` asks for confirmation and deletes its index. For a person's mailbox the
-  route answers `409`: nobody decides for them, not the operator either.
+  route answers `404`: an instance key does not see it, and nobody decides for its person, not the
+  operator either.
 - **The rule the engine reads** (`internal/store/eligibility.go`): the account is `active` and,
-  with an owner, the owner is active and has consented; without one, the operator switched it on.
+  with a linker, the linker is active and has consented; without one, the operator switched it on.
 
 The first sync of a person's mailbox reaches back 90 days and then follows new mail. Gmail's All
 Mail, Starred and Important are never synced: they are views of other folders.
@@ -365,7 +427,7 @@ Every account in the JSON has `sync`, the `AccountSync` that `GET /v1/accounts/{
 
 | Field | |
 |---|---|
-| `enabled` | sync is allowed: the owner consented or, without one, the operator switched it on |
+| `enabled` | sync is allowed: the linker consented or, without one, the operator switched it on |
 | `running` | a worker holds the account now |
 | `state` | `off`, `initial`, `live`, `backoff` or `stopped` |
 | `tier` | `condstore` or `uidpoll`, after the first connection |
@@ -407,26 +469,39 @@ revisions than the daemon's sees every agreement refused, and offers only a relo
 
 ## Storage
 
-`GET /v1/me/storage` (read scope, any credential) is what the caller's own mailboxes take up in the
-index: `{mailboxes: [{account_id, email, messages, bytes}], total: {messages, bytes},
-database_bytes?}`, sorted by address.
+`GET /v1/me/storage` (read scope, any credential) is what the mailboxes the caller may read take up
+in the index: `{mailboxes: [{account_id, workspace_id, email, messages, bytes}], workspaces:
+[{workspace_id, mailboxes, messages, bytes}], total: {messages, bytes}, database_bytes?}`, the
+mailboxes sorted by address. `workspaces` sums them per workspace, never a mailbox the caller
+cannot read, so it is not a workspace's whole usage; `?workspace=` narrows the answer to one.
 
-- **Whose mailboxes**: the rule of `GET /v1/accounts`, except that an instance key answers only for
-  the mailboxes nobody owns, never a person's. A mailbox never synced, or whose index was deleted,
-  is listed with zeros; one whose account needs signing in again keeps, and reports, what was
-  already indexed.
+- **Whose mailboxes**: the ones the caller may **read** — the rule of `GET /v1/accounts`, narrowed
+  to the `read` flag, since a grant that only shows a mailbox does not open its index; an instance
+  key answers only for the operator workspace's, never a person's. A mailbox never synced, or whose
+  index was deleted, is listed with zeros; one whose account needs signing in again keeps, and
+  reports, what was already indexed.
 - **Per folder copy**: `messages` counts the index rows still in their folder and `bytes` sums their
   `RFC822.SIZE`, so a Gmail message under three synced labels counts three times. `bytes` is the
   mail's size on its server, not what the index keeps of it.
-- **`database_bytes`**, only for an `owner` signed in: `mail.db` plus `mail.db-wal` on disk,
-  everybody's data included.
+- **`database_bytes`**, only for an instance `owner` signed in: `mail.db` plus `mail.db-wal` on
+  disk, everybody's data included.
 
 ## Events: SSE and long poll
 
 Both read the event journal (`events`) from a cursor and deliver only events of mailboxes the caller
-sees, decided in `internal/service` **per event**: a mailbox connected while the stream is open
-appears from its first event, without reconnecting. No payload carries a token or a credential;
+may **read**, decided in `internal/service` **per event, with access as it stands**: a mailbox
+linked or granted while the stream is open appears from its first event, without reconnecting, and
+one whose `read` goes (a grant revoked, a membership disabled or removed, the mailbox removed, the
+person disabled) stops the moment that change commits. Resuming from an old cursor never yields
+events of a mailbox the caller cannot read now. No payload carries a token or a credential;
 they may carry subjects and senders, which are the person's own.
+
+`send.finished` is the one exception: it is not the mailbox's but one sender's record, which
+several people sending from a shared mailbox each keep apart (`GET /v1/sends/{key}` answers only
+the caller's own). It goes only to whoever may read that record: the person who sent it, with the
+`send` scope and the `send` flag on the mailbox when it is delivered, whether or not they may read
+the mailbox (a stream without `?account=`); an instance key's send, to instance keys with the `send`
+scope. A member who reads a shared mailbox never hears of another member's sends.
 
 **`GET /v1/events`** (SSE, no route timeout):
 
@@ -434,11 +509,24 @@ they may carry subjects and senders, which are the person's own.
   `Event = {seq, type, account_id, at, payload}`: the same shape as the long poll's items.
 - It resumes after `Last-Event-ID` or `?since=`; the header wins. With neither it starts **from
   now**: the journal is for resuming a stream, not for reading the mailbox.
-- Filters: `?account=ID[,ID]` (someone else's is `404`) and `?types=message.new,…` (an unknown type
-  is `400`).
+- Filters: `?account=ID[,ID]` (one the caller does not see is `404`, one they see without `read`
+  `403`), `?workspace=ID` and `?types=message.new,…` (an unknown type is `400`).
 - `: ping` every 15 s. The credential is **checked again before each batch** and at each ping: an
   ended session or a revoked key receives `event: error` with `{code, message}` instead of the next
-  event, and the stream ends. Do not reconnect after that.
+  event, and the stream ends. The `code` says what to do:
+  - `unauthorized`: the credential no longer works. Do not reconnect with it.
+  - `conflict`: the key works, but its restriction lost a mailbox the stream was opened with (its
+    person lost `read` on it). Reconnect with the same key: the new stream follows what the key
+    still names, and never the lost mailbox, even once `read` comes back.
+  - `not_found`: see the next item.
+- Access is **checked again** at the same moments. `event: access` (no `id`, like `lagged`) with
+  `{"account_id": "…", "read": false}` says a mailbox the stream followed is no longer readable,
+  and `"read": true` that one joined. The stream ends with `event: error` and `{"code":
+  "not_found", …}` only when its filter can match nothing again — every mailbox named by
+  `?account=`, or every mailbox of a restricted key, is gone, or the caller is no longer an active
+  member of the workspace `?workspace=` named: do not reconnect with the same filter. A stream of
+  everything the caller may read stays open, however little that is (none at all, after the last
+  grant is revoked, or before the first), so a mailbox granted or linked later appears on it.
 - `event: lagged` (no `id`) comes first when the cursor is older than the journal keeps (7 days,
   and always the latest 10,000 events): what survives follows, but the client must read again the
   state it keeps.
@@ -449,7 +537,8 @@ they may carry subjects and senders, which are the person's own.
   header) and never a token in the URL. The daemon sends `X-Accel-Buffering: no`; a proxy in front
   must not buffer.
 
-**`GET /v1/events/wait?since&timeout&account`** is a long poll for **new mail**: `message.new` in an
+**`GET /v1/events/wait?since&timeout&account&workspace`** is a long poll for **new mail**, under the
+same rule (mail of a mailbox lost during the wait is left out): `message.new` in an
 inbox or a folder without a role (a filter that files straight into a label). A copy in Sent,
 Drafts, Trash or Junk is not mail arriving. `timeout` in seconds, up to 55 (absent or `0` is 30).
 It answers as soon as something arrives, with everything that arrived until then:
@@ -464,7 +553,7 @@ It answers as soon as something arrives, with everything that arrived until then
 | `folder.changed` | `{account_id, folder_id, name, role, change, count?}`; `change` is `added`, `updated`, `removed`, `initial_done` or `resync_done` |
 | `account.state` | `{account_id, state, previous_state, reason?}`, whenever an account's state changes |
 | `sync.progress` | the initial sync's progress, rate-limited at the source |
-| `send.finished` | `{account_id, key, state}` |
+| `send.finished` | `{account_id, key, state, user_id?}`: `user_id` is the sender, absent for an instance key's send; only the sender receives it |
 
 `message_id` is the local id, not the `Message-ID` header. No `message.new` is emitted during the
 initial sync; each folder ends with `folder.changed{initial_done}`.
@@ -555,12 +644,12 @@ shape of `SyncConsent`. Without sync there is no index, and without an index no 
 Decided in `internal/service`, before any connection, in this order:
 
 1. The `write` scope; a `read` key gets `403`.
-2. Every message must be readable by the caller; one of someone else's, or one that does not exist,
-   makes the whole request `404`. All in one account, 1 to 100 ids.
-3. **A person's mailbox**: the caller must **be** that person (their session or a key they created)
-   and their consent to actions must name the current revision. An instance key gets `403`; without
-   consent, or with an old one, `409`.
-4. **A mailbox nobody owns**: an instance key with `write`, or an owner signed in.
+2. Every message must be readable by the caller (`read` on its mailbox); one they cannot read, or
+   one that does not exist, makes the whole request `404`. All in one account, 1 to 100 ids.
+3. **A person's mailbox**: the caller (their session or a key they created) must hold `act` on it,
+   and **their own** consent to actions must name the current revision — whoever linked the
+   mailbox. Without `act`, `403`; without consent, or with an old one, `409`.
+4. **A mailbox of the operator workspace**: an instance key with `write`.
 5. The account must be usable: `needs_reauth`, `pending_auth` and `disabled` are `409`.
 
 ### Routes
@@ -632,14 +721,16 @@ send unless that person agrees through the API with their session.
 2. `confirm: true` in the message. Without it, `400` before anything else: nothing is reserved or
    dialed. No flag or test relaxes this.
 3. The account must be visible to the caller (`404` otherwise).
-4. **A person's mailbox**: the caller must be that person, with their consent to sending at the
-   current revision. An instance key gets `403`; without consent, `409`.
-5. **A mailbox nobody owns**: an instance key with `send`, or an owner signed in.
+4. **A person's mailbox**: the caller must hold `send` on it, with **their own** consent to sending
+   at the current revision. Without `send`, `403`; without consent, `409`. A reply or a forward
+   also needs `read` on the original.
+5. **A mailbox of the operator workspace**: an instance key with `send`.
 6. The account must be usable (`409` otherwise).
 
 Each account's JSON has `send: {available, reason?, from_name?}`: whether it can send **for this
 caller**, consent aside. `reason` is `needs_reauth`, `pending_auth`, `disabled`, `no_smtp` or
-`not_owner`.
+`not_granted` (no `send` flag, or a credential that does not send). `from_name` is the caller's
+own profile name: a message goes out under the name of whoever sends it.
 
 ### `POST /v1/messages/send`
 
@@ -669,10 +760,10 @@ of at most 998 bytes; text up to 1 MiB; up to 100 attachments; the estimated mes
 provider's size limit. Error messages cite positions (`to[2]`), never addresses. A person sends at
 most 200 messages a day, and each account at most its provider's rate per minute (`429`).
 
-- The sender is the account's address, under its owner's name (the address alone for a mailbox
-  nobody owns).
+- The sender is the account's address, under the **sender's** profile name, whoever linked the
+  mailbox (the address alone for an instance key).
 - A reply sets `In-Reply-To` and `References` from the original, and `Re: ` once. After it is sent,
-  the original gets `\Answered` only if its owner allowed actions.
+  the original gets `\Answered` only if the sender holds `act` on it and allowed actions.
 - A forward adds `Fwd: ` once; `forward_attachments` are fetched from the server when it is sent.
 - An attachment's type is **sniffed**, and anything outside the passive list goes out as
   `application/octet-stream`; its name is sanitized.
@@ -694,7 +785,8 @@ most 200 messages a day, and each account at most its provider's rate per minute
 
 **Idempotency is reserved before dialing**, in an immediate transaction. The same key with the same
 message: `sent` replays the stored answer, `sending` is `409` (in progress), `unknown` is `409`
-(check Sent before sending again). The same key with another message is `409`. `failed` frees the
+(check Sent before sending again). The same key with another message is `409`, and so is a key
+another person used on the same shared mailbox: their send is never replayed to anyone else. `failed` frees the
 key. When the daemon starts, any send still `sending` becomes `unknown`, never `failed`.
 
 **At the SMTP server.** One connection per send, an account's sends in series, the `Message-ID` and
@@ -714,7 +806,8 @@ IMAP account with `save_sent_copy`, after `sent` the daemon looks for the `Messa
 folder and, if the server did not file it, appends **the exact bytes sent** with a `Bcc:` header in
 front, marked `\Seen`.
 
-**`GET /v1/sends/{key}?account=`** (send scope; still readable after withdrawing consent) answers
+**`GET /v1/sends/{key}?account=`** (send scope; still readable after withdrawing consent) answers,
+for one of the caller's own sends (another person's on a shared mailbox is `404`),
 `{account_id, idempotency_key, state, message_id, reason?, attempts, recipients, sent_copy,
 created_at, updated_at, sent_at?}`. A derived key contains `/`: encode it (`%2F`).
 
@@ -751,7 +844,9 @@ revokes their keys: any key, the new one included, gets `403` on these routes. N
 ```
 
 - `name`: 1 to 120 characters. `scope`: `read` or `write`. `ttl_days`: 30, 90 or 365 (default 90).
-- `account_ids`: mailboxes the person sees; someone else's is `404` and nothing is created.
+- `account_ids`: mailboxes the person may **read**; one they do not see is `404`, one they see
+  without `read` `403`, and nothing is created. A key reaches only what its person can, at each
+  request: with `read` on a mailbox lost, the key no longer reaches it.
 - `terms_version` must be `MAIL_CONSENT_VERSION_KEYS`; another is `409`. A key keeps working under
   the terms it was created with.
 - At most **20 live keys** per person; the 21st is `409`.
@@ -760,7 +855,10 @@ revokes their keys: any key, the new one included, gets `403` on these routes. N
   administrator issued for them before personal keys existed (`terms_version` empty). Such a key
   works on no route, REST or `/mcp`.
 - A key restricted to mailboxes is **revoked** when its last mailbox is removed, rather than becoming
-  a key for every mailbox.
+  a key for every mailbox. Losing `read` on a mailbox takes it out of the person's keys in the same
+  transaction, so a key made for it alone is revoked too, and does not come back with a new grant; a
+  caller still holding what such a key authenticated as (an MCP session, a stream) is refused at
+  its next re-check.
 
 The console shows the MCP address (`<origin>/mcp`) and the Claude Code command only when
 `GET /v1/me/mcp` says the server answers there.
@@ -772,7 +870,7 @@ Prerequisites: Go 1.27, Node 24, and a `.env` with `MAIL_CREDENTIAL_KEY_HEX` (se
 ```sh
 echo 'MAIL_PUBLIC_URL=http://localhost:5174' >> .env
 make build
-./bin/mailserver user invite --bootstrap --email you@example.com   # daemon stopped
+./bin/mailserver user invite --bootstrap --role owner --email you@example.com   # daemon stopped
 make run                     # the daemon, on 127.0.0.1:8080
 make web-install web-dev     # another terminal: http://localhost:5174, /v1 and /mcp proxied
 ```

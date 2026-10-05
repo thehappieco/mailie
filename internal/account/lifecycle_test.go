@@ -1,7 +1,6 @@
 package account_test
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,8 +12,11 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // stateEvents reads the account.state rows journaled for an account.
@@ -175,21 +177,21 @@ func TestTheSyncEngineHearsAboutEveryAccountLifecycleChange(t *testing.T) {
 	}
 
 	// A person's mailboxes, deleted with them.
-	if _, err := db.Writer().ExecContext(ctx, `INSERT INTO users(id, email, password_hash, role, password_changed_at, created_at, updated_at)
-		VALUES ('usr_1', 'owner@example.com', 'x', 'owner', 1, 1, 1)`); err != nil {
-		t.Fatal(err)
-	}
+	owner := authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	b, err := repo.Create(ctx, account.Account{
 		ID: "acc_b", Email: "b@example.com", Provider: provider.KindGmail, AuthKind: "oauth2",
 		IMAPHost: "imap.example.com", IMAPPort: 993, SMTPHost: "smtp.example.com", SMTPPort: 587,
-		SMTPTLS: "starttls", LoginUser: "b@example.com", OwnerUserID: "usr_1",
+		SMTPTLS: "starttls", LoginUser: "b@example.com", OwnerUserID: owner.ID,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	heard.take()
-	n, err := registry.RemoveOwner(ctx, "usr_1", func(tx *sql.Tx) error {
-		_, err := tx.ExecContext(context.Background(), `DELETE FROM users WHERE id = 'usr_1'`)
+	n, err := registry.RemoveOwner(ctx, owner.ID, nil, func(tx *sql.Tx) error {
+		if _, err := workspace.DeletePersonTx(ctx, tx, owner.ID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, owner.ID)
 		return err
 	})
 	if err != nil || n != 1 {

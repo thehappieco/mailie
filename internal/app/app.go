@@ -38,6 +38,7 @@ import (
 	"github.com/thehappieco/mailie/internal/store"
 	syncengine "github.com/thehappieco/mailie/internal/sync"
 	"github.com/thehappieco/mailie/internal/webui"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Options is what the binary that runs the daemon decides beyond the
@@ -54,6 +55,11 @@ type Options struct {
 	// Extensions add routes to the daemon's listener, in this order, once
 	// the service is built and before anything listens. See Extension.
 	Extensions []Extension
+	// WorkspaceSource is where workspaces and their memberships come from;
+	// nil is workspace.Local(), the self-hosted edition's. Only a binary
+	// that embeds the daemon sets it: there is no environment variable, and
+	// `serve` never does.
+	WorkspaceSource workspace.Source
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -124,7 +130,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 
 	metrics := obs.NewMetrics()
 	keys := auth.NewKeys(db)
-	users := auth.NewUsers(db)
+	users := auth.NewUsers(db).WithWorkspaceSource(opts.WorkspaceSource)
 	bus := events.NewBus(events.NewJournal(db))
 	started := time.Now()
 
@@ -189,9 +195,20 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	if err != nil {
 		return err
 	}
+	workspaces := workspace.NewRepository(db, opts.WorkspaceSource)
+	if made, err := workspaces.RepairPersonal(ctx); err != nil {
+		return err
+	} else if made > 0 {
+		// Only a binary from before migration 0008, run on this database
+		// after it was migrated, creates a person without one.
+		logger.Warn("people without a personal workspace were given one; a binary older than this database's "+
+			"schema ran on it: never roll a binary back alone, restore the backup taken before the upgrade",
+			"people", made)
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
-		PublicURL: cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
+		Workspaces: workspaces,
+		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 	})
 
@@ -299,6 +316,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		}
 		if userCount == 0 {
 			logger.Info("nobody can sign in to the console yet", "hint", firstInviteHint(cfg.PublicURL != "", keyCount > 0))
+		} else if orphaned, err := users.NeedsFirstOwner(ctx); err != nil {
+			return err
+		} else if orphaned {
+			// People, and nobody to invite more or close an account: the
+			// last owner deleted with --force, say, or a first sign-up that
+			// an older release would have made an owner.
+			logger.Warn("nobody administers this server: no active owner, and no owner invite waiting",
+				"hint", firstInviteHint(cfg.PublicURL != "", keyCount > 0)+" (an address with no account yet)")
 		}
 	}
 	logger.Info("starting", append([]any{"version", opts.Version, "config", cfg.String()}, mcpLog...)...)
@@ -442,11 +467,11 @@ func firstInviteHint(publicURL, anyKey bool) string {
 	switch {
 	case !publicURL:
 		return "set MAIL_PUBLIC_URL (invite links are built from it), then stop the daemon and run: " +
-			"mailserver user invite --bootstrap --email ADDRESS"
+			"mailserver user invite --bootstrap --role owner --email ADDRESS"
 	case !anyKey:
-		return "stop the daemon and run: mailserver user invite --bootstrap --email ADDRESS"
+		return "stop the daemon and run: mailserver user invite --bootstrap --role owner --email ADDRESS"
 	default:
-		return "mailserver user invite --email ADDRESS (needs MAIL_ADMIN_KEY), " +
-			"or with the daemon stopped: mailserver user invite --bootstrap --email ADDRESS"
+		return "mailserver user invite --role owner --email ADDRESS (needs MAIL_ADMIN_KEY), " +
+			"or with the daemon stopped: mailserver user invite --bootstrap --role owner --email ADDRESS"
 	}
 }

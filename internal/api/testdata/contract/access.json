@@ -1,0 +1,31 @@
+[
+  {
+    "account_id": "acc_0000000000000005",
+    "email": "support@mail.example",
+    "grants": [
+      {
+        "account_id": "acc_0000000000000005",
+        "act": true,
+        "granted_by": "usr_0000000000000001",
+        "manage": true,
+        "read": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000001"
+      },
+      {
+        "account_id": "acc_0000000000000005",
+        "act": false,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000003"
+      }
+    ],
+    "linked_by": "usr_0000000000000001",
+    "provider": "imap",
+    "state": "active"
+  }
+]

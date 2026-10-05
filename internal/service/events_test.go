@@ -66,13 +66,13 @@ func TestResumedStreamsReconnectingTogetherNeverStallTheDaemonsReads(t *testing.
 			cancel()
 		case <-time.After(5 * time.Second):
 			probe, stop := context.WithTimeout(t.Context(), time.Second)
-			_, perr := f.svc.ListAccounts(probe, bob)
+			_, perr := f.svc.ListAccounts(probe, bob, "")
 			stop()
 			cancel()
 			t.Fatalf("round %d: resumed streams hung; another reader's ListAccounts: %v", round, perr)
 		}
 		// Reads go on for everyone else meanwhile.
-		if _, err := f.svc.ListAccounts(t.Context(), bob); err != nil {
+		if _, err := f.svc.ListAccounts(t.Context(), bob, ""); err != nil {
 			t.Fatalf("round %d: ListAccounts: %v", round, err)
 		}
 	}

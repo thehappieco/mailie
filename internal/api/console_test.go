@@ -273,8 +273,7 @@ func TestAnInviteLinkSignsUpItsAddressOnce(t *testing.T) {
 	if err != nil || fragment.Get("email") != "ana@example.com" || fragment.Get("invite") == "" {
 		t.Fatalf("fragment = %q", link.Fragment)
 	}
-	// The invite says what was asked for; the first person to sign up is
-	// promoted at sign-up, below, not when the invite is written.
+	// The invite says what was asked for, and that is what its person gets.
 	if invite.Role != "member" {
 		t.Errorf("role = %q, want the member an invite without a role asks for", invite.Role)
 	}
@@ -293,8 +292,9 @@ func TestAnInviteLinkSignsUpItsAddressOnce(t *testing.T) {
 	}
 	var s sessionReply
 	decodeInto(t, resp, &s)
-	// The first person on a daemon administers it, whatever the invite said.
-	if s.User.Role != "owner" || s.User.Name != "Ana" {
+	// Even the first person on a daemon: only an invite for an owner makes
+	// one.
+	if s.User.Role != "member" || s.User.Name != "Ana" {
 		t.Errorf("user = %+v", s.User)
 	}
 	if resp := h.do(t, http.MethodGet, "/v1/auth/me", s.Token, ""); resp.StatusCode != http.StatusOK {
@@ -323,6 +323,11 @@ func TestPollingAnAccountEveryTwoSecondsIsNeverThrottled(t *testing.T) {
 	decodeInto(t, resp, &added)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleOwner)
 	console := authtest.SignIn(t, h.users, "ana@example.com")
+	// Each polls its own mailbox: an owner of the instance does not see the
+	// operator's.
+	var hers struct{ Account struct{ ID string } }
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	consolePath := "/v1/accounts/" + hers.Account.ID
 
 	path := "/v1/accounts/" + added.Account.ID
 	for elapsed := time.Duration(0); elapsed <= 10*time.Minute; elapsed += time.Second {
@@ -332,7 +337,7 @@ func TestPollingAnAccountEveryTwoSecondsIsNeverThrottled(t *testing.T) {
 			}
 		}
 		if elapsed%(3*time.Second) == 0 {
-			if resp := h.do(t, http.MethodGet, path, console, ""); resp.StatusCode != http.StatusOK {
+			if resp := h.do(t, http.MethodGet, consolePath, console, ""); resp.StatusCode != http.StatusOK {
 				t.Fatalf("the console's poll at %v: %d", elapsed, resp.StatusCode)
 			}
 		}
@@ -489,6 +494,11 @@ func TestAnotherCallersMissesNeverThrottleAGoodCredential(t *testing.T) {
 	decodeInto(t, resp, &added)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleOwner)
 	console := authtest.SignIn(t, h.users, "ana@example.com")
+	// Each polls its own mailbox: an owner of the instance does not see the
+	// operator's.
+	var hers struct{ Account struct{ ID string } }
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	consolePath := "/v1/accounts/" + hers.Account.ID
 	path := "/v1/accounts/" + added.Account.ID
 
 	// Every kind of bad bearer, all from 127.0.0.1 like the pollers.
@@ -515,7 +525,7 @@ func TestAnotherCallersMissesNeverThrottleAGoodCredential(t *testing.T) {
 			}
 		}
 		if elapsed%(3*time.Second) == 0 {
-			for _, p := range []string{path, "/v1/accounts", "/v1/auth/me"} {
+			for _, p := range []string{consolePath, "/v1/accounts", "/v1/auth/me"} {
 				if got := h.statusOf(t, p, console, ""); got != http.StatusOK {
 					t.Fatalf("the console's %s at %v: %d", p, elapsed, got)
 				}
@@ -543,6 +553,11 @@ func TestAnotherClientsFailuresNeverThrottleAValidPoller(t *testing.T) {
 	decodeInto(t, resp, &added)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleOwner)
 	console := authtest.SignIn(t, h.users, "ana@example.com")
+	// Each polls its own mailbox: an owner of the instance does not see the
+	// operator's.
+	var hers struct{ Account struct{ ID string } }
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	consolePath := "/v1/accounts/" + hers.Account.ID
 	path := "/v1/accounts/" + added.Account.ID
 	revoked := h.revokedKey(t)
 	ended := strings.Repeat("A", 43)
@@ -575,7 +590,7 @@ func TestAnotherClientsFailuresNeverThrottleAValidPoller(t *testing.T) {
 			}
 		}
 		if elapsed%(3*time.Second) == 0 {
-			if got := h.statusOf(t, path, console, ""); got != http.StatusOK {
+			if got := h.statusOf(t, consolePath, console, ""); got != http.StatusOK {
 				t.Fatalf("the console's poll at %v: %d", elapsed, got)
 			}
 		}

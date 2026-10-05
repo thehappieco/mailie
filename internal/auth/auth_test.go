@@ -385,9 +385,9 @@ func seedAccount(t *testing.T, s *store.Store, id string) {
 	ctx := context.Background()
 	if err := s.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO accounts(id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
+			`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host, smtp_port,
 			 smtp_tls, login_user, save_sent_copy, state, state_changed_at, created_at, updated_at)
-			 VALUES (?, ?, 'gmail', 'oauth2', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'implicit', ?, 0, 'active', 0, 0, 0)`,
+			 VALUES (?, 'wsp_operator', ?, 'gmail', 'oauth2', 'imap.gmail.com', 993, 'smtp.gmail.com', 465, 'implicit', ?, 0, 'active', 0, 0, 0)`,
 			id, id+"@example.com", id+"@example.com")
 		return err
 	}); err != nil {

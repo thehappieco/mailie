@@ -27,6 +27,7 @@ import (
 	"github.com/thehappieco/mailie/internal/mime"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Sending mail.
@@ -38,11 +39,12 @@ import (
 //     flag or test relaxes that.
 //   - Who may send from a mailbox is decided here, before anything is read,
 //     and asked again right before every connection to the submission
-//     server. A person's mailbox sends only for that person, signed in, and
-//     only while they allow sending in the console under the current policy
-//     (SendConsent): a withdrawal stops every send that has not connected
-//     yet. A mailbox nobody owns sends only for the operator: an instance
-//     key with the send scope, or an owner signed in.
+//     server. A person sends from a mailbox when they hold the send flag on
+//     it, signed in, and only while they allow sending in the console under
+//     the current policy (SendConsent): a withdrawal stops every send that
+//     has not connected yet. The message goes out under the sender's name,
+//     whoever linked the mailbox. A mailbox of the operator workspace sends
+//     only for the operator: an instance key with the send scope.
 //   - Nothing of the message is kept. Its text lives in the request, its
 //     attachments in the spool (<data>/tmp/send-*) for as long as the send
 //     runs, and both are gone when it returns. The provider's Sent folder
@@ -250,14 +252,14 @@ type SendStatus struct {
 type AccountSend struct {
 	Available bool `json:"available"`
 	// Reason says why not: "needs_reauth", "pending_auth", "disabled",
-	// "no_smtp", or "not_owner" (a person's mailbox, and the caller is not
-	// that person; or a mailbox nobody owns, and the caller is not the
-	// operator). Whether its owner allowed sending is theirs to read, from
-	// their send consent.
+	// "no_smtp", or "not_granted" (the caller holds no send flag on it, or
+	// their credential's scope does not send). Whether they allowed sending
+	// is theirs to read, from their send consent.
 	Reason string `json:"reason,omitempty"`
 	// FromName is the name a message from this mailbox carries next to its
-	// address: its owner's name, as in their profile. Empty for a mailbox
-	// nobody owns, which sends under its address alone.
+	// address: the caller's own name, as in their profile, since a message
+	// goes out under the name of whoever sends it. Empty for an instance
+	// key, which sends under the address alone.
 	FromName string `json:"from_name,omitempty"`
 }
 
@@ -266,10 +268,9 @@ var (
 	errSendConfirm = E(CodeBadRequest,
 		"sending requires confirm=true: the request is the confirmation that the person asked to send this message", nil)
 	errSendOff = E(CodeConflict,
-		"sending is off: the mailbox's owner has not allowed it in the console", nil)
-	errNotSender          = E(CodeNotAuthorized, "only the mailbox's owner can send from it", nil)
+		"sending is off: you have not allowed it in the console", nil)
 	errNotSendingOperator = E(CodeNotAuthorized,
-		"a mailbox nobody owns sends only with an instance key or for an owner signed in to the console", nil)
+		"a mailbox of the operator workspace sends only with an instance key", nil)
 	errSendKeyRequired = E(CodeBadRequest,
 		"an Idempotency-Key header is required: one per message, reused when the same request is retried", nil)
 	errSendKeyInvalid = Ef(CodeBadRequest, nil,
@@ -291,7 +292,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest)
 	if !c.Confirm {
 		return SendResult{}, errSendConfirm
 	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeSend, c.AccountID)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeSend, c.AccountID, needCard)
 	if err != nil {
 		return SendResult{}, err
 	}
@@ -386,10 +387,10 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest)
 		return SendResult{}, E(CodeInternal, "recording the send failed", err)
 	case !reserved:
 		s.pacer.giveBack(a.ID)
-		return replayOrRefuse(row, hash)
+		return replayOrRefuse(p, row, hash)
 	}
 
-	out := msg.outgoing(a, s.fromName(ctx, a), messageID, s.now(), spool)
+	out := msg.outgoing(a, s.fromName(ctx, p), messageID, s.now(), spool)
 	out.KeepCopy = appendsSentCopy(a)
 	res, err := s.submit(ctx, p, a, mailbox, row, out, msg)
 	if err != nil {
@@ -672,17 +673,19 @@ func (s *Service) markAnswered(ctx context.Context, p Principal, a account.Accou
 	}
 }
 
-// SendStatus reads the record of a send, for the caller who may send from
-// the account: whether it was sent, failed, or is still unknown.
+// SendStatus reads the record of one of the caller's own sends from an
+// account they may send from: whether it was sent, failed, or is still
+// unknown. Several people may send from one shared mailbox, and each reads
+// only their own records — an instance key, the operator's.
 func (s *Service) SendStatus(ctx context.Context, p Principal, accountID, key string) (SendStatus, error) {
 	if err := s.authorize(p, auth.ScopeSend); err != nil {
 		return SendStatus{}, err
 	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeSend, accountID)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeSend, accountID, needCard)
 	if err != nil {
 		return SendStatus{}, err
 	}
-	if err := maySendFrom(p, a); err != nil {
+	if err := s.maySendFrom(ctx, p, a); err != nil {
 		return SendStatus{}, err
 	}
 	if key == "" || len(key) > 2*MaxIdempotencyKey {
@@ -694,6 +697,10 @@ func (s *Service) SendStatus(ctx context.Context, p Principal, accountID, key st
 		return SendStatus{}, errNoSend
 	case err != nil:
 		return SendStatus{}, E(CodeInternal, "reading the send failed", err)
+	case row.UserID != p.UserID:
+		// Somebody else's send from the same mailbox: not this caller's to
+		// read, and answered as a key nobody used.
+		return SendStatus{}, errNoSend
 	}
 	return SendStatus{
 		AccountID: row.AccountID, IdempotencyKey: row.Key, State: row.State, MessageID: row.MessageID,
@@ -714,17 +721,17 @@ func SendBodyLimit() int64 {
 }
 
 // maySend decides whether the caller may send from this account, once it is
-// known they may see it: the sender rule, and, for a person's mailbox, their
-// consent under the current policy. Asked when a send is accepted and again
-// before every connection (stillMaySend).
+// known they may see it: the sender rule, and for a person their own consent
+// to sending under the current policy. Asked when a send is accepted and
+// again before every connection (stillMaySend).
 func (s *Service) maySend(ctx context.Context, p Principal, a account.Account) error {
-	if err := maySendFrom(p, a); err != nil {
+	if err := s.maySendFrom(ctx, p, a); err != nil {
 		return err
 	}
-	if a.OwnerUserID == "" {
+	if p.IsInstance() {
 		return nil
 	}
-	c, err := s.store.SendConsentOf(ctx, a.OwnerUserID)
+	c, err := s.store.SendConsentOf(ctx, p.UserID)
 	switch {
 	case errors.Is(err, store.ErrNoSuchUser):
 		return errSendOff
@@ -736,22 +743,19 @@ func (s *Service) maySend(ctx context.Context, p Principal, a account.Account) e
 	return nil
 }
 
-// maySendFrom is the sender rule. A person's mailbox sends for that person
-// and nobody else — not an instance key, which sees every account, and not an
-// owner of the instance. A mailbox nobody owns sends for the operator: an
-// instance key, or an owner signed in (an owner's personal key acts as the
-// person, not as the operator).
-func maySendFrom(p Principal, a account.Account) error {
-	if a.OwnerUserID == "" {
-		if p.IsInstance() || (p.IsSession() && p.UserRole == auth.RoleOwner) {
+// maySendFrom is the sender rule. A person sends from a mailbox when they
+// hold the send flag on it — whoever linked it, whatever their role. A
+// mailbox of the operator workspace sends with an instance key, the only
+// credential that sees it.
+func (s *Service) maySendFrom(ctx context.Context, p Principal, a account.Account) error {
+	if p.IsInstance() || a.OwnerUserID == "" {
+		if p.IsInstance() && a.OwnerUserID == "" {
 			return nil
 		}
+		// Unreachable while visibility holds.
 		return errNotSendingOperator
 	}
-	if p.UserID != a.OwnerUserID {
-		return errNotSender
-	}
-	return nil
+	return s.requireFlags(ctx, p, a, needSend)
 }
 
 // stillMaySend asks again, right before a connection to the submission
@@ -783,8 +787,9 @@ func readyToSend(a account.Account) error {
 	return readyToRead(a)
 }
 
-// sendOf says whether an account can send for the caller.
-func sendOf(p Principal, a account.Account) AccountSend {
+// sendOf says whether an account can send for a caller holding these flags
+// on it, their credential's scope applied.
+func sendOf(a account.Account, held workspace.Flags) AccountSend {
 	switch {
 	case a.SMTPHost == "":
 		return AccountSend{Reason: "no_smtp"}
@@ -794,24 +799,25 @@ func sendOf(p Principal, a account.Account) AccountSend {
 		return AccountSend{Reason: "pending_auth"}
 	case a.State == account.StateDisabled:
 		return AccountSend{Reason: "disabled"}
-	case maySendFrom(p, a) != nil:
-		return AccountSend{Reason: "not_owner"}
+	case !held.Send:
+		return AccountSend{Reason: "not_granted"}
 	}
 	return AccountSend{Available: true}
 }
 
-// fromName is the name a mailbox's messages go out under: its owner's name
-// from their profile. Not the account's display name, which is a label the
+// fromName is the name a message goes out under: the sender's own name from
+// their profile. Not the linker's — on a shared mailbox the recipient should
+// see who wrote — and not the account's display name, which is a label a
 // person gave the mailbox in the console ("gmail", "work") and was never
-// meant for recipients. A mailbox nobody owns, a name that cannot be read,
-// or one that could not go in a header sends under the address alone.
-func (s *Service) fromName(ctx context.Context, a account.Account) string {
-	if a.OwnerUserID == "" || s.users == nil {
+// meant for recipients. An instance key, a name that cannot be read, or one
+// that could not go in a header sends under the address alone.
+func (s *Service) fromName(ctx context.Context, p Principal) string {
+	if p.UserID == "" || s.users == nil {
 		return ""
 	}
-	user, err := s.users.Get(ctx, a.OwnerUserID)
+	user, err := s.users.Get(ctx, p.UserID)
 	if err != nil {
-		s.log.Warn("reading a mailbox owner's name failed; sending under the address alone", "account", a.ID, "err", err)
+		s.log.Warn("reading the sender's name failed; sending under the address alone", "user", p.UserID, "err", err)
 		return ""
 	}
 	name := strings.TrimSpace(user.Name)
@@ -821,10 +827,12 @@ func (s *Service) fromName(ctx context.Context, a account.Account) string {
 	return name
 }
 
-// replayOrRefuse answers a request whose key another request holds.
-func replayOrRefuse(row store.Send, hash string) (SendResult, error) {
+// replayOrRefuse answers a request whose key another request holds. A key
+// another person holds on the same mailbox is refused as a key reused for
+// another message, never replayed: the answer would be their send.
+func replayOrRefuse(p Principal, row store.Send, hash string) (SendResult, error) {
 	switch {
-	case row.ComposeHash != hash:
+	case row.UserID != p.UserID, row.ComposeHash != hash:
 		return SendResult{}, errSendKeyReused
 	case row.State == store.SendSent:
 		return presentSend(row, true), nil

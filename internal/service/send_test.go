@@ -45,7 +45,14 @@ type sendBox struct {
 // submission to its own SMTP server. Its owner allows sending.
 func (m *mailFixture) sendingBox(t *testing.T, owner service.Principal, email string, o providertest.FakeOptions) *sendBox {
 	t.Helper()
-	id, box := m.ownedBox(t, owner, email, o)
+	return m.sendingBoxIn(t, owner, "", email, o)
+}
+
+// sendingBoxIn is sendingBox linked into a workspace of the owner's: empty
+// is their personal workspace.
+func (m *mailFixture) sendingBoxIn(t *testing.T, owner service.Principal, workspaceID, email string, o providertest.FakeOptions) *sendBox {
+	t.Helper()
+	id, box := m.ownedBoxIn(t, owner, workspaceID, email, o)
 	box.CreateFolder("Sent", imap.MailboxAttrSent)
 	smtp := providertest.NewSMTPServer(t)
 	saveSent := 0
@@ -198,9 +205,10 @@ func TestAnInstanceKeyCannotSendFromAPersonsMailbox(t *testing.T) {
 	shared := m.sendingBox(t, service.Principal{}, "team@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
 	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend}
 
-	// The instance key sees ana's mailbox and still may not send from it.
+	// The instance key reaches the operator workspace's mailboxes only:
+	// ana's does not exist for it.
 	_, err := anas.send(t, instance, "k-1", anas.compose("bea@example.org"))
-	wantCode(t, "an instance key on ana's mailbox", err, service.CodeNotAuthorized)
+	wantCode(t, "an instance key on ana's mailbox", err, service.CodeNotFound)
 	// An owner of the instance does not see it at all.
 	_, err = anas.send(t, owner, "k-2", anas.compose("bea@example.org"))
 	wantCode(t, "an owner on ana's mailbox", err, service.CodeNotFound)
@@ -215,13 +223,13 @@ func TestAnInstanceKeyCannotSendFromAPersonsMailbox(t *testing.T) {
 		t.Fatalf("%d DATA commands before anyone could send", n)
 	}
 
-	// The operator's mailbox sends for the operator: its key, or an owner
-	// signed in.
-	for i, p := range []service.Principal{instance, owner} {
-		res, err := shared.send(t, p, fmt.Sprintf("op-%d", i), shared.compose("bea@example.org"))
-		if err != nil || res.State != service.SendStateSent {
-			t.Fatalf("the operator's mailbox for %s: %+v, %v", p.Actor(), res, err)
-		}
+	// The operator's mailbox sends for the operator, with its key; an owner
+	// of the instance does not see it.
+	_, err = shared.send(t, owner, "op-owner", shared.compose("bea@example.org"))
+	wantCode(t, "an owner on the operator's mailbox", err, service.CodeNotFound)
+	res, err := shared.send(t, instance, "op-0", shared.compose("bea@example.org"))
+	if err != nil || res.State != service.SendStateSent {
+		t.Fatalf("the operator's mailbox for its key: %+v, %v", res, err)
 	}
 	// And ana's for ana.
 	if res, err := anas.send(t, ana, "k-5", anas.compose("bea@example.org")); err != nil || res.State != service.SendStateSent {
@@ -234,10 +242,8 @@ func TestAnInstanceKeyCannotSendFromAPersonsMailbox(t *testing.T) {
 		id   string
 		want service.AccountSend
 	}{
-		{instance, anas.id, service.AccountSend{Reason: "not_owner"}},
 		{instance, shared.id, service.AccountSend{Available: true}},
 		{ana, anas.id, service.AccountSend{Available: true}},
-		{owner, shared.id, service.AccountSend{Available: true}},
 	} {
 		a, err := m.svc.GetAccount(t.Context(), c.p, c.id)
 		if err != nil || a.Send != c.want {

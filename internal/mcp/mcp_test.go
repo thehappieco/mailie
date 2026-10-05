@@ -19,6 +19,7 @@ import (
 	"github.com/thehappieco/mailie/internal/mcp"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func TestToolsListCarriesTheAnnotations(t *testing.T) {
@@ -470,7 +471,7 @@ type waitAnswer struct {
 	NextCursor int64             `json:"next_cursor"`
 }
 
-func TestAToolReachesOnlyTheMailboxesNobodyOwnsWithAnInstanceKey(t *testing.T) {
+func TestAnInstanceKeyReachesOnlyOperatorMailboxes(t *testing.T) {
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleOwner)
 	const hers, operators = "acc_00000000000000a1", "acc_00000000000000c1"
@@ -493,15 +494,15 @@ func TestAToolReachesOnlyTheMailboxesNobodyOwnsWithAnInstanceKey(t *testing.T) {
 		t.Errorf("search found %+v", page.Messages)
 	}
 
-	// Over REST the same key still reaches every mailbox: the rule is about
-	// tools.
+	// Over REST the same key reaches the same: the operator workspace's
+	// mailboxes, never a person's.
 	p, err := h.svc.Authenticate(t.Context(), instance, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	all, err := h.svc.ListAccounts(t.Context(), p)
-	if err != nil || len(all) != 2 {
-		t.Errorf("over REST the instance key lists %d accounts (%v), want 2", len(all), err)
+	all, err := h.svc.ListAccounts(t.Context(), p, "")
+	if err != nil || len(all) != 1 || all[0].ID != operators {
+		t.Errorf("over REST the instance key lists %+v (%v), want only %s", all, err, operators)
 	}
 }
 
@@ -977,4 +978,171 @@ func TestSessionsThatClosedLeaveNoMemoryBehind(t *testing.T) {
 	if grew > 4<<20 {
 		t.Errorf("%d sessions that closed left %d KiB behind", sessions, grew>>10)
 	}
+}
+
+func TestAHeldSessionNeverReachesAMailboxItsKeyLostEvenOnceReadComesBack(t *testing.T) {
+	// A client that launched the daemon holds the key it authenticated with
+	// for the whole session. Bea's key was made for the team's mailbox and
+	// her own; losing read on the team's takes it out of the key for good,
+	// so the session stops at its next call rather than reaching the
+	// mailbox again once read is granted back. The refusal says so, rather
+	// than that the key is dead: a new session with the same key goes on
+	// with her own mailbox.
+	h := newHarness(t)
+	ana := h.person("ana@example.com", auth.RoleMember)
+	bea := h.person("bea@example.com", auth.RoleMember)
+	team, ws := h.team(ana, bea)
+	const shared, own = "acc_00000000000000aa", "acc_00000000000000bb"
+	h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
+	h.mailbox(own, bea.user.ID, "bea@mail.example")
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	key := h.key(bea, "read", shared, own)
+	cs := h.connect(key, "", nil)
+	ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": shared})
+
+	if _, err := ws.Revoke(t.Context(), shared, bea.user.ID, workspace.Flags{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	msg := refused(t, cs, "search_messages", map[string]any{"account": shared}, service.CodeConflict)
+	if !strings.Contains(msg, "restart the session") {
+		t.Errorf("the refusal does not say what to do: %q", msg)
+	}
+	refused(t, cs, "list_folders", map[string]any{"account": own}, service.CodeConflict)
+
+	again := h.connect(key, "", nil)
+	ok[service.MessagePage](t, again, "search_messages", map[string]any{"account": own})
+	refused(t, again, "search_messages", map[string]any{"account": shared}, service.CodeNotFound)
+}
+
+func TestSubscribingToAnInboxNeedsReadAccessToIt(t *testing.T) {
+	// Bea may send from the team's mailbox, and so sees it; being told when
+	// mail arrives in it is reading it.
+	h := newHarness(t)
+	ana := h.person("ana@example.com", auth.RoleMember)
+	bea := h.person("bea@example.com", auth.RoleMember)
+	team, ws := h.team(ana, bea)
+	const shared = "acc_00000000000000aa"
+	h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Send: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Under the older protocol the refusal is the answer.
+	cs := h.connect(h.key(bea, "read"), "2025-11-25", nil)
+	inbox := "mail://" + shared + "/folder/inbox"
+	if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: inbox}); err == nil {
+		t.Error("subscribed to an inbox without read access to it")
+	}
+	h.waitForLog(`"msg":"mcp subscription refused"`, `"account":"`+shared+`"`, `"outcome":"not_authorized"`)
+
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true, Send: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: inbox}); err != nil {
+		t.Errorf("subscribing with read: %v", err)
+	}
+}
+
+func TestASubscriptionToAnInboxTheKeyCanNoLongerReadIsDropped(t *testing.T) {
+	// Bea's key follows whatever she may read. She subscribed to the team's
+	// inbox and her own, then lost read on the team's: the watch drops it
+	// at its next turn, and never announces it again.
+	h := newHarness(t)
+	ana := h.person("ana@example.com", auth.RoleMember)
+	bea := h.person("bea@example.com", auth.RoleMember)
+	team, ws := h.team(ana, bea)
+	const shared, own = "acc_00000000000000aa", "acc_00000000000000bb"
+	sharedBox := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
+	ownBox := h.mailbox(own, bea.user.ID, "bea@mail.example")
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true, Send: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var updated []string
+	key := h.key(bea, "read")
+	cs := h.connect(key, "", &sdk.ClientOptions{
+		ResourceUpdatedHandler: func(_ context.Context, req *sdk.ResourceUpdatedNotificationRequest) {
+			mu.Lock()
+			updated = append(updated, req.Params.URI)
+			mu.Unlock()
+		},
+	})
+	for _, acc := range []string{shared, own} {
+		if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: "mail://" + acc + "/folder/inbox"}); err != nil {
+			t.Fatal(err)
+		}
+		h.waitForLog(`"msg":"mcp subscription"`, `"account":"`+acc+`"`, `"outcome":"ok"`)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if _, err := ws.Revoke(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Mail in her own inbox turns the watch.
+	h.announce(own, h.deliver(own, ownBox, letter("Hello", "Carl <carl@example.org>", "Hi", "h.pdf", "%PDF")), "Hello")
+	h.waitForLog(`"msg":"mcp subscription dropped: the key can no longer read the inbox"`, `"key":"`+prefixOf(key)+`"`,
+		`"account":"`+shared+`"`, `"outcome":"not_authorized"`)
+	time.Sleep(200 * time.Millisecond)
+	h.announce(shared, h.deliver(shared, sharedBox, letter("Refund", "Client <c@example.org>", "x", "r.pdf", "%PDF")), "Refund")
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(updated, []string{"mail://" + own + "/folder/inbox"}) {
+		t.Errorf("resource updates %v; want one, for her own inbox", updated)
+	}
+}
+
+func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
+	// Bea belongs to the team Ana linked a mailbox into, and holds nothing on
+	// it: through her key, tools, resources and the wait never reach it.
+	// Then read is granted, and the same calls do, which is what makes the
+	// refusals about the grant.
+	h := newHarness(t)
+	ana := h.person("ana@example.com", auth.RoleMember)
+	bea := h.person("bea@example.com", auth.RoleMember)
+	team, ws := h.team(ana, bea)
+	const shared = "acc_00000000000000aa"
+	box := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
+	id := h.deliver(shared, box, letter("Refund", "Client <c@example.org>", "Order 4471", "r.pdf", "%PDF"))
+	cs := h.connect(h.key(bea, "read"), "", nil)
+
+	accounts := ok[struct {
+		Accounts []service.Account `json:"accounts"`
+	}](t, cs, "list_accounts", nil)
+	if len(accounts.Accounts) != 0 {
+		t.Errorf("list_accounts = %+v", accounts.Accounts)
+	}
+	if page := ok[service.MessagePage](t, cs, "search_messages", nil); len(page.Messages) != 0 {
+		t.Errorf("search found %+v", page.Messages)
+	}
+	refused(t, cs, "list_folders", map[string]any{"account": shared}, service.CodeNotFound)
+	refused(t, cs, "search_messages", map[string]any{"account": shared}, service.CodeNotFound)
+	refused(t, cs, "get_message", map[string]any{"id": id}, service.CodeNotFound)
+	refused(t, cs, "wait_for_new_mail", map[string]any{"account": shared, "timeout_seconds": 1}, service.CodeNotFound)
+	var v any
+	if err := readResource(t, cs, "mail://"+shared+"/folder/inbox", &v); err == nil {
+		t.Errorf("read the team's inbox: %v", v)
+	}
+	waited := make(chan waitAnswer, 1)
+	go func() { waited <- ok[waitAnswer](t, cs, "wait_for_new_mail", map[string]any{"timeout_seconds": 2}) }()
+	time.Sleep(300 * time.Millisecond)
+	h.announce(shared, id, "Refund")
+	if got := <-waited; len(got.Messages) != 0 {
+		t.Errorf("the wait handed over %+v", got.Messages)
+	}
+	if n := box.CallCount(providertest.MethodFetchPart); n != 0 {
+		t.Errorf("refused reads fetched %d parts", n)
+	}
+
+	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	if page := ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": shared}); len(page.Messages) != 1 {
+		t.Errorf("with read, search found %+v", page.Messages)
+	}
+	ok[service.Message](t, cs, "get_message", map[string]any{"id": id})
 }

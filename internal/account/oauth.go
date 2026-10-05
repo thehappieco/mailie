@@ -219,6 +219,10 @@ var (
 	// ErrOwnerInactive is a consent or a new account whose person was
 	// disabled or deleted while it was under way. Nothing is stored for them.
 	ErrOwnerInactive = errors.New("account: the person this is for is no longer active")
+	// ErrStarterLostAccess is a consent whose starter no longer manages the
+	// account — their grant lost manage, or they lost their place in its
+	// workspace — while it was under way. Nothing is stored.
+	ErrStarterLostAccess = errors.New("account: whoever started the consent no longer manages the account")
 	// ErrScopeMissing is a grant the token endpoint says does not cover the
 	// mailbox. Google lets a person untick a scope only on the granular
 	// screen it shows apps that ask for more than one, which this server

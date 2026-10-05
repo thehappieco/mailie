@@ -35,13 +35,20 @@ type actionBox struct {
 // owner (the operator's when owner is the zero principal), with sync on.
 func (m *mailFixture) ownedBox(t *testing.T, owner service.Principal, email string, o providertest.FakeOptions) (string, *providertest.FakeMailbox) {
 	t.Helper()
+	return m.ownedBoxIn(t, owner, "", email, o)
+}
+
+// ownedBoxIn is ownedBox linked into a workspace of the owner's: empty is
+// their personal workspace.
+func (m *mailFixture) ownedBoxIn(t *testing.T, owner service.Principal, workspaceID, email string, o providertest.FakeOptions) (string, *providertest.FakeMailbox) {
+	t.Helper()
 	kind := o.Kind
 	if kind == "" {
 		kind = provider.KindIMAP
 	}
 	id := fmt.Sprintf("acc_%016x", len(m.boxes)+100)
 	a := account.Account{
-		ID: id, Email: email, Provider: kind, AuthKind: "password", OwnerUserID: owner.UserID,
+		ID: id, WorkspaceID: workspaceID, Email: email, Provider: kind, AuthKind: "password", OwnerUserID: owner.UserID,
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
 	}
@@ -225,7 +232,7 @@ func TestAReadKeyCannotAct(t *testing.T) {
 	}
 }
 
-func TestNobodyActsWithoutTheOwnersCurrentConsent(t *testing.T) {
+func TestNobodyActsWithoutTheirOwnCurrentConsent(t *testing.T) {
 	b := genericBox(t)
 	ctx := t.Context()
 	if _, err := b.m.svc.WithdrawActionsConsent(ctx, b.owner); err != nil {
@@ -238,7 +245,7 @@ func TestNobodyActsWithoutTheOwnersCurrentConsent(t *testing.T) {
 	}{{"her session", b.owner}, {"her own write key", keyOf(b.owner, auth.ScopeWrite)}} {
 		_, err := b.m.svc.SetFlags(ctx, who.p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 		wantCode(t, who.name+" without consent", err, service.CodeConflict)
-		if msg := service.MessageOf(err); msg != "actions are off: the mailbox's owner has not allowed them in the console" {
+		if msg := service.MessageOf(err); msg != "actions are off: you have not allowed them in the console" {
 			t.Errorf("message = %q", msg)
 		}
 	}
@@ -259,8 +266,9 @@ func TestNobodyActsWithoutTheOwnersCurrentConsent(t *testing.T) {
 }
 
 func TestAnInstanceKeyCannotChangeAPersonsMessages(t *testing.T) {
-	// An instance key sees every mailbox, and the operator's is not the
-	// person's request: the policy promises only they change it.
+	// An instance key reaches the operator workspace's mailboxes and no
+	// person's: to it, a person's messages do not exist, and the policy
+	// promises only the person acting changes them.
 	b := genericBox(t)
 	ctx := t.Context()
 	a := b.row(t, "INBOX", "a")
@@ -272,12 +280,9 @@ func TestAnInstanceKeyCannotChangeAPersonsMessages(t *testing.T) {
 		{"an instance write key", service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite}},
 	} {
 		_, err := b.m.svc.SetFlags(ctx, who.p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
-		wantCode(t, who.name, err, service.CodeNotAuthorized)
-		if msg := service.MessageOf(err); msg != "only the mailbox's owner can change its messages" {
-			t.Errorf("%s: message = %q", who.name, msg)
-		}
+		wantCode(t, who.name, err, service.CodeNotFound)
 		_, err = b.m.svc.TrashMessages(ctx, who.p, service.TrashRequest{IDs: []int64{a}})
-		wantCode(t, who.name+" trashing", err, service.CodeNotAuthorized)
+		wantCode(t, who.name+" trashing", err, service.CodeNotFound)
 	}
 	// Another person, even an owner of the instance, cannot see it at all.
 	bea := b.m.person(t, "bea@example.com", auth.RoleOwner)
@@ -304,21 +309,18 @@ func TestAMailboxNobodyOwnsIsChangedOnlyByTheOperator(t *testing.T) {
 	member := m.person(t, "mo@example.com", auth.RoleMember)
 	ctx := t.Context()
 
-	for _, who := range []struct {
-		name string
-		p    service.Principal
-	}{
-		{"an instance write key", service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite}},
-		{"an owner signed in", owner},
-	} {
-		if _, err := m.svc.SetFlags(ctx, who.p, service.SetFlagsRequest{IDs: []int64{a}, Flagged: yes()}); err != nil {
-			t.Fatalf("%s: %v", who.name, err)
-		}
+	operator := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite}
+	if _, err := m.svc.SetFlags(ctx, operator, service.SetFlagsRequest{IDs: []int64{a}, Flagged: yes()}); err != nil {
+		t.Fatalf("an instance write key: %v", err)
 	}
-	_, err := m.svc.SetFlags(ctx, keyOf(owner, auth.ScopeWrite), service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
-	wantCode(t, "an owner's own key", err, service.CodeNotAuthorized)
-	_, err = m.svc.SetFlags(ctx, member, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
-	wantCode(t, "a member", err, service.CodeNotFound)
+	// An owner of the instance administers its people, not the operator
+	// workspace's mail: it does not exist for her, signed in or by key.
+	for name, p := range map[string]service.Principal{
+		"an owner signed in": owner, "an owner's own key": keyOf(owner, auth.ScopeWrite), "a member": member,
+	} {
+		_, err := m.svc.SetFlags(ctx, p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
+		wantCode(t, name, err, service.CodeNotFound)
+	}
 }
 
 func TestWithdrawingActionsStopsThemAtOnce(t *testing.T) {

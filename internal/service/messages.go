@@ -161,8 +161,11 @@ type Message struct {
 // SearchRequest filters the index.
 type SearchRequest struct {
 	// AccountID limits the search to one account; empty searches every
-	// account the caller may see.
+	// account the caller may read.
 	AccountID string
+	// Workspace limits the search to the mailboxes of one workspace the
+	// caller is an active member of; empty is every workspace.
+	Workspace string
 	// FolderID limits the search to one folder of the index. Without it,
 	// each message is listed once, however many Gmail labels it carries.
 	FolderID int64
@@ -231,17 +234,26 @@ func (s *Service) SearchMessages(ctx context.Context, p Principal, req SearchReq
 	if err != nil {
 		return MessagePage{}, err
 	}
+	if err := s.inWorkspace(ctx, p, req.Workspace); err != nil {
+		return MessagePage{}, err
+	}
 	empty := MessagePage{Messages: []MessageSummary{}}
 
 	var accountIDs []string
 	if req.AccountID != "" {
-		a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, req.AccountID)
+		a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, req.AccountID, needRead)
 		if err != nil {
 			return MessagePage{}, err
 		}
+		if req.Workspace != "" && a.WorkspaceID != req.Workspace {
+			// Named with a workspace it is not in: as good as absent there.
+			return MessagePage{}, E(CodeNotFound, "no such account", nil)
+		}
 		accountIDs = []string{a.ID}
 	} else {
-		all, err := s.accounts.Repo().ListVisible(ctx, visibility(p))
+		v := readable(p)
+		v.Workspace = req.Workspace
+		all, err := s.accounts.Repo().ListVisible(ctx, v)
 		if err != nil {
 			return MessagePage{}, E(CodeInternal, "listing accounts failed", err)
 		}
@@ -763,7 +775,7 @@ func (s *Service) readableMessage(ctx context.Context, p Principal, id int64) (a
 	if !p.MayAccess(row.AccountID) {
 		return account.Account{}, store.MessageRow{}, errNoMessage
 	}
-	a, err := s.accounts.Repo().GetVisible(ctx, row.AccountID, visibility(p))
+	a, err := s.accounts.Repo().GetVisible(ctx, row.AccountID, readable(p))
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return account.Account{}, store.MessageRow{}, errNoMessage

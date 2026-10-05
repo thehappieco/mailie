@@ -38,13 +38,16 @@ func (h *Handler) eventPing() time.Duration {
 //
 // Resumes after Last-Event-ID, the header a reconnecting client sends, or
 // after ?since=, and otherwise starts from now. ?account= and ?types= take
-// comma-separated lists. The route has no timeout: it lives as long as the
-// client, the credential and the daemon do. The credential is checked again
-// before every batch of events is written and at every ping, so a session
-// that ends or a key that is revoked receives nothing more: an idle stream
-// learns it within one interval, and never through another event.
+// comma-separated lists; ?workspace= narrows to one workspace. The route has
+// no timeout: it lives as long as the client, the credential and the daemon
+// do. The credential is checked again before every batch of events is written
+// and at every ping, so a session that ends or a key that is revoked receives
+// nothing more: an idle stream learns it within one interval, and never
+// through another event. So is access: a mailbox the caller gains or loses
+// read on is announced as `event: access`, and once every mailbox the stream
+// follows is gone it ends with `event: error`, not_found.
 func (h *Handler) streamEvents(q *request) {
-	params, err := q.query("since", "account", "types")
+	params, err := q.query("since", "account", "types", "workspace")
 	if err != nil {
 		q.fail(err)
 		return
@@ -55,7 +58,7 @@ func (h *Handler) streamEvents(q *request) {
 		return
 	}
 	stream, err := h.Service.Subscribe(q.ctx(), q.principal, since, service.EventFilter{
-		AccountIDs: list(params["account"]), Types: list(params["types"]),
+		AccountIDs: list(params["account"]), Types: list(params["types"]), Workspace: params["workspace"],
 	})
 	if err != nil {
 		q.fail(err)
@@ -91,19 +94,31 @@ func (h *Handler) streamEvents(q *request) {
 	ping := time.NewTicker(h.eventPing())
 	defer ping.Stop()
 	events := stream.Events()
-	// credentialWorks checks the caller again, and ends the stream when it
-	// no longer works.
+	// credentialWorks checks the caller again, and what they may still
+	// read, and ends the stream when the credential no longer works or
+	// nothing it follows is left.
 	credentialWorks := func() bool {
 		err := h.Service.Recheck(q.ctx(), q.principal)
 		if err == nil {
-			return true
+			var changes []service.AccessChange
+			changes, err = stream.CheckAccess(q.ctx())
+			// Like lagged, no id: an access change is not a journal entry,
+			// and a reconnection resumes after the last event that was.
+			for _, change := range changes {
+				sse.event("", "access", change)
+			}
+			if err == nil {
+				return true
+			}
 		}
 		// Too late for a status code. The client is told why the stream
 		// ended, in the error body every route uses, so it does not
-		// reconnect with a credential that no longer works.
+		// reconnect with a credential that no longer works, or for
+		// mailboxes it can no longer read.
 		sse.event("", "error", wireError{Code: service.CodeOf(err), Message: service.MessageOf(err)})
 		sse.flush()
-		q.log().Debug("event stream ended: the credential no longer works", "err", err)
+		q.log().Debug("event stream ended: the credential no longer works or nothing it follows is readable",
+			"err", err)
 		return false
 	}
 	// forward writes one event, and reports whether the stream goes on.
@@ -116,6 +131,11 @@ func (h *Handler) streamEvents(q *request) {
 				q.log().Warn("event stream ended: reading the journal failed", "err", err)
 			}
 			return false
+		}
+		if !stream.Allowed(ev) {
+			// Read before the caller lost the mailbox, written after:
+			// held back.
+			return true
 		}
 		return sse.event(strconv.FormatInt(ev.Seq, 10), ev.Type, ev)
 	}
@@ -161,7 +181,7 @@ func (h *Handler) streamEvents(q *request) {
 // ?timeout= is in seconds, at most 55, and 0 or absent is the default;
 // ?since= is the next_cursor of the previous call.
 func (h *Handler) waitForEvents(q *request) {
-	params, err := q.query("since", "timeout", "account")
+	params, err := q.query("since", "timeout", "account", "workspace")
 	if err != nil {
 		q.fail(err)
 		return
@@ -180,7 +200,9 @@ func (h *Handler) waitForEvents(q *request) {
 		}
 		timeout = time.Duration(seconds) * time.Second
 	}
-	result, err := h.Service.WaitForNewMail(q.ctx(), q.principal, since, timeout, list(params["account"]))
+	result, err := h.Service.WaitForNewMail(q.ctx(), q.principal, since, timeout, service.EventFilter{
+		AccountIDs: list(params["account"]), Workspace: params["workspace"],
+	})
 	if err != nil {
 		q.fail(err)
 		return

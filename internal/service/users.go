@@ -195,7 +195,9 @@ func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileReq
 // either role. Members may not invite at all: a member who could mint accounts
 // would be an administrator with a different name. Nor may a key restricted to
 // some accounts, which was handed to one integration, not to whoever runs the
-// instance.
+// instance. A team invite, which any person may make into a team of their
+// own, signs a new person up only when an instance owner or the operator made
+// it (auth.SignUp); anyone else's adds an existing account to the team.
 func (s *Service) CreateInvite(ctx context.Context, p Principal, req InviteRequest) (Invite, error) {
 	switch {
 	case p.IsSession() && p.UserRole == auth.RoleOwner:
@@ -237,6 +239,9 @@ func fromUsers(err error, what string) error {
 	case errors.Is(err, auth.ErrInviteInvalid):
 		return E(CodeNotAuthorized,
 			"that invite is not valid: it may have expired, been used, or be meant for another address", err)
+	case errors.Is(err, auth.ErrInviteJoinsOnly):
+		return E(CodeNotAuthorized, "that invite adds someone who already has an account here to a team: "+
+			"sign in with that address and accept it. A new account needs an invitation from the server's owner", err)
 	case errors.Is(err, auth.ErrEmailTaken):
 		return E(CodeConflict, "that address already has an account; sign in instead", err)
 	case errors.Is(err, auth.ErrInvalidEmail):
@@ -258,7 +263,9 @@ func fromUsers(err error, what string) error {
 		// outlasted the request.
 		return Retryable("the server is busy checking other passwords; try again shortly", hashWaitRetry, err)
 	default:
-		return E(CodeInternal, what, err)
+		// A sign-up with a team invite joins the team, which may refuse:
+		// a workspace managed elsewhere, one that is gone.
+		return fromWorkspace(err, what)
 	}
 }
 

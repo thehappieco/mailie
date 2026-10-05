@@ -1,0 +1,11 @@
+[
+  {
+    "created_at": 1790000000,
+    "created_by": "usr_0000000000000001",
+    "email": "dan@example.com",
+    "expires_at": 1790604800,
+    "id": "inv_0000000000000002",
+    "role": "admin",
+    "workspace_id": "wsp_0000000000000002"
+  }
+]

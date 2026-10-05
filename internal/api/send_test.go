@@ -244,7 +244,8 @@ func TestTheSendRoutesReadMultipartAndAnswerOnlyWhoMaySend(t *testing.T) {
 	}{
 		{"ana", read, token, http.StatusOK},
 		{"bob", read, bobs, http.StatusNotFound},
-		{"an instance send key", read, instance, http.StatusForbidden},
+		// An instance key reaches the operator workspace's mailboxes only.
+		{"an instance send key", read, instance, http.StatusNotFound},
 		{"a read key", read, h.key(t, auth.ScopeRead), http.StatusForbidden},
 		{"no account", key, token, http.StatusBadRequest},
 		{"an unknown key", "another?account=" + id, token, http.StatusNotFound},

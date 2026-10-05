@@ -32,8 +32,13 @@ func TestTheFirstInviteHintOnlySuggestsACommandThatCanWork(t *testing.T) {
 	}{
 		{"no public url", false, true, "set MAIL_PUBLIC_URL", "(needs MAIL_ADMIN_KEY)"},
 		{"no key to call it with", true, false, "stop the daemon and run: mailserver user invite --bootstrap", "(needs MAIL_ADMIN_KEY)"},
-		{"both", true, true, "mailserver user invite --email ADDRESS (needs MAIL_ADMIN_KEY)", ""},
+		{"both", true, true, "mailserver user invite --role owner --email ADDRESS (needs MAIL_ADMIN_KEY)", ""},
 	} {
+		// Nobody becomes an owner by signing up first: the invite has to
+		// say so.
+		if hint := firstInviteHint(c.publicURL, c.anyKey); strings.Count(hint, "--role owner") != strings.Count(hint, "user invite") {
+			t.Errorf("%s: hint %q invites the first person without the owner role", c.name, hint)
+		}
 		hint := firstInviteHint(c.publicURL, c.anyKey)
 		if !strings.Contains(hint, c.want) {
 			t.Errorf("%s: hint %q does not say %q", c.name, hint, c.want)

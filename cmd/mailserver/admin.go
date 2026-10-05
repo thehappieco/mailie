@@ -200,8 +200,15 @@ func migrateCommand(ctx context.Context, cfg config.Config, args []string) error
 			fmt.Println("schema is up to date")
 			return nil
 		}
-		for _, name := range pending {
-			fmt.Println("pending:", name)
+		for _, m := range pending {
+			if m.Rebuild {
+				// Applied with the same guarantees as any other, but it
+				// rewrites a table every mailbox hangs off: the moment for the
+				// backup an upgrade deserves anyway.
+				fmt.Println("pending:", m.Name, "(rebuilds a table; back up the data directory first)")
+				continue
+			}
+			fmt.Println("pending:", m.Name)
 		}
 		return nil
 	}

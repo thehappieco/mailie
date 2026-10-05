@@ -227,7 +227,7 @@ func (s *Store) FinishSend(ctx context.Context, o SendOutcome) (Send, []events.E
 			state, reason, o.Attempts, sentAt, copyState, now.Unix(), o.AccountID, o.Key); err != nil {
 			return fmt.Errorf("store: finish a send: %w", err)
 		}
-		if evs, err = journalSendFinished(ctx, s, tx, now, []sendKey{{o.AccountID, o.Key, state}}); err != nil {
+		if evs, err = journalSendFinished(ctx, s, tx, now, []sendKey{{o.AccountID, o.Key, state, current.UserID}}); err != nil {
 			return err
 		}
 		out, _, err = sendTx(ctx, tx, o.AccountID, o.Key)
@@ -276,7 +276,7 @@ func (s *Store) InterruptSends(ctx context.Context) (int, error) {
 	err := s.Write(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx,
 			`UPDATE sends SET state = 'unknown', error = ?, updated_at = ? WHERE state = 'sending'
-			 RETURNING account_id, idempotency_key`, ReasonInterrupted, now.Unix())
+			 RETURNING account_id, idempotency_key, user_id`, ReasonInterrupted, now.Unix())
 		if err != nil {
 			return fmt.Errorf("store: interrupt sends: %w", err)
 		}
@@ -284,7 +284,7 @@ func (s *Store) InterruptSends(ctx context.Context) (int, error) {
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			k := sendKey{state: SendUnknown}
-			if err := rows.Scan(&k.accountID, &k.key); err != nil {
+			if err := rows.Scan(&k.accountID, &k.key, &k.userID); err != nil {
 				return fmt.Errorf("store: interrupt sends: %w", err)
 			}
 			changed = append(changed, k)
@@ -350,12 +350,19 @@ func (s *Store) SweepSends(ctx context.Context, ahead time.Duration) (records, n
 }
 
 // ForgetSenderTx takes a person out of the send records, inside the
-// transaction that deletes them. The records of the mailboxes they owned go
-// with those mailboxes; this is for the ones they sent from a mailbox nobody
-// owns, which stay with it and no longer say who asked.
+// transaction that deletes them. The records of the mailboxes they linked go
+// with those mailboxes; this is for the ones they sent from a mailbox someone
+// else linked, which stay with it and no longer say who asked. So do the
+// send.finished notices of those sends, which name the sender too.
 func ForgetSenderTx(ctx context.Context, tx *sql.Tx, userID string) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sends SET user_id = '', created_by = '' WHERE user_id = ? OR created_by = ?`, userID, userID); err != nil {
+		return fmt.Errorf("store: forget who sent: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE events SET payload_json = json_remove(payload_json, '$.user_id')
+		  WHERE type = ? AND json_extract(payload_json, '$.user_id') = ?`,
+		string(events.TypeSendFinished), userID); err != nil {
 		return fmt.Errorf("store: forget who sent: %w", err)
 	}
 	return nil
@@ -368,7 +375,7 @@ func reconcileSendsTx(ctx context.Context, tx *sql.Tx, accountID, messageID stri
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE sends SET state = 'sent', error = '', sent_at = ?, updated_at = ?
 		  WHERE account_id = ? AND message_id_hdr = ? AND state = 'unknown'
-		  RETURNING idempotency_key`, now.Unix(), now.Unix(), accountID, messageID)
+		  RETURNING idempotency_key, user_id`, now.Unix(), now.Unix(), accountID, messageID)
 	if err != nil {
 		return nil, fmt.Errorf("store: reconcile sends: %w", err)
 	}
@@ -376,12 +383,12 @@ func reconcileSendsTx(ctx context.Context, tx *sql.Tx, accountID, messageID stri
 	defer func() { _ = rows.Close() }()
 	var out []events.Event
 	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
+		var key, userID string
+		if err := rows.Scan(&key, &userID); err != nil {
 			return nil, fmt.Errorf("store: reconcile sends: %w", err)
 		}
 		ev, err := events.New(events.TypeSendFinished, accountID, now, SendFinished{
-			AccountID: accountID, Key: key, State: SendSent,
+			AccountID: accountID, Key: key, State: SendSent, UserID: userID,
 		})
 		if err != nil {
 			return nil, err
@@ -415,13 +422,15 @@ type sendKey struct {
 	accountID string
 	key       string
 	state     string
+	// userID is the sender, "" for an instance key.
+	userID string
 }
 
 func journalSendFinished(ctx context.Context, s *Store, tx *sql.Tx, now time.Time, keys []sendKey) ([]events.Event, error) {
 	evs := make([]events.Event, 0, len(keys))
 	for _, k := range keys {
 		ev, err := events.New(events.TypeSendFinished, k.accountID, now, SendFinished{
-			AccountID: k.accountID, Key: k.key, State: k.state,
+			AccountID: k.accountID, Key: k.key, State: k.state, UserID: k.userID,
 		})
 		if err != nil {
 			return nil, err

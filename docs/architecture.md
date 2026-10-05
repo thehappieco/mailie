@@ -14,9 +14,10 @@ sends it twice or leaks a credential.
 | `internal/config` | Environment only (`MAIL_*`, optionally seeded from `.env`). `Load()` returns every error at once; `String()` redacts secrets. |
 | `internal/obs` | `log/slog` with redaction of addresses and credentials; Prometheus metrics. |
 | `internal/lockfile` | The data directory's lock: two daemons on one database would corrupt the index. |
-| `internal/store` | SQLite through `modernc.org/sqlite` (no cgo): a writer pool with `_txlock=immediate` and `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations tracked by `PRAGMA user_version`, FTS5. |
+| `internal/store` | SQLite through `modernc.org/sqlite` (no cgo): a writer pool with `_txlock=immediate` and `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations tracked by `PRAGMA user_version` (a table is rebuilt only through the runner's rebuild procedure, below), FTS5. |
 | `internal/secrets` | A versioned AES-256-GCM envelope (`v1‖keyid‖nonce‖ct‖tag`) whose additional data binds the account and the field; rotation by key id. |
-| `internal/auth` | API keys `prefix.secret` hashed with Argon2id (PHC strings), scopes `read < write < send < admin`, restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id passwords, roles `owner`/`member`), sessions (a 43-character opaque token stored as SHA-256, 14 days) and single-use invitations. `authtest` mints cheap users and keys for tests. |
+| `internal/auth` | API keys `prefix.secret` hashed with Argon2id (PHC strings), scopes `read < write < send < admin`, restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id passwords, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as SHA-256, 14 days) and single-use invitations, to the instance or to a team. `authtest` mints cheap users and keys for tests. |
+| `internal/workspace` | Workspaces (a person's personal one, teams, the one operator workspace), their members and the per-mailbox grants (`read`, `act`, `send`, `manage`), with the protections that hold inside each write: a team keeps an active owner, a mailbox's linker stays while it is linked, a linked mailbox keeps a holder of `manage`. The `Source` (local, or the platform's) says where workspaces come from. Who may change what is the service's. See [`workspaces.md`](workspaces.md). |
 | `internal/ratelimit` | Token buckets per address (IPv6 per /64) and per key prefix. A failed authentication is reserved on the prefix and given back if the credential proves good; it is never charged to the whole address, which would lock out good credentials behind the same NAT. |
 | `internal/backup` | The snapshot (`VACUUM INTO` from a `mode=ro` connection), `integrity_check`, the `.mlbk` format (AES-256-GCM STREAM chunks under a KMS data key, the header as additional data) and restore. KMS and S3 sit behind small interfaces; `aws.go` is the only file that talks to the AWS SDK, and `backuptest` has the fakes. See [`backup.md`](backup.md). |
 | `internal/events` | The journal (`events`), written in the same transaction as the change it records, and the live fan-out bus. |
@@ -66,10 +67,13 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
 - **No duplicated logic between REST and MCP.** Handlers and tools are thin adapters over
   `internal/service`, where every authorization decision is made. `depguard` (`.golangci.yml`)
   stops a transport (`internal/api`, `internal/mcp`, `internal/webui`) from importing `store`,
-  `sync`, `provider` or `account`. If a rule appears on both sides, it is in the wrong place.
-- **Ownership is decided in `internal/service`.** Another person's mailbox is `not_found`, never
-  `forbidden`, and listing filters in SQL with the same rule as fetching one. An `owner` also sees
-  the mailboxes nobody owns (created with an instance key); a `member` sees only their own.
+  `sync`, `provider`, `account` or `workspace`. If a rule appears on both sides, it is in the wrong place.
+- **Access is decided in `internal/service`.** A person sees a mailbox when they are an active
+  member of its workspace and hold a grant on it (`read`, `act`, `send`, `manage`), and each use
+  needs its flag; an instance key reaches only the operator workspace's mailboxes. Another
+  workspace's mailbox, or one the caller holds nothing on, is `not_found`, never `forbidden`, and
+  listing filters in SQL with the same rule as fetching one. No role — a team's owner or admin, or
+  the instance's `owner` — reads a mailbox by being one. See [`workspaces.md`](workspaces.md).
 - **A console session is a bearer token, never a cookie.** It travels only in `Authorization`;
   sessions and API keys are told apart by their shape (a key has a dot). Person routes
   (`/v1/auth/*`) refuse API keys.
@@ -124,6 +128,18 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
 
 ### Data
 
+- **Rebuilding a table.** SQLite drops a constraint only by rebuilding the table, and an ordinary
+  migration runs with foreign keys on, where `DROP TABLE` cascades into every child: dropping
+  `accounts` would delete every credential, folder and message. A migration that rebuilds a table
+  says so on its first line (`-- migration: rebuild`) and runs through the runner's rebuild
+  procedure (`store/migrate.go`): foreign keys off outside the transaction and read back, the rows
+  of every table counted, the new table created and filled with every column named, the old one
+  dropped and the new one renamed into its place (never the old one renamed aside first),
+  `foreign_key_check` and the counts again before the commit, foreign keys back on whatever
+  happened. A test fails any other migration that drops a table something refers to.
+- **A schema newer than the binary** is refused (`store.ErrSchemaTooNew`): a binary never runs on a
+  database a newer one migrated. Going back is the backup taken before the upgrade, with the binary
+  of its time.
 - **Events.** The journal row and the state change are written in the same transaction, and
   published only after the commit. Replay always comes from the `events` table; there is no history
   in memory.

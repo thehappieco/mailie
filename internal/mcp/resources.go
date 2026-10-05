@@ -91,7 +91,7 @@ func (ss *session) resource(name string, read func(context.Context, service.Prin
 }
 
 func (ss *session) readAccounts(ctx context.Context, p service.Principal, _ string, _ *[]any) (any, error) {
-	accounts, err := ss.svc.ListAccounts(ctx, p)
+	accounts, err := ss.svc.ListAccounts(ctx, p, "")
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +167,9 @@ func (ss *session) readFolder(ctx context.Context, p service.Principal, uri stri
 
 var errNoResource = service.E(service.CodeNotFound, "no such resource", nil)
 
-// subscribe accepts a subscription to an inbox the key may see. Every other
-// resource is refused: nothing would ever be said about it.
+// subscribe accepts a subscription to an inbox the key may read
+// (service.MayFollow). Every other resource is refused: nothing would ever be
+// said about it.
 func (ss *session) subscribe(ctx context.Context, req *sdk.SubscribeRequest) error {
 	started := time.Now()
 	p := ss.caller(req.Extra)
@@ -181,7 +182,7 @@ func (ss *session) subscribe(ctx context.Context, req *sdk.SubscribeRequest) err
 	}
 	err := ss.svc.Recheck(ctx, p)
 	if err == nil {
-		_, err = ss.svc.GetAccount(ctx, p, account)
+		err = ss.svc.MayFollow(ctx, p, account)
 	}
 	ss.logCall(ctx, "subscription", "subscribe", p, started, err, idAttrs(account))
 	if err != nil {

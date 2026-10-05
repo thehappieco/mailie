@@ -28,12 +28,13 @@ import (
 //     on its own and never because a message was opened.
 //   - Who may act is decided here, before any connection, and asked again
 //     on the connection before every command that changes the mailbox. A
-//     person's mailbox is changed only by that person — signed in, or with a
-//     key issued to them — and only while they allow actions in the console
-//     under the current policy (ActionsConsent): a withdrawal stops the next
-//     command, even of an action already running. A mailbox nobody owns is
-//     changed only by the operator: an instance key, or an owner signed in.
-//     Every action needs the write scope.
+//     person changes a mailbox when they hold the act flag on it — signed
+//     in, or with a key they made — and only while they allow actions in the
+//     console under the current policy (ActionsConsent): a withdrawal stops
+//     the next command, even of an action already running. Who linked the
+//     mailbox does not matter: the actor's consent and flag do. A mailbox of
+//     the operator workspace is changed only with an instance key. Every
+//     action needs the write scope.
 //   - Nothing is ever deleted for good: there is no \Deleted and EXPUNGE here
 //     but inside the provider's MOVE fallback, which expunges exactly the UIDs
 //     it moved and needs UIDPLUS for it. A server without MOVE and without
@@ -106,10 +107,9 @@ type ActionResult struct {
 // Errors of the action routes.
 var (
 	errActionsOff = E(CodeConflict,
-		"actions are off: the mailbox's owner has not allowed them in the console", nil)
-	errNotOwner    = E(CodeNotAuthorized, "only the mailbox's owner can change its messages", nil)
+		"actions are off: you have not allowed them in the console", nil)
 	errNotOperator = E(CodeNotAuthorized,
-		"a mailbox nobody owns is changed only with an instance key or by an owner signed in to the console", nil)
+		"a mailbox of the operator workspace is changed only with an instance key", nil)
 	errNoSafeMove = E(CodeConflict,
 		"this mail server supports neither MOVE nor UIDPLUS, so a move would also delete messages other apps "+
 			"marked for deletion; Mailie does not move messages there", nil)
@@ -334,7 +334,7 @@ type actionTarget struct {
 // probed — and all of them must be in one account. A message gone from its
 // folder is not_found; one waiting for a resync is a conflict, as for reading.
 // Only then is it asked whether the caller may change this account's
-// mailbox, and whether its owner allowed it.
+// mailbox, and whether they allowed actions.
 func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, allowLeft bool) (account.Account, []actionTarget, error) {
 	if len(ids) == 0 || len(ids) > MaxActionIDs {
 		return account.Account{}, nil, Ef(CodeBadRequest, nil, "ids must name between 1 and %d messages", MaxActionIDs)
@@ -354,7 +354,7 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 		if !p.MayAccess(accountID) {
 			return account.Account{}, errNoMessage
 		}
-		a, err := s.accounts.Repo().GetVisible(ctx, accountID, visibility(p))
+		a, err := s.accounts.Repo().GetVisible(ctx, accountID, readable(p))
 		switch {
 		case errors.Is(err, account.ErrNotFound):
 			return account.Account{}, errNoMessage
@@ -417,23 +417,30 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 // mayAct decides whether the caller may change this account's mailbox, once
 // it is known they may read it.
 //
-// A person's mailbox is changed by that person and nobody else — not an
-// instance key, which sees every account, and not an owner of the instance —
-// and only while their consent to actions names the current policy. The
-// policy promises Mailie changes a mailbox only when its owner asks. It is
-// asked when an action is accepted (actionTargets), and again before each
-// command that changes the mailbox (stillMayAct).
+// A person changes a mailbox when they hold the act flag on it and their own
+// consent to actions names the current policy: the policy promises Mailie
+// changes a mailbox only when the person acting asks. Who linked the mailbox
+// does not matter, nor does anybody's role. A mailbox of the operator
+// workspace is changed with an instance key, the only credential that sees
+// it. It is asked when an action is accepted (actionTargets), and again
+// before each command that changes the mailbox (stillMayAct).
 func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) error {
-	if a.OwnerUserID == "" {
-		if p.IsInstance() || (p.IsSession() && p.UserRole == auth.RoleOwner) {
+	if p.IsInstance() || a.OwnerUserID == "" {
+		if p.IsInstance() && a.OwnerUserID == "" {
 			return nil
 		}
+		// Unreachable while visibility holds: an instance key sees only
+		// the operator's mailboxes, and a person never does.
 		return errNotOperator
 	}
-	if p.UserID != a.OwnerUserID {
-		return errNotOwner
+	held, err := s.grantsOf(ctx, p, a.ID)
+	if err != nil {
+		return E(CodeInternal, "reading the access to the mailbox failed", err)
 	}
-	c, err := s.store.ActionsConsentOf(ctx, a.OwnerUserID)
+	if !held[a.ID].Act {
+		return errNoAct
+	}
+	c, err := s.store.ActionsConsentOf(ctx, p.UserID)
 	switch {
 	case errors.Is(err, store.ErrNoSuchUser):
 		return errActionsOff
@@ -723,13 +730,13 @@ func (x *act) failed(ctx context.Context, what string, err error) error {
 
 // stillMayAct asks again, on the connection and before a command that
 // changes the mailbox, what actionTargets asked when the action was
-// accepted: the account is still one the caller may see, and they may still
-// change it — the scope, the owner, the owner's consent.
+// accepted: the account is still one the caller may read, and they may still
+// change it — the scope, the act flag, their consent.
 func (s *Service) stillMayAct(ctx context.Context, p Principal, a account.Account) error {
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return err
 	}
-	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, visibility(p))
+	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, readable(p))
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return errNoMessage

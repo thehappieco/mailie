@@ -68,6 +68,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/auth/password", h.authenticated(auth.ScopeRead, opts(), h.changePassword))
 	mux.Handle("PUT /v1/auth/profile", h.authenticated(auth.ScopeRead, opts(), h.updateProfile))
 	mux.Handle("POST /v1/users/invites", h.authenticated(auth.ScopeAdmin, opts(), h.createInvite))
+	// A team invite, accepted by a person who already has an account here.
+	mux.Handle("POST /v1/auth/invites/accept", h.authenticated(auth.ScopeRead, opts(), h.acceptInvite))
 	// Closing a person's account, for the operator. The address is in the
 	// body rather than the path, so no access log along the way records it.
 	// Deleting cascades through everything indexed for their mailboxes,
@@ -75,6 +77,23 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/users/disable", h.authenticated(auth.ScopeAdmin, opts(), h.disableUser))
 	mux.Handle("POST /v1/users/delete",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(60*time.Second), h.deleteUser))
+
+	// Workspaces: the ones the caller belongs to, any key included; and,
+	// for a person signed in or the operator, administering a team — its
+	// name, members and invites — and who holds what on its mailboxes.
+	mux.Handle("GET /v1/workspaces", h.authenticated(auth.ScopeRead, opts(), h.listWorkspaces))
+	mux.Handle("POST /v1/workspaces", h.authenticated(auth.ScopeAdmin, opts(), h.createWorkspace))
+	mux.Handle("PATCH /v1/workspaces/{id}", h.authenticated(auth.ScopeAdmin, opts(), h.renameWorkspace))
+	mux.Handle("GET /v1/workspaces/{id}/members", h.authenticated(auth.ScopeRead, opts(), h.listMembers))
+	mux.Handle("PATCH /v1/workspaces/{id}/members/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setMember))
+	mux.Handle("DELETE /v1/workspaces/{id}/members/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.removeMember))
+	mux.Handle("GET /v1/workspaces/{id}/invites", h.authenticated(auth.ScopeRead, opts(), h.listTeamInvites))
+	mux.Handle("POST /v1/workspaces/{id}/invites", h.authenticated(auth.ScopeAdmin, opts(), h.createTeamInvite))
+	mux.Handle("DELETE /v1/workspaces/{id}/invites/{invite}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeTeamInvite))
+	mux.Handle("GET /v1/workspaces/{id}/access", h.authenticated(auth.ScopeRead, opts(), h.accessDirectory))
+	mux.Handle("PUT /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setAccess))
+	mux.Handle("DELETE /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeAccess))
+	mux.Handle("POST /v1/accounts/{id}/take-over", h.authenticated(auth.ScopeAdmin, opts(), h.takeOver))
 
 	mux.Handle("GET /v1/providers", h.authenticated(auth.ScopeRead, opts(), h.providers))
 	mux.Handle("GET /v1/accounts", h.authenticated(auth.ScopeRead, opts(), h.listAccounts))
@@ -105,9 +124,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		h.authenticated(auth.ScopeRead, opts().withTimeout(downloadTimeout), h.getRaw))
 	mux.Handle("GET /v1/messages/{id}/attachments/{path}",
 		h.authenticated(auth.ScopeRead, opts().withTimeout(downloadTimeout), h.getAttachment))
-	// Changing messages on their mail server, when their owner asks and has
-	// allowed it: the write scope, and the default thirty seconds and 64
-	// KiB, which a hundred ids fit in many times over.
+	// Changing messages on their mail server, when someone who may act on
+	// the mailbox asks and has allowed it: the write scope, and the default
+	// thirty seconds and 64 KiB, which a hundred ids fit in many times over.
 	mux.Handle("PATCH /v1/messages/{id}", h.authenticated(auth.ScopeWrite, opts(), h.patchMessage))
 	mux.Handle("POST /v1/messages/flags", h.authenticated(auth.ScopeWrite, opts(), h.setFlags))
 	mux.Handle("POST /v1/messages/move", h.authenticated(auth.ScopeWrite, opts(), h.moveMessages))
@@ -194,11 +213,12 @@ func (h *Handler) healthz(q *request) {
 }
 
 func (h *Handler) listAccounts(q *request) {
-	if _, err := q.query(); err != nil {
+	params, err := q.query("workspace")
+	if err != nil {
 		q.fail(err)
 		return
 	}
-	accounts, err := h.Service.ListAccounts(q.ctx(), q.principal)
+	accounts, err := h.Service.ListAccounts(q.ctx(), q.principal, params["workspace"])
 	if err != nil {
 		q.fail(err)
 		return

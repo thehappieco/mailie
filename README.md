@@ -67,9 +67,9 @@ MAIL_WEB_DIR=web/dist
 MAIL_PUBLIC_URL=http://localhost:8080
 EOF
 
-# The first person, always an owner. Like every --bootstrap command, it opens the database
-# directly and refuses to run while the daemon is up.
-./bin/mailserver user invite --bootstrap --email you@example.com
+# The first person, invited as the owner who administers the server. Like every --bootstrap
+# command, it opens the database directly and refuses to run while the daemon is up.
+./bin/mailserver user invite --bootstrap --role owner --email you@example.com
 
 ./bin/mailserver serve          # 127.0.0.1:8080
 ```
@@ -195,13 +195,22 @@ sync and for actions). There is no mail to read or write in it: a tool does that
 
 - Sessions are bearer tokens, never cookies, valid for 14 days.
 - People are invited (`mailserver user invite --email X [--role owner|member]`), never sign up on
-  their own. An `owner` also sees the mailboxes nobody owns, which the command line creates; a
-  `member` sees only their own. Another person's mailbox does not exist for you.
+  their own. Each person has a personal workspace for their own mailboxes, and may belong to
+  **teams**, whose mailboxes are shared through per-mailbox grants (`read`, `act`, `send`,
+  `manage`); a team's owners and admins administer people and grants, and read nothing by being
+  one. A mailbox you hold no grant on does not exist for you. The instance `owner` invites people
+  to the server and closes their accounts, and sees no mailbox by being one; the mailboxes the
+  command line creates belong to the operator workspace, which only instance keys reach. See
+  [`docs/workspaces.md`](docs/workspaces.md).
 - Nothing from a person's mailboxes is stored until they turn sync on in the console, and turning
   it off deletes their index. Actions on their messages are a second, separate permission.
 - `mailserver user disable --email X` ends a person's sessions and revokes their keys;
-  `mailserver user delete --email X` deletes them with their mailboxes, credentials, index,
-  sessions and keys.
+  `mailserver user delete --email X` deletes them with the mailboxes they linked, credentials,
+  index, sessions, keys and personal workspace.
+- Teams from the command line, as the operator: `mailserver workspace list|create|rename`,
+  `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
+  `manage` only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
+  for a team invite.
 - A forgotten password is reset by the operator with the daemon stopped:
   `mailserver user password --bootstrap --email X` asks for the new one twice (or reads one line
   piped in) and ends every session that person has. No route sets a password.
@@ -230,24 +239,25 @@ curl -H "$H" -H 'Idempotency-Key: 7d1c0e1a' localhost:8080/v1/messages/send \
 | Scope | Allows |
 |---|---|
 | `read` | listing, searching, reading bodies, downloading attachments and originals, waiting for new mail. It never marks anything as read. |
-| `write` | the above, plus flags, moves, archive and trash. In a person's mailbox only that person acts, with their session or a key they created, and only after allowing actions in the console. |
-| `send` | the above, plus sending. A person's mailbox sends only for that person, signed in, after they allowed sending. |
+| `write` | the above, plus flags, moves, archive and trash. In a person's mailbox only someone holding `act` on it acts, with their session or a key they created, and only after allowing actions in the console themselves. |
+| `send` | the above, plus sending. A person's mailbox sends only for someone holding `send` on it, signed in, after they allowed sending, under their own name. |
 | `admin` | the above, plus mailboxes, keys and people. |
 
 There are two kinds of key:
 
 - **Instance keys**, for the operator: `mailserver apikey create --scope SCOPE --name NAME
-  [--accounts IDS] [--days N]`, at most a year, optionally restricted to some mailboxes. Over REST
-  they see every mailbox, but never change or send from a person's mailbox. Over MCP they reach
-  only the mailboxes nobody owns.
+  [--accounts IDS] [--days N]`, at most a year, optionally restricted to some of the operator
+  workspace's mailboxes. Over REST and MCP alike they reach only those, the operator workspace's,
+  never a person's.
 
   `apikey create`, `apikey list` and `apikey revoke PREFIX` call the daemon's `/v1/apikeys` routes,
   which exist only while it runs with `MAIL_ADMIN_API=true` (off by default; otherwise the daemon
   answers 404). Without them, `apikey create --bootstrap` issues a key straight into the database,
   with the daemon stopped, as for the first key above; listing and revoking need the routes.
 - **Personal keys**, which each person creates in the console for their own tools: `read` or
-  `write`, for all or some of their mailboxes, for 30, 90 or 365 days, at most 20 alive. They are
-  the only keys that act as a person, and the only way a tool reaches a person's mailbox.
+  `write`, for all or some of the mailboxes they may read, for 30, 90 or 365 days, at most 20
+  alive. They are the only keys that act as a person, and the only way a tool reaches a person's
+  mailbox; they reach only what their person can, at each request.
 
 Keys are stored only as Argon2id hashes and shown once. Revoked keys stay listed, because they
 answer "what could have read this mailbox". A key restricted to mailboxes that have all been

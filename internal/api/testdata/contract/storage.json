@@ -5,29 +5,41 @@
       "account_id": "acc_0000000000000001",
       "bytes": 0,
       "email": "ana@gmail.com",
-      "messages": 0
+      "messages": 0,
+      "workspace_id": "wsp_0000000000000001"
     },
     {
       "account_id": "acc_0000000000000003",
       "bytes": 0,
       "email": "ana@icloud.com",
-      "messages": 0
+      "messages": 0,
+      "workspace_id": "wsp_0000000000000001"
     },
     {
       "account_id": "acc_0000000000000002",
       "bytes": 0,
       "email": "ana@mail.example",
-      "messages": 0
+      "messages": 0,
+      "workspace_id": "wsp_0000000000000001"
     },
     {
       "account_id": "acc_0000000000000004",
       "bytes": 1037,
       "email": "ana@work.example",
-      "messages": 2
+      "messages": 2,
+      "workspace_id": "wsp_0000000000000001"
     }
   ],
   "total": {
     "bytes": 1037,
     "messages": 2
-  }
+  },
+  "workspaces": [
+    {
+      "bytes": 1037,
+      "mailboxes": 4,
+      "messages": 2,
+      "workspace_id": "wsp_0000000000000001"
+    }
+  ]
 }

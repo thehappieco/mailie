@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
 )
@@ -47,7 +48,7 @@ func newStorageFixture(t *testing.T) *storageFixture {
 
 func (s *storageFixture) storage(t *testing.T, p service.Principal) service.Storage {
 	t.Helper()
-	got, err := s.svc.Storage(t.Context(), p)
+	got, err := s.svc.Storage(t.Context(), p, "")
 	if err != nil {
 		t.Fatalf("Storage: %v", err)
 	}
@@ -67,15 +68,22 @@ func TestAMemberSeesTheStorageOfHerOwnMailboxesOnly(t *testing.T) {
 	s := newStorageFixture(t)
 	st := s.storage(t, s.ana)
 	got := mailboxes(st)
+	personal := authtest.Personal(t, s.db, s.ana.UserID)
 	want := map[string]service.MailboxStorage{
-		s.work: {AccountID: s.work, Email: "ana@work.example", Messages: 2, Bytes: 3000},
-		s.home: {AccountID: s.home, Email: "ana@home.example", Messages: 1, Bytes: 500},
+		s.work: {AccountID: s.work, WorkspaceID: personal, Email: "ana@work.example", Messages: 2, Bytes: 3000},
+		s.home: {AccountID: s.home, WorkspaceID: personal, Email: "ana@home.example", Messages: 1, Bytes: 500},
 	}
 	if len(got) != len(want) || got[s.work] != want[s.work] || got[s.home] != want[s.home] {
 		t.Fatalf("ana's storage lists %+v, want %+v", st.Mailboxes, want)
 	}
 	if st.Total != (service.StorageTotal{Messages: 3, Bytes: 3500}) {
 		t.Errorf("total = %+v", st.Total)
+	}
+	// Summed per workspace: both are in her personal one.
+	if len(st.Workspaces) != 1 || st.Workspaces[0] != (service.WorkspaceStorage{
+		WorkspaceID: personal, Mailboxes: 2, Messages: 3, Bytes: 3500,
+	}) {
+		t.Errorf("per workspace = %+v", st.Workspaces)
 	}
 	// What the whole database takes is the operator's business, not hers:
 	// not on her session, not on her key.
@@ -105,12 +113,11 @@ func TestAnotherPersonsMailboxNeverAppearsInSomebodysStorage(t *testing.T) {
 	}
 }
 
-func TestAnOwnerAlsoSeesTheMailboxesNobodyOwnsAndTheDatabaseSize(t *testing.T) {
+func TestAnInstanceOwnerIsToldTheDatabaseSizeButSeesNoMailboxByBeingOne(t *testing.T) {
 	s := newStorageFixture(t)
 	st := s.storage(t, s.olga)
-	got := mailboxes(st)
-	if len(got) != 1 || got[s.team] != (service.MailboxStorage{AccountID: s.team, Email: "team@mail.example", Messages: 1, Bytes: 9000}) {
-		t.Fatalf("olga's storage lists %+v, want the mailbox nobody owns", st.Mailboxes)
+	if len(st.Mailboxes) != 0 || st.Total != (service.StorageTotal{}) {
+		t.Fatalf("olga's storage lists %+v: an owner of the instance reads nobody's mailboxes by being one", st.Mailboxes)
 	}
 	if st.DatabaseBytes == nil {
 		t.Fatal("an owner signed in is not told the database's size")

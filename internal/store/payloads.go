@@ -127,10 +127,18 @@ type SyncProgress struct {
 // SendFinished is how a submission ended: send.finished. Key is the send's
 // idempotency key, which GET /v1/sends/{key} answers about. It never carries
 // a subject, an address or a server's words.
+//
+// It is one sender's record, not the mailbox's: several people may send from
+// one shared mailbox, and the event goes only to whoever may read the record
+// it is about (internal/service, the event gate), which UserID decides.
 type SendFinished struct {
 	AccountID string `json:"account_id"`
 	Key       string `json:"key"`
 	// State is sent, failed or unknown; a later send.finished with sent
 	// follows an unknown that the Sent folder confirmed.
 	State string `json:"state"`
+	// UserID is the person who sent it, whichever credential they used;
+	// absent for an instance key's send, and once that person is deleted
+	// (ForgetSenderTx).
+	UserID string `json:"user_id,omitempty"`
 }

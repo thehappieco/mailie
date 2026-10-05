@@ -50,7 +50,19 @@ export interface Account {
    * a mailbox that works can send; the server decides either way.
    */
   send?: AccountSend
+  /** The workspace the mailbox belongs to. Absent from a daemon older than workspaces. */
+  workspace_id?: string
+  /** The person who linked it, under whose consent to sync it syncs; absent for the operator's mailboxes. */
+  linked_by?: string
+  /**
+   * What the caller may do with the mailbox: their grant, as far as their
+   * credential reaches. Absent from a daemon older than workspaces; the
+   * server decides either way.
+   */
+  access?: AccountAccess
 }
+/** A caller's grant on a mailbox: read its index, act on its messages, send from it, manage it. */
+export interface AccountAccess { read: boolean; act: boolean; send: boolean; manage: boolean }
 /**
  * available false: the mailbox cannot send now, for a short reason (such as
  * needs_reauth, or no SMTP server) the console never shows as it is.
@@ -185,13 +197,28 @@ export interface CreatedKey extends PersonalKey { key: string }
  * is in counts once in each) and their size on the mail server, not what the
  * index keeps of them. Zeros for a mailbox that does not sync.
  */
-export interface MailboxStorage { account_id: string; email: string; messages: number; bytes: number }
+export interface MailboxStorage {
+  account_id: string
+  /** The workspace the mailbox belongs to. Absent from a daemon older than workspaces. */
+  workspace_id?: string
+  email: string
+  messages: number
+  bytes: number
+}
+/** The caller's readable mailboxes of one workspace, summed: never a workspace's whole usage. */
+export interface WorkspaceStorage { workspace_id: string; mailboxes: number; messages: number; bytes: number }
 /**
  * GET /v1/me/storage: the caller's own mailboxes and their sum, and the size
  * of the database file on disk (everyone's, the write-ahead log included),
  * which only an owner signed in to the console is told.
  */
-export interface Storage { mailboxes: MailboxStorage[]; total: { messages: number; bytes: number }; database_bytes?: number }
+export interface Storage {
+  mailboxes: MailboxStorage[]
+  /** mailboxes summed per workspace. Absent from a daemon older than workspaces. */
+  workspaces?: WorkspaceStorage[]
+  total: { messages: number; bytes: number }
+  database_bytes?: number
+}
 /**
  * GET /v1/me/mcp: whether this server answers MCP over HTTP at /mcp
  * (MAIL_MCP_HTTP). Off, the console shows no MCP address: /mcp answers 404.
@@ -257,7 +284,7 @@ export function isMe(v: unknown, strict = false): v is Me {
 }
 
 export function isAccount(v: unknown, strict = false): v is Account {
-  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send'], strict)
+  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'linked_by', 'access'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
     && oneOf(providerIDs)(v.provider) && oneOf(authKinds)(v.auth_kind) && oneOf(accountStates)(v.state)
     && optional(v.state_reason, text) && optional(v.sync_tier, x => text(x, 64)) && flag(v.save_sent_copy)
@@ -266,6 +293,14 @@ export function isAccount(v: unknown, strict = false): v is Account {
     // The daemon that writes the fixtures always says; an older one may not.
     && (strict ? isAccountActions(v.actions, strict) : optional(v.actions, x => isAccountActions(x)))
     && optional(v.send, x => isAccountSend(x, strict))
+    && (strict ? filled(v.workspace_id, 64) && isAccountAccess(v.access, strict)
+      : optional(v.workspace_id, x => filled(x, 64)) && optional(v.access, x => isAccountAccess(x)))
+    && optional(v.linked_by, x => filled(x, 64))
+}
+
+export function isAccountAccess(v: unknown, strict = false): v is AccountAccess {
+  return record(v) && known(v, ['read', 'act', 'send', 'manage'], strict)
+    && flag(v.read) && flag(v.act) && flag(v.send) && flag(v.manage)
 }
 
 export function isAccountSend(v: unknown, strict = false): v is AccountSend {
@@ -383,13 +418,22 @@ export function isPersonalKeyList(v: unknown, strict = false): v is PersonalKey[
 }
 
 export function isMailboxStorage(v: unknown, strict = false): v is MailboxStorage {
-  return record(v) && known(v, ['account_id', 'email', 'messages', 'bytes'], strict)
+  return record(v) && known(v, ['account_id', 'workspace_id', 'email', 'messages', 'bytes'], strict)
     && filled(v.account_id, 64) && filled(v.email, 320) && counter(v.messages) && counter(v.bytes)
+    // The daemon that writes the fixtures always says; an older one may not.
+    && (strict ? filled(v.workspace_id, 64) : optional(v.workspace_id, x => filled(x, 64)))
+}
+
+export function isWorkspaceStorage(v: unknown, strict = false): v is WorkspaceStorage {
+  return record(v) && known(v, ['workspace_id', 'mailboxes', 'messages', 'bytes'], strict)
+    && filled(v.workspace_id, 64) && counter(v.mailboxes) && counter(v.messages) && counter(v.bytes)
 }
 
 export function isStorage(v: unknown, strict = false): v is Storage {
-  return record(v) && known(v, ['mailboxes', 'total', 'database_bytes'], strict)
+  const workspaces = (x: unknown) => Array.isArray(x) && x.every(item => isWorkspaceStorage(item, strict))
+  return record(v) && known(v, ['mailboxes', 'workspaces', 'total', 'database_bytes'], strict)
     && Array.isArray(v.mailboxes) && v.mailboxes.every(item => isMailboxStorage(item, strict))
+    && (strict ? workspaces(v.workspaces) : optional(v.workspaces, workspaces))
     && record(v.total) && known(v.total, ['messages', 'bytes'], strict) && counter(v.total.messages) && counter(v.total.bytes)
     && optional(v.database_bytes, counter)
 }

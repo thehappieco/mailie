@@ -33,7 +33,7 @@ func (f *fixture) mailbox(t *testing.T, p service.Principal, email string) strin
 
 func ids(t *testing.T, f *fixture, p service.Principal) []string {
 	t.Helper()
-	accounts, err := f.svc.ListAccounts(t.Context(), p)
+	accounts, err := f.svc.ListAccounts(t.Context(), p, "")
 	if err != nil {
 		t.Fatalf("ListAccounts: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestASessionOpensOnlyItsOwnersAccounts(t *testing.T) {
 	}
 }
 
-func TestAnOwnerSeesInstanceAccountsAndAMemberDoesNot(t *testing.T) {
+func TestNobodySeesTheOperatorsMailboxesButAnInstanceKeyAndAnInstanceKeyNobodyElses(t *testing.T) {
 	f := newFixture(t)
 	owner := f.person(t, "owner@example.com", auth.RoleOwner)
 	member := f.person(t, "member@example.com", auth.RoleMember)
@@ -100,24 +100,25 @@ func TestAnOwnerSeesInstanceAccountsAndAMemberDoesNot(t *testing.T) {
 		t.Fatalf("an instance key's account got owner %q", stored.OwnerUserID)
 	}
 
-	// Created within the same second, so listed in id order; compare as sets.
-	want := []string{instance, owners}
-	slices.Sort(want)
-	if got := ids(t, f, owner); !slices.Equal(slices.Sorted(slices.Values(got)), want) {
-		t.Errorf("the owner lists %v, want the instance's account and their own", got)
+	// Administering the instance is neither reading other people's mail nor
+	// the operator's: an owner of it sees their own mailboxes, like anyone.
+	if got := ids(t, f, owner); !slices.Equal(got, []string{owners}) {
+		t.Errorf("the owner lists %v, want only their own", got)
 	}
 	if got := ids(t, f, member); !slices.Equal(got, []string{members}) {
 		t.Errorf("a member lists %v, want only their own", got)
 	}
-	if _, err := f.svc.GetAccount(t.Context(), member, instance); service.CodeOf(err) != service.CodeNotFound {
-		t.Errorf("a member reached an instance account: %v", err)
+	for name, p := range map[string]service.Principal{"a member": member, "an owner": owner} {
+		if _, err := f.svc.GetAccount(t.Context(), p, instance); service.CodeOf(err) != service.CodeNotFound {
+			t.Errorf("%s reached an instance account: %v", name, err)
+		}
 	}
-	// Administering the instance is not reading other people's mail.
 	if _, err := f.svc.GetAccount(t.Context(), owner, members); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("the owner reached a member's account: %v", err)
 	}
-	if got := ids(t, f, admin()); len(got) != 3 {
-		t.Errorf("an instance key lists %v, want all three", got)
+	// The operator's key, for its part, reaches the operator workspace's.
+	if got := ids(t, f, admin()); !slices.Equal(got, []string{instance}) {
+		t.Errorf("an instance key lists %v, want only the instance's account", got)
 	}
 }
 
@@ -236,7 +237,7 @@ func TestAHostedConsoleIsNeverOfferedLoopback(t *testing.T) {
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("a Microsoft account with no usable flow: %v", err)
 	}
-	if accounts, _ := f.svc.ListAccounts(t.Context(), session); len(accounts) != 0 {
+	if accounts, _ := f.svc.ListAccounts(t.Context(), session, ""); len(accounts) != 0 {
 		t.Errorf("a refused flow still left %d accounts behind", len(accounts))
 	}
 	// An instance key keeps the CLI's default.
@@ -247,7 +248,11 @@ func TestAHostedConsoleIsNeverOfferedLoopback(t *testing.T) {
 	if result.Auth == nil || result.Auth.Flow != "loopback" {
 		t.Errorf("auth = %+v, want the loopback flow", result.Auth)
 	}
-	if _, err := f.svc.StartOAuth(t.Context(), session, result.Account.ID, "loopback"); service.CodeOf(err) != service.CodeBadRequest {
+	hers, err := f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{Email: "ana@gmail.com"})
+	if err != nil {
+		t.Fatalf("the web flow from a hosted console: %v", err)
+	}
+	if _, err := f.svc.StartOAuth(t.Context(), session, hers.Account.ID, "loopback"); service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("StartOAuth with flow=loopback from a hosted console: %v", err)
 	}
 }

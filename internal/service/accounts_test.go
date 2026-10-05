@@ -290,7 +290,7 @@ func TestAKeyRestrictedToOtherAccountsCannotEvenLearnTheyExist(t *testing.T) {
 	if service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}
-	accounts, err := f.svc.ListAccounts(t.Context(), restricted)
+	accounts, err := f.svc.ListAccounts(t.Context(), restricted, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -606,7 +606,7 @@ func TestAPersonCannotWidenTheInitialSyncWindow(t *testing.T) {
 			t.Errorf("initial_days %d from a person: %v, want bad_request", days, err)
 		}
 	}
-	if accounts, err := f.svc.ListAccounts(t.Context(), ana); err != nil || len(accounts) != 0 {
+	if accounts, err := f.svc.ListAccounts(t.Context(), ana, ""); err != nil || len(accounts) != 0 {
 		t.Fatalf("refused requests left %d accounts behind (%v)", len(accounts), err)
 	}
 	for _, days := range []int{0, account.PersonInitialDays} {
@@ -646,7 +646,7 @@ func TestAPersonCannotConnectGmailAsAGenericIMAPAccount(t *testing.T) {
 			t.Errorf("%s on %s: %v, want a refusal pointing at Google sign-in", req.Email, req.IMAPHost, err)
 		}
 	}
-	if accounts, err := f.svc.ListAccounts(t.Context(), ana); err != nil || len(accounts) != 0 {
+	if accounts, err := f.svc.ListAccounts(t.Context(), ana, ""); err != nil || len(accounts) != 0 {
 		t.Fatalf("refused requests left %d accounts behind (%v)", len(accounts), err)
 	}
 }

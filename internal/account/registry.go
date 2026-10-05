@@ -80,6 +80,9 @@ type Registry struct {
 	// ownerCheck is who may still have something stored for them; see
 	// CheckOwnersWith. Guarded by mu.
 	ownerCheck OwnerCheck
+	// flowCheck is who may still finish a consent attempt on an account;
+	// see CheckFlowsWith. Guarded by mu.
+	flowCheck FlowCheck
 	// grantSlot is where a new grant's login check runs; see CheckGrantsIn.
 	// Guarded by mu.
 	grantSlot ConnectionSlot
@@ -212,6 +215,45 @@ func (r *Registry) ownerStillActive(ctx context.Context, userID string) func(*sq
 	}
 }
 
+// FlowCheck reports, inside the transaction that stores what a consent
+// attempt produced, why whoever started it — owner, empty for an instance key
+// — may no longer finish it on the account, or nil if they may.
+type FlowCheck func(ctx context.Context, tx *sql.Tx, accountID, owner string) error
+
+// CheckFlowsWith installs the rule for who may still finish a consent attempt
+// on an account. Like CheckOwnersWith's, the rule is not this package's: who
+// manages a mailbox is decided in internal/service, which installs it once,
+// before anything can run. Without one, nothing is checked.
+//
+// It runs in the transaction that stores the grant, ordered by the database's
+// one writer against every change to grants and memberships, so an attempt
+// whose starter lost manage on the mailbox, or their place in its workspace,
+// after starting it stores nothing — whichever path finishes it: a redirect
+// the console posts, or a loopback listener or device poll the daemon
+// completes by itself, which no request re-checks.
+func (r *Registry) CheckFlowsWith(check FlowCheck) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.flowCheck = check
+}
+
+// flowStillAllowed is the check for one attempt, for the write that stores
+// its grant to run in its transaction; nil when there is no rule.
+func (r *Registry) flowStillAllowed(ctx context.Context, accountID, owner string) func(*sql.Tx) error {
+	r.mu.Lock()
+	check := r.flowCheck
+	r.mu.Unlock()
+	if check == nil {
+		return nil
+	}
+	return func(tx *sql.Tx) error {
+		if err := check(ctx, tx, accountID, owner); err != nil {
+			return fmt.Errorf("%w: %w", ErrStarterLostAccess, err)
+		}
+		return nil
+	}
+}
+
 // ConnectionSlot runs check in place of an account's interactive connection:
 // that connection is logged out first, and nothing else takes its place
 // until check returns.
@@ -310,6 +352,15 @@ type AddRequest struct {
 	// OwnerUserID is the person connecting the account; empty for an
 	// instance key. The consent flow is bound to them too.
 	OwnerUserID string
+	// WorkspaceID is the workspace the account goes into; empty is the
+	// person's personal workspace, or the operator workspace for an instance
+	// key. Who may link where is the service's to decide.
+	WorkspaceID string
+	// Check runs first in the transaction that creates the account, after
+	// the check that the person is still active: where the service re-reads
+	// that the caller may still link into the workspace. nil checks nothing
+	// more.
+	Check func(*sql.Tx) error
 	// InitialDays is the initial sync window; zero means the default.
 	InitialDays int
 	// SaveSentCopy overrides the provider default. Nil keeps it.
@@ -352,6 +403,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		Provider:     kind,
 		LoginUser:    orDefault(req.LoginUser, strings.TrimSpace(req.Email)),
 		OwnerUserID:  req.OwnerUserID,
+		WorkspaceID:  req.WorkspaceID,
 		InitialDays:  req.InitialDays,
 		SaveSentCopy: profile.SaveSentDefault,
 	}
@@ -378,8 +430,13 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 	}
 
 	// A duplicate would be refused by the insert anyway; asking first saves
-	// dialing somebody's mail server to find that out.
-	if _, err := r.repo.GetByEmail(ctx, a.Email); err == nil {
+	// dialing somebody's mail server to find that out. Only within the
+	// workspace it goes into: elsewhere the same address is another mailbox.
+	ws, err := r.repo.WorkspaceFor(ctx, a)
+	if err != nil {
+		return Account{}, nil, err
+	}
+	if _, err := r.repo.GetByEmail(ctx, ws, a.Email); err == nil {
 		return Account{}, nil, ErrDuplicate
 	}
 
@@ -398,7 +455,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 
 	// The login check above can take seconds; the person may have been
 	// switched off meanwhile.
-	created, err := r.repo.create(ctx, a, r.ownerStillActive(ctx, a.OwnerUserID))
+	created, err := r.repo.create(ctx, a, both(r.ownerStillActive(ctx, a.OwnerUserID), req.Check))
 	if err != nil {
 		return Account{}, nil, err
 	}
@@ -1054,7 +1111,7 @@ func (r *Registry) fail(ctx context.Context, accountID string, cause error) {
 }
 
 // storeGrant stores what a consent produced, unless owner — who started it —
-// has been disabled or deleted since.
+// has been disabled or deleted since, or no longer manages the account.
 func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oauth2.Token, client, owner string) error {
 	r.grantMu.Lock()
 	defer r.grantMu.Unlock()
@@ -1064,7 +1121,8 @@ func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oaut
 	// cannot write a refreshed token over it, and again after, so the next
 	// use picks up both.
 	r.forget(accountID)
-	if err := r.repo.saveGrant(ctx, accountID, token, client, r.ownerStillActive(ctx, owner)); err != nil {
+	if err := r.repo.saveGrant(ctx, accountID, token, client,
+		both(r.ownerStillActive(ctx, owner), r.flowStillAllowed(ctx, accountID, owner))); err != nil {
 		return err
 	}
 	r.forget(accountID)
@@ -1285,15 +1343,17 @@ func (r *Registry) Remove(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// RemoveOwner deletes a person's mailboxes — every account they own, with
-// everything Remove deletes for one — and drops every consent attempt they
-// started anywhere, in one transaction that also then completes: the caller
-// deletes the person there, so either all of it happens or none does. Once it
-// has committed, the registry lets go of those accounts as Remove does: their
+// RemoveOwner deletes a person's mailboxes — every account they linked, in
+// every workspace, with everything Remove deletes for one — and drops every
+// consent attempt they started anywhere, in one transaction that also then
+// completes: the caller deletes the person there, so either all of it happens
+// or none does. before runs first in that transaction, while the mailboxes
+// are still there to be asked about; nil checks nothing. Once it has
+// committed, the registry lets go of those accounts as Remove does: their
 // token sources and cached mailboxes, and any listener or device poll still
 // waiting on their behalf. It reports how many accounts it removed.
-func (r *Registry) RemoveOwner(ctx context.Context, userID string, also func(*sql.Tx) error) (int, error) {
-	removed, attempts, err := r.repo.deleteOwner(ctx, userID, also)
+func (r *Registry) RemoveOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) (int, error) {
+	removed, attempts, err := r.repo.deleteOwner(ctx, userID, before, also)
 	if err != nil {
 		return 0, err
 	}

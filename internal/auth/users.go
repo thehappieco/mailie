@@ -14,30 +14,33 @@ import (
 	"unicode/utf8"
 
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Users are the people who sign in to the web console.
 //
-// A person owns the mailboxes they connect and sees nothing else, except that
-// the owner role — the instance's administrator — also sees the accounts the
-// CLI created, which belong to nobody. That rule is applied in
-// internal/service; this file only keeps the people, their passwords and
-// their sessions.
+// Which mailboxes a person sees is a matter of workspaces and grants
+// (internal/workspace), decided in internal/service; this file keeps the
+// people, their passwords, their sessions and their invites. Creating a
+// person creates their personal workspace in the same transaction, through
+// the workspace source.
 //
 // Nobody signs up without an invite. There is no public registration, no email
 // verification and no reset by email: an invite is printed by the CLI or made
-// by an owner in the console, it names the one address it is for, and it
-// works once. A forgotten password is set again by the operator, from the
-// command line (SetPassword).
+// in the console, it names the one address it is for, and it works once. A
+// forgotten password is set again by the operator, from the command line
+// (SetPassword).
 
-// Role is what a person may do beyond their own mailboxes.
+// Role is a person's role on the instance: the self-hosted server's own
+// administration, apart from any workspace.
 type Role string
 
 const (
-	// RoleOwner administers the instance: sees the accounts no user owns and
-	// may invite people.
+	// RoleOwner administers the instance: invites people to it, and
+	// disables and deletes them. The first one comes from an invite the
+	// operator makes with the owner role (`user invite --bootstrap`).
 	RoleOwner Role = "owner"
-	// RoleMember sees only the accounts they connected.
+	// RoleMember is everybody else.
 	RoleMember Role = "member"
 )
 
@@ -88,20 +91,38 @@ var (
 	ErrInvalidName = errors.New("auth: a name is at most 120 characters and has no control characters")
 	// ErrInvalidRole is a role other than owner or member.
 	ErrInvalidRole = errors.New("auth: a role is owner or member")
+	// ErrInvalidWorkspaceRole is a team invite's role other than owner,
+	// admin or member.
+	ErrInvalidWorkspaceRole = errors.New("auth: a role in a team is owner, admin or member")
 )
 
 // Users is the repository for people, their sessions and invites.
 type Users struct {
-	store *store.Store
-	now   func() time.Time
+	store      *store.Store
+	now        func() time.Time
+	source     workspace.Source
+	workspaces *workspace.Repository
 }
 
-// NewUsers builds the repository.
-func NewUsers(s *store.Store) *Users { return &Users{store: s, now: s.Now} }
+// NewUsers builds the repository, with the local workspace source.
+func NewUsers(s *store.Store) *Users { return NewUsersWithClock(s, s.Now) }
 
 // NewUsersWithClock builds the repository with an injected clock, for tests.
 func NewUsersWithClock(s *store.Store, now func() time.Time) *Users {
-	return &Users{store: s, now: now}
+	u := &Users{store: s, now: now}
+	return u.WithWorkspaceSource(nil)
+}
+
+// WithWorkspaceSource sets where workspaces come from: what creating a person
+// creates for them, and whether a team invite may be made or redeemed here.
+// nil is the local source.
+func (u *Users) WithWorkspaceSource(source workspace.Source) *Users {
+	if source == nil {
+		source = workspace.Local()
+	}
+	u.source = source
+	u.workspaces = workspace.NewRepository(u.store, source).WithClock(u.now)
+	return u
 }
 
 // NormalizeEmail checks that s is one bare address and returns it lowercased.
@@ -154,7 +175,7 @@ func (u *Users) GetByEmail(ctx context.Context, email string) (User, error) {
 	return user, err
 }
 
-// Count reports how many users exist. The first one is always an owner.
+// Count reports how many users exist.
 func (u *Users) Count(ctx context.Context) (int, error) {
 	var n int
 	if err := u.store.Reader().QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&n); err != nil {

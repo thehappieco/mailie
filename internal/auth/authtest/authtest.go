@@ -11,6 +11,7 @@ package authtest
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -21,12 +22,14 @@ import (
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Password is what every user made here signs in with.
 const Password = "correct horse battery staple"
 
-// NewUser inserts an active user and returns it.
+// NewUser inserts an active user, with the personal workspace signing up
+// makes for them (the local source's), and returns it.
 func NewUser(t *testing.T, db *store.Store, email string, role auth.Role) auth.User {
 	t.Helper()
 	now := db.Now().UTC().Truncate(time.Second)
@@ -34,14 +37,30 @@ func NewUser(t *testing.T, db *store.Store, email string, role auth.Role) auth.U
 		ID: "usr_" + randomHex(t, 8), Email: email, Role: role,
 		PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
-	_, err := db.Writer().ExecContext(t.Context(),
-		`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at)
-		 VALUES (?, ?, '', ?, ?, 'active', ?, ?, ?)`,
-		user.ID, email, cheapHash(t, Password), string(role), now.Unix(), now.Unix(), now.Unix())
+	err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(t.Context(),
+			`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at)
+			 VALUES (?, ?, '', ?, ?, 'active', ?, ?, ?)`,
+			user.ID, email, cheapHash(t, Password), string(role), now.Unix(), now.Unix(), now.Unix())
+		if err != nil {
+			return err
+		}
+		return workspace.Local().PersonCreatedTx(t.Context(), tx, user.ID, now)
+	})
 	if err != nil {
 		t.Fatalf("authtest: insert user: %v", err)
 	}
 	return user
+}
+
+// Personal is the id of a person's personal workspace.
+func Personal(t *testing.T, db *store.Store, userID string) string {
+	t.Helper()
+	w, err := workspace.NewRepository(db, nil).PersonalOf(t.Context(), userID)
+	if err != nil {
+		t.Fatalf("authtest: personal workspace of %s: %v", userID, err)
+	}
+	return w.ID
 }
 
 // NewKey inserts an instance key, or with a userID a key acting as that user

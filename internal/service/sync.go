@@ -155,7 +155,7 @@ func (s *Service) syncOf(ctx context.Context, id string, enabled bool) (AccountS
 
 // SyncStatus reports where an account's sync stands.
 func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string) (AccountSync, error) {
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, accountID)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, accountID, needCard)
 	if err != nil {
 		return AccountSync{}, err
 	}
@@ -167,9 +167,10 @@ func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string)
 }
 
 // TriggerSync asks for a pass over every synced folder of the account soon,
-// and returns without waiting for it.
+// and returns without waiting for it: anybody who may read it, with the
+// write scope.
 func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string) error {
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeWrite, accountID)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeWrite, accountID, needRead)
 	if err != nil {
 		return err
 	}
@@ -203,11 +204,11 @@ func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string
 var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server", nil)
 
 // errSyncOff is an account that may not sync: for a person's mailbox, one
-// whose owner has not consented; for an instance mailbox, one the operator
+// whose linker has not consented; for an operator mailbox, one the operator
 // has not switched on.
 func errSyncOff(a account.Account) error {
 	if a.OwnerUserID == "" {
 		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", nil)
 	}
-	return E(CodeConflict, "sync is off: its owner has not turned it on in the console", nil)
+	return E(CodeConflict, "sync is off: the person who linked it has not turned it on in the console", nil)
 }

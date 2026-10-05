@@ -564,3 +564,47 @@ func TestThePasswordIsNeverAnArgument(t *testing.T) {
 		t.Errorf("--password was accepted")
 	}
 }
+
+func TestABootstrapInviteIsAnOwnersOnlyWhileTheServerHasNone(t *testing.T) {
+	// Signing up first no longer makes anyone an owner: the invite decides.
+	// The quick start's `user invite --bootstrap --email ADDRESS` still makes
+	// the first owner, and only the first.
+	cfg := localConfig(t)
+	cfg.PublicURL = "https://console.example"
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	invite := func(args ...string) {
+		t.Helper()
+		if err := userInvite(t.Context(), cfg, append([]string{"--bootstrap"}, args...)); err != nil {
+			t.Fatalf("user invite %v: %v", args, err)
+		}
+	}
+	roles := func() string {
+		t.Helper()
+		rows, err := db.Reader().QueryContext(t.Context(), `SELECT email, role FROM invites ORDER BY rowid`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = rows.Close() }()
+		var out []string
+		for rows.Next() {
+			var email, role string
+			if err := rows.Scan(&email, &role); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, email+" "+role)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(out, ", ")
+	}
+
+	invite("--email", "colleague@example.com", "--role", "member")
+	invite("--email", "first@example.com")
+	invite("--email", "second@example.com")
+	invite("--email", "deputy@example.com", "--role", "owner")
+	want := "colleague@example.com member, first@example.com owner, second@example.com member, deputy@example.com owner"
+	if got := roles(); got != want {
+		t.Errorf("invites:\n%s\nwant:\n%s", got, want)
+	}
+}

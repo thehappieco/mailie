@@ -16,9 +16,11 @@ import (
 // The privacy policy says Mailie keeps nothing about a person's messages
 // until they agree to it in the console, and that turning sync off deletes
 // what it kept. Consent is the person's, given once for every mailbox they
-// own. A mailbox nobody owns — added with an instance key, from the command
-// line — has no person to ask, and syncs only once the operator switches it
-// on.
+// link, in whichever workspace: a mailbox syncs under the consent of whoever
+// linked it, and withdrawing deletes the index of every one of them, team
+// mailboxes others read included. A mailbox nobody linked — the operator
+// workspace's, added with an instance key from the command line — has no
+// person to ask, and syncs only once the operator switches it on.
 
 // DefaultSyncConsentVersion is the revision of the text describing sync that
 // a person agrees to when the deployment configures no other
@@ -301,21 +303,22 @@ func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
 	return out
 }
 
-// InstanceSyncRequest switches sync on or off for an account nobody owns.
+// InstanceSyncRequest switches sync on or off for a mailbox of the operator
+// workspace.
 // Enabled is required: switching off deletes the index, which no request
 // should do by leaving a field out.
 type InstanceSyncRequest struct {
 	Enabled *bool `json:"enabled"`
 }
 
-// EnableInstanceAccountSync switches sync on or off for an account nobody
-// owns, recording who switched it on and when. Switching it off deletes what
-// was indexed for it.
+// EnableInstanceAccountSync switches sync on or off for a mailbox of the
+// operator workspace, recording who switched it on and when. Switching it off
+// deletes what was indexed for it.
 //
 // Only an unrestricted instance admin key: the operator's decision, like
-// closing someone's account. A person's mailbox is refused as not_found —
-// its owner decides, by consenting in the console, and nobody may decide for
-// them.
+// closing someone's account. A person's mailbox is not_found to it, as every
+// mailbox outside the operator workspace is — its linker decides, by
+// consenting in the console, and nobody may decide for them.
 func (s *Service) EnableInstanceAccountSync(ctx context.Context, p Principal, accountID string, on bool) (AccountSync, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AccountSync{}, err
@@ -324,13 +327,15 @@ func (s *Service) EnableInstanceAccountSync(ctx context.Context, p Principal, ac
 		return AccountSync{}, E(CodeNotAuthorized,
 			"switching sync for an instance account needs an unrestricted instance admin key", nil)
 	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID)
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
 	if err != nil {
 		return AccountSync{}, err
 	}
 	if a.OwnerUserID != "" {
-		return AccountSync{}, E(CodeConflict,
-			"this account belongs to a person; it syncs when they turn sync on in the console", nil)
+		// Unreachable while visibility holds (an instance key sees only the
+		// operator's mailboxes, which nobody linked): a person's mailbox is
+		// not_found above. Kept as a second wall, the same answer.
+		return AccountSync{}, E(CodeNotFound, "no such account", nil)
 	}
 	changed, err := s.store.SetInstanceSync(ctx, a.ID, on, p.Actor())
 	switch {

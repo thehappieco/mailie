@@ -27,6 +27,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // State is where an account stands.
@@ -67,8 +68,15 @@ type Account struct {
 	LoginUser   string
 	Tenant      string
 
-	// OwnerUserID is the person who connected the account. Empty for one an
-	// instance key created, which the owner role sees.
+	// WorkspaceID is the workspace the mailbox belongs to, which never
+	// changes. Create puts a person's mailbox in their personal workspace,
+	// and one an instance key creates in the operator workspace, unless it
+	// names another.
+	WorkspaceID string
+	// OwnerUserID is the person who linked the account: "linked by" in the
+	// API and the documents, the column keeps its name. The mailbox syncs
+	// under their consent. Empty exactly for a mailbox of the operator
+	// workspace, which an instance key created.
 	OwnerUserID string
 	// OAuthClient is which registration issued the stored grant, "installed"
 	// or "web": a refresh token only works with the client it came from.
@@ -106,12 +114,16 @@ func (a Account) UsesOAuth() bool { return a.AuthKind == "oauth2" }
 var (
 	// ErrNotFound is an account id nobody knows.
 	ErrNotFound = errors.New("account: no such account")
-	// ErrDuplicate is an address already registered.
-	ErrDuplicate = errors.New("account: that address is already registered")
+	// ErrDuplicate is an address already linked in the same workspace.
+	ErrDuplicate = errors.New("account: that address is already connected")
 	// ErrNoCredentials is an account with nothing stored to authenticate with.
 	ErrNoCredentials = errors.New("account: no stored credentials")
 	// ErrUnknownOwner is an owner id no user has.
 	ErrUnknownOwner = errors.New("account: no such owner")
+	// ErrNoWorkspace is a workspace that does not exist, or one the account
+	// cannot go into: a linked mailbox in the operator workspace, one nobody
+	// linked anywhere else, or a person with no personal workspace.
+	ErrNoWorkspace = errors.New("account: no such workspace for this mailbox")
 )
 
 // Repository reads and writes accounts and their sealed credentials.
@@ -222,7 +234,7 @@ func (r *Repository) WithClock(now func() time.Time) *Repository {
 	return r
 }
 
-const accountColumns = `id, email, display_name, provider, auth_kind, imap_host, imap_port,
+const accountColumns = `id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 	smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, coalesce(owner_user_id, ''), oauth_client,
 	sync_tier, sync_tier_resolved, save_sent_copy, initial_days, folder_overrides, state, state_reason,
 	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at`
@@ -235,27 +247,55 @@ const (
 
 // Visibility is which accounts a caller may know exist. Built by
 // internal/service from the caller, and turned into SQL here, so listing and
-// fetching one account apply the ownership rule the same way.
+// fetching one account apply the rule the same way.
+//
+// A person sees a mailbox when they are an active member of its workspace
+// (an active membership, and active on the instance) and hold a grant on it:
+// any grant shows it, and Need narrows to the mailboxes on which they hold
+// those flags.
 type Visibility struct {
-	// All is an instance credential: every account.
+	// All is an instance credential over REST, as the service has it until
+	// it moves instance keys to the operator workspace: every account.
 	All bool
-	// UserID sees the accounts that person owns.
+	// UserID sees the mailboxes of their workspaces they hold a grant on.
 	UserID string
-	// Unowned also sees the accounts nobody owns — created by an instance
-	// key — which is what the owner role gets.
+	// Unowned also sees the operator workspace's mailboxes: those nobody
+	// linked, which an instance key created.
 	Unowned bool
+	// Need is the flags a person must hold on the mailbox; the zero value
+	// is any grant. It narrows only the person's half of the rule.
+	Need workspace.Flags
+	// Workspace narrows to one workspace's mailboxes; empty is every one.
+	Workspace string
 }
 
-// clause is the WHERE fragment for v, with its arguments.
+// clause is the WHERE fragment for v, over the accounts table, with its
+// arguments.
 func (v Visibility) clause() (string, []any) {
-	if v.All {
-		return "1", nil
+	where, args := "1", []any(nil)
+	if !v.All {
+		where = `(EXISTS (SELECT 1 FROM mailbox_access g
+		            JOIN workspace_members m ON m.workspace_id = g.workspace_id AND m.user_id = g.user_id
+		            JOIN users u ON u.id = g.user_id
+		           WHERE g.account_id = accounts.id AND g.user_id = ? AND m.status = 'active' AND u.status = 'active'
+		             AND g.read >= ? AND g.act >= ? AND g.send >= ? AND g.manage >= ?)
+		      OR (? AND accounts.workspace_id = '` + workspace.OperatorID + `'))`
+		args = []any{v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, v.Unowned}
 	}
-	return "(owner_user_id = ? OR (? AND owner_user_id IS NULL))", []any{v.UserID, v.Unowned}
+	if v.Workspace != "" {
+		where += ` AND accounts.workspace_id = ?`
+		args = append(args, v.Workspace)
+	}
+	return where, args
 }
 
 // Create registers an account. It starts in pending_auth: nothing syncs until
 // a credential has been stored for it.
+//
+// A linked mailbox (OwnerUserID) goes into WorkspaceID, or their personal
+// workspace when it is empty, and its linker gets every flag on it in the
+// same transaction, which also checks they are an active member there. One
+// nobody linked goes into the operator workspace.
 func (r *Repository) Create(ctx context.Context, a Account) (Account, error) {
 	return r.create(ctx, a, nil)
 }
@@ -288,13 +328,16 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 				return err
 			}
 		}
+		if a.WorkspaceID, err = workspaceForTx(ctx, tx, a); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO accounts(id, email, display_name, provider, auth_kind, imap_host, imap_port,
+			`INSERT INTO accounts(id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 			 smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, owner_user_id, oauth_client,
 			 sync_tier, save_sent_copy, initial_days, folder_overrides, state, state_reason,
 			 state_changed_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
-			a.ID, a.Email, a.DisplayName, string(a.Provider), a.AuthKind, a.IMAPHost, a.IMAPPort,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+			a.ID, a.WorkspaceID, a.Email, a.DisplayName, string(a.Provider), a.AuthKind, a.IMAPHost, a.IMAPPort,
 			a.SMTPHost, a.SMTPPort, a.SMTPTLS, a.LoginUser, a.Tenant, nullable(a.OwnerUserID), a.OAuthClient,
 			orDefault(a.SyncTier, "auto"), boolToInt(a.SaveSentCopy), a.InitialDays, string(overrides),
 			string(a.State), now.Unix(), now.Unix(), now.Unix())
@@ -307,13 +350,47 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 		if err != nil {
 			return fmt.Errorf("account: insert: %w", err)
 		}
-		return nil
+		if a.OwnerUserID == "" {
+			return nil
+		}
+		return workspace.GrantLinkerTx(ctx, tx, a.ID, a.WorkspaceID, a.OwnerUserID, now)
 	})
 	if err != nil {
 		return Account{}, err
 	}
 	r.committed(nil, a.ID)
 	return a, nil
+}
+
+// workspaceForTx is the workspace a new account goes into, checked: the one
+// it names, or else its linker's personal workspace, or the operator's for a
+// mailbox nobody linked. A linked mailbox never goes into the operator
+// workspace, and one nobody linked never anywhere else.
+func workspaceForTx(ctx context.Context, tx *sql.Tx, a Account) (string, error) {
+	switch {
+	case a.WorkspaceID == "" && a.OwnerUserID == "":
+		return workspace.OperatorID, nil
+	case a.WorkspaceID == "":
+		w, err := workspace.PersonalOfTx(ctx, tx, a.OwnerUserID)
+		if errors.Is(err, workspace.ErrNotFound) {
+			return "", fmt.Errorf("%w: the person has no personal workspace", ErrNoWorkspace)
+		}
+		if err != nil {
+			return "", err
+		}
+		return w.ID, nil
+	}
+	w, err := workspace.GetTx(ctx, tx, a.WorkspaceID)
+	if errors.Is(err, workspace.ErrNotFound) {
+		return "", ErrNoWorkspace
+	}
+	if err != nil {
+		return "", err
+	}
+	if (w.Kind == workspace.KindOperator) != (a.OwnerUserID == "") {
+		return "", ErrNoWorkspace
+	}
+	return w.ID, nil
 }
 
 // Get reads one account.
@@ -327,15 +404,32 @@ func (r *Repository) Get(ctx context.Context, id string) (Account, error) {
 	return a, err
 }
 
-// GetByEmail reads one account by address.
-func (r *Repository) GetByEmail(ctx context.Context, email string) (Account, error) {
+// GetByEmail reads the account linked under an address in one workspace.
+// The same address may be linked in several workspaces, each its own
+// mailbox; within one it is linked at most once.
+func (r *Repository) GetByEmail(ctx context.Context, workspaceID, email string) (Account, error) {
 	row := r.store.Reader().QueryRowContext(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE email = ? COLLATE NOCASE`, email)
+		`SELECT `+accountColumns+` FROM accounts WHERE workspace_id = ? AND email = ? COLLATE NOCASE`,
+		workspaceID, email)
 	a, err := scanAccount(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
 	}
 	return a, err
+}
+
+// WorkspaceFor is the workspace Create would put a into, without creating
+// anything: for a check made before a slow step, which create repeats in its
+// own transaction.
+func (r *Repository) WorkspaceFor(ctx context.Context, a Account) (string, error) {
+	// A read-only transaction on the reader pool: nothing here writes.
+	tx, err := r.store.Reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return "", fmt.Errorf("account: begin: %w", err)
+	}
+	//nolint:errcheck // a read-only transaction; nothing to keep or lose
+	defer func() { _ = tx.Rollback() }()
+	return workspaceForTx(ctx, tx, a)
 }
 
 // GetVisible reads one account if v may see it, and reports ErrNotFound
@@ -355,6 +449,31 @@ func (r *Repository) GetVisible(ctx context.Context, id string, v Visibility) (A
 // List returns every account, oldest first.
 func (r *Repository) List(ctx context.Context) ([]Account, error) {
 	return r.ListVisible(ctx, Visibility{All: true})
+}
+
+// LinkedBy returns the accounts a person linked, in every workspace, oldest
+// first, whatever their access to them now and whether or not they are still
+// active: the mailboxes that sync under their consent.
+func (r *Repository) LinkedBy(ctx context.Context, userID string) ([]Account, error) {
+	rows, err := r.store.Reader().QueryContext(ctx,
+		`SELECT `+accountColumns+` FROM accounts WHERE owner_user_id = ? ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("account: list linked: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	var out []Account
+	for rows.Next() {
+		a, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: list linked: %w", err)
+	}
+	return out, nil
 }
 
 // ListVisible returns the accounts v may see, oldest first. The filter runs in
@@ -414,12 +533,17 @@ type attempt struct {
 // they do not own, and then runs also, where the caller deletes the person. It
 // returns the accounts removed and the attempts dropped, which the registry
 // then stops waiting on.
-func (r *Repository) deleteOwner(ctx context.Context, userID string, also func(*sql.Tx) error) ([]string, []attempt, error) {
+func (r *Repository) deleteOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) ([]string, []attempt, error) {
 	var (
 		owned    []string
 		attempts []attempt
 	)
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+		if before != nil {
+			if err := before(tx); err != nil {
+				return err
+			}
+		}
 		var err error
 		if owned, err = ownedTx(ctx, tx, userID); err != nil {
 			return err
@@ -995,7 +1119,7 @@ func scanAccount(row scanner) (Account, error) {
 		lastOK, nextRetry, created, updated int64
 		saveSent                            int
 	)
-	err := row.Scan(&a.ID, &a.Email, &a.DisplayName, &kind, &a.AuthKind, &a.IMAPHost, &a.IMAPPort,
+	err := row.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DisplayName, &kind, &a.AuthKind, &a.IMAPHost, &a.IMAPPort,
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPTLS, &a.LoginUser, &a.Tenant, &a.OwnerUserID, &a.OAuthClient,
 		&a.SyncTier, &a.SyncTierResolved,
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
@@ -1048,4 +1172,20 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// both runs two checks in order, either of which may be nil.
+func both(first, second func(*sql.Tx) error) func(*sql.Tx) error {
+	switch {
+	case first == nil:
+		return second
+	case second == nil:
+		return first
+	}
+	return func(tx *sql.Tx) error {
+		if err := first(tx); err != nil {
+			return err
+		}
+		return second(tx)
+	}
 }

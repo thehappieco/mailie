@@ -1,4 +1,10 @@
 {
+  "access": {
+    "act": true,
+    "manage": true,
+    "read": true,
+    "send": true
+  },
   "actions": {
     "archive": false,
     "trash": false
@@ -8,6 +14,7 @@
   "display_name": "Ana (iCloud)",
   "email": "ana@icloud.com",
   "id": "acc_0000000000000003",
+  "linked_by": "usr_0000000000000001",
   "provider": "icloud",
   "save_sent_copy": true,
   "send": {
@@ -23,5 +30,6 @@
     "messages": 0,
     "running": false,
     "state": "off"
-  }
+  },
+  "workspace_id": "wsp_0000000000000001"
 }

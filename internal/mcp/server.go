@@ -245,9 +245,9 @@ var accountIDShape = regexp.MustCompile(accountIDPattern)
 
 // watcher turns new mail into resource notifications for the inboxes this
 // session subscribed to. It waits on the event journal with the session's
-// own key, so it hears only of the mailboxes that key may see, and it stops
-// when the key stops working, when nothing is subscribed, or when the
-// session ends.
+// own key, so it hears only of the mailboxes that key may read, drops an
+// inbox the key can no longer read, and stops when the key stops working,
+// when nothing is subscribed, or when the session ends.
 type watcher struct {
 	ss *session
 	// start runs a watch until its context ends: run, outside tests.
@@ -339,8 +339,13 @@ func (w *watcher) run(ctx context.Context) {
 			return true
 		}
 		if ctx.Err() == nil {
-			w.ss.log.Info("mcp subscriptions stopped: the key no longer works", "key", p.KeyPrefix,
-				"outcome", service.CodeOf(err))
+			msg := "mcp subscriptions stopped: the key no longer works"
+			if service.CodeOf(err) == service.CodeConflict {
+				// The key works, without a mailbox the session was
+				// opened with: a new session subscribes again.
+				msg = "mcp subscriptions stopped: the key no longer reaches a mailbox the session was opened with"
+			}
+			w.ss.log.Info(msg, "key", p.KeyPrefix, "outcome", service.CodeOf(err))
 		}
 		w.stop()
 		return false
@@ -350,7 +355,7 @@ func (w *watcher) run(ctx context.Context) {
 		if !keyWorks() {
 			return
 		}
-		res, err := svc.WaitForNewMail(ctx, p, cursor, watchWait, nil)
+		res, err := svc.WaitForNewMail(ctx, p, cursor, watchWait, service.EventFilter{})
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -370,7 +375,7 @@ func (w *watcher) run(ctx context.Context) {
 			return
 		}
 		cursor = res.NextCursor
-		subscribed := w.subscribed()
+		subscribed := w.followed(ctx, svc, p)
 		changed := map[string]bool{}
 		for _, ev := range res.Events {
 			if m, ok := ev.NewMail(); ok && m.FolderRole == inboxRole && subscribed[m.AccountID] {
@@ -390,6 +395,37 @@ func (w *watcher) run(ctx context.Context) {
 			_ = w.ss.server.ResourceUpdated(ctx, &sdk.ResourceUpdatedNotificationParams{URI: inboxURI(accountID)})
 		}
 	}
+}
+
+// followed is the subscribed inboxes the key may still read, asked of the
+// service after every wait: access may have changed during it, and a lagged
+// wait marks every inbox followed as changed without the event gate's say.
+// An inbox the key can no longer read is dropped from the watch — subscribing
+// to it again is refused as any other would be — and the watch stops when
+// none is left. One the service could not decide on stays subscribed but is
+// not announced this time.
+func (w *watcher) followed(ctx context.Context, svc *service.Service, p service.Principal) map[string]bool {
+	out := map[string]bool{}
+	for accountID := range w.subscribed() {
+		err := svc.MayFollow(ctx, p, accountID)
+		switch code := service.CodeOf(err); {
+		case err == nil:
+			out[accountID] = true
+		case code == service.CodeNotFound || code == service.CodeNotAuthorized:
+			if ctx.Err() != nil {
+				return out
+			}
+			w.ss.log.Info("mcp subscription dropped: the key can no longer read the inbox",
+				append([]any{"key", p.KeyPrefix, "outcome", code}, idAttrs(accountID)...)...)
+			w.remove(accountID)
+		default:
+			if ctx.Err() == nil {
+				w.ss.log.Warn("mcp subscriptions: checking access to a subscribed inbox failed",
+					append([]any{"key", p.KeyPrefix, "err", err}, idAttrs(accountID)...)...)
+			}
+		}
+	}
+	return out
 }
 
 // inboxRole is the folder role subscriptions are about.

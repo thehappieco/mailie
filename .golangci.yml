@@ -67,6 +67,8 @@ linters:
               desc: transports go through internal/service
             - pkg: github.com/thehappieco/mailie/internal/account
               desc: account ownership is decided in internal/service
+            - pkg: github.com/thehappieco/mailie/internal/workspace
+              desc: workspaces, members and grants are decided in internal/service
             - pkg: github.com/thehappieco/mailie/internal/auth/authtest
               desc: test helper; mints users and keys straight into the store
 

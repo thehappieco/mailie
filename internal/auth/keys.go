@@ -14,11 +14,14 @@ package auth
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // MaxLifetime bounds how long a key may live. A credential that never expires
@@ -49,7 +52,7 @@ type Principal struct {
 	SessionID string
 	// UserID is the person the caller acts as: the signed-in user, or the
 	// user a key was issued for. Empty for an instance key, which answers to
-	// nobody but the operator and sees every account.
+	// nobody but the operator and reaches the operator workspace's mailboxes.
 	UserID   string
 	UserRole Role
 	Scope    Scope
@@ -58,9 +61,10 @@ type Principal struct {
 	// to one integration should not have.
 	AccountIDs []string
 	// Tool marks a key presented to the MCP server: a tool, such as an AI
-	// assistant, acting with it. The service narrows what an instance key
-	// sees there to the mailboxes nobody owns; a person's mailbox is reached
-	// by a tool only through a key that person created.
+	// assistant, acting with it. It changes what nothing sees: an instance
+	// key reaches the operator workspace's mailboxes over REST and MCP alike,
+	// and a person's mailbox is reached by a tool only through a key that
+	// person created.
 	Tool bool
 	// TermsVersion is, for a key, the revision of the key terms the person
 	// it acts as agreed to by creating it; empty for an instance key and for
@@ -72,7 +76,7 @@ type Principal struct {
 func (p Principal) IsSession() bool { return p.Kind == KindSession }
 
 // IsInstance reports whether the caller is an instance key: a key bound to no
-// user, which is what the CLI holds and what reaches every account.
+// user, which is what the CLI holds and what reaches the operator workspace.
 func (p Principal) IsInstance() bool { return !p.IsSession() && p.UserID == "" }
 
 // Actor names the caller for audit columns: "usr_…" for a person, "key:<prefix>"
@@ -166,7 +170,8 @@ type NewKeyRequest struct {
 // Errors issuing a key can report about its request.
 var (
 	// ErrUnknownAccount is a restriction naming an account that does not
-	// exist.
+	// exist, or, for an instance key, one outside the operator workspace,
+	// which is all an instance key ever reaches.
 	ErrUnknownAccount = errors.New("auth: a key cannot be restricted to an account that does not exist")
 	// ErrUserNotFound is a user id nobody has.
 	ErrUserNotFound = errors.New("auth: no such user")
@@ -235,6 +240,19 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 			return fmt.Errorf("auth: insert key: %w", err)
 		}
 		for _, accountID := range req.AccountIDs {
+			if req.UserID == "" {
+				// An instance key reaches the operator workspace's
+				// mailboxes and nothing else: one restricted to a person's
+				// mailbox would reach nothing at all.
+				var operator int
+				if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?`,
+					accountID, workspace.OperatorID).Scan(&operator); err != nil {
+					return fmt.Errorf("auth: check account %s: %w", accountID, err)
+				}
+				if operator == 0 {
+					return ErrUnknownAccount
+				}
+			}
 			_, err := tx.ExecContext(ctx,
 				`INSERT INTO api_key_accounts(key_prefix, account_id) VALUES (?, ?)`, out.Prefix, accountID)
 			if store.IsForeignKey(err) {
@@ -419,6 +437,49 @@ func (k *Keys) Recheck(ctx context.Context, p Principal) error {
 	// was computed for a role they no longer hold.
 	if Scope(scopeStr) != p.Scope || !owner.usable() || Role(owner.role.String) != p.UserRole {
 		return ErrInvalidKey
+	}
+	// And so is a restriction that lost a mailbox the principal still names
+	// (its person lost read on it): a caller that holds a principal for
+	// long — a stdio MCP session, a subscription, an event stream — would
+	// otherwise keep reaching it, and reach it again once read is granted
+	// back, which the key itself never will.
+	return k.recheckRestriction(ctx, p)
+}
+
+// recheckRestriction refuses, with ErrKeyNarrowed, a principal that names a
+// mailbox its key's restriction no longer does. A mailbox removed since is no
+// difference: its id is never reused, so nothing can be reached through it
+// again.
+func (k *Keys) recheckRestriction(ctx context.Context, p Principal) error {
+	if len(p.AccountIDs) == 0 {
+		// Unrestricted when it authenticated, and a key never gains a
+		// restriction afterwards.
+		return nil
+	}
+	current, err := k.accountsFor(ctx, p.KeyPrefix)
+	if err != nil {
+		return err
+	}
+	var dropped []string
+	for _, id := range p.AccountIDs {
+		if !slices.Contains(current, id) {
+			dropped = append(dropped, id)
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	list, err := json.Marshal(dropped)
+	if err != nil {
+		return fmt.Errorf("auth: recheck key: %w", err)
+	}
+	var still int
+	if err := k.store.Reader().QueryRowContext(ctx,
+		`SELECT count(*) FROM accounts WHERE id IN (SELECT value FROM json_each(?))`, string(list)).Scan(&still); err != nil {
+		return fmt.Errorf("auth: recheck key: %w", err)
+	}
+	if still > 0 {
+		return ErrKeyNarrowed
 	}
 	return nil
 }
