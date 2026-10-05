@@ -54,6 +54,12 @@ type IMAPServer struct {
 	// authAttempts records what was presented, so a test can assert that a
 	// refresh actually happened rather than that the retry merely worked.
 	authAttempts []string
+
+	// idlers are the sessions in IDLE, woken by changed after anything that
+	// may have queued an update for them: every command a client completes,
+	// and every helper here that writes to the store.
+	idleMu sync.Mutex
+	idlers map[chan struct{}]struct{}
 }
 
 // IMAPOptions configure the server.
@@ -135,6 +141,7 @@ func NewIMAPServer(t *testing.T, opts IMAPOptions) *IMAPServer {
 	s := &IMAPServer{
 		User: user, mem: mem, memUser: memUser, tokens: map[string]bool{},
 		anyUser: opts.AnyUser, gmailRefusals: opts.GmailRefusals,
+		idlers: map[chan struct{}]struct{}{},
 	}
 	s.server = imapserver.New(&imapserver.Options{
 		NewSession: func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
@@ -268,7 +275,38 @@ func (s *IMAPServer) Append(t *testing.T, mailbox string, message string, flags 
 	if err != nil {
 		t.Fatalf("providertest: append to %q: %v", mailbox, err)
 	}
+	s.changed()
 	return data.UID
+}
+
+// listen registers a session that is about to idle. It must come before the
+// session's first poll: a change is then either queued before that poll, which
+// sends it, or wakes the session after it.
+func (s *IMAPServer) listen() chan struct{} {
+	wake := make(chan struct{}, 1)
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	s.idlers[wake] = struct{}{}
+	return wake
+}
+
+func (s *IMAPServer) unlisten(wake chan struct{}) {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	delete(s.idlers, wake)
+}
+
+// changed wakes every session in IDLE to poll for what the change queued for
+// it. A wake already pending is enough: the poll it causes sends everything.
+func (s *IMAPServer) changed() {
+	s.idleMu.Lock()
+	defer s.idleMu.Unlock()
+	for wake := range s.idlers {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // literal adapts a reader to what APPEND wants.
@@ -303,6 +341,39 @@ func (s *saslSession) Login(username, password string) error {
 		}
 	}
 	return nil
+}
+
+// Poll is called by go-imap's server after every command that succeeds, on
+// every connection, which makes it where a change one client made reaches the
+// others that are idling.
+func (s *saslSession) Poll(w *imapserver.UpdateWriter, allowExpunge bool) error {
+	defer s.owner.changed()
+	return s.UserSession.Poll(w, allowExpunge)
+}
+
+// Idle replaces the memory server's, which can withhold an update a real
+// server would send. go-imap's server answers "+ idling" — the moment the
+// client's Idle returns — and only then starts the goroutine that listens for
+// updates, and that listener never sends what was queued before it started.
+// Mail appended in between waits for the client's next command, which a client
+// that only idles never sends; on a loaded machine the goroutine starts late
+// often enough to fail a test now and then. Here the session listens first and
+// polls second, so nothing queued during IDLE stays unsent.
+func (s *saslSession) Idle(w *imapserver.UpdateWriter, stop <-chan struct{}) error {
+	wake := s.owner.listen()
+	defer s.owner.unlisten(wake)
+	for {
+		// The embedded Poll, not this session's own: that one wakes every
+		// idler, this one included, and the loop would never rest.
+		if err := s.UserSession.Poll(w, true); err != nil {
+			return err
+		}
+		select {
+		case <-wake:
+		case <-stop:
+			return nil
+		}
+	}
 }
 
 func (s *saslSession) AuthenticateMechanisms() []string {

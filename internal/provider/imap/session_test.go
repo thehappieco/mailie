@@ -642,6 +642,35 @@ func TestIdleDeliversNewMailAsASignal(t *testing.T) {
 	}
 }
 
+func TestMailThatArrivesBetweenSelectAndIdleIsStillSignalled(t *testing.T) {
+	// The idle loop selects the inbox and then idles, and mail can land in
+	// between. The server owes the client that change once IDLE starts, and it
+	// must become a signal like any other: nothing may discard what was queued
+	// before Idle. This is also the state a late listener on the server side
+	// leaves behind, made certain instead of left to the scheduler.
+	h := newHarness(t, providertest.IMAPOptions{})
+	sess := h.open(t, provider.RoleIdle)
+	if _, err := sess.Select(t.Context(), "INBOX", true, 0); err != nil {
+		t.Fatal(err)
+	}
+	h.server.Append(t, "INBOX", sampleMessage, nil, time.Time{})
+
+	handle, err := sess.Idle(t.Context())
+	if err != nil {
+		t.Fatalf("Idle: %v", err)
+	}
+	defer func() { _ = handle.Stop() }()
+
+	select {
+	case ev := <-sess.Events():
+		if ev.Kind != provider.IdleExists {
+			t.Fatalf("event kind = %v, want an EXISTS signal", ev.Kind)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the mail that arrived before IDLE was never signalled")
+	}
+}
+
 func TestAnIdleSignalCarriesNoDataToApply(t *testing.T) {
 	// The sequence number in an EXPUNGE is meaningless without a local shadow
 	// of the mailbox's ordering, which is exactly the thing not to keep. The
