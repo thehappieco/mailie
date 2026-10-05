@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
-	_ "modernc.org/sqlite" // registers the "sqlite" driver
+	"modernc.org/sqlite" // also registers the "sqlite" driver
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 // ErrDamagedDatabase is a snapshot, or a restored file, that fails
@@ -43,6 +45,80 @@ func sourceDSN(path string) string {
 	return sqliteURI(path, "mode=ro&_pragma=busy_timeout(5000)")
 }
 
+// readAttempts bounds how many times readLive runs a read, and readBackoff is
+// its first pause between two; each pause doubles, so five attempts wait
+// 150 ms in all.
+const (
+	readAttempts = 5
+	readBackoff  = 10 * time.Millisecond
+)
+
+// beforeReadRetry runs when readLive is about to try a read again, with the
+// error that ended the attempt. Tests set it to end the race, or not.
+var beforeReadRetry func(err error)
+
+// readLive runs read, a statement on a connection opened with sourceDSN, and
+// runs it again, a few times, when SQLite answers SQLITE_READONLY_RECOVERY or
+// SQLITE_READONLY_CANTINIT.
+//
+// The first is how a reader without write access to the -shm (the backup
+// unit's ReadOnlyPaths) loses a race with the daemon's commit. A read
+// transaction begins by copying the WAL index header, which every commit
+// rewrites; when the copy's two halves disagree, the read was torn. A reader
+// that can write the -shm takes the write lock and reads the header again.
+// This one cannot, so SQLite tries a shared lock on the writer's slot
+// instead: busy, the daemon is still committing and SQLite tries again by
+// itself; free, SQLite takes the header for one that needs recovering, which
+// only a writer may do, and gives up with SQLITE_READONLY_RECOVERY — though
+// the daemon has most likely just finished the commit it caught. busy_timeout
+// does not help: the code is not SQLITE_BUSY. Another attempt a moment later
+// reads a whole header. The race is only at the start of a read transaction,
+// before the first page is read, so an attempt it ends has copied nothing.
+//
+// The second comes to the same reader in the same circumstances, far more
+// rarely: SQLite could not confirm that a process able to write the -shm has
+// it open. The daemon does, and the next attempt reads.
+//
+// A header that stays torn is one no writer is fixing: the attempts run out
+// and the error is returned, as it is for anything else.
+func readLive(ctx context.Context, read func() error) error {
+	pause := readBackoff
+	for attempt := 1; ; attempt++ {
+		err := read()
+		if !readAgain(err) {
+			return err
+		}
+		if attempt == readAttempts {
+			return fmt.Errorf("after %d attempts: %w", readAttempts, err)
+		}
+		if beforeReadRetry != nil {
+			beforeReadRetry(err)
+		}
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("%w (waiting to read again after: %w)", ctx.Err(), err)
+		case <-timer.C:
+		}
+		pause *= 2
+	}
+}
+
+// readAgain reports whether err is one of the answers readLive reads again
+// after.
+func readAgain(err error) bool {
+	var e *sqlite.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	switch e.Code() {
+	case sqlite3.SQLITE_READONLY_RECOVERY, sqlite3.SQLITE_READONLY_CANTINIT:
+		return true
+	}
+	return false
+}
+
 // snapshot copies the live database at live into a new file at out, as it
 // was at one instant.
 //
@@ -51,6 +127,10 @@ func sourceDSN(path string) string {
 // commits meanwhile — WAL readers see a fixed snapshot. It writes a fresh,
 // compact file in rollback-journal mode: no -wal or -shm to carry along, and
 // none of the free pages that held deleted rows.
+//
+// readLive starts the copy over when SQLite catches the daemon mid-commit.
+// Each attempt is a new read transaction, so the copy is still of one
+// instant: the one the attempt that succeeded began at.
 func snapshot(ctx context.Context, live, out string) error {
 	if _, err := os.Stat(live); err != nil {
 		return fmt.Errorf("backup: the live database: %w", err)
@@ -63,9 +143,17 @@ func snapshot(ctx context.Context, live, out string) error {
 	defer func() { _ = db.Close() }()
 	db.SetMaxOpenConns(1)
 
-	if _, err := db.ExecContext(ctx, `VACUUM INTO ?`, out); err != nil {
-		//nolint:errcheck // a partial copy is about to be removed with its directory
-		_ = os.Remove(out)
+	err = readLive(ctx, func() error {
+		_, err := db.ExecContext(ctx, `VACUUM INTO ?`, out)
+		if err != nil {
+			// Whatever the attempt wrote goes: a partial copy is no backup,
+			// and VACUUM INTO writes only to a file that is absent or empty.
+			//nolint:errcheck // a file that stays fails the next attempt, or is removed with its directory
+			_ = os.Remove(out)
+		}
+		return err
+	})
+	if err != nil {
 		if _, werr := os.Stat(live + "-wal"); errors.Is(werr, os.ErrNotExist) {
 			// A backup run with the data directory read-only cannot
 			// create the -wal and -shm SQLite wants for a database nobody

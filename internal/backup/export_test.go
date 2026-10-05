@@ -17,6 +17,20 @@ func Inspect(ctx context.Context, path string) (Inspection, error) { return insp
 // SourceDSN is the DSN the snapshot opens the live database with.
 func SourceDSN(path string) string { return sourceDSN(path) }
 
+// ReadLive is readLive.
+func ReadLive(ctx context.Context, read func() error) error { return readLive(ctx, read) }
+
+// ReadAttempts is readAttempts.
+const ReadAttempts = readAttempts
+
+// SetBeforeReadRetry installs the hook that runs before readLive tries a read
+// again, and returns what undoes it.
+func SetBeforeReadRetry(f func(err error)) (undo func()) {
+	prev := beforeReadRetry
+	beforeReadRetry = f
+	return func() { beforeReadRetry = prev }
+}
+
 // SetAfterSnapshot installs the hook that runs between the snapshot and its
 // check, and returns what undoes it.
 func SetAfterSnapshot(f func(path string)) (undo func()) {

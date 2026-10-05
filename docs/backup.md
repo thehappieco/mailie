@@ -13,6 +13,9 @@ before.
    the `-wal` and `-shm` files must exist.
 2. It takes a snapshot with `VACUUM INTO`, a single read transaction, into a private 0700
    directory, and runs `PRAGMA integrity_check` on it. A damaged snapshot is never uploaded.
+   With the data directory read-only, a read can begin just as the daemon commits, and SQLite
+   then refuses it with `SQLITE_READONLY_RECOVERY` (or, far more rarely,
+   `SQLITE_READONLY_CANTINIT`); the snapshot starts over, up to five attempts in all.
 3. It asks AWS KMS for a fresh AES-256 data key, encrypts the snapshot with it in 64 KiB chunks
    (AES-256-GCM, the `.mlbk` format), zeroes the key and deletes the snapshot. The data key's
    encryption context is
