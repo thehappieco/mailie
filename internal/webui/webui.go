@@ -31,7 +31,11 @@ import (
 //
 // connect-src 'self' is the property the design rests on: the console and the
 // API share one origin, so the page never needs to talk anywhere else, and a
-// script injected into it cannot send what it reads anywhere else either.
+// script injected into it cannot send what it reads anywhere else either. A
+// deployment can add origins to it (MAIL_CONNECT_SRC), and then a page may
+// send what it holds there too; with none, the policy is exactly the one
+// below. A browser enforces every policy a document carries, so a page also
+// reaches an added origin only if its own meta tag allows it.
 //
 // style-src allows inline styles for one reader: a message's own HTML, which
 // an edition of the console that reads mail (the hosted service's app) shows
@@ -40,17 +44,19 @@ import (
 // 'unsafe-inline' here every style in an email is refused, whatever the
 // frame's policy says. Scripts stay 'self' only, and with img-src, font-src and
 // connect-src at 'self', a style has nowhere to send what it could see.
-const contentSecurityPolicy = "default-src 'self'; " +
-	"script-src 'self'; " +
-	"style-src 'self' 'unsafe-inline'; " +
-	"img-src 'self' data:; " +
-	"font-src 'self'; " +
-	"connect-src 'self'; " +
-	"frame-src 'none'; " +
-	"frame-ancestors 'none'; " +
-	"base-uri 'none'; " +
-	"object-src 'none'; " +
-	"form-action 'self'"
+func contentSecurityPolicy(connectSrc []string) string {
+	return "default-src 'self'; " +
+		"script-src 'self'; " +
+		"style-src 'self' 'unsafe-inline'; " +
+		"img-src 'self' data:; " +
+		"font-src 'self'; " +
+		"connect-src " + strings.Join(append([]string{"'self'"}, connectSrc...), " ") + "; " +
+		"frame-src 'none'; " +
+		"frame-ancestors 'none'; " +
+		"base-uri 'none'; " +
+		"object-src 'none'; " +
+		"form-action 'self'"
+}
 
 // ErrNotBuilt says the directory holds no console.
 var ErrNotBuilt = errors.New("webui: no index.html in that directory")
@@ -61,6 +67,7 @@ type Handler struct {
 	root  *os.Root
 	fsys  fs.FS
 	files http.Handler
+	csp   string
 }
 
 // New opens the directory, or reports why it cannot be served.
@@ -72,7 +79,11 @@ type Handler struct {
 // The directory is opened as an os.Root, so no request path — "..", an
 // encoded "%2e%2e", or a symlink inside the build pointing elsewhere — can
 // name a file outside it.
-func New(dir string) (*Handler, error) {
+//
+// connectSrc are origins the console's pages may connect to besides their
+// own, added to the policy's connect-src: MAIL_CONNECT_SRC, as config.Load
+// validated it. None leaves the policy as it always was.
+func New(dir string, connectSrc ...string) (*Handler, error) {
 	if dir == "" {
 		return nil, ErrNotBuilt
 	}
@@ -87,7 +98,9 @@ func New(dir string) (*Handler, error) {
 		_ = root.Close()
 		return nil, errors.Join(ErrNotBuilt, err)
 	}
-	return &Handler{dir: dir, root: root, fsys: fsys, files: http.FileServerFS(fsys)}, nil
+	return &Handler{
+		dir: dir, root: root, fsys: fsys, files: http.FileServerFS(fsys), csp: contentSecurityPolicy(connectSrc),
+	}, nil
 }
 
 // Dir reports where the console is being served from, for the boot log.
@@ -141,7 +154,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // to be.
 func (h *Handler) headers(w http.ResponseWriter) {
 	header := w.Header()
-	header.Set("Content-Security-Policy", contentSecurityPolicy)
+	header.Set("Content-Security-Policy", h.csp)
 	header.Set("X-Content-Type-Options", "nosniff")
 	// The OAuth return lands on /oauth/return with the code in its query;
 	// no-referrer keeps it out of any request the page goes on to make.

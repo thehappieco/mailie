@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -84,6 +85,14 @@ type Config struct {
 	// web OAuth redirect and for invite links, and is never derived from a
 	// request's Host or X-Forwarded-* headers, which the caller controls.
 	PublicURL string
+	// ConnectSrc are origins the console's pages may connect to besides
+	// their own (MAIL_CONNECT_SRC), added to the connect-src of the policy
+	// internal/webui sends: each a scheme and a host (a name or an IPv4
+	// address: a CSP source cannot hold an IPv6 one), optionally a port, as
+	// a browser writes an origin. Empty, the default, leaves connect-src at
+	// 'self', where the console and the API share one origin and a page
+	// talks to nothing else.
+	ConnectSrc []string
 	// AccountAllowPrivate lets mail accounts point at loopback, private,
 	// link-local or CGNAT addresses. Off by default: a host somebody typed
 	// into the console is a server-side connection to wherever they chose,
@@ -207,6 +216,7 @@ func Load() (Config, error) {
 		MicrosoftWeb:        OAuthClient{ClientID: str("MAIL_MICROSOFT_WEB_CLIENT_ID", ""), ClientSecret: str("MAIL_MICROSOFT_WEB_CLIENT_SECRET", ""), Tenant: str("MAIL_MICROSOFT_TENANT", "common")},
 		WebDir:              webDir(&errs),
 		PublicURL:           publicURL(env, &errs),
+		ConnectSrc:          connectSrc(env, &errs),
 		AccountAllowPrivate: boolean("MAIL_ACCOUNT_ALLOW_PRIVATE", false, &errs),
 		Cache:               Cache{BodyMaxBytes: bytes("MAIL_CACHE_BODY_MAX_BYTES", defaultBodyCacheBytes, &errs), AttachMaxBytes: bytes("MAIL_CACHE_ATTACH_MAX_BYTES", defaultAttachBytes, &errs)},
 		DownloadSpoolBytes:  bytes("MAIL_DOWNLOAD_SPOOL_MAX_BYTES", defaultDownloadSpool, &errs),
@@ -332,6 +342,101 @@ func publicURL(env Env, errs *[]error) string {
 		host = strings.TrimSuffix(host, ":"+u.Port())
 	}
 	return u.Scheme + "://" + host
+}
+
+// connectSrc reads the origins the console may also connect to: a list
+// separated by spaces, each an origin as publicURL reads one, without a path,
+// a query, a fragment or credentials, and without the wildcards a CSP source
+// could hold, so that each names exactly one origin. Cleartext is only
+// accepted for an origin that never leaves the machine (loopback, or a name
+// under .localhost), and never in prod. Each comes back as a browser writes
+// it, lower case and without the scheme's default port, once.
+func connectSrc(env Env, errs *[]error) []string {
+	var out []string
+	for _, raw := range strings.Fields(os.Getenv("MAIL_CONNECT_SRC")) {
+		origin, complaint := connectOrigin(env, raw)
+		if complaint != "" {
+			*errs = append(*errs, fmt.Errorf("MAIL_CONNECT_SRC: %q: %s", raw, complaint))
+			continue
+		}
+		if !slices.Contains(out, origin) {
+			out = append(out, origin)
+		}
+	}
+	return out
+}
+
+// connectOrigin is raw as an origin, or why it is not one.
+func connectOrigin(env Env, raw string) (string, string) {
+	if strings.Contains(raw, "*") {
+		return "", "wildcards are not allowed; list each origin"
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", "not a URL"
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case u.Scheme != "http" && u.Scheme != "https":
+		return "", "want https://, or http:// for loopback"
+	case u.Opaque != "" || u.Host == "" || host == "":
+		return "", "no host"
+	case strings.HasSuffix(u.Host, ":"):
+		return "", "empty port"
+	case u.Port() != "" && !validPort(u.Port()):
+		return "", "port must be 1-65535"
+	case u.User != nil:
+		return "", "must not carry credentials"
+	case u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(raw, "?#"):
+		return "", "must be an origin, without a query or fragment"
+	case u.Path != "" && u.Path != "/":
+		return "", "must be an origin, without a path"
+	case isIPv6(host):
+		// CSP's host-source has no brackets: a browser drops the source as
+		// invalid, and the origin would be refused for all it was accepted.
+		return "", "an IPv6 address cannot be a CSP source; use a name such as localhost"
+	case !validHost(host):
+		return "", "the host must be a DNS name or an IPv4 address"
+	case u.Scheme == "http" && !IsLoopbackHost(host) && !strings.HasSuffix(host, ".localhost"):
+		return "", "http is only allowed for loopback addresses and localhost names; use https"
+	case u.Scheme == "http" && env.IsProd():
+		return "", "prod requires https"
+	}
+	origin := strings.ToLower(u.Host)
+	if (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80") {
+		origin = strings.TrimSuffix(origin, ":"+u.Port())
+	}
+	return u.Scheme + "://" + origin, ""
+}
+
+// isIPv6 reports whether host, without brackets, is an IPv6 address, with or
+// without a zone, an IPv4-mapped one included.
+func isIPv6(host string) bool {
+	addr, err := netip.ParseAddr(host)
+	return err == nil && addr.Is6()
+}
+
+// validHost reports whether host, in lower case and without brackets, is an
+// IPv4 address or a DNS name of letters, digits and hyphens: what CSP's
+// host-source can hold, and nothing that could end a source or start another.
+func validHost(host string) bool {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.Is4()
+	}
+	if len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, c := range label {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validPort(p string) bool {
@@ -478,7 +583,16 @@ func (c Config) String() string {
 		c.MicrosoftDeviceCode, c.AdminAPI, c.MCPHTTP, configured(c.MCPKey != ""),
 		c.Consent.Sync, c.Consent.Actions, c.Consent.Send, c.Consent.Keys,
 		c.DownloadSpoolBytes>>20, c.Log.Level, c.Log.Format,
-	)
+	) + connectSrcField(c.ConnectSrc)
+}
+
+// connectSrcField is the console's extra origins for String, only when there
+// are some: without them the line is what it always was.
+func connectSrcField(origins []string) string {
+	if len(origins) == 0 {
+		return ""
+	}
+	return " connect_src=" + strings.Join(origins, ",")
 }
 
 func configured(ok bool) string {

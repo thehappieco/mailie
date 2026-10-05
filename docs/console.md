@@ -31,6 +31,16 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
   `/oauth/return`). Every response carries a strict CSP, `X-Frame-Options: DENY`,
   `Referrer-Policy: no-referrer`, COOP/CORP `same-origin` and `nosniff`. The directory is opened
   with `os.Root`: neither `..` nor a symlink escapes it.
+- **Other origins.** `MAIL_CONNECT_SRC`, empty by default, adds origins to the header's
+  `connect-src`, for an edition whose pages talk to a service on another origin: a list separated by
+  spaces, each a scheme and a host with an optional port, without a path, query, fragment or
+  wildcard; the host a name or an IPv4 address, since a CSP source cannot hold an IPv6 literal (a
+  browser drops `http://[::1]:8081` as invalid; use `localhost`); `http` only for loopback
+  addresses and names under `.localhost`, and never in `prod`. `config.Load` refuses anything
+  else. Unset, the header is the policy it always was, byte for byte. A browser enforces every
+  policy a page carries, so an origin must also be in the meta policy of that edition's
+  `index.html`; the open console's says `connect-src 'self'`, so with it the setting changes
+  nothing.
 - **The console never shows the server's `message`.** It translates the `code` (and the operation
   it was doing) into its own words: English, and the Portuguese, Spanish, French and German
   catalogs in `web/src/ui/locales`.

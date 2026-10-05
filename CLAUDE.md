@@ -20,6 +20,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `install` writes Claude Desktop's or Cursor's configuration (atomic, 0600, one `.bak-mailie`, empty
   when there was no file, never from `--uninstall`; no symbolic link below the home on the way) after
   checking the key, and for Claude Code only prints the command. The key is never an argument.
+- `internal/app` — the daemon's assembly (`app.Run`), which `serve` calls and another binary may
+  too; `Options.Extensions` mounts routes before the console's catch-all, refused at start if one
+  names a host, duplicates or would take a request from a core route.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
