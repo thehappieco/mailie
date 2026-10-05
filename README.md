@@ -38,10 +38,12 @@ may still change.
 | MCP over Streamable HTTP and stdio, with read and action tools | OAuth for MCP clients (claude.ai web connectors) |
 | The server console, invitations, personal API keys | Webhooks |
 | Encrypted database backups to S3 | |
+| A Docker image, Compose and a hardened systemd unit for self-hosting | |
 
 ## Quick start
 
-You need Go 1.27, and Node 24 to build the console. `make help` lists every target.
+You need Go 1.27, and Node 24 to build the console, or only Docker for the image
+([`docs/self-hosting.md`](docs/self-hosting.md)). `make help` lists every target.
 
 ```sh
 git clone https://github.com/thehappieco/mailie.git && cd mailie
@@ -255,19 +257,37 @@ removed is revoked rather than widened to every mailbox.
 
 The daemon is an MCP server: Streamable HTTP at `/mcp` and stdio. Tools to read (`list_accounts`,
 `list_folders`, `search_messages`, `get_message`, `get_attachment`, `wait_for_new_mail`) and to act
-(`mark_read`, `flag_message`, `move_message`, `trash_message`), and `mail://` resources.
+(`mark_read`, `flag_message`, `move_message`, `trash_message`), and `mail://` resources. MCP takes
+API keys only, never a console session; a person creates theirs in the console.
+
+Connecting a client, from the machine it runs on (the same binary, which needs nothing of the
+daemon's there):
 
 ```sh
-claude mcp add --transport http mailie http://localhost:8080/mcp \
+# Claude Code speaks HTTP with a header itself:
+claude mcp add --transport http --scope user mailie https://mail.example.com/mcp \
   --header "Authorization: Bearer <your key>"
+
+# Claude Desktop, through a local bridge; Cursor, over HTTP. The key is typed (not shown) or piped,
+# checked against the server, and written only into the client's file, mode 0600:
+mailserver mcp install --client claude-desktop --url https://mail.example.com
+mailserver mcp install --client cursor --url https://mail.example.com
+
+# Any client that launches a local server: a stdio bridge to the server's /mcp.
+MAILIE_API_KEY=<your key> mailserver mcp connect --url https://mail.example.com
 ```
 
-MCP takes API keys only, never a console session. `MAIL_MCP_HTTP=false` switches the HTTP endpoint
-off (`/mcp` then answers 404), and `mailserver serve --mcp-stdio` with `MAIL_MCP_KEY` speaks MCP on
-standard input and output for a client that launches the daemon itself. Everything else, including
-Claude Desktop, limits and what is logged, is in [`docs/mcp.md`](docs/mcp.md).
+Addresses are `https://`, or `http://` only to the same machine (`http://localhost:8080`).
+`MAIL_MCP_HTTP=false` switches the HTTP endpoint off (`/mcp` then answers 404, and the bridge says
+so), and `mailserver serve --mcp-stdio` with `MAIL_MCP_KEY` speaks MCP on standard input and output
+for a client that launches the whole daemon itself. Everything else — what `mcp install` writes where,
+taking a key back, limits and what is logged — is in [`docs/mcp.md`](docs/mcp.md).
 
 ## Running it for real
+
+[`docs/self-hosting.md`](docs/self-hosting.md) takes a server from a checkout to running: with
+Docker Compose, Docker or a hardened systemd unit ([`deploy/`](deploy)), behind Caddy or nginx,
+with the first owner, OAuth clients, backups, upgrades and a forgotten password. In short:
 
 - The daemon listens on `127.0.0.1:8080` and speaks plain HTTP. To reach it from elsewhere, put a
   reverse proxy that terminates TLS in front, set `MAIL_TRUSTED_PROXIES` to the proxy's address
@@ -334,6 +354,7 @@ make check          # gofmt, vet, layout and the unit tests with -race; offline,
 make it             # the integration tier: Dovecot and Mailpit in Docker
 make web-check      # the console: typecheck, tests and build (needs Node)
 make public-source  # the public source snapshot, as it is published
+make image         # the self-hosting image, mailie:local (Docker)
 ```
 
 [`docs/architecture.md`](docs/architecture.md) explains the layout and the rules that keep mail

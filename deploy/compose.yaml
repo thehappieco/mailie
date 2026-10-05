@@ -1,0 +1,67 @@
+# Mailie with Docker Compose: the daemon and the open console in one
+# container, built from this checkout with deploy/Dockerfile. From the
+# checkout's root:
+#
+#   cp .env.example deploy/.env       # then set MAIL_CREDENTIAL_KEY_HEX in it (openssl rand -hex 32)
+#   docker compose -f deploy/compose.yaml up -d --build
+#
+# deploy/.env holds the credential key: Git ignores it, keep it 0600 and keep a
+# copy with your other secrets. docs/self-hosting.md covers the rest: the
+# reverse proxy, the first owner, OAuth clients, backups and upgrades.
+name: mailie
+
+services:
+  mailie:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        VERSION: ${MAILIE_VERSION:-dev}
+    image: mailie:local
+    # Relative to this file: deploy/.env.
+    env_file: .env
+    environment:
+      # The image's own paths, kept whatever .env says (a development .env
+      # names others): the database lives on the volume below, the console is
+      # in the image, and the daemon listens on every address of the
+      # container, which only the port published below reaches.
+      MAIL_DATA_DIR: /data
+      MAIL_HTTP_ADDR: 0.0.0.0:8080
+      MAIL_WEB_DIR: /usr/share/mailie/console
+    ports:
+      # The host's loopback only, for a reverse proxy on the same host that
+      # terminates TLS. Never publish 8080 on a public address: the daemon
+      # speaks plain HTTP.
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - data:/data
+    # Nothing in the image is written to: the database and the download spool
+    # are on the volume, and /tmp is memory, where `mailserver backup` keeps
+    # its snapshot while it runs (it needs room for a copy of the database).
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    # The daemon allows itself 15 s to close its mailbox connections on SIGTERM.
+    stop_grace_period: 30s
+
+networks:
+  # The stack's own network (mailie_default), on a subnet fixed here so that
+  # its gateway, the address a reverse proxy on the host reaches the daemon
+  # from through the published port, stays the same whenever the network is
+  # made again (docker compose down, then up). MAIL_TRUSTED_PROXIES in
+  # deploy/.env names this subnet. If `up` says it overlaps a network the
+  # host already has, choose another here and name it there too.
+  default:
+    ipam:
+      config:
+        - subnet: 172.30.255.0/29
+          gateway: 172.30.255.1
+
+volumes:
+  # mailie_data: the database. It holds the index and the encrypted
+  # credentials; the key that opens them is in deploy/.env, never here.
+  data:

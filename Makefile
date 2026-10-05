@@ -1,5 +1,5 @@
 .PHONY: help build run test test-race cover fuzz vet fmt lint-layout lint check it tidy clean \
-	backup-tool public-source web-install web-dev web-build web-test web-check
+	backup-tool image public-source web-install web-dev web-build web-test web-check
 
 GO   ?= go
 GOLANGCI_LINT ?= golangci-lint
@@ -81,6 +81,12 @@ tidy: ## Tidy modules
 backup-tool: ## Build dist/mailserver-linux-amd64 for a restore on another machine
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath \
 	  -ldflags "-s -w -X main.version=$$(git describe --always --dirty)" -o dist/mailserver-linux-amd64 ./cmd/mailserver
+
+# The self-hosting image: the daemon and the open console, built by Docker
+# from this checkout (deploy/Dockerfile; docs/self-hosting.md). It needs
+# neither Go nor Node here.
+image: ## Build the self-hosting image mailie:local with Docker
+	docker build -f deploy/Dockerfile --build-arg VERSION=$$(git describe --always --dirty) -t mailie:local .
 
 # The public source: an allowlist of this checkout, exactly what Git tracks
 # there, without commercial/, history, dependencies or builds, refused if a

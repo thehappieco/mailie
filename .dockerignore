@@ -1,0 +1,23 @@
+# The build context of deploy/Dockerfile is this checkout's root, and only what
+# the image is built from goes into it: an allowlist, so that a new file at the
+# top (an .env, a database, a private checkout under commercial/, a build) stays
+# out of the context without anyone having to remember it here.
+*
+!go.mod
+!go.sum
+!cmd/
+!internal/
+!web/
+
+# Inside what is let in, still out: dependencies and builds, which the image
+# makes itself, and local settings, secrets and databases, wherever they sit.
+**/node_modules
+web/dist
+**/.env
+**/.env.*
+**/*.local.*
+**/.npmrc
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/.DS_Store

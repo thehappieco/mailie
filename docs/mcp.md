@@ -9,7 +9,9 @@ same consent. No authorization rule lives in `internal/mcp`.
 - **Endpoint:** `/mcp` on the daemon's listener (`http://127.0.0.1:8080/mcp` by default, or
   `https://<your host>/mcp` behind your proxy): Streamable HTTP, **stateful** (POST, GET and
   DELETE). On unless `MAIL_MCP_HTTP=false`.
-- **stdio:** `mailserver serve --mcp-stdio`, for a client that launches the daemon itself.
+- **stdio:** `mailserver mcp connect --url <server>`, a local server for a client that launches one,
+  relaying to a server's `/mcp` (on any machine); or `mailserver serve --mcp-stdio`, for a client that
+  launches the whole daemon itself. See [Connect a client](#connect-a-client).
 - **Credential:** an API key in `Authorization: Bearer <key>`. There is no OAuth.
 
 ## Who gets in, and what they see
@@ -90,25 +92,163 @@ model.
 Every result carries `cacheScope: "private"` and `ttlMs: 0`. The protocol's default, `"public"`,
 would let an intermediary keep a response and serve it to someone else, and this is one key's mail.
 
-## Connecting a client
+## Connect a client
 
-**Claude Code:**
+A client needs two things: the server's address, and an API key. A person creates theirs in the
+console's **API keys & MCP** section, for the mailboxes, scope and lifetime they choose; the operator's
+instance keys come from `mailserver apikey create`. The key is the only credential: whoever holds it
+reaches what it reaches, so it goes where only its owner can read it, never into a command line
+someone else can see, an address or a log.
+
+| Client | How it reaches the server | Set up with | Where the key ends up |
+|---|---|---|---|
+| Claude Code | HTTP, the key in a header | `claude mcp add` (below), which you run | `~/.claude.json`, Claude Code's own file |
+| Cursor | HTTP, the key in a header | `mailserver mcp install --client cursor` | `~/.cursor/mcp.json`, mode 0600 |
+| Claude Desktop | `mailserver mcp connect`, launched by it | `mailserver mcp install --client claude-desktop` | its `claude_desktop_config.json`, mode 0600 |
+| Any other client that launches a local server | `mailserver mcp connect` | its own configuration, as below | the environment it gives `mcp connect` |
+| Any other client that sends a fixed `Authorization: Bearer` header | HTTP | its own configuration | its configuration |
+
+Every way needs MCP over HTTP on the server (the default; not `MAIL_MCP_HTTP=false`), and an
+`https://` address, or `http://` to this very machine (`localhost`, `127.0.0.1`, `::1`): over plain
+HTTP to anywhere else the key would cross the network in clear, and the commands refuse it.
+**claude.ai web connectors** and Claude Desktop's *remote* connectors need OAuth, which Mailie does
+not offer yet; `mcp connect` is how Claude Desktop reaches a Mailie server meanwhile.
+
+### Claude Code
+
+Claude Code speaks MCP over HTTP with a header itself:
 
 ```sh
-claude mcp add --transport http mailie http://localhost:8080/mcp \
+claude mcp add --transport http --scope user mailie https://mail.example.com/mcp \
   --header "Authorization: Bearer <your key>"
 ```
 
-The console's **API keys & MCP** section shows this command with the server's own address, and a
-new key's dialog copies it with the key in it, whenever the server answers MCP over HTTP.
+The console's **API keys & MCP** section shows this command with the server's own address, and a new
+key's dialog copies it with the key in it, whenever the server answers MCP over HTTP.
+`mailserver mcp install --client claude-code --url https://mail.example.com` checks that the address
+answers MCP and prints the same command with `<your key>` where the key goes, and writes nothing:
+Claude Code keeps its servers in `~/.claude.json`, its own state file, which it rewrites while it runs
+and whose format its documentation does not offer to other programs, and `claude mcp add` takes the
+header only on its command line, where other programs on the machine can read it while it runs. So
+the command is yours to run; clear it from your shell's history afterwards. `claude mcp remove --scope
+user mailie` removes it (`mcp install --client claude-code --uninstall` prints that too).
 
-**Any other client** that sends a fixed `Authorization: Bearer` header works the same way.
+### `mailserver mcp connect`
 
-**claude.ai web connectors** and Claude Desktop's remote connectors need OAuth, which Mailie does not
-offer yet.
+```sh
+MAILIE_API_KEY=<your key> mailserver mcp connect --url https://mail.example.com
+```
 
-**stdio**, for a client that launches the daemon, such as Claude Desktop's
-`claude_desktop_config.json`:
+A local MCP server on standard input and output, for a client that launches one, that relays every
+message to the server's `/mcp` over HTTPS with the key from `MAILIE_API_KEY`: the client talks to
+the Mailie server as if it were local. It is the same binary as the daemon but runs nothing of it:
+no database, no sync, no `MAIL_*` variable and no `.env`, so it runs on any machine — a laptop
+reaching a server elsewhere, or beside a daemon on the same one (unlike `serve --mcp-stdio`, which is a
+whole daemon).
+
+- **The key** comes from `MAILIE_API_KEY` and nowhere else; there is no flag for it. Without it, or
+  with something that is not an API key (a console session token, for one), `mcp connect` refuses to
+  start. It sends the key only to the address given, and never follows a redirect, which would take
+  the key along.
+- **What passes:** everything. The bridge copies JSON-RPC messages both ways without reading them:
+  tools, resources, subscriptions and their `notifications/resources/updated`, progress, the server's
+  own requests to the client and the client's answers. It is the go-sdk's own stdio transport towards
+  the client and its Streamable HTTP client towards the server, plus the two things that client does
+  only inside the SDK's own session: it sends the negotiated `MCP-Protocol-Version` on every request
+  of the session, and it holds the session's GET stream, where the server sends what it says outside a
+  request (a subscription's updates).
+- **A session the server ended** — idle for 30 minutes, the key's least recently used of 16, a
+  daemon that restarted — is opened again with the client's own `initialize`, and its subscriptions
+  made again, before the request that found it gone is sent again: the client never sees it. A call
+  still waiting when its session ended is answered with an error instead of never.
+- **The stream of notifications** (the session's GET stream) is asked for again whenever it ends,
+  with `Last-Event-ID`, so that the server replays what it sent meanwhile. A refusal is asked again
+  too, waiting longer each time (1 s, doubling up to 30 s): a server restarting (`5xx`), limiting the
+  key (`429`), or still holding the stream for a connection it has not noticed is dead (`409`: the
+  client's network changed or its machine slept, and the server, or a proxy in front of it, still
+  believes the old connection is there). When the server still holds it after 3 minutes, or can no
+  longer replay what it sent meanwhile (`400`: it keeps that for 5 minutes at most), the bridge ends
+  the session and opens another with the client's subscriptions, as above: what was sent in the gap
+  is lost, the bridge logs that, and a call still waiting in the old session is answered with an
+  error. Only a server without that stream (`405`) is left without one.
+- **Logs** go to standard error (standard output is the client's), one line per event of its own,
+  never a message's content and never the key.
+- **It ends** when the client closes standard input (exit 0), and with a line on standard error and a
+  non-zero exit when the server refuses the key (`401`: wrong, expired or revoked — at the start, or at
+  the first request after it was revoked), refuses it MCP (`403`: a key an administrator made for a
+  person), has no MCP endpoint at that address (`404`: not a Mailie server, or `MAIL_MCP_HTTP=false`
+  there) or answers with a redirect. A client shows that line in its log of the server.
+
+For a client that launches a local server, the entry is the one `mcp install` writes for Claude
+Desktop:
+
+```json
+{
+  "mcpServers": {
+    "mailie": {
+      "command": "/usr/local/bin/mailserver",
+      "args": ["mcp", "connect", "--url", "https://mail.example.com"],
+      "env": { "MAILIE_API_KEY": "<your key>" }
+    }
+  }
+}
+```
+
+### `mailserver mcp install`
+
+```sh
+mailserver mcp install --client claude-desktop --url https://mail.example.com
+mailserver mcp install --client cursor --url https://mail.example.com [--name mailie] [--force]
+mailserver mcp install --client claude-desktop --uninstall [--name mailie]
+```
+
+It asks for the key at the terminal without showing it, or reads one line of standard input when that
+is not a terminal (`mailserver mcp install … < key.txt`), and opens a session with it before anything
+is written: a wrong key, a key that may not use MCP, an address with no MCP endpoint or a binary that
+`go run` built (gone by the time Claude Desktop launches it) are refused, and nothing is written.
+
+| Client | File | Entry |
+|---|---|---|
+| `claude-desktop` | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS), `%APPDATA%\Claude\claude_desktop_config.json` (Windows), `$XDG_CONFIG_HOME/Claude/` or `~/.config/Claude/claude_desktop_config.json` (Linux) | `{command: <this binary's absolute path>, args: ["mcp","connect","--url",URL], env: {MAILIE_API_KEY: key}}` |
+| `cursor` | `~/.cursor/mcp.json` | `{url: URL/mcp, headers: {Authorization: "Bearer " + key}}` |
+| `claude-code` | none | the `claude mcp add` command above, printed |
+
+Every write:
+
+- changes the named server (`--name`, default `mailie`) under `mcpServers` and nothing else: other
+  servers and settings keep their values and their order (the file is laid out again, two spaces);
+- refuses to replace a server of the same name without `--force`, before the key is asked for;
+- refuses a file that is not a JSON object, rather than replace it;
+- refuses a symbolic link anywhere below your home directory on the way to the file — the file
+  itself, or a directory such as `~/.cursor`, `~/.config` or `~/Library` — which often leads into a
+  repository of dotfiles where a key has no business (a link above the home, such as a `/home` that
+  is one, is the system's and is followed);
+- writes a temporary file and renames it over the original, so a crash leaves the old file or the new
+  one; the file holds a key now, so it gets mode 0600;
+- keeps the file as it was before mailserver first changed it in `<file>.bak-mailie`, once, and mode
+  0600: later writes never replace that copy, and when there was no file the copy is left empty,
+  which records that, so it never holds a key mailserver wrote;
+- says which file changed, and never the key.
+
+`--uninstall` removes the named server and nothing else, and says so when there is none. It keeps no
+copy (the file it changes holds the key it removes), and since it writes no key it goes through a
+linked directory; a linked file is still refused, because the rename would replace the link. Claude
+Desktop's entry names this binary's absolute path: if the binary moves, run `mcp install --force`
+again. Restart the client after a change.
+
+### Where the key ends up, and taking it back
+
+The key sits in the client's file (Cursor's, Claude Desktop's, readable only by you after `mcp
+install`) or in Claude Code's. Removing the entry does not make the key stop working: revoking it does.
+A person revokes theirs in the console's **API keys & MCP** section, the operator an instance key with
+`mailserver apikey revoke PREFIX`. A revoked key stops at its next request — over HTTP the client gets
+`401`, and `mcp connect` ends with a line saying so — and `mcp install --uninstall` then clears the
+entry.
+
+### `serve --mcp-stdio`
+
+For a client that launches the whole daemon itself, such as Claude Desktop's
+`claude_desktop_config.json` on the server's own machine:
 
 ```json
 {
@@ -129,12 +269,16 @@ offer yet.
 This runs the whole daemon (sync included), so it cannot share a data directory with another
 running daemon: the second refuses the lock. With `--mcp-stdio` every log line goes to standard
 error (standard output is the client's), `MAIL_MCP_KEY` is required and checked like a bearer key
-when the daemon starts, and the daemon exits when the client hangs up.
+when the daemon starts, and the daemon exits when the client hangs up. Beside a daemon that is
+already running, use `mcp connect` instead.
 
-**Switching HTTP off.** `MAIL_MCP_HTTP=false` (default `true`) leaves `/mcp` unmounted: every method
+### Switching HTTP off
+
+`MAIL_MCP_HTTP=false` (default `true`) leaves `/mcp` unmounted: every method
 on `/mcp` and under it answers the API's JSON `404` (`{"code":"not_found","message":"no such
 endpoint"}`), with or without a console, and no event store is built (the startup log says
-`mcp_http=off` instead of its bounds). `serve --mcp-stdio` works either way. `GET /v1/me/mcp`
+`mcp_http=off` instead of its bounds). `serve --mcp-stdio` works either way; `mcp connect` and
+`mcp install` need HTTP, and say so when it is off. `GET /v1/me/mcp`
 answers `{"http":false}`, and the console's API keys section then shows no MCP address and no
 command.
 
@@ -142,7 +286,9 @@ command.
 
 Over stateful HTTP the SDK negotiates up to `2025-11-25`: a client asking for `2026-07-28` gets the
 version error and negotiates again (the SDK's own client does, and the tests prove it). Over stdio,
-any version the SDK speaks, `2026-07-28` included. The test suite runs on both.
+any version the SDK speaks, `2026-07-28` included. The test suite runs on both. Through `mcp
+connect` a client negotiates with the server's HTTP transport, as if it were connected directly: the
+bridge relays the negotiation, `server/discover` included, on a connection of its own.
 
 ## Limits
 
