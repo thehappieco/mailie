@@ -200,6 +200,9 @@ sync and for actions). There is no mail to read or write in it: a tool does that
 - `mailserver user disable --email X` ends a person's sessions and revokes their keys;
   `mailserver user delete --email X` deletes them with their mailboxes, credentials, index,
   sessions and keys.
+- A forgotten password is reset by the operator with the daemon stopped:
+  `mailserver user password --bootstrap --email X` asks for the new one twice (or reads one line
+  piped in) and ends every session that person has. No route sets a password.
 
 [`docs/console.md`](docs/console.md) covers the console, its REST API, consent, events and the
 OAuth flows in detail.

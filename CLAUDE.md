@@ -8,7 +8,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 
 - `cmd/mailserver` — one binary: `serve`, `account`, `apikey`, `user`, `migrate`,
   `rewrap-credentials`, `backup`. The CLI is a REST client of the daemon; only
-  `apikey create --bootstrap`, `user invite|disable|delete --bootstrap`, `migrate` and
+  `apikey create --bootstrap`, `user invite|disable|delete|password --bootstrap`, `migrate` and
   `rewrap-credentials` open the database directly, and they refuse to run while the daemon is up.
   The one exception to the lock is `backup`: it reads the database with the daemon up, through a
   `mode=ro` connection that writes nothing, and takes no lock. `backup` and `backup restore` load

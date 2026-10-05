@@ -27,7 +27,8 @@ import (
 // Nobody signs up without an invite. There is no public registration, no email
 // verification and no reset by email: an invite is printed by the CLI or made
 // by an owner in the console, it names the one address it is for, and it
-// works once.
+// works once. A forgotten password is set again by the operator, from the
+// command line (SetPassword).
 
 // Role is what a person may do beyond their own mailboxes.
 type Role string
@@ -321,6 +322,46 @@ func (u *Users) ChangePassword(ctx context.Context, userID, current, next, userA
 		return "", Session{}, err
 	}
 	return token, session, nil
+}
+
+// SetPassword replaces a person's password without asking for the old one,
+// and reports how many sessions it ended. It is how a forgotten password is
+// recovered, and only the operator reaches it: `mailserver user password
+// --bootstrap`, with the database open and the daemon stopped. No route calls
+// it, so nothing remote can set someone's password.
+//
+// The rules and the hash are sign-up's. Every session the person has ends in
+// the same transaction, as with a change: whoever forgot a password may also
+// have left it somewhere, and a session opened under it must not outlive the
+// reset. A disabled person stays disabled; the new password signs in only if
+// they are enabled again.
+func (u *Users) SetPassword(ctx context.Context, userID, password string) (int, error) {
+	if err := CheckPassword(password); err != nil {
+		return 0, err
+	}
+	fresh, err := hashPassword(ctx, password)
+	if err != nil {
+		return 0, err
+	}
+	var ended int
+	err = u.store.Write(ctx, func(tx *sql.Tx) error {
+		now := u.now()
+		res, err := tx.ExecContext(ctx,
+			`UPDATE users SET password_hash = ?, password_changed_at = ?, updated_at = ? WHERE id = ?`,
+			fresh, now.Unix(), now.Unix(), userID)
+		if err != nil {
+			return fmt.Errorf("auth: set password: %w", err)
+		}
+		if err := requireRow(res, ErrUserNotFound); err != nil {
+			return err
+		}
+		ended, err = revokeSessionsTx(ctx, tx, userID, now.Unix())
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return ended, nil
 }
 
 func scanUser(row interface{ Scan(...any) error }) (User, error) {

@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -19,8 +21,10 @@ import (
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/lockfile"
+	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
 )
 
@@ -275,5 +279,373 @@ func TestAnAddressCanComeFromStandardInputAndStayOffTheCommandLine(t *testing.T)
 		if !strings.Contains(request, `"email":"ana@example.com"`) {
 			t.Errorf("the address read from standard input did not arrive whole: %s", request)
 		}
+	}
+}
+
+// pipeStdin makes standard input a pipe that carries input: not a terminal.
+func pipeStdin(t *testing.T, input string) *strings.Reader {
+	t.Helper()
+	previous, wasTerminal := stdin, stdinIsTerminal
+	r := strings.NewReader(input)
+	stdin, stdinIsTerminal = r, func() bool { return false }
+	t.Cleanup(func() { stdin, stdinIsTerminal = previous, wasTerminal })
+	return r
+}
+
+// terminalStdin makes standard input a terminal, on which typed is what the
+// operator types where it is echoed (an address, for --email -) and each of
+// hidden is one entry typed where it is not.
+func terminalStdin(t *testing.T, typed string, hidden ...string) {
+	t.Helper()
+	previous, wasTerminal, previousRead := stdin, stdinIsTerminal, readHidden
+	stdin, stdinIsTerminal = strings.NewReader(typed), func() bool { return true }
+	readHidden = func(context.Context) ([]byte, error) {
+		if len(hidden) == 0 {
+			t.Error("asked for one more password than was typed")
+			return nil, io.EOF
+		}
+		next := hidden[0]
+		hidden = hidden[1:]
+		return []byte(next), nil
+	}
+	t.Cleanup(func() { stdin, stdinIsTerminal, readHidden = previous, wasTerminal, previousRead })
+}
+
+// passwordState is what a reset changes for one person: their stored hash and
+// how many of their sessions still work.
+func passwordState(t *testing.T, db *store.Store, userID string) string {
+	t.Helper()
+	var hash string
+	var live int
+	if err := db.Reader().QueryRowContext(t.Context(),
+		`SELECT password_hash, (SELECT count(*) FROM sessions WHERE user_id = users.id AND revoked_at = 0)
+		   FROM users WHERE id = ?`, userID).Scan(&hash, &live); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%s|%d live", hash, live)
+}
+
+const newPassword = "a brand new password"
+
+func TestAPasswordResetWithBootstrapSignsInAndEndsOnlyThatPersonsSessions(t *testing.T) {
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	users := auth.NewUsers(db)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.NewUser(t, db, "bob@example.com", auth.RoleMember)
+	laptop := authtest.SignIn(t, users, "ana@example.com")
+	phone := authtest.SignIn(t, users, "ana@example.com")
+	bobs := authtest.SignIn(t, users, "bob@example.com")
+
+	// One line, for automation: whatever follows it is not the password.
+	pipeStdin(t, newPassword+"\nnot this line\n")
+	var logs bytes.Buffer
+	ctx := obs.WithLogger(t.Context(), obs.NewLoggerTo(&logs, "info", "json"))
+	if err := userPassword(ctx, cfg, []string{"--bootstrap", "--email", "Ana@Example.com"}); err != nil {
+		t.Fatalf("user password --bootstrap: %v", err)
+	}
+
+	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Errorf("the old password still signs in: %v", err)
+	}
+	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", newPassword, "test"); err != nil {
+		t.Errorf("the new password does not sign in: %v", err)
+	}
+	for name, token := range map[string]string{"laptop": laptop, "phone": phone} {
+		if _, err := users.AuthenticateSession(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
+			t.Errorf("ana's %s session survived the reset: %v", name, err)
+		}
+	}
+	if _, err := users.AuthenticateSession(t.Context(), bobs); err != nil {
+		t.Errorf("bob's session ended with ana's reset: %v", err)
+	}
+	// The operator's event is in the log, and the password nowhere in it.
+	if got := logs.String(); !strings.Contains(got, "password set by the operator") || !strings.Contains(got, ana.ID) ||
+		!strings.Contains(got, `"sessions_ended":2`) || strings.Contains(got, newPassword) {
+		t.Errorf("the log says %q", got)
+	}
+}
+
+func TestResettingAPasswordRefusesWithoutBootstrap(t *testing.T) {
+	// No route sets someone's password, so there is no daemon to ask.
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	before := passwordState(t, db, ana.ID)
+
+	input := pipeStdin(t, newPassword+"\n")
+	err := userPassword(t.Context(), cfg, []string{"--email", "ana@example.com"})
+	if err == nil || !strings.Contains(err.Error(), "--bootstrap") {
+		t.Errorf("user password without --bootstrap: %v", err)
+	}
+	if input.Len() != len(newPassword)+1 {
+		t.Errorf("standard input was read before refusing")
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused reset changed the person: %s, was %s", after, before)
+	}
+}
+
+func TestResettingAPasswordRefusesWhileTheDaemonRuns(t *testing.T) {
+	cfg := localConfig(t)
+	lock, err := lockfile.Acquire(cfg.LockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = lock.Release() })
+
+	pipeStdin(t, newPassword+"\n")
+	err = userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
+	if err == nil || !strings.Contains(err.Error(), "daemon is running") {
+		t.Errorf("user password --bootstrap beside the daemon: %v", err)
+	}
+}
+
+func TestResettingThePasswordOfAnUnknownAddressChangesNothing(t *testing.T) {
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	// Nobody is asked to type a password for nobody.
+	input := pipeStdin(t, newPassword+"\n")
+	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "nobody@example.com"})
+	if err == nil || !strings.Contains(err.Error(), "no person has that address") {
+		t.Errorf("user password for an unknown address: %v", err)
+	}
+	if input.Len() != len(newPassword)+1 {
+		t.Errorf("a password was read for an address nobody has")
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a reset for nobody changed somebody: %s, was %s", after, before)
+	}
+}
+
+func TestAShortPasswordIsRefusedByTheResetAndChangesNothing(t *testing.T) {
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	for _, input := range []string{"too short\n", "\n", ""} {
+		pipeStdin(t, input)
+		if err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"}); err == nil ||
+			!strings.Contains(err.Error(), "nothing was changed") {
+			t.Errorf("user password with %q on standard input: %v", input, err)
+		}
+	}
+	terminalStdin(t, "", "too short")
+	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
+	if !errors.Is(err, auth.ErrPasswordTooShort) {
+		t.Errorf("user password with a short password at a terminal: %v", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused password changed the person: %s, was %s", after, before)
+	}
+}
+
+func TestAPasswordThatIsNotUTF8IsRefusedByTheResetAndChangesNothing(t *testing.T) {
+	// Piped from a Latin-1 file, or typed at a terminal not set to UTF-8:
+	// the console could never send these bytes, so the person could never
+	// sign in with what the operator meant.
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	pipeStdin(t, "contrase\xf1a2026\n")
+	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
+	if !errors.Is(err, auth.ErrPasswordNotUTF8) || !strings.HasSuffix(err.Error(), "nothing was changed") {
+		t.Errorf("user password with Latin-1 on standard input: %v", err)
+	}
+	terminalStdin(t, "", "contrase\xf1a2026")
+	err = userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
+	if !errors.Is(err, auth.ErrPasswordNotUTF8) || !strings.HasSuffix(err.Error(), "nothing was changed") {
+		t.Errorf("user password with Latin-1 typed at a terminal: %v", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused password changed the person: %s, was %s", after, before)
+	}
+}
+
+func TestMismatchedEntriesAtATerminalAreRefusedAndChangeNothing(t *testing.T) {
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	terminalStdin(t, "", newPassword, newPassword+"!")
+	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
+	if !errors.Is(err, errPasswordsDiffer) {
+		t.Errorf("user password with two different entries: %v", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("mismatched entries changed the person: %s, was %s", after, before)
+	}
+}
+
+func TestTheNewPasswordMustBeTypedTheSameTwice(t *testing.T) {
+	typing := func(entries ...string) func(context.Context) ([]byte, error) {
+		return func(context.Context) ([]byte, error) {
+			if len(entries) == 0 {
+				return nil, io.EOF
+			}
+			next := entries[0]
+			entries = entries[1:]
+			return []byte(next), nil
+		}
+	}
+	var said strings.Builder
+	say := func(s string) { said.WriteString(s) }
+
+	got, err := readNewPassword(t.Context(), typing(newPassword, newPassword), say, "ana@example.com")
+	if err != nil || got != newPassword {
+		t.Errorf("two equal entries: %q, %v", got, err)
+	}
+	if !strings.Contains(said.String(), "ana@example.com") || strings.Contains(said.String(), newPassword) {
+		t.Errorf("the prompts say %q: they must name the person and never show the password", said.String())
+	}
+	if _, err := readNewPassword(t.Context(), typing(newPassword, "a brand new passwork"), say, "ana@example.com"); !errors.Is(err, errPasswordsDiffer) {
+		t.Errorf("two different entries: %v", err)
+	}
+	if _, err := readNewPassword(t.Context(), typing(newPassword, newPassword+" "), say, "ana@example.com"); !errors.Is(err, errPasswordsDiffer) {
+		t.Errorf("entries that differ by a trailing space: %v", err)
+	}
+	// A short first entry is refused before the second is asked for.
+	asked := 0
+	counting := func(context.Context) ([]byte, error) { asked++; return []byte("short"), nil }
+	if _, err := readNewPassword(t.Context(), counting, say, "ana@example.com"); !errors.Is(err, auth.ErrPasswordTooShort) || asked != 1 {
+		t.Errorf("a short first entry: %v after %d entries, want ErrPasswordTooShort after 1", err, asked)
+	}
+	if _, err := readNewPassword(t.Context(), typing(newPassword), say, "ana@example.com"); !errors.Is(err, io.EOF) {
+		t.Errorf("a terminal that closes before the second entry: %v", err)
+	}
+}
+
+// fakeTerminal is a terminal for readHiddenFrom: it records whether it
+// echoes, and a line arrives when the test types one.
+type fakeTerminal struct {
+	mu     sync.Mutex
+	echo   bool
+	hidden chan struct{} // closed once echo is off
+	typed  chan []byte
+}
+
+func newFakeTerminal(t *testing.T) *fakeTerminal {
+	f := &fakeTerminal{echo: true, hidden: make(chan struct{}), typed: make(chan []byte)}
+	// A read nobody waits for any more ends with the test, as it ends with
+	// the process.
+	t.Cleanup(func() { close(f.typed) })
+	return f
+}
+
+func (f *fakeTerminal) hide() (func(), error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.echo = false
+	close(f.hidden)
+	return func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.echo = true
+	}, nil
+}
+
+func (f *fakeTerminal) readLine() ([]byte, error) {
+	line, ok := <-f.typed
+	if !ok {
+		return nil, io.EOF
+	}
+	return line, nil
+}
+
+func (f *fakeTerminal) echoing() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.echo
+}
+
+func TestEchoComesBackWhicheverWayAHiddenEntryEnds(t *testing.T) {
+	t.Run("Return", func(t *testing.T) {
+		f := newFakeTerminal(t)
+		go func() { <-f.hidden; f.typed <- []byte(newPassword) }()
+		line, err := readHiddenFrom(t.Context(), f)
+		if err != nil || string(line) != newPassword || !f.echoing() {
+			t.Errorf("read %q, %v; echoing %v", line, err, f.echoing())
+		}
+	})
+	t.Run("an interrupt while typing", func(t *testing.T) {
+		f := newFakeTerminal(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		go func() { <-f.hidden; cancel() }()
+		if _, err := readHiddenFrom(ctx, f); !errors.Is(err, context.Canceled) || !f.echoing() {
+			t.Errorf("%v; echoing %v", err, f.echoing())
+		}
+	})
+	t.Run("an interrupt before the prompt", func(t *testing.T) {
+		f := newFakeTerminal(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		if _, err := readHiddenFrom(ctx, f); !errors.Is(err, context.Canceled) || !f.echoing() {
+			t.Errorf("%v; echoing %v", err, f.echoing())
+		}
+	})
+}
+
+func TestAHiddenEntryReadsOneLineAndNothingPastIt(t *testing.T) {
+	r := strings.NewReader("secret\b\bxx\r\nthe next line")
+	if line, err := readTerminalLine(r); err != nil || string(line) != "secrxx" || r.Len() != len("the next line") {
+		t.Errorf("read %q, %v, leaving %d bytes", line, err, r.Len())
+	}
+	if line, err := readTerminalLine(strings.NewReader("no newline")); err != nil || string(line) != "no newline" {
+		t.Errorf("a line ended by the end of input: %q, %v", line, err)
+	}
+	if _, err := readTerminalLine(strings.NewReader("")); !errors.Is(err, io.EOF) {
+		t.Errorf("nothing typed before the end of input: %v", err)
+	}
+}
+
+func TestAnAddressFromStandardInputNeedsThePasswordTypedAtATerminal(t *testing.T) {
+	// Standard input cannot carry both the address and the password: a
+	// pipe after --email - is refused, and at a terminal the address is
+	// typed in the clear and the password twice without echo.
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	before := passwordState(t, db, ana.ID)
+
+	pipeStdin(t, "ana@example.com\n"+newPassword+"\n")
+	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "-"})
+	if err == nil || !strings.Contains(err.Error(), "terminal") {
+		t.Errorf("user password --email - from a pipe: %v", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused reset changed the person: %s, was %s", after, before)
+	}
+
+	terminalStdin(t, "ana@example.com\n", newPassword, newPassword)
+	if err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "-"}); err != nil {
+		t.Fatalf("user password --email - at a terminal: %v", err)
+	}
+	if _, _, _, err := auth.NewUsers(db).SignIn(t.Context(), "ana@example.com", newPassword, "test"); err != nil {
+		t.Errorf("the password typed at the terminal does not sign in: %v", err)
+	}
+}
+
+func TestThePasswordIsNeverAnArgument(t *testing.T) {
+	// An argument is in the process listing and the shell history; a
+	// stray one here may well be the password, so it is not quoted back.
+	pipeStdin(t, "")
+	err := userPassword(t.Context(), localConfig(t), []string{"--bootstrap", "--email", "ana@example.com", newPassword})
+	if err == nil || strings.Contains(err.Error(), newPassword) {
+		t.Errorf("a password given as an argument: %v", err)
+	}
+	args := []string{"--bootstrap", "--email", "ana@example.com", "--password", newPassword}
+	if err := userPassword(t.Context(), localConfig(t), args); err == nil {
+		t.Errorf("--password was accepted")
 	}
 }

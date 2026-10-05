@@ -247,6 +247,8 @@ func fromUsers(err error, what string) error {
 		return Ef(CodeBadRequest, err, "a password needs at least %d characters", auth.MinPasswordLength)
 	case errors.Is(err, auth.ErrPasswordTooLong):
 		return Ef(CodeBadRequest, err, "a password may be at most %d bytes", auth.MaxPasswordBytes)
+	case errors.Is(err, auth.ErrPasswordNotUTF8):
+		return E(CodeBadRequest, "a password must be valid UTF-8 text", err)
 	case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, auth.ErrInvalidSession):
 		// The session authenticated a moment ago; if its user or its row is
 		// gone now, the honest answer is the one a revoked session gets.

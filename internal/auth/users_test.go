@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -403,6 +404,160 @@ func TestAPasswordChangeEndsEverySessionAndIssuesANewOne(t *testing.T) {
 	}
 	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); err != nil {
 		t.Errorf("the new password does not sign in: %v", err)
+	}
+}
+
+// passwordState is what a password reset changes: the stored hash, when it
+// last changed, and how many of the person's sessions are still live.
+func passwordState(t *testing.T, db *store.Store, userID string) string {
+	t.Helper()
+	var hash string
+	var changed, live int64
+	if err := db.Reader().QueryRowContext(t.Context(),
+		`SELECT password_hash, password_changed_at,
+		        (SELECT count(*) FROM sessions WHERE user_id = users.id AND revoked_at = 0)
+		   FROM users WHERE id = ?`, userID).Scan(&hash, &changed, &live); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%s|%d|%d", hash, changed, live)
+}
+
+func TestAPasswordSetByTheOperatorSignsInAndTheOldOneNoLongerDoes(t *testing.T) {
+	cheapKDF(t)
+	users, db, clock := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	*clock = clock.Add(time.Hour)
+
+	if _, err := users.SetPassword(t.Context(), ana.ID, "a brand new password"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Errorf("the old password still signs in: %v", err)
+	}
+	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); err != nil {
+		t.Errorf("the new password does not sign in: %v", err)
+	}
+	if got, err := users.Get(t.Context(), ana.ID); err != nil || !got.PasswordChangedAt.Equal(clock.Truncate(time.Second)) {
+		t.Errorf("password_changed_at = %v (%v), want %v", got.PasswordChangedAt, err, *clock)
+	}
+	// Sign-up's hash, at sign-up's cost: the reset is not a cheaper door.
+	var hash string
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT password_hash FROM users WHERE id = ?`, ana.ID).Scan(&hash); err != nil {
+		t.Fatal(err)
+	}
+	memory, passes := auth.PasswordCostForTest()
+	if want := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=1$", argon2.Version, memory, passes); !strings.HasPrefix(hash, want) {
+		t.Errorf("stored %q, want a PHC string starting %q", hash[:min(len(hash), 40)], want)
+	}
+}
+
+func TestSettingAPasswordEndsEverySessionOfThatPersonAndNobodyElses(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.NewUser(t, db, "bob@example.com", auth.RoleMember)
+	laptop := authtest.SignIn(t, users, "ana@example.com")
+	phone := authtest.SignIn(t, users, "ana@example.com")
+	bobs := authtest.SignIn(t, users, "bob@example.com")
+
+	ended, err := users.SetPassword(t.Context(), ana.ID, "a brand new password")
+	if err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if ended != 2 {
+		t.Errorf("ended %d sessions, want 2", ended)
+	}
+	for name, token := range map[string]string{"laptop": laptop, "phone": phone} {
+		if _, err := users.AuthenticateSession(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
+			t.Errorf("ana's %s session survived the reset: %v", name, err)
+		}
+	}
+	if _, err := users.AuthenticateSession(t.Context(), bobs); err != nil {
+		t.Errorf("bob's session ended with ana's reset: %v", err)
+	}
+}
+
+func TestAShortPasswordIsRefusedAndNothingChanges(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	token := authtest.SignIn(t, users, "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	for password, want := range map[string]error{
+		"too short":               auth.ErrPasswordTooShort,
+		strings.Repeat("x", 1025): auth.ErrPasswordTooLong,
+		"ninechars":               auth.ErrPasswordTooShort,
+		strings.Repeat("é", 9):    auth.ErrPasswordTooShort, // characters, not bytes
+	} {
+		if _, err := users.SetPassword(t.Context(), ana.ID, password); !errors.Is(err, want) {
+			t.Errorf("SetPassword(%d bytes) = %v, want %v", len(password), err, want)
+		}
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused password changed something:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := users.AuthenticateSession(t.Context(), token); err != nil {
+		t.Errorf("a refused password ended a session: %v", err)
+	}
+}
+
+func TestAPasswordThatIsNotUTF8IsRefusedAndNothingChanges(t *testing.T) {
+	// "contraseña2026" in Latin-1: no sign-in could ever present these
+	// bytes, since the console sends UTF-8 and JSON turns \xf1 into U+FFFD.
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	token := authtest.SignIn(t, users, "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	if err := auth.CheckPassword("contrase\xf1a2026"); !errors.Is(err, auth.ErrPasswordNotUTF8) {
+		t.Errorf("CheckPassword(Latin-1) = %v, want ErrPasswordNotUTF8", err)
+	}
+	if _, err := users.SetPassword(t.Context(), ana.ID, "contrase\xf1a2026"); !errors.Is(err, auth.ErrPasswordNotUTF8) {
+		t.Errorf("SetPassword(Latin-1) = %v, want ErrPasswordNotUTF8", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a refused password changed something:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := users.AuthenticateSession(t.Context(), token); err != nil {
+		t.Errorf("a refused password ended a session: %v", err)
+	}
+	if err := auth.CheckPassword("contraseña2026"); err != nil {
+		t.Errorf("the same password in UTF-8 is refused: %v", err)
+	}
+}
+
+func TestSettingAPasswordKeepsADisabledPersonDisabled(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	if err := users.SetDisabled(t.Context(), ana.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.SetPassword(t.Context(), ana.ID, "a brand new password"); err != nil {
+		t.Fatalf("SetPassword: %v", err)
+	}
+	if got, err := users.Get(t.Context(), ana.ID); err != nil || !got.Disabled {
+		t.Errorf("the reset enabled the person again: %+v, %v", got, err)
+	}
+	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Errorf("a disabled person signed in with the new password: %v", err)
+	}
+}
+
+func TestSettingAPasswordForNobodyChangesNothing(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.SignIn(t, users, "ana@example.com")
+	before := passwordState(t, db, ana.ID)
+
+	if _, err := users.SetPassword(t.Context(), "usr_0000000000000000", "a brand new password"); !errors.Is(err, auth.ErrUserNotFound) {
+		t.Errorf("SetPassword for nobody = %v, want ErrUserNotFound", err)
+	}
+	if after := passwordState(t, db, ana.ID); after != before {
+		t.Errorf("a reset for nobody changed somebody:\nbefore %s\nafter  %s", before, after)
 	}
 }
 

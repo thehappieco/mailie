@@ -66,9 +66,19 @@ tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`. Rou
 
 ### Passwords and sign-in
 
-Passwords are hashed with Argon2id on the server (64 MiB, t=3, p=1), at least 10 characters, with
-at most two hashes running at once. An unknown address and a disabled person cost the same work as
-a wrong password and get the same answer. Changing the password ends every other session.
+Passwords are hashed with Argon2id on the server (64 MiB, t=3, p=1), at least 10 characters of
+valid UTF-8, with at most two hashes running at once. An unknown address and a disabled person cost
+the same work as a wrong password and get the same answer. Changing the password ends every other
+session.
+
+A forgotten password is reset by the operator, with the daemon stopped:
+`mailserver user password --bootstrap --email X`. It asks for the new password twice without
+echo, or reads one line from standard input when that is not a terminal (never a flag or a
+variable), applies the same rules as sign-up (bytes in another encoding, such as a Latin-1 file,
+are refused: no sign-in could send them), and ends every session the person has in the same
+transaction. A disabled person stays disabled. There is no route for it, by design: nothing remote
+sets someone's password. `--email -` reads the address from standard input; the password must then
+be typed at a terminal.
 
 ### Invitations
 
@@ -787,7 +797,8 @@ CI runs it in a job of its own. `web/README.md` describes the tests and the opti
 - Drafts kept on the server, composing HTML, the MCP tools that send, and webhooks. Permanent
   deletion does not exist and will not.
 - Searching message bodies.
-- Self-service sign-up, email verification, password recovery by email, passkeys.
+- Self-service sign-up, email verification, password recovery by email (the operator resets a
+  forgotten password: [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
 - A screen to invite and manage people; the routes and the command line exist.
 - OAuth for MCP clients: `/mcp` takes a key as a bearer.
 - Renaming or pausing a mailbox, and replacing the stored password of a password mailbox.

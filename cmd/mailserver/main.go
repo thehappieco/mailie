@@ -7,8 +7,8 @@
 // running daemon — with a few exceptions that have to touch the database
 // directly, because they run when no daemon is up or no key exists yet:
 // `apikey create --bootstrap`, `user invite|disable|delete --bootstrap`,
-// `migrate` and `rewrap-credentials`. Those refuse to run while the daemon
-// holds its lock.
+// `user password --bootstrap` (which has no REST form at all), `migrate` and
+// `rewrap-credentials`. Those refuse to run while the daemon holds its lock.
 //
 // `backup` is the one exception to the lock. It reads the database while the
 // daemon runs — that is the point of it — through a read-only connection,
@@ -120,6 +120,9 @@ Usage:
   mailserver user invite --email ADDR     Invite a person to the web console
   mailserver user disable --email ADDR    End a person's sessions and revoke their keys
   mailserver user delete --email ADDR     Delete a person, their mailboxes, sessions, keys and invite
+  mailserver user password --bootstrap --email ADDR
+                                          Set a forgotten console password and end every session
+                                          (daemon stopped; typed twice at a terminal, or one line piped)
   mailserver migrate [--dry-run]          Apply pending schema migrations
   mailserver rewrap-credentials           Re-encrypt credentials under the active key
   mailserver backup                       Encrypt a snapshot of the database and upload it to S3
@@ -148,6 +151,11 @@ routes off, issue a key with the daemon stopped:
 and, for the web console, invite its first person (always an owner) with:
 
   mailserver user invite --bootstrap --email you@example.com
+
+A forgotten console password is set again only that way, with the daemon
+stopped, since no route sets a password; it ends every session the person has:
+
+  mailserver user password --bootstrap --email you@example.com
 
 backup reads MAIL_ENV (the encryption context's env, dev when unset), and
 MAIL_BACKUP_BUCKET, MAIL_BACKUP_KMS_KEY_ARN and MAIL_BACKUP_REGION, all three

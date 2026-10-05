@@ -45,12 +45,23 @@ var (
 	ErrPasswordTooShort = errors.New("auth: a password needs at least 10 characters")
 	// ErrPasswordTooLong is a new password over MaxPasswordBytes.
 	ErrPasswordTooLong = errors.New("auth: a password may be at most 1024 bytes")
+	// ErrPasswordNotUTF8 is a new password that is not valid UTF-8.
+	ErrPasswordNotUTF8 = errors.New("auth: a password must be valid UTF-8 text")
 )
 
 // CheckPassword applies the rules a new password must meet.
+//
+// It has to be valid UTF-8 because that is all a sign-in can ever present: the
+// console sends UTF-8, and a JSON body's invalid bytes arrive as U+FFFD. Bytes
+// in another encoding — a password piped from a Latin-1 file to `user
+// password`, or typed at a terminal that is not set to UTF-8 — would hash to
+// something no sign-in reproduces.
 func CheckPassword(password string) error {
 	if len(password) > MaxPasswordBytes {
 		return ErrPasswordTooLong
+	}
+	if !utf8.ValidString(password) {
+		return ErrPasswordNotUTF8
 	}
 	if utf8.RuneCountInString(password) < MinPasswordLength {
 		return ErrPasswordTooShort

@@ -3,14 +3,18 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -59,7 +63,7 @@ const devConsoleURL = "http://localhost:5174"
 
 func userCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: user needs a subcommand: invite, disable or delete", errUsage)
+		return fmt.Errorf("%w: user needs a subcommand: invite, disable, delete or password", errUsage)
 	}
 	switch args[0] {
 	case "invite":
@@ -68,6 +72,8 @@ func userCommand(ctx context.Context, cfg config.Config, args []string) error {
 		return userDisable(ctx, cfg, args[1:])
 	case "delete":
 		return userDelete(ctx, cfg, args[1:])
+	case "password":
+		return userPassword(ctx, cfg, args[1:])
 	default:
 		return fmt.Errorf("%w: unknown user subcommand %q", errUsage, args[0])
 	}
@@ -233,6 +239,249 @@ func closeBody(req service.CloseUserRequest) map[string]any {
 		body["force"] = true
 	}
 	return body
+}
+
+// A forgotten password is set again by the operator, with the daemon
+// stopped: `user password --bootstrap --email ADDRESS`. There is no route for
+// it, by design: nothing that reaches the daemon over the network sets
+// someone's password, so --bootstrap is not optional here. Whoever can open
+// the database file and hold its lock administers the instance already.
+//
+// The new password is typed at a terminal, twice and without echo, or read as
+// one line from standard input when that is not a terminal (automation,
+// tests). Never a flag or an environment variable: those end up in a process
+// listing, a shell history or the host's journal.
+
+// errPasswordsDiffer is a confirmation that does not match the first entry.
+var errPasswordsDiffer = errors.New("user password: the two entries differ; nothing was changed")
+
+// stdinIsTerminal and readHidden stand for the terminal, which `go test`
+// never has; variables so that a test can be one.
+var (
+	stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	readHidden      = readHiddenLine
+)
+
+func userPassword(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("user password", flag.ContinueOnError)
+	emailFlag := fs.String("email", "", "the address the person signs in with"+emailFlagUsage+
+		"; the password is then typed at a terminal")
+	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, when no daemon is running "+
+		"(required: no route sets a password)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		// Not quoted back: a stray argument here may well be the password.
+		return errors.New("user password: unexpected argument; the password is never an argument, " +
+			"it is typed at a terminal or read from standard input")
+	}
+	if !*bootstrap {
+		return errors.New("user password: needs --bootstrap, with the daemon stopped: " +
+			"no route sets someone's password, by design")
+	}
+	terminal := stdinIsTerminal()
+	if *emailFlag == "-" && !terminal {
+		return errors.New("user password: --email - takes the address from standard input, so the password " +
+			"has to be typed at a terminal; run it from one, or give --email ADDRESS and pipe the password")
+	}
+	// The lock first, and then who it is for: nobody types anything beside
+	// a running daemon, or a password for nobody.
+	db, release, err := openExclusively(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	if *emailFlag == "-" {
+		fmt.Fprint(os.Stderr, "Address: ")
+	}
+	address, err := emailArg("user password", *emailFlag)
+	if err != nil {
+		return err
+	}
+	address, err = auth.NormalizeEmail(address)
+	if err != nil {
+		return fmt.Errorf("user password: %w", err)
+	}
+	users := auth.NewUsers(db)
+	user, err := users.GetByEmail(ctx, address)
+	if errors.Is(err, auth.ErrUserNotFound) {
+		return errors.New("user password: no person has that address; nothing was changed")
+	}
+	if err != nil {
+		return err
+	}
+
+	var password string
+	if terminal {
+		password, err = readNewPassword(ctx, readHidden, func(s string) { fmt.Fprint(os.Stderr, s) }, user.Email)
+	} else {
+		password, err = readPasswordLine(stdin)
+	}
+	if err != nil {
+		return err
+	}
+	ended, err := users.SetPassword(ctx, user.ID, password)
+	if err != nil {
+		return fmt.Errorf("user password: %w; nothing was changed", err)
+	}
+	obs.LoggerFrom(ctx).Info("password set by the operator",
+		"user", user.ID, "sessions_ended", ended, "disabled", user.Disabled)
+	fmt.Printf("new password for %s (%s): every session ended (%s)\n", user.Email, user.ID, plural(ended, "session"))
+	if user.Disabled {
+		fmt.Fprintln(os.Stderr, "This person is disabled and stays so: "+
+			"the new password signs in only once they are enabled again.")
+	}
+	return nil
+}
+
+// readNewPassword asks for the new password twice and returns it once both
+// entries match. The first is held to sign-up's rules before the second is
+// asked for, so a short one is not typed twice for nothing.
+func readNewPassword(ctx context.Context, read func(context.Context) ([]byte, error), say func(string), email string) (string, error) {
+	ask := func(prompt string) (string, error) {
+		say(prompt)
+		line, err := read(ctx)
+		say("\n") // the Return the terminal did not echo
+		if err != nil {
+			return "", fmt.Errorf("user password: reading the password: %w", err)
+		}
+		return string(line), nil
+	}
+	first, err := ask("New password for " + email + ": ")
+	if err != nil {
+		return "", err
+	}
+	if err := auth.CheckPassword(first); err != nil {
+		return "", fmt.Errorf("user password: %w; nothing was changed", err)
+	}
+	again, err := ask("The same password again: ")
+	if err != nil {
+		return "", err
+	}
+	if subtle.ConstantTimeCompare([]byte(first), []byte(again)) != 1 {
+		return "", errPasswordsDiffer
+	}
+	return first, nil
+}
+
+// readPasswordLine reads exactly one line of r and removes its line ending,
+// and nothing else: a space is as much part of a password as any other
+// character.
+func readPasswordLine(r io.Reader) (string, error) {
+	line, err := bufio.NewReader(r).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("user password: reading the password from standard input: %w", err)
+	}
+	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+	if line == "" {
+		return "", errors.New("user password: read no password from standard input; nothing was changed")
+	}
+	return line, nil
+}
+
+// hiddenTerminal is a terminal a password is typed at. hide switches its echo
+// off and returns what switches it back on; readLine reads one line and never
+// touches the terminal's settings.
+type hiddenTerminal interface {
+	hide() (show func(), err error)
+	readLine() ([]byte, error)
+}
+
+// errEntryStopped is a hidden entry ended by quit or hangup.
+var errEntryStopped = errors.New("stopped by a signal")
+
+// readHiddenLine reads one line from the terminal on standard input without
+// echoing it.
+func readHiddenLine(ctx context.Context) ([]byte, error) {
+	return readHiddenFrom(ctx, newStdinTerminal())
+}
+
+// readHiddenFrom reads one line from t without echoing it, and leaves the
+// terminal echoing again whichever way it ends: Return, an interrupt or a
+// termination (ctx), or quit or hangup.
+//
+// Echo goes off here, before anything waits, and the deferred call puts it
+// back, last. The read runs in a goroutine, because it is the one step a
+// signal does not end (the terminal still waits for Return), and it never
+// touches the terminal's settings: a process that gives up leaves it blocked
+// and exits, and nothing switches echo off again after it was put back. Quit
+// (Ctrl-\, which the terminal still sends) and hangup would otherwise end the
+// process at once, past every deferred call, so they are listened for while
+// the entry is open.
+func readHiddenFrom(ctx context.Context, t hiddenTerminal) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	var listen []os.Signal
+	for _, sig := range entrySignals {
+		// An ignored signal ends nothing, and listening would stop
+		// ignoring it (nohup's hangup).
+		if !signal.Ignored(sig) {
+			listen = append(listen, sig)
+		}
+	}
+	stopped := make(chan os.Signal, 1)
+	if len(listen) > 0 { // none would mean every signal
+		signal.Notify(stopped, listen...)
+		defer signal.Stop(stopped) // after show: echo is back before quit can kill again
+	}
+	show, err := t.hide()
+	if err != nil {
+		return nil, err
+	}
+	defer show()
+
+	type read struct {
+		line []byte
+		err  error
+	}
+	done := make(chan read, 1)
+	go func() {
+		line, err := t.readLine()
+		done <- read{line, err}
+	}()
+	select {
+	case r := <-done:
+		return r.line, r.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case sig := <-stopped:
+		return nil, fmt.Errorf("%w (%s); nothing was changed", errEntryStopped, sig)
+	}
+}
+
+// readTerminalLine reads one line of r a byte at a time, so that nothing past
+// it is consumed, as x/term's ReadPassword does: a backspace that reaches it
+// removes the byte before, a carriage return is dropped, and the end of input
+// ends a line that has something in it.
+func readTerminalLine(r io.Reader) ([]byte, error) {
+	var b [1]byte
+	var line []byte
+	for {
+		n, err := r.Read(b[:])
+		if n > 0 {
+			switch b[0] {
+			case '\b':
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			case '\n':
+				return line, nil
+			case '\r':
+			default:
+				line = append(line, b[0])
+			}
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				return line, nil
+			}
+			return nil, err
+		}
+	}
 }
 
 // asOperator runs a use case straight against the database, as the operator.
