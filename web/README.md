@@ -6,9 +6,10 @@ console of Wappie, a sibling product, whose tokens, class names, `ConsoleDialog`
 in `../docs/console.md`, and the OAuth client registrations in `../README.md`.
 
 This project is the **open console**, what a self-hosted server serves (`src/main.ts`,
-`src/open`): Mailboxes, API keys & MCP, Storage and Account. It is also the **core** other editions
-build on: signing in, the session and its vault, the OAuth return, mailboxes and their sync, API
-keys, the account section and its permissions, Storage and the event stream. An edition configures
+`src/open`): Mailboxes, Members (a team's people and invitations, or making a team), API keys & MCP,
+Storage and Account. It is also the **core** other editions build on: signing in, the session and
+its vault, the OAuth return, workspaces and the switcher between them, mailboxes with their grants,
+access and sync, API keys, the account section and its permissions, Storage and the event stream. An edition configures
 the core before mounting (`src/edition.ts`) and compiles it from source through an alias of its
 own; nothing here imports one. `../docs/console.md`, "Editions", lists what an edition gives the
 core and the other extension points.
@@ -77,7 +78,21 @@ The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and s
 and their OAuth flows, sync and the event stream, actions consent, API keys, `GET /v1/me/mcp`,
 storage) and the helpers the QA scripts share. Another edition's QA imports it and adds its own
 routes and state through `extend` (the cloud app's adds Mail and sending), so a change to the core's
-contract is made once.
+contract is made once. Without workspaces it answers `GET /v1/workspaces` with `404`, as a server
+older than them would, and every list is the person's whole.
+
+`test/browser/teams.mjs` adds workspaces through the same `extend`: Ana's personal workspace, a team
+she owns with a mailbox Bea linked (Ana reads and sends from it, Carol only sends), one Ana linked
+and one she holds nothing on (Carol only manages it), and a second team whose invitation waits for
+her. It walks the switcher, each card's grant, a mailbox's access ticked and saved (act ticks read; a
+change that also adds sets the whole grant; one that only takes away names the flags taken), the
+protections said beforehand, the mailboxes an owner administers without holding them, the team's
+people (a role changed and back, an invitation's link shown once, kept through Escape, copied and
+gone with its dialog), creating a team, turning sync off with the team mailbox it reaches named, an
+invitation opened signed in, and then Carol, a member who reads none of those two: their cards
+without folders or messages, her own access only where she just sends, everyone's where she
+manages, and the team's people with nothing to administer. On desktop and phone, light and dark,
+then in Portuguese and German. It takes the same `QA_*` variables as `console.mjs`.
 
 ```sh
 npm run build && npx vite preview --port 4174 &     # or npm run dev, with QA_ORIGIN=http://localhost:5174

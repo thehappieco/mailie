@@ -1,11 +1,13 @@
 # Workspaces
 
-**Status: phase 2, approved by the owner on 2026-10-05, implemented on the server**: migration 0008
-and the runner's rebuild procedure, `internal/workspace`, the service's authorization on workspaces
-and grants for every path (REST, MCP, the event stream and the long poll), the routes, the command
-line's commands and the contract fixtures. Not yet: the console's screens (step 3) and the
-platform's workspace source, of which only the stub is here. [`console.md`](console.md) describes
-the routes as the console reads them. Where this document had to choose between readings of the
+**Status: phase 2, approved by the owner on 2026-10-05, implemented on the server and in the
+console**: migration 0008 and the runner's rebuild procedure, `internal/workspace`, the service's
+authorization on workspaces and grants for every path (REST, MCP, the event stream and the long
+poll), the routes, the command line's commands and the contract fixtures; and the console's screens
+(step 3): the workspace switcher, each mailbox's grant and access panel, taking a link over, and,
+in the open edition, a team's members and invitations. Not yet: the platform's workspace source, of
+which only the stub is here. [`console.md`](console.md) describes the routes as the console reads
+them, and its screens. Where this document had to choose between readings of the
 plan, or found a rule that conflicts with the code or with another rule, it says so in
 [Conflicts and resolutions](#conflicts-and-resolutions).
 
@@ -112,6 +114,13 @@ re-checks their membership and role there (like `CheckOwnersWith` today). `POST 
 an optional `workspace_id`; without it a person links into their personal workspace and an instance
 key into the operator workspace.
 
+A team mailbox syncs at once under its linker's consent, so linking into a team also needs that
+consent, when there is one, to be to the current revision of the sync text
+(`MAIL_CONSENT_VERSION_SYNC`): an earlier one may not say who reads a team mailbox's index, and is
+refused with `409` until the person agrees to the current text. With no consent at all the link is
+made, and nothing syncs until they agree, which they can only do to the current text. The same
+transaction re-checks it (`Service.syncCoversTeamTx`).
+
 ### Grants
 
 ```sql
@@ -205,6 +214,9 @@ Consents stay per person, exactly as today (`users.*_consent_at` and `*_version`
   person **linked**, in every workspace, including team mailboxes other members read. The console
   has to say so before the person confirms; [taking over](#taking-over-a-link) a link first is how
   a team keeps it.
+- A consent to an earlier revision of the sync text keeps syncing what it covered, as for any
+  revision, but brings no team mailbox under it: a link into a team and a take-over need the
+  current revision (see [Mailboxes](#mailboxes) and [Taking over a link](#taking-over-a-link)).
 - Disabling a person on the instance stops the sync of every mailbox they linked (the eligibility
   rule requires the linker to be active); the index stays until they are enabled again or deleted.
 
@@ -308,10 +320,12 @@ mailboxes in it, which they linked.
 
 `POST /v1/accounts/{id}/take-over` (a session) makes the caller the mailbox's linker. The caller
 must hold all four flags on it, be allowed to link into its workspace (owner or admin of a team),
-and have agreed to sync; otherwise `409`. In one transaction `owner_user_id` becomes the caller;
-the previous linker keeps their grant as an ordinary one, no longer protected. The index is kept:
-from that moment it is stored under the new linker's consent, which already covers it. This is the
-step that lets a team keep a mailbox when the person who linked it leaves (see
+and have agreed to sync, to the current revision of its text; otherwise `409`. In one transaction
+`owner_user_id` becomes the caller; the previous linker keeps their grant as an ordinary one, no
+longer protected. The index is kept: from that moment it is stored under the new linker's consent,
+which covers it because it was given to the current text, the one that says who reads a team
+mailbox's index (an earlier one may not, so a consent to it is refused here, as for a link into a
+team). This is the step that lets a team keep a mailbox when the person who linked it leaves (see
 [conflict 1](#conflicts-and-resolutions)).
 
 ## Errors
@@ -358,9 +372,9 @@ person's key reaches their mailboxes in every workspace they belong to, as the p
   `GET /v1/events/wait` accept `?workspace=ID`, which narrows them to that workspace's mailboxes. A
   workspace the caller is not an active member of is `404`; with `account` as well, the account
   must be in that workspace.
-- The console keeps the current workspace itself (per tab, remembered in local storage) and passes
-  `?workspace=` so a view never fetches another workspace's data. This goes into `console.md` with
-  the implementation.
+- The console keeps the current workspace itself (per tab, remembered for each person in local
+  storage) and passes `?workspace=` so a view never fetches another workspace's data
+  ([`console.md`](console.md), "Workspaces in the console").
 
 ## Events
 
@@ -494,8 +508,7 @@ Shapes:
 `access` is the caller's grant; for an instance key, what its scope allows on an operator mailbox.
 `send.reason` `not_owner` becomes `not_granted` (no `send` flag). The contract fixtures change only
 through `go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`, and the
-console's types and `web/test/contract.spec.ts` adapt to the new fields; the console's screens are
-step 3.
+console's types and `web/test/contract.spec.ts` hold them to the new fields.
 
 ## Command line
 
@@ -743,6 +756,7 @@ Test names state the guarantee. At least:
 - Links: `TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes`;
   `TestAnAddressIsLinkedOnceInAWorkspace`; `TestTheLinkerCannotBeRemovedWhileTheirMailboxIsLinked`;
   `TestATakeOverKeepsTheIndexAndMovesTheConsent`;
+  `TestATeamMailboxComesToSyncOnlyUnderAConsentToTheCurrentSyncText`;
   `TestWithdrawingSyncDeletesTheIndexOfEveryMailboxThePersonLinked`.
 - Members: `TestTheLastOwnerCannotLeaveOrBeDemoted`;
   `TestRemovingAMemberRemovesTheirGrantsAndStopsTheirEventStream`;
@@ -839,7 +853,9 @@ Test names state the guarantee. At least:
    grants `manage` only, and revokes anything.
 8. **Withdrawing sync consent reaches team mailboxes.** A direct consequence of syncing under the
    linker's consent. *Resolution:* keep the consent rule; the console warns and names the team
-   mailboxes before the person confirms (step 3); a take-over first keeps the team's index.
+   mailboxes before the person confirms (the dialog that turns sync off reads every workspace's
+   mailboxes for it, and is not confirmed before they are named); a take-over first keeps the
+   team's index.
 9. **Team invites bring new people onto a self-hosted server**, which today only an instance owner
    can. Any person may create a team and invite into it, so if every team invite could sign a new
    person up, any member could create an account for any address without one, with a password of
@@ -871,16 +887,34 @@ Test names state the guarantee. At least:
 13. **`act` without `read`** is a grant that can do nothing (an action names messages the caller
     reads). *Resolution:* `CHECK (act = 0 OR read = 1)`. `send` without `read` stays meaningful (a
     send-only member) and allowed.
-14. **The consent texts.** The open console's sync text says what is stored for "your" mailboxes;
-    with grants, other members read the index of a team mailbox. Whether the text, and so
-    `MAIL_CONSENT_VERSION_SYNC`, needs a new revision when the console offers teams is the owner's
-    call, in step 3.
+14. **The consent texts.** The open console's sync text said what is stored for "your" mailboxes,
+    and that only whoever runs the server reads it besides the person; with grants, the members
+    given `read` on a team mailbox read its index too, and withdrawing deletes it for them.
+    *Resolution:* a second revision of the open sync text, `2026-10-open-sync-2`
+    (`web/src/open/SyncText.vue`, `web/src/open/versions.ts`, `config.DefaultSyncConsentVersion`),
+    says where the mailboxes a person connects may be (their personal workspace or a team), who
+    reads a team mailbox's index, and that turning sync off deletes the index of every mailbox they
+    connected, team ones included, unless another member took the link over first. As for any new
+    revision, everyone is asked again, and sync keeps running for whoever agreed to the first one
+    until they turn it off; but a team mailbox comes under someone's consent, by a link or a
+    take-over, only once they agreed to this revision, which is the first to say who reads its
+    index (the service refuses both otherwise, and the console asks for the current text first).
+    The API key text speaks of the mailboxes a key names, which grants do not change, and keeps its
+    revision.
+    *Open, the owner's decision:* the actions text (`web/src/open/ActionsText.vue`,
+    `2026-10-open-actions`) opens with "this server changes your mailboxes only when it is asked
+    to: by you, or by a tool you gave an API key that can act". For a team mailbox the person
+    linked, other members given `act` change it too, each under their own actions consent, so that
+    sentence stops being true of it once they do. Either a second revision of the actions text says
+    so (every person is then asked again, and actions are refused until they agree, as for any
+    revision of actions), or the sentence is read as being about the person's own mailboxes and the
+    text keeps its revision. Until the owner decides, the text and its revision are unchanged.
 
 ## Not in this phase
 
 - Deleting a team workspace; moving a mailbox between workspaces (link it again instead).
-- A screen for any of this: the console is step 3. The platform source beyond its stub is a later
-  step.
+- The platform source beyond its stub, a later step; with it, an edition's own screens for teams
+  (the open edition's Members section is for the local source only).
 - Selecting a workspace per MCP session; an MCP tool for workspaces.
 - Whole-workspace usage for owners.
 
@@ -898,4 +932,4 @@ Test names state the guarantee. At least:
 | `cmd/mailserver` | `workspace`, `member`, `access`; `user invite --workspace`; the bootstrap default; the startup hint |
 | `.golangci.yml` | `internal/workspace` joins the packages transports may not import |
 | docs | `console.md` (ownership becomes workspaces, routes, storage, events, the current workspace), `architecture.md` and `CLAUDE.md` (the ownership rule), `mcp.md` (instance keys), `self-hosting.md` and the README (the first owner) |
-| `web/` | the types and contract spec for the changed fixtures only |
+| `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, taking a link over, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |

@@ -75,6 +75,11 @@ export function count(n: number | undefined): string {
   return decimal().format(n ?? 0)
 }
 
+/** anyOf joins words as alternatives, in the page's language: "Read, Act, or Send". */
+export function anyOf(words: readonly string[]): string {
+  return new Intl.ListFormat(intlLocale(), { type: 'disjunction' }).format(words)
+}
+
 /** initials is what an avatar shows when there is no picture: two letters at most. */
 export function initials(name: string): string {
   const words = name.replace(/@.*$/, '').split(/[\s._-]+/).filter(Boolean)

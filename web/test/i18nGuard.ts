@@ -72,3 +72,14 @@ export function repeatedKeys(...sets: Catalogs[]): string[] {
 export function keysOf(...sets: Catalogs[]): Set<string> {
   return new Set(sets.flatMap(catalogs => Object.values(catalogs).flatMap(catalog => Object.keys(catalog))))
 }
+
+/**
+ * Keys that say managing a mailbox is enough to give someone access to it.
+ * Read, act and send pass only from someone who holds them, and owners,
+ * admins and holders of Manage give Manage (docs/workspaces.md, "Who may
+ * change a grant"): "whoever manages it can give you access" is not true.
+ */
+export function managersGivingAccess(catalogs: Catalogs): string[] {
+  const claim = /\b(?:whoever|someone who|who) manages? (?:it|them|one|(?:a|the|this) mailbox(?: of the team)?),? (?:can give|gives?|decides|chooses)\b/i
+  return [...keysOf(catalogs)].filter(key => claim.test(key))
+}

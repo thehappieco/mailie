@@ -49,9 +49,11 @@ function current(): () => boolean {
   return () => at === generation
 }
 
-watch(() => accounts.list, (now, before) => {
-  if (!apiKeys.loaded) return
-  const gone = before.filter(item => !now.some(account => account.id === item.id))
+// A mailbox gone from the list of the same workspace was removed (or its
+// read lost); one gone because another workspace is shown was not.
+watch(() => ({ workspace: accounts.workspace, loaded: accounts.loaded, list: accounts.list }), (now, before) => {
+  if (!apiKeys.loaded || !now.loaded || !before.loaded || now.workspace !== before.workspace) return
+  const gone = before.list.filter(item => !now.list.some(account => account.id === item.id))
   if (gone.some(item => apiKeys.list.some(key => key.account_ids?.includes(item.id)))) void loadKeys()
 })
 

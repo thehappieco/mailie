@@ -500,9 +500,10 @@ func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string) err
 //
 // A person links into their personal workspace, and into a team they are an
 // active owner or admin of: a link puts a mailbox's index in a space the
-// team shares, so a member asks one of them. An instance key links into the
-// operator workspace only. The role is read again inside the transaction
-// that creates the mailbox.
+// team shares, so a member asks one of them; and, into a team, with no
+// consent to sync or one to the current text (syncCoversTeamTx). An instance
+// key links into the operator workspace only. The role and the consent are
+// read again inside the transaction that creates the mailbox.
 func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID string) (string, func(*sql.Tx) error, error) {
 	if p.IsInstance() {
 		if workspaceID == "" || workspaceID == workspace.OperatorID {
@@ -534,6 +535,20 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID string)
 			return errNoWorkspace
 		case w.Kind == workspace.KindTeam && m.Role != workspace.RoleOwner && m.Role != workspace.RoleAdmin:
 			return errLinkTeam
+		}
+		if w.Kind != workspace.KindTeam {
+			return nil
+		}
+		// A team mailbox syncs under its linker's consent from the moment it
+		// works: one given to an earlier text, which may not say who reads a
+		// team mailbox, is not enough. None at all is: nothing syncs until
+		// they agree, and they can agree only to the current text.
+		consented, current, err := s.syncCoversTeamTx(ctx, tx, p.UserID)
+		switch {
+		case err != nil:
+			return err
+		case consented && !current:
+			return errLinkTeamOutdated
 		}
 		return nil
 	}

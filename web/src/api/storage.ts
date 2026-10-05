@@ -5,6 +5,7 @@
 import { checked, request } from './http'
 import { isStorage, type Storage } from './types'
 
-export async function getStorage(token: string, signal?: AbortSignal): Promise<Storage> {
-  return checked(await request('/v1/me/storage', { token, signal }), isStorage)
+/** With workspace, only that workspace's mailboxes (?workspace=). */
+export async function getStorage(token: string, workspace = '', signal?: AbortSignal): Promise<Storage> {
+  return checked(await request('/v1/me/storage', { token, signal, query: workspace ? { workspace } : undefined }), isStorage)
 }

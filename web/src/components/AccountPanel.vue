@@ -1,5 +1,6 @@
 <script setup lang="ts">
-// The signed-in person: name, password and sessions, and below them whatever
+// The signed-in person: name, password and sessions (and their role on this
+// server, where the edition's people have one), and below them whatever
 // the edition puts in its account section (the default slot): the permission
 // rows, and anything else of its own. A password change ends every session on
 // the server, this one included, and hands back the one that replaces it; the
@@ -27,6 +28,8 @@ const profileProblem = ref<Failure | null>(null)
 const done = shallowRef<(() => string) | null>(null)
 provide(accountNotice, { show(words) { done.value = words }, clear() { done.value = null } })
 const label = computed(() => edition().copy.accountSection())
+/** The person's role on this server, where the edition's people have one. */
+const serverRole = edition().serverRole === true
 
 watch(() => session.user?.name, value => { name.value = value ?? '' }, { immediate: true })
 const profileChanged = computed(() => name.value.trim() !== (session.user?.name ?? '') && !!name.value.trim())
@@ -105,7 +108,7 @@ async function leave(all: boolean) {
         <label>{{ t('Your name') }}<input v-model="name" name="name" maxlength="120" autocomplete="name" required :disabled="profileBusy" /></label>
         <div class="profile-facts">
           <div><span>{{ t('Email') }}</span><strong>{{ session.user?.email }}</strong></div>
-          <div v-if="session.user"><span>{{ t('Role') }}</span><strong>{{ roleLabel(session.user.role) }}</strong></div>
+          <div v-if="serverRole && session.user"><span>{{ t('Role on this server') }}</span><strong>{{ roleLabel(session.user.role) }}</strong></div>
         </div>
         <button class="primary small" type="submit" :disabled="profileBusy || !profileChanged">{{ profileBusy ? t('Saving…') : t('Save name') }}</button>
       </div>

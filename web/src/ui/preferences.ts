@@ -31,6 +31,32 @@ export function writePreference(name: PreferenceName, value: string): void {
   } catch { /* A preference is still usable for the current page. */ }
 }
 
+/**
+ * Preferences of one person on this server alone: kept in this host's local
+ * storage, never in a cookie, so neither another host of the edition's domain
+ * nor any request carries them, under a key that names the person by their
+ * opaque user id (mailie_workspace:usr_…), so two people who share a browser
+ * never open on each other's choice. Non-sensitive, like the others: the last
+ * workspace shown, an identifier the server checks on every read. Without a
+ * person (nobody signed in) nothing is read or kept.
+ */
+type PersonPreferenceName = 'workspace'
+
+const personKey = (name: PersonPreferenceName, person: string) => `${prefix}${name}:${person}`
+
+export function readPersonPreference(name: PersonPreferenceName, person: string): string | null {
+  if (!person) return null
+  try { return localStorage.getItem(personKey(name, person)) } catch { return null }
+}
+
+export function writePersonPreference(name: PersonPreferenceName, person: string, value: string): void {
+  if (!person) return
+  try {
+    if (value) localStorage.setItem(personKey(name, person), value)
+    else localStorage.removeItem(personKey(name, person))
+  } catch { /* Private browsing can deny storage; the page still keeps it in memory. */ }
+}
+
 export const theme = ref<ThemePreference>('system')
 let media: MediaQueryList | null = null
 let stopListening: (() => void) | null = null

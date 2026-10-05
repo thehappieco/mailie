@@ -3,6 +3,7 @@
 
 import type { Account, AccountState, AuthKind, Folder, ProviderID, Role } from '../api/types'
 import type { IconName } from '../components/AppIcon.vue'
+import { accessOf } from './access'
 import { t } from './i18n'
 import { reasonText } from './reasons'
 
@@ -71,9 +72,17 @@ export function stateLabel(state: AccountState): string {
  * the state, and for a failing account from the few reasons the console
  * explains itself (ui/reasons.ts): the server's own state_reason and
  * last_error are diagnostics in English and are never shown (the same rule
- * as error messages).
+ * as error messages). Authorizing a mailbox again is for whoever manages it:
+ * anyone else is told so, not what they could not do.
  */
 export function stateDetail(account: Account): string {
+  if (needsAuthorization(account) && !accessOf(account).manage) {
+    switch (account.state) {
+      case 'pending_auth': return t('Authorization was not finished. Someone who manages this mailbox has to finish it.')
+      case 'needs_reauth': return t('The provider asks for this mailbox to be authorized again, by someone who manages it. Mail is not syncing.')
+      default: return t('The last attempt to connect failed. Someone who manages this mailbox has to authorize it again.')
+    }
+  }
   switch (account.state) {
     case 'active':
       // How far the sync has come is the sync block's to say (ui/sync.ts).

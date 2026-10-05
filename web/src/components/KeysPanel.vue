@@ -4,11 +4,14 @@
 // what that does, and, where the edition offers the MCP server at this
 // origin and the server says it answers there (state/mcp.ts), how to connect
 // an AI assistant with a key. A key's secret is never here: only the
-// creation dialog ever holds it.
+// creation dialog ever holds it. A key acts as the person in every workspace
+// they are in, so this section is the person's, not the workspace's: it names
+// the mailboxes a key reaches from every workspace (state/everyMailbox.ts).
 import { computed, onMounted, ref } from 'vue'
 import type { PersonalKey } from '../api/types'
 import { accounts } from '../state/accounts'
 import { apiKeys, atKeyLimit, loadKeys, revokeKey } from '../state/apikeys'
+import { everyMailbox, loadEveryMailbox } from '../state/everyMailbox'
 import type { Failure } from '../state/failure'
 import { loadMcpAccess, mcpOffered } from '../state/mcp'
 import { announce } from '../ui/announce'
@@ -38,6 +41,8 @@ const ordered = computed(() => apiKeys.list
   .map(key => ({ key, standing: keyStanding(key) }))
   .sort((a, b) => rank[a.standing] - rank[b.standing] || b.key.created_at - a.key.created_at))
 const limited = computed(() => atKeyLimit())
+/** The mailboxes a key may name, from every workspace, and the ones shown now, which may be newer. */
+const named = computed(() => [...accounts.list, ...everyMailbox.list.filter(item => !accounts.list.some(account => account.id === item.id))])
 
 function create() { revoked.value = ''; creating.value = true }
 function askRevoke(key: PersonalKey) { revokeProblem.value = null; revoked.value = ''; revoking.value = key }
@@ -55,11 +60,13 @@ async function confirmRevoke() {
 /** The keys, and whether /mcp is served if the server could not say yet. */
 function refresh() {
   void loadKeys()
+  void loadEveryMailbox()
   void loadMcpAccess()
 }
 
 onMounted(() => {
   if (!apiKeys.loaded && !apiKeys.loading) void loadKeys()
+  if (!everyMailbox.loading) void loadEveryMailbox()
   void loadMcpAccess()
 })
 </script>
@@ -90,7 +97,7 @@ onMounted(() => {
         <div class="identity"><div class="name">{{ key.name }}</div><div class="sub mono" translate="no">{{ key.prefix }}…</div></div>
         <dl class="counts">
           <div><dt>{{ t('Access') }}</dt><dd>{{ scopeLabel(key.scope) }}</dd></div>
-          <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ keyMailboxes(key, accounts.list).join(', ') }}</dd></div>
+          <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ keyMailboxes(key, named).join(', ') }}</dd></div>
           <div><dt>{{ t('Created') }}</dt><dd>{{ dayStamp(key.created_at) }}</dd></div>
           <div v-if="standing === 'revoked'"><dt>{{ t('Revoked on') }}</dt><dd>{{ dayStamp(key.revoked_at) }}</dd></div>
           <div v-else><dt>{{ standing === 'expired' ? t('Expired on') : t('Expires') }}</dt><dd>{{ dayStamp(key.expires_at) }}</dd></div>

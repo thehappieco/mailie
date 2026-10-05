@@ -193,11 +193,12 @@ class FakeElement extends FakeNode {
 
 class FakeSVGElement extends FakeElement {}
 
-/** One compound selector: tag, #id, .class and [attr] / [attr="value"], in any mix. */
+/** One compound selector: tag, #id, .class, [attr] / [attr="value"] and :not(one of those), in any mix. */
 function matchesOne(element: FakeElement, selector: string): boolean {
-  const parts = selector.match(/^[a-z][\w-]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]/gi) ?? []
+  const parts = selector.match(/^[a-z][\w-]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]|:not\([^()]+\)/gi) ?? []
   if (parts.join('') !== selector) throw new Error(`test/dom.ts cannot read the selector ${selector}`)
   return parts.every(part => {
+    if (part.startsWith(':not(')) return !matchesOne(element, part.slice(5, -1))
     if (part[0] === '#') return element.id === part.slice(1)
     if (part[0] === '.') return element.className.split(/\s+/).includes(part.slice(1))
     if (part[0] === '[') {

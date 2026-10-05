@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
 import { draftRequest, emptyDraft, guessHosts, isICloudAddress, portForSecurity, signsInWithPassword } from '../src/ui/accountDraft'
 import { describe as describeFailure, describeFolders } from '../src/ui/errors'
 import { countdown, initials } from '../src/ui/format'
@@ -108,6 +110,17 @@ describe('account states', () => {
     // A reason left on an account that works again says nothing about it.
     expect(stateDetail(account({ state: 'active', state_reason: REASON_NOT_GRANTED }))).toBe('Connected. Sync is off.')
   })
+  it('tell someone who does not manage the mailbox that someone who does has to authorize it, never to do it themselves', () => {
+    const uses = { read: true, act: true, send: true, manage: false }
+    expect(stateDetail(account({ state: 'pending_auth', access: uses }))).toBe('Authorization was not finished. Someone who manages this mailbox has to finish it.')
+    expect(stateDetail(account({ state: 'needs_reauth', state_reason: REASON_MAILBOX_REFUSED, access: uses }))).toBe('The provider asks for this mailbox to be authorized again, by someone who manages it. Mail is not syncing.')
+    expect(stateDetail(account({ state: 'error', access: uses }))).toBe('The last attempt to connect failed. Someone who manages this mailbox has to authorize it again.')
+    // Whoever manages it is told what to do, and so is anyone on a server older than grants.
+    expect(stateDetail(account({ state: 'pending_auth', access: { ...uses, manage: true } }))).toBe('Authorization was not finished. Finish it, or remove this account.')
+    expect(stateDetail(account({ state: 'pending_auth' }))).toBe('Authorization was not finished. Finish it, or remove this account.')
+    // A password account is not authorized again by anyone.
+    expect(stateDetail(account({ state: 'error', auth_kind: 'password', provider: 'imap', access: uses }))).toBe('The last attempt to connect failed. Check the account at the provider.')
+  })
   it('say whether sync is on, and never promise one the person has not turned on', () => {
     expect(stateDetail(account({ state: 'active' }))).toBe('Connected. Sync is off.')
     expect(stateDetail(account({ state: 'active', sync: syncing() }))).toBe('Connected. Sync is on.')
@@ -181,15 +194,32 @@ describe('failure text', () => {
   it('depends on what was being done, not only on the code', () => {
     expect(describeFailure({ op: 'password', code: 'not_authorized' })).toBe('The current password is incorrect.')
     expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toContain('invitation')
-    expect(describeFailure({ op: 'folders', code: 'not_authorized' })).toBe('Your account is not allowed to do this.')
+    expect(describeFailure({ op: 'profile', code: 'not_authorized' })).toBe('Your account is not allowed to do this.')
+    // A grant without read: the mailbox is seen, its folders are not.
+    expect(describeFailure({ op: 'folders', code: 'not_authorized' })).toBe('You do not have read access to this mailbox. It comes only from someone who has it and can change who has access.')
     locale.value = 'pt'
     expect(describeFailure({ op: 'sign-in', code: 'unauthorized' })).toBe('O email ou a senha estão incorretos.')
+  })
+  it('words a refused sign-up invitation by whether people join teams here, signed in', () => {
+    expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toBe('This invitation cannot create an account for this address. It may have expired or been used, or it invites you to a team: sign in to the account you already have, and open the link again.')
+    try {
+      // Where workspaces come from elsewhere an invitation only ever creates an account: no step to send anyone to.
+      configureEdition({ ...openEdition, teams: false })
+      expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toBe('This invitation cannot create an account for this address. It may have expired or been used: ask for a new one.')
+    } finally {
+      configureEdition(openEdition)
+    }
+  })
+  it('says that the lists wait for the workspaces, whatever kept them from loading', () => {
+    const waiting = 'Could not load your workspaces. Your mailboxes and what they take up are shown once they load: Mailie tries again by itself, or you can try now.'
+    for (const code of ['unavailable', 'internal', 'rate_limited', 'invalid_response'] as const) expect(describeFailure({ op: 'load-workspaces', code })).toBe(waiting)
+    expect(describeFailure({ op: 'load-workspaces', code: 'unauthorized' })).toBe('Your session ended. Sign in again.')
   })
   it('names the app-specific password when iCloud refuses the sign-in, and keeps the general texts for the rest', () => {
     expect(describeFailure({ op: 'test-login-icloud', code: 'bad_request' })).toBe('iCloud refused the sign-in. Check the address and that you used an app-specific password, not your Apple Account password.')
     expect(describeFailure({ op: 'test-login', code: 'bad_request' })).toContain('the server names')
-    expect(describeFailure({ op: 'test-login-icloud', code: 'conflict' })).toBe('This address is already connected.')
-    expect(describeFailure({ op: 'test-login-icloud', code: 'not_authorized' })).toBe('Your account is not allowed to connect mailboxes.')
+    expect(describeFailure({ op: 'test-login-icloud', code: 'conflict' })).toBe('This address is already connected in this workspace.')
+    expect(describeFailure({ op: 'test-login-icloud', code: 'not_authorized' })).toBe('Your account is not allowed to connect mailboxes here. In a team, only its owners and admins connect them.')
     expect(describeFailure({ op: 'test-login-icloud', code: 'unavailable' })).toBe('Could not reach the server. Check your connection and try again.')
     locale.value = 'pt'
     expect(describeFailure({ op: 'test-login-icloud', code: 'bad_request' })).toBe('O iCloud recusou o acesso. Confira o endereço e se você usou uma senha específica de app, e não a senha da sua Conta Apple.')

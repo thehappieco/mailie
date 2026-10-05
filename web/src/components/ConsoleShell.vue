@@ -11,6 +11,12 @@ export interface ConsoleSection {
   component: Component
   /** A number beside the label, when there is one to show. */
   count?: number
+  /**
+   * Whose the section is: the workspace shown's (the default), whose name the
+   * header's breadcrumb then carries, or the person's own, the same in every
+   * workspace (their account, their API keys), where it names none.
+   */
+  scope?: 'workspace' | 'person'
 }
 </script>
 
@@ -26,23 +32,34 @@ export interface ConsoleSection {
 // edition's is a console, another's may be an app. Anything else the edition
 // keeps on screen across sections goes in the default slot.
 //
-// While the console is on screen it reads the mailboxes, the providers, and
-// where the person stands on sync and on actions, and keeps the event stream
-// open.
+// While the console is on screen it reads the person's workspaces (again by
+// itself, after a first read that failed: every list waits for them), the
+// mailboxes of the one shown, the providers, and where the person stands on
+// sync and on actions, and keeps the event stream open. The workspace shown
+// is chosen in the sidebar (WorkspaceSwitcher) once there is more than one;
+// every section's lists follow it, and the header names it on the sections
+// that are a workspace's: never on the person's own (scope 'person', and the
+// account section always), which no workspace holds. When it goes away from
+// under the person, or they join a team, a line above the section says so.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { edition } from '../edition'
 import { accounts, loadAccounts, loadProviders } from '../state/accounts'
 import { actionsConsent, loadActionsConsent } from '../state/actionsConsent'
 import { server } from '../state/connection'
+import { dismissJoined, invitation } from '../state/invitation'
 import { startLive, stopLive, wakeLive } from '../state/live'
 import { session, signOut } from '../state/session'
 import { consent, loadConsent } from '../state/sync'
+import { currentWorkspace, dismissLost, loadWorkspaces, retryWorkspaces, workspaces } from '../state/workspaces'
+import { workspaceName, workspaceRoleLabel } from '../ui/access'
+import { announce } from '../ui/announce'
 import { initials } from '../ui/format'
 import { t } from '../ui/i18n'
 import AppearanceMenu from './AppearanceMenu.vue'
 import AppIcon from './AppIcon.vue'
 import BrandLockup from './BrandLockup.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
+import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
 
 const props = defineProps<{
   sections: ConsoleSection[]
@@ -69,6 +86,18 @@ const rootLabel = computed(() => edition().shell.rootLabel())
 /** The lockup's name: the product, and the edition's root beside it unless the root is the product itself. */
 const brandLabel = computed(() => rootLabel.value === 'Mailie' ? 'Mailie' : `Mailie · ${rootLabel.value}`)
 const navLabel = computed(() => edition().shell.navLabel())
+/** The section shown is the person's own, not the workspace's: their account, or one the edition says is theirs. */
+const personSection = computed(() => current.value.scope === 'person' || current.value.id === props.account)
+/** The workspace shown, named in the header once there is more than one to tell apart, on a section that is the workspace's. */
+const workspaceLabel = computed(() => workspaces.list.length > 1 && !personSection.value ? workspaceName(currentWorkspace()) : '')
+/** What changed about the person's workspaces: one they are no longer in, or one they just joined. */
+const workspaceNotice = computed(() => {
+  if (workspaces.lost) return t('You are no longer a member of {name}. This page now shows {current}.', { name: workspaceName(workspaces.lost), current: workspaceName(currentWorkspace()) })
+  if (invitation.joined) return t('You joined {name} as {role}. Its mailboxes appear here as you are given access to them.', { name: workspaceName(invitation.joined), role: workspaceRoleLabel(invitation.joined.role) })
+  return ''
+})
+watch(workspaceNotice, words => { if (words) announce(words) })
+function dismissWorkspaceNotice() { dismissLost(); dismissJoined() }
 
 function show(id: string) {
   navigated = true
@@ -99,16 +128,23 @@ watch(() => props.sections.some(item => item.id === section.value), present => {
 // A network that comes back cuts the event stream's reconnection wait short.
 function online() { wakeLive() }
 
+let stopRetrying: (() => void) | null = null
+let stopStreamWatch: (() => void) | null = null
 onMounted(() => {
+  stopRetrying = retryWorkspaces()
+  if (!workspaces.loaded) void loadWorkspaces()
   if (accounts.loaded) landed()
   else void loadAccounts()
   if (!accounts.providersLoaded) void loadProviders()
   if (!consent.loaded) void loadConsent()
   if (!actionsConsent.loaded) void loadActionsConsent()
-  startLive()
+  // The stream narrows to the workspace shown, so it opens once that is known.
+  stopStreamWatch = watch(() => workspaces.loaded, loaded => { if (loaded) startLive() }, { immediate: true })
   window.addEventListener('online', online)
 })
 onBeforeUnmount(() => {
+  stopRetrying?.()
+  stopStreamWatch?.()
   window.removeEventListener('online', online)
   stopLive()
 })
@@ -119,6 +155,7 @@ onBeforeUnmount(() => {
   <div class="console console-app">
     <aside class="console-sidebar" :aria-label="navLabel">
       <div class="console-brand"><BrandLockup :size="34" animate="load" :label="brandLabel" /></div>
+      <WorkspaceSwitcher />
       <nav class="console-nav" :aria-label="t('Sections')">
         <button v-for="item in sections" :key="item.id" type="button" class="console-nav-item"
           :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined"
@@ -136,13 +173,15 @@ onBeforeUnmount(() => {
     <div class="console-main">
       <header class="console-header">
         <button class="icon-btn mobile-menu" type="button" :aria-label="t('Open menu')" aria-haspopup="dialog" :aria-expanded="mobileNav" @click="mobileNav = true"><AppIcon name="menu" :size="23" /></button>
-        <div class="grow"><div class="console-breadcrumb">{{ rootLabel }} <span>/</span> {{ current.label }}</div><h1>{{ current.label }}</h1></div>
+        <div class="grow"><div class="console-breadcrumb">{{ rootLabel }} <span>/</span> <template v-if="workspaceLabel">{{ workspaceLabel }} <span>/</span>{{ ' ' }}</template>{{ current.label }}</div><h1>{{ current.label }}</h1></div>
         <AppearanceMenu />
         <button class="mobile-profile" type="button" :aria-label="accountLabel" @click="show(account)"><span aria-hidden="true">{{ initials(profileName) }}</span></button>
       </header>
 
       <main id="console-content" ref="content" class="console-content" tabindex="-1" :aria-label="current.label">
         <div class="console-section-intro"><p>{{ current.description }}</p><span class="connection-label" :class="{ connected: server.reachable }" role="status"><i aria-hidden="true" />{{ server.reachable ? t('Server connected') : t('No connection to the server') }}</span></div>
+        <!-- Said by the live region (ui/announce.ts) as it appears. -->
+        <p v-if="workspaceNotice" class="note workspace-notice"><AppIcon name="info" :size="17" /><span class="grow">{{ workspaceNotice }}</span><button class="icon-btn" type="button" :aria-label="t('Dismiss')" @click="dismissWorkspaceNotice"><AppIcon name="close" :size="16" /></button></p>
         <template v-for="item in sections" :key="item.id">
           <component :is="item.component" v-if="visited.has(item.id)" v-show="section === item.id" />
         </template>
@@ -153,6 +192,7 @@ onBeforeUnmount(() => {
 
     <ConsoleDialog v-if="mobileNav" title="Mailie" drawer @close="mobileNav = false">
       <div class="mobile-navigation">
+        <WorkspaceSwitcher />
         <nav class="console-nav" :aria-label="t('Sections')"><button v-for="item in sections" :key="item.id" type="button" class="console-nav-item" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="show(item.id)"><AppIcon :name="item.icon" :size="21" /><span>{{ item.label }}</span><span v-if="item.count !== undefined" class="nav-count">{{ item.count }}</span></button></nav>
         <div class="mobile-account-area">
           <button type="button" class="profile-trigger" @click="show(account)"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span></button>
@@ -198,6 +238,13 @@ onBeforeUnmount(() => {
 .console-content:focus { outline: none; }
 .console-content > :not(:first-child) { margin-top: 20px; }
 .console-section-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.workspace-notice { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
+.workspace-notice span { overflow-wrap: anywhere; }
+.workspace-notice .icon-btn { min-width: 32px; min-height: 32px; padding: 4px; margin: -6px -6px -6px 0; color: inherit; }
+.mobile-navigation :deep(.workspace-switcher) { padding: 0; }
+/* In the sidebar the select is as wide as the sections below it, so a team's name and the person's role there fit; its label lines up with their text. */
+.console-sidebar :deep(.workspace-switcher) { padding: 0; }
+.console-sidebar :deep(.workspace-switcher label) { padding: 0 12px; }
 .console-section-intro p { color: var(--text-dim); font-size: 13px; margin: 0; line-height: 1.6; }
 .connection-label { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 11px; flex-shrink: 0; margin-top: 3px; }
 .connection-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }

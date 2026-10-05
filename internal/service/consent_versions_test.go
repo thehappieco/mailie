@@ -12,6 +12,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // revised is a deployment that changed every text since the defaults.
@@ -211,5 +212,67 @@ func TestAKeyKeepsWorkingUnderTheTermsItWasCreatedWith(t *testing.T) {
 	p, err := f.svc.Authenticate(t.Context(), secret, nil)
 	if err != nil || p.TermsVersion != service.DefaultKeyTermsVersion {
 		t.Fatalf("a key under the earlier terms: %+v, %v", p, err)
+	}
+}
+
+func TestATeamMailboxComesToSyncOnlyUnderAConsentToTheCurrentSyncText(t *testing.T) {
+	// A team mailbox syncs at once under the consent of whoever links it, or
+	// takes its link over. A consent given to an earlier text of sync, which
+	// may not say who reads a team mailbox's index, keeps covering what it
+	// already covered; it does not bring a team mailbox under it.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
+	dan := tm.join(t, f, "dan@example.com", workspace.RoleAdmin)
+	ctx := t.Context()
+	const shared = "acc_00000000000000aa"
+	tm.link(t, f, shared, "support@mail.example")
+	if _, err := f.svc.SetAccess(ctx, tm.ana, shared, carol.UserID, grantRequest(true, true, true, true)); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []service.Principal{tm.ana, carol} {
+		if _, err := f.svc.GrantSyncConsent(ctx, p, service.DefaultSyncConsentVersion); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The daemon restarts with another revision of the sync text.
+	f.opts.consent = config.ConsentVersions{Sync: "sync-2"}
+	f.svc, f.registry = f.build(t, f.opts.registry)
+
+	_, err := f.svc.TakeOver(ctx, carol, shared)
+	wantCode(t, "Carol taking the link over under the earlier text", err, service.CodeConflict)
+	if msg := service.MessageOf(err); !strings.Contains(msg, "current sync text") {
+		t.Errorf("the take-over refusal says %q", msg)
+	}
+	billing := f.passwordAccount(t, "billing@mail.example")
+	billing.WorkspaceID = tm.id
+	_, err = f.svc.AddAccount(ctx, tm.ana, billing)
+	wantCode(t, "Ana linking into the team under the earlier text", err, service.CodeConflict)
+	if msg := service.MessageOf(err); !strings.Contains(msg, "earlier text") {
+		t.Errorf("the link refusal says %q", msg)
+	}
+	// Her personal workspace is what the earlier text covered.
+	if _, err := f.svc.AddAccount(ctx, tm.ana, f.passwordAccount(t, "ana@mail.example")); err != nil {
+		t.Fatalf("Ana linking into her personal workspace: %v", err)
+	}
+	// Someone who never agreed links into the team: nothing syncs until they
+	// agree, and they can agree only to the current text.
+	orders := f.passwordAccount(t, "orders@mail.example")
+	orders.WorkspaceID = tm.id
+	if _, err := f.svc.AddAccount(ctx, dan, orders); err != nil {
+		t.Fatalf("Dan, who never agreed, linking into the team: %v", err)
+	}
+
+	for _, p := range []service.Principal{tm.ana, carol} {
+		if _, err := f.svc.GrantSyncConsent(ctx, p, "sync-2"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.svc.AddAccount(ctx, tm.ana, billing); err != nil {
+		t.Fatalf("Ana linking into the team under the current text: %v", err)
+	}
+	if taken, err := f.svc.TakeOver(ctx, carol, shared); err != nil || taken.LinkedBy != carol.UserID {
+		t.Fatalf("Carol taking the link over under the current text: %+v, %v", taken.LinkedBy, err)
 	}
 }

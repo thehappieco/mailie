@@ -1,5 +1,6 @@
-// /v1/accounts: the mailboxes the signed-in person owns. Ownership is decided
-// by the server; this file only asks.
+// /v1/accounts: the mailboxes the caller holds a grant on, in every workspace
+// or in the one named. Who sees what is decided by the server; this file only
+// asks.
 
 import { segment } from './endpoint'
 import { checked, request } from './http'
@@ -23,8 +24,9 @@ export const FOLDERS_TIMEOUT_MS = 70_000
  */
 export const COMPLETE_OAUTH_TIMEOUT_MS = 50_000
 
-export async function listAccounts(token: string, signal?: AbortSignal): Promise<Account[]> {
-  return checked(await request('/v1/accounts', { token, signal }), isAccountList)
+/** The caller's mailboxes; with workspace, only that workspace's (?workspace=), so a view never reads another's. */
+export async function listAccounts(token: string, workspace = '', signal?: AbortSignal): Promise<Account[]> {
+  return checked(await request('/v1/accounts', { token, signal, query: workspace ? { workspace } : undefined }), isAccountList)
 }
 
 export async function getAccount(token: string, id: string, signal?: AbortSignal): Promise<Account> {

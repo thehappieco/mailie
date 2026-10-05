@@ -8,8 +8,7 @@
 // events") without the reconnection those leave to EventSource: the console
 // decides for itself when to reconnect (state/live.ts).
 
-import { endpoint } from './endpoint'
-import { ApiError, failureOf, isServerCode, parseRetryAfter } from './http'
+import { ApiError, failureOf, isServerCode, parseRetryAfter, requestURL } from './http'
 import { markReachable } from '../state/connection'
 
 /** One dispatched event: its type ("message" when the stream named none), its data, and the last id the stream set. */
@@ -98,6 +97,11 @@ export interface StreamOptions {
   token: string
   /** The last event id this page received; the server resumes after it. */
   lastEventID?: string
+  /**
+   * Only this workspace's mailboxes (?workspace=). A stream so narrowed ends
+   * with not_found once the caller is no longer an active member of it.
+   */
+  workspace?: string
   signal: AbortSignal
   /** The server answered 200 with an event stream. */
   onOpen?: () => void
@@ -146,7 +150,7 @@ export async function readEventStream(options: StreamOptions): Promise<void> {
     arm()
     let response: Response
     try {
-      response = await fetch(endpoint('/v1/events'), {
+      response = await fetch(requestURL('/v1/events', options.workspace ? { workspace: options.workspace } : undefined), {
         method: 'GET', headers, credentials: 'omit', redirect: 'error', cache: 'no-store', signal: watchdog.signal,
       })
     } catch {

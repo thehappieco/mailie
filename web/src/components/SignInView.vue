@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { MIN_PASSWORD } from '../api/auth'
 import { failure, type Failure } from '../state/failure'
+import { dropInvitation } from '../state/invitation'
 import { pendingOAuthReturn } from '../state/oauthReturn'
 import { session, signIn, signUp } from '../state/session'
 import { edition } from '../edition'
@@ -15,10 +16,13 @@ import PasswordInput from './PasswordInput.vue'
 
 // There is no public sign-up: an account starts from an invitation link, which
 // carries the code and the address it is for. Without one, this is a sign-in
-// form and says where invitations come from. What creating an account agrees
-// to, and the links at the card's foot, are the edition's (legal), if any.
+// form and says where invitations come from. Where teams are made here, an
+// invitation may also be one to join a team, which someone who already has an
+// account accepts once signed in. What creating an account agrees to, and the
+// links at the card's foot, are the edition's (legal), if any.
 const props = defineProps<{ invitation: Invitation | null }>()
 const legal = edition().legal
+const teams = edition().teams === true
 
 type Mode = 'sign-in' | 'sign-up'
 const mode = ref<Mode>(props.invitation ? 'sign-up' : 'sign-in')
@@ -60,6 +64,8 @@ async function submit(event: SubmitEvent) {
   try {
     if (mode.value === 'sign-up' && props.invitation) {
       await signUp({ invite: props.invitation.invite, email: email.value, name: name.value, password: password.value })
+      // Spent: the account it made is the one signed in now.
+      dropInvitation()
     } else {
       await signIn(email.value, password.value)
     }
@@ -86,6 +92,7 @@ async function submit(event: SubmitEvent) {
 
       <p v-if="session.notice === 'expired' && mode === 'sign-in'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
       <p v-if="returning" class="note" role="status">{{ t('Sign in to finish connecting your email account.') }}</p>
+      <p v-if="teams && invitation && mode === 'sign-in'" class="note">{{ t('Once you are signed in, you can accept the invitation to join a team.') }}</p>
       <div v-if="problemText" class="alert" role="alert">{{ problemText }}</div>
 
       <form :name="mode === 'sign-in' ? 'mailie-login' : 'mailie-signup'" method="post" autocomplete="on" @submit.prevent="submit">

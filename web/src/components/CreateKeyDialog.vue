@@ -11,12 +11,15 @@
 // nothing about it reaches storage, the address bar or history. While it is
 // shown, only Done and the close button close the dialog: an Escape pressed
 // by habit, or a tap beside it, would lose a key that cannot be shown again.
-import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { keyLifetimes, type CreatedKey, type KeyLifetime, type KeyScope } from '../api/types'
 import { edition } from '../edition'
 import { accounts } from '../state/accounts'
 import { actionsAllowed } from '../state/actionsConsent'
 import { atKeyLimit, createKey } from '../state/apikeys'
+import { everyMailbox, loadEveryMailbox } from '../state/everyMailbox'
+import { workspaces } from '../state/workspaces'
+import { accessOf, workspaceName } from '../ui/access'
 import type { Failure } from '../state/failure'
 import { mcpOffered } from '../state/mcp'
 import { announce } from '../ui/announce'
@@ -56,11 +59,26 @@ const termsChanged = computed(() => problem.value?.code === 'terms_changed')
 const { keyTerms, copy: words } = edition()
 const mcp = computed(mcpOffered)
 const accountSection = computed(() => words.accountSection())
+/**
+ * The mailboxes a key may be made for: every one the person may read, in
+ * every workspace (a key acts as them wherever they are a member). The list
+ * of the workspace shown stands in until the whole one is read.
+ */
+const choices = computed(() => (everyMailbox.loaded ? everyMailbox.list : accounts.list).filter(item => accessOf(item).read))
+/** The choices by workspace, named, when they come from more than one. */
+const groups = computed(() => {
+  const ids = [...new Set(choices.value.map(item => item.workspace_id ?? ''))]
+  return ids.map(id => ({
+    id,
+    name: ids.length > 1 ? workspaceName(workspaces.list.find(item => item.id === id)) || t('Another workspace') : '',
+    mailboxes: choices.value.filter(item => (item.workspace_id ?? '') === id),
+  }))
+})
 
 async function submit() {
   if (busy.value || created.value || !name.value.trim()) return
   // Chosen from the list as it is now: a mailbox removed meanwhile is not asked for.
-  const accountIDs = every.value ? null : accounts.list.filter(item => chosen.value.includes(item.id)).map(item => item.id)
+  const accountIDs = every.value ? null : choices.value.filter(item => chosen.value.includes(item.id)).map(item => item.id)
   noneChosen.value = accountIDs !== null && accountIDs.length === 0
   if (noneChosen.value) return
   busy.value = true
@@ -108,6 +126,8 @@ function close() {
 
 function reload() { location.reload() }
 
+// The mailboxes as they are now, in every workspace: one connected or shared since the list was read is offered too.
+onMounted(() => { if (!everyMailbox.loading) void loadEveryMailbox() })
 onBeforeUnmount(forget)
 </script>
 
@@ -126,7 +146,7 @@ onBeforeUnmount(forget)
       <dl class="key-facts">
         <div><dt>{{ t('Name') }}</dt><dd>{{ created.name }}</dd></div>
         <div><dt>{{ t('Access') }}</dt><dd>{{ scopeLabel(created.scope) }}</dd></div>
-        <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ keyMailboxes(created, accounts.list).join(', ') }}</dd></div>
+        <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ keyMailboxes(created, choices).join(', ') }}</dd></div>
         <div><dt>{{ t('Expires') }}</dt><dd>{{ dayStamp(created.expires_at) }}</dd></div>
       </dl>
       <div class="dialog-actions"><button class="ghost" type="button" @click="close">{{ t('Done') }}</button></div>
@@ -142,10 +162,13 @@ onBeforeUnmount(forget)
       </fieldset>
       <fieldset class="key-choice" :disabled="busy">
         <legend>{{ t('Mailboxes') }}</legend>
-        <label class="option"><input v-model="every" type="radio" name="mailboxes" :value="true" /><span><strong>{{ t('All my mailboxes') }}</strong><small>{{ t('Including the ones you connect later.') }}</small></span></label>
-        <label v-if="accounts.list.length" class="option"><input v-model="every" type="radio" name="mailboxes" :value="false" /><span><strong>{{ t('Only the ones I choose') }}</strong></span></label>
+        <label class="option"><input v-model="every" type="radio" name="mailboxes" :value="true" /><span><strong>{{ t('All my mailboxes') }}</strong><small>{{ workspaces.supported ? t('Every mailbox you can read, in every workspace, including the ones connected or shared with you later.') : t('Including the ones you connect later.') }}</small></span></label>
+        <label v-if="choices.length" class="option"><input v-model="every" type="radio" name="mailboxes" :value="false" /><span><strong>{{ t('Only the ones I choose') }}</strong></span></label>
         <div v-if="!every" class="mailbox-choices" role="group" :aria-label="t('Mailboxes this key reaches')">
-          <label v-for="account in accounts.list" :key="account.id" class="choice"><input v-model="chosen" type="checkbox" name="account" :value="account.id" /><span class="grow">{{ account.email }}</span><small>{{ providerName(account.provider) }}</small></label>
+          <template v-for="group in groups" :key="group.id">
+            <p v-if="group.name" class="choice-group">{{ group.name }}</p>
+            <label v-for="account in group.mailboxes" :key="account.id" class="choice"><input v-model="chosen" type="checkbox" name="account" :value="account.id" /><span class="grow">{{ account.email }}</span><small>{{ providerName(account.provider) }}</small></label>
+          </template>
         </div>
         <p v-if="noneChosen && !every" class="alert" role="alert">{{ t('Choose at least one mailbox.') }}</p>
       </fieldset>
@@ -187,6 +210,8 @@ onBeforeUnmount(forget)
 .key-form .mailbox-choices .choice input { flex: none; margin: 0; }
 .mailbox-choices .choice span { min-width: 0; overflow-wrap: anywhere; }
 .mailbox-choices small { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.mailbox-choices .choice-group { margin: 8px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .4px; overflow-wrap: anywhere; }
+.mailbox-choices .choice-group:first-child { margin-top: 0; }
 .lifetimes { display: flex; flex-wrap: wrap; gap: 8px; }
 .key-form .lifetime { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-raised); font-size: 13px; cursor: pointer; }
 .key-form .lifetime:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); font-weight: 600; }

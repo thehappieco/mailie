@@ -1,5 +1,4 @@
 {
-  "Role": ["Função", "Rol", "Rôle", "Rolle"],
   "Saving…": ["Salvando…", "Guardando…", "Enregistrement…", "Wird gespeichert…"],
   "Save name": ["Salvar nome", "Guardar nombre", "Enregistrer le nom", "Namen speichern"],
   "Name saved.": ["Nome salvo.", "Nombre guardado.", "Nom enregistré.", "Name gespeichert."],
@@ -16,5 +15,6 @@
   "Current password": ["Senha atual", "Contraseña actual", "Mot de passe actuel", "Aktuelles Passwort"],
   "New password": ["Nova senha", "Contraseña nueva", "Nouveau mot de passe", "Neues Passwort"],
   "Repeat the new password": ["Repita a nova senha", "Repite la contraseña nueva", "Répétez le nouveau mot de passe", "Neues Passwort wiederholen"],
-  "Changing…": ["Trocando…", "Cambiando…", "Modification…", "Wird geändert…"]
+  "Changing…": ["Trocando…", "Cambiando…", "Modification…", "Wird geändert…"],
+  "Role on this server": ["Função neste servidor", "Rol en este servidor", "Rôle sur ce serveur", "Rolle auf diesem Server"]
 }

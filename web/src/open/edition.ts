@@ -39,4 +39,8 @@ export const openEdition: Edition = {
   },
   // Where the server serves MCP over HTTP (MAIL_MCP_HTTP, its default).
   mcp: true,
+  // A self-hosted server makes its own teams (the local workspace source).
+  teams: true,
+  // Its owners bring people onto it, and its members are the rest.
+  serverRole: true,
 }

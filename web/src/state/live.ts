@@ -1,7 +1,14 @@
 // Live updates: the event stream, kept open while the console is.
 //
-// The stream carries the journal's events for the person's mailboxes (the
-// server decides which). The console does not rebuild its state from them:
+// The stream carries the journal's events for the mailboxes the person may
+// read in the workspace the console shows (?workspace=; the server decides
+// which, with access as it stands when each event is delivered), and is
+// opened again for another workspace when the console shows one. When read
+// access to a mailbox comes or goes, the server says so (`event: access`) and
+// the list is read again, with what was read of the team shown (its people
+// and who holds what, state/team.ts). A stream narrowed to a workspace the person is no
+// longer in ends with not_found: their workspaces are read again, and the
+// console shows another. The console does not rebuild its state from events:
 // an event says "this account changed", and the account is read again, at
 // most once a second per account, so whatever the events said and whatever
 // arrived out of order, the card shows what the server holds. A folder list
@@ -27,6 +34,9 @@ import { t } from '../ui/i18n'
 import { accounts, loadAccounts, nudge, refreshAccount, reloadIndexedFolders } from './accounts'
 import { setStream } from './connection'
 import { authorized, identity, session } from './session'
+import { loadStorage, storage } from './storage'
+import { refreshTeam } from './team'
+import { loadWorkspaces, workspaces } from './workspaces'
 
 export const RETRY_BASE_MS = 1_000
 export const RETRY_MAX_MS = 30_000
@@ -36,6 +46,11 @@ export const HEALTHY_MS = 5_000
 export const ACCOUNT_REFRESH_MS = 1_000
 /** And of a folder list read from the index. */
 export const FOLDERS_REFRESH_MS = 3_000
+/** At most one read of the list (and of storage) per this interval, however many access changes arrive. */
+export const ACCESS_REFRESH_MS = 1_000
+
+/** What the server says when read access to a mailbox came or went: the stream follows it from then on. */
+export interface AccessChange { account_id: string; read: boolean }
 
 /** A seam for tests: the jitter. */
 export const timing = { random: Math.random }
@@ -45,6 +60,7 @@ export type EventType = typeof eventTypes[number]
 
 const eventHandlers = new Map<string, Set<(event: ServerEvent) => void>>()
 const laggedHandlers = new Set<() => void>()
+const accessHandlers = new Set<(change: AccessChange) => void>()
 
 /**
  * Hears every event of this type, after the core has scheduled its own
@@ -65,16 +81,38 @@ export function onLiveLagged(handler: () => void): () => void {
   return () => { laggedHandlers.delete(handler) }
 }
 
+/**
+ * Hears that the person may now read a mailbox, or no longer may: what an
+ * edition shows of one that went must go with it. The core reads the list
+ * again either way.
+ */
+export function onLiveAccess(handler: (change: AccessChange) => void): () => void {
+  accessHandlers.add(handler)
+  return () => { accessHandlers.delete(handler) }
+}
+
 let generation = 0
 let controller: AbortController | null = null
 /** The last event id received, for Last-Event-ID. Memory only: a reload starts from now. */
 let cursor = ''
 let wake: (() => void) | null = null
+/** The workspace the stream running now was opened for. */
+let streaming = ''
 const accountTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const folderTimers = new Map<string, ReturnType<typeof setTimeout>>()
+let accessTimer: ReturnType<typeof setTimeout> | undefined
 
 // Another person's stream must not resume from this one's cursor.
 watch(identity, () => stopLive({ forget: true }), { flush: 'sync' })
+
+// Another workspace shown: its stream starts from now, as the list it goes
+// with is read whole; resuming the old one's cursor would replay what that
+// list already holds.
+watch(() => workspaces.currentID, id => {
+  if (!controller || id === streaming) return
+  stopLive({ forget: true })
+  startLive()
+})
 
 /** The Last-Event-ID the next connection sends. */
 export function lastEventID(): string {
@@ -102,6 +140,8 @@ export function stopLive(options: { forget?: boolean } = {}): void {
   for (const timer of [...accountTimers.values(), ...folderTimers.values()]) clearTimeout(timer)
   accountTimers.clear()
   folderTimers.clear()
+  clearTimeout(accessTimer)
+  accessTimer = undefined
   if (options.forget) cursor = ''
   setStream('off')
 }
@@ -133,9 +173,11 @@ async function loop(run: number, signal: AbortSignal): Promise<void> {
     let delivered = false
     /** A rate limit's Retry-After: the next attempt waits at least this long. */
     let asked = 0
+    const workspace = workspaces.currentID
+    streaming = workspace
     try {
       await authorized(token => readEventStream({
-        token, lastEventID: cursor, signal,
+        token, lastEventID: cursor, signal, workspace,
         onOpen: () => { opened = Date.now(); setStream('open') },
         onMessage: message => { delivered = true; receive(message) },
       }))
@@ -155,6 +197,9 @@ async function loop(run: number, signal: AbortSignal): Promise<void> {
       if (code === 'not_authorized') { setStream('stopped'); return }
       // A cursor the server will not take is dropped; the next stream starts from now.
       if (code === 'bad_request') { cursor = ''; void loadAccounts() }
+      // The workspace it was narrowed to is no longer the person's: reading
+      // their workspaces again shows another, which opens its own stream.
+      if (code === 'not_found' && workspace) void loadWorkspaces()
       if (code === 'rate_limited' && error instanceof ApiError) asked = Math.min(RETRY_MAX_MS * 10, (error.retryAfter ?? 0) * 1000)
     }
     if (run !== generation) return
@@ -167,6 +212,17 @@ async function loop(run: number, signal: AbortSignal): Promise<void> {
 }
 
 function receive(message: StreamMessage): void {
+  if (message.event === 'access') {
+    let change: unknown
+    try { change = JSON.parse(message.data) } catch { return }
+    if (!isAccessChange(change)) return
+    // Its folders, read from an index the person may no longer read, go now;
+    // the list says the rest once it is read again.
+    if (!change.read) delete accounts.folders[change.account_id]
+    scheduleAccess()
+    for (const handler of accessHandlers) handler(change)
+    return
+  }
   if (message.event === 'lagged') {
     // Events after the cursor were pruned: what the page shows may be
     // missing changes no event will bring back. Read it all again.
@@ -201,6 +257,29 @@ function receive(message: StreamMessage): void {
       scheduleAccount(id)
   }
   for (const handler of eventHandlers.get(event.type) ?? []) handler(event)
+}
+
+function isAccessChange(value: unknown): value is AccessChange {
+  if (typeof value !== 'object' || value === null) return false
+  const change = value as Record<string, unknown>
+  return typeof change.account_id === 'string' && change.account_id.length > 0 && change.account_id.length <= 64 && typeof change.read === 'boolean'
+}
+
+/**
+ * Reads the list again, storage if it was read, and what was read of the team
+ * shown (a mailbox removed leaves its directory, and its linker's protection
+ * may go), once however many access changes arrive together.
+ */
+function scheduleAccess(): void {
+  if (accessTimer) return
+  const run = generation
+  accessTimer = setTimeout(() => {
+    accessTimer = undefined
+    if (run !== generation) return
+    void loadAccounts()
+    if (storage.loaded) void loadStorage()
+    refreshTeam()
+  }, ACCESS_REFRESH_MS)
 }
 
 function scheduleAccount(id: string): void {

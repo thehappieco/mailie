@@ -10,17 +10,21 @@ import { describe } from './ui/errors'
 import { forgetRemembered, recheckRemembered, restore, session, showSignIn } from './state/session'
 import { captureOAuthReturn, pendingOAuthReturn, sweepOAuthStorage } from './state/oauthReturn'
 import { finishOAuthReturn } from './state/accounts'
+import { dropInvitation, holdInvitation, invitation } from './state/invitation'
 import { takeInvitation } from './ui/signupLink'
 import SignInView from './components/SignInView.vue'
 import OAuthReturnView from './components/OAuthReturnView.vue'
+import InvitationDialog from './components/InvitationDialog.vue'
 import LiveRegion from './components/LiveRegion.vue'
 
 const consoleView = edition().console
+/** Teams are made here, so an invitation may be one to join a team, accepted signed in. */
+const teams = edition().teams === true
 
 // Both run before anything renders, so neither the provider's code nor an
 // invitation code stays in the address bar for a moment longer than needed.
 captureOAuthReturn()
-const invitation = ref(takeInvitation())
+holdInvitation(takeInvitation())
 
 // A provider start or return this tab never used is removed when its ten
 // minutes are up, not merely ignored: it names a mailbox, or carries a code.
@@ -54,8 +58,10 @@ watch(() => session.phase, async phase => {
 
 watch(() => session.phase, phase => {
   rememberNoticeClosed.value = false
-  // An invitation is spent by signing up; a later sign-out shows the plain sign-in form.
-  if (phase === 'ready') invitation.value = null
+  // An invitation is spent by signing up; a later sign-out shows the plain
+  // sign-in form. Where teams are made here, a sign-in keeps it, to be
+  // accepted in the console (the sign-up drops it, having spent it).
+  if (phase === 'ready' && !teams) dropInvitation()
 })
 
 /** A page back from the back/forward cache may be signed in with a login another tab has since cleared. */
@@ -74,7 +80,10 @@ onMounted(() => {
   window.visualViewport?.addEventListener('scroll', updateViewport)
   window.addEventListener('pageshow', returnedToPage)
   window.addEventListener('focus', focused)
-  if (invitation.value) showSignIn()
+  // An invitation link starts a new account, even in a browser that
+  // remembers another one; where teams are made here, it may be one to join
+  // a team, so a remembered session is restored and asked to accept it.
+  if (invitation.pending && !teams) showSignIn()
   else void restore()
 })
 
@@ -102,9 +111,10 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <SignInView v-else-if="session.phase === 'signed-out'" :invitation="invitation" />
+  <SignInView v-else-if="session.phase === 'signed-out'" :invitation="invitation.pending" />
   <OAuthReturnView v-else-if="finishing" />
   <component :is="consoleView" v-else />
+  <InvitationDialog v-if="teams && session.phase === 'ready' && !finishing && invitation.pending" />
 
   <div v-if="session.phase === 'ready' && session.notRemembered && !rememberNoticeClosed" class="alert session-notice" role="status">
     <span>{{ t('This browser did not let Mailie remember your session. You will need to sign in again after reloading the page.') }}</span>

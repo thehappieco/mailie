@@ -221,7 +221,7 @@ describe('creating a key', () => {
     await click(createButton())
     await fill(find('dialog input[name=key-name]'), 'Reader')
     await submit(find('dialog form'))
-    expect(words(find('dialog .alert')!)).toBe('A chosen mailbox cannot be given to a key: it was removed, or it is not one you connected. Choose again.')
+    expect(words(find('dialog .alert')!)).toBe('A chosen mailbox cannot be given to a key: it was removed, or you no longer have access to it. Choose again.')
     expect(words()).not.toContain('hunter2')
     expect(find('dialog form')).not.toBeNull()
   })

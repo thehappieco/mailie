@@ -19,6 +19,8 @@ async function signedIn(route: Route) {
   const fetch = serve(request => {
     if (request.path === '/v1/auth/login') return json(reply())
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
+    // A server without workspaces: every list is the person's whole.
+    if (request.path === '/v1/workspaces') return failure('not_found', 404)
     return route(request)
   })
   await session.signIn('ana@example.test', 'correct-password')

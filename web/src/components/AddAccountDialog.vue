@@ -4,10 +4,21 @@
 // iCloud, and the servers for IMAP), then either leave for the provider, wait
 // for the provider, or wait for the server's test sign-in. Closing an unfinished attempt removes the account it
 // created, so nothing half-connected is left behind.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+//
+// A person who owns or administers a team chooses where the mailbox goes:
+// their personal workspace, listed first, or one of those teams; the
+// workspace shown is chosen until they pick, when they may link into it. The
+// console shows that workspace before connecting, so the new mailbox appears
+// in the list it belongs to. A team mailbox syncs at once under the agreement
+// of whoever links it, so someone who agreed to an earlier text of mail sync
+// agrees to the current one before linking into a team.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import type { Account, ProviderID } from '../api/types'
 import { edition } from '../edition'
-import { accounts, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import { loadConsent, syncStanding } from '../state/sync'
+import { currentWorkspace, selectWorkspace, workspaces } from '../state/workspaces'
+import { canLinkInto, linkWaitsForSync, workspaceName } from '../ui/access'
 import { draftRequest, emptyDraft, signsInWithPassword, type AccountDraft } from '../ui/accountDraft'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
@@ -18,6 +29,7 @@ import { noticeText } from '../ui/notices'
 import AccountFields from './AccountFields.vue'
 import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
+import SyncRenewal from './SyncRenewal.vue'
 
 const props = defineProps<{ resume: Account | null; returnFocus?: () => HTMLElement | null }>()
 const emit = defineEmits<{ close: [] }>()
@@ -32,8 +44,33 @@ const now = ref(Date.now())
 const body = ref<HTMLElement | null>(null)
 let ticker: ReturnType<typeof setInterval> | undefined
 
+/** Showing the chosen workspace before connecting: the form waits. */
+const moving = ref(false)
 const options: ProviderID[] = ['gmail', 'microsoft', 'icloud', 'imap']
-const blocked = computed(() => connect.phase === 'starting' || connect.phase === 'redirecting')
+const placeID = useId()
+/** Where the person may link a mailbox: their personal workspace first, then the teams they own or administer. */
+const places = computed(() => workspaces.list.filter(canLinkInto).sort((a, b) => Number(b.kind === 'personal') - Number(a.kind === 'personal')))
+/** What the person picked, if they did. */
+const picked = ref('')
+/**
+ * The workspace chosen: the one the person picked; until they do, the one
+ * shown when they may link into it (a team's empty list says a mailbox
+ * connected there is the team's), else their personal one. Followed as the
+ * workspaces load, so a dialog opened before them ticks one all the same.
+ */
+const place = computed({
+  get: () => {
+    if (picked.value && places.value.some(item => item.id === picked.value)) return picked.value
+    const shown = currentWorkspace()
+    return shown && canLinkInto(shown) ? shown.id : places.value[0]?.id ?? ''
+  },
+  set: (id: string) => { picked.value = id },
+})
+const placeChosen = computed(() => workspaces.list.find(item => item.id === place.value))
+/** Linking into the team chosen waits for the person to agree to the current text of mail sync. */
+const renewal = computed(() => linkWaitsForSync(placeChosen.value, syncStanding()))
+const renewalNote = computed(() => t('A mailbox you connect to {team} syncs under your agreement to mail sync, which was to an earlier text. Agree to the current text first.', { team: workspaceName(placeChosen.value) }))
+const blocked = computed(() => moving.value || connect.phase === 'starting' || connect.phase === 'redirecting')
 const name = computed(() => providerName(connect.provider || provider.value))
 /** The server tests a password before it saves anything; OAuth leaves for the provider instead. */
 const password = computed(() => signsInWithPassword(provider.value))
@@ -87,15 +124,35 @@ function back() {
   step.value = 'choose'
 }
 
+/**
+ * Shows the workspace the mailbox goes into, so its card lands in the list
+ * shown. Answers the team's id to send, or '' for the personal workspace,
+ * which the server picks when none is named.
+ */
+async function goTo(): Promise<string> {
+  const target = placeChosen.value
+  if (!target) return ''
+  if (target.id !== workspaces.currentID) {
+    selectWorkspace(target.id)
+    await accountsSettled()
+  }
+  return target.kind === 'team' ? target.id : ''
+}
+
 async function submit() {
-  if (blocked.value || !provider.value) return
+  if (blocked.value || moving.value || !provider.value || renewal.value) return
+  moving.value = true
+  let workspaceID: string
+  try { workspaceID = await goTo() } finally { moving.value = false }
   if (password.value) {
-    const ok = await connectPasswordAccount(draftRequest(provider.value, draft.value))
+    const body = draftRequest(provider.value, draft.value)
+    if (workspaceID) body.workspace_id = workspaceID
+    const ok = await connectPasswordAccount(body)
     // The password is not kept once it has done its job.
     if (ok) draft.value.password = ''
     return
   }
-  await connectOAuthAccount({ provider: provider.value, email: draft.value.email.trim(), displayName: draft.value.displayName.trim() })
+  await connectOAuthAccount({ provider: provider.value, email: draft.value.email.trim(), displayName: draft.value.displayName.trim(), workspaceID })
 }
 
 async function retry() {
@@ -112,6 +169,20 @@ function close() {
   else cancelConnect()
   emit('close')
 }
+
+// The server refused a link into a team: maybe for an agreement to an
+// earlier text than it now asks about, which this page had not heard of.
+// Reading it again says so, in place of the refusal's general words.
+watch(() => connect.failure, found => {
+  if (found?.op === 'add-account' || found?.op === 'test-login' || found?.op === 'test-login-icloud') {
+    if (found.code === 'conflict' && placeChosen.value?.kind === 'team') void loadConsent()
+  }
+})
+const failureText = computed(() => {
+  const found = connect.failure
+  if (!found) return ''
+  return found.code === 'conflict' && renewal.value ? renewalNote.value : describe(found)
+})
 
 watch(() => connect.phase, phase => {
   clearInterval(ticker)
@@ -180,6 +251,18 @@ onBeforeUnmount(() => {
       <!-- 2. The address, and the servers for IMAP. -->
       <form v-else-if="!resume && (connect.phase === 'idle' || connect.phase === 'starting') && provider" class="form-stack" @submit.prevent="submit">
         <AccountFields v-model:draft="draft" :provider="provider" :busy="blocked" :offer-icloud="available('icloud')" @use-icloud="useICloud" />
+        <p v-if="places.length === 1 && placeChosen && placeChosen.id !== workspaces.currentID" class="hint place-note">{{ t('It is connected to your personal workspace, which this page then shows.') }}</p>
+        <fieldset v-if="places.length > 1" class="place-choice" :disabled="blocked">
+          <legend :id="placeID">{{ t('Connect it to') }}</legend>
+          <label v-for="item in places" :key="item.id" class="place">
+            <input v-model="place" type="radio" name="workspace" :value="item.id" />
+            <span>
+              <strong>{{ item.kind === 'personal' ? t('Your personal workspace') : workspaceName(item) }}</strong>
+              <small>{{ item.kind === 'personal' ? t('Only you can use it.') : t('Its owners and admins see that it is there. Only you can use it until you give other members access.') }}</small>
+            </span>
+          </label>
+        </fieldset>
+        <SyncRenewal v-if="renewal" :note="renewalNote" />
         <!-- Said before any access is granted: ahead of the provider's consent screen, or of the password test. -->
         <p v-if="accessNote" class="access-note"><AppIcon name="shield" :size="15" /><span><component :is="accessNote" /></span></p>
         <p v-if="connect.phase === 'starting'" class="progress">
@@ -188,7 +271,7 @@ onBeforeUnmount(() => {
         </p>
         <div class="dialog-actions">
           <button class="ghost" type="button" :disabled="blocked" @click="back">{{ t('Back') }}</button>
-          <button class="primary" type="submit" :disabled="blocked">
+          <button class="primary" type="submit" :disabled="blocked || renewal">
             {{ connect.phase === 'starting' ? (password ? t('Testing the connection…') : t('Starting…')) : password ? t('Connect') : t('Continue to {provider}', { provider: name }) }}
           </button>
         </div>
@@ -231,7 +314,7 @@ onBeforeUnmount(() => {
 
       <!-- 5. Failed. -->
       <div v-else-if="connect.phase === 'failed' && connect.failure" class="outcome">
-        <p class="alert" role="alert">{{ describe(connect.failure) }}</p>
+        <p class="alert" role="alert">{{ failureText }}</p>
         <div class="dialog-actions">
           <button class="ghost" type="button" @click="close">{{ t('Close') }}</button>
           <!-- A removed account cannot be tried again; closing is all there is. -->
@@ -261,6 +344,15 @@ onBeforeUnmount(() => {
 .access-note { display: flex; align-items: flex-start; gap: 6px; margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 .access-note .app-icon { flex: none; margin-top: 1px; color: var(--accent); }
 .access-note :deep(a) { text-underline-offset: 2px; }
+.place-note { margin: 0; }
+.place-choice { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
+.place-choice legend { padding: 0; margin-bottom: 8px; font-size: 13px; }
+.form-stack .place { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); cursor: pointer; }
+.place:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); }
+.place input { width: auto; min-height: 0; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.place span { display: grid; gap: 3px; min-width: 0; }
+.place strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.place small { font-size: 12px; line-height: 1.45; color: var(--text-dim); }
 .user-code { justify-self: start; font-family: var(--mono); font-size: 28px; letter-spacing: .14em; padding: 10px 18px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--accent-dim); color: var(--text); }
 .outcome .alert { margin: 0; }
 .success strong { font-weight: 650; }

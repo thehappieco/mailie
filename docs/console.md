@@ -1,10 +1,11 @@
 # The server console and its API
 
 The console is where a person signs in to **their** account on a Mailie server and connects their
-own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP. The open console
-(`web/`) has four sections: **Mailboxes**, **API keys & MCP**, **Storage** and **Account** (name,
-password, sessions, and what they allow the server to do: sync and actions). No mail is read or
-written there; a tool does that, with a key.
+own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their personal
+workspace or in a team. The open console (`web/`) has five sections: **Mailboxes**, **Members**
+(the people of the team shown, or making a team), **API keys & MCP**, **Storage** and **Account**
+(name, password, sessions, and what they allow the server to do: sync and actions). No mail is read
+or written there; a tool does that, with a key.
 
 This document is the console's architecture and the REST API it uses, which is the same API the
 command line and any other client use. The MCP server is in [`mcp.md`](mcp.md), backups in
@@ -51,12 +52,17 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
 edition calls `configureEdition()` (`web/src/edition.ts`) before mounting: the console component
 built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, actions, a new key's
 terms) with their revisions, what the frame calls itself (`shell`: the breadcrumb's root and the
-sidebar's name; the open edition's is the server's "Console"), a few sentences it words its own
-way, whether to show how to connect over MCP, and optional extras (a byline, legal components, more
-translations). The core's own sentences never name the frame: they say "this page". Other extension
-points are `onLiveEvent()`/`onLiveLagged()` (`state/live.ts`), `addDescriber()` for an edition's own
-operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account section's
-pieces (`AccountPanel`, `SyncPermission`, `ActionsPermission`, `PermissionRow`).
+sidebar's name; the open edition's is the server's "Console"), its sections as data (each one the
+workspace shown's, or with `scope: 'person'` the person's own, where the breadcrumb names no
+workspace), a few sentences it words its own
+way, whether to show how to connect over MCP, whether people make and run teams on this server
+(`teams`: the open edition's, for the local workspace source), whether the account section names
+the person's role on this server (`serverRole`, the open edition's), and optional extras (a
+byline, legal components, more translations). The core's own sentences never name the frame: they
+say "this page". Other extension points are `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()`
+(`state/live.ts`), `addDescriber()` for an edition's own operations (`ui/errors.ts`,
+`state/failure.ts`), `onActionsConsent()` and the account section's pieces (`AccountPanel`,
+`SyncPermission`, `ActionsPermission`, `PermissionRow`).
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
@@ -188,8 +194,113 @@ adds with an instance key.
 Protections, each `409` and marked in advance in the listings (`last_owner`, `links`,
 `linked_by`): a team keeps an active owner; the person a mailbox syncs under is neither removed nor
 disabled, nor their grant changed, while it is linked — another member with every flag, who may
-link there and agreed to sync, **takes the link over** (`POST /v1/accounts/{id}/take-over`) and
-keeps the index; a linked mailbox keeps a holder of `manage`.
+link there and agreed to the current text of sync, **takes the link over**
+(`POST /v1/accounts/{id}/take-over`) and keeps the index; a linked mailbox keeps a holder of
+`manage`. A team mailbox comes to sync under someone's consent only at the current revision of the
+sync text: linking into a team is `409` for someone whose consent is to an earlier one (with none,
+nothing syncs until they agree, to the current text), as is taking a link over.
+
+### Workspaces in the console
+
+The console decides nothing here: every rule is the server's, and a screen only offers what the
+caller's role and flags allow and says beforehand what a protection refuses (`web/src/ui/access.ts`,
+whose rules are tests of their own). A refusal is said in the console's words, from its `code`.
+
+- **The workspace shown.** The sidebar (the drawer on a phone) has a switcher once the person
+  belongs to more than one workspace, and the header's breadcrumb names the one shown on the
+  sections that are a workspace's (Mailboxes, Members, Storage), never on the person's own (API
+  keys & MCP, Account), which an edition marks `scope: 'person'` (its account section always is).
+  It is kept in memory for the tab; the last one chosen is remembered for each person apart, in
+  this host's local storage under a key naming only their opaque user id
+  (`mailie_workspace:usr_…`, never a cookie, so no request and no other host carries it; someone
+  else signing in on the same browser does not open on it, and signing out, even everywhere,
+  clears no preference, this one included), and checked against `GET /v1/workspaces`, which is
+  read before any list: one the person is no longer in is never asked for, and the personal
+  workspace is shown instead. The mailboxes (`GET /v1/accounts`), Storage (`GET /v1/me/storage`)
+  and the event stream (`GET /v1/events`) pass `?workspace=`; a card
+  of another workspace that an answer names is left out of the list. Choosing another workspace
+  reads its lists again and opens its stream from now; an answer for the one before that lands
+  later is dropped. A server without workspaces (`404`) lists everything together. Any other
+  failure to read them holds every list and the stream, and says why, rather than read them
+  without `?workspace=`, which would show a team's mailboxes as the person's own: while the console
+  is shown it asks again by itself (2 s doubling to 30 s, or as long as a rate limit asks), and
+  reads the lists once the workspace is known. Refresh reads the workspaces again too, as does a
+  refusal for want of a role (`not_authorized` from a team or access route): a role changed
+  elsewhere, or a team joined in another tab, shows without reloading.
+- **The person's own settings are not a workspace's.** API keys act as their person in every
+  workspace, so the keys section names a key's mailboxes, and the new-key dialog offers them, from
+  every workspace (`GET /v1/accounts` without `?workspace=`, grouped by workspace); only mailboxes
+  the person may read are offered. The dialog that turns sync off reads the same list, each time it
+  opens, to name the team mailboxes the person linked, whose index goes for everyone who reads
+  them, and says that a take-over first keeps it; it is not confirmed before they are named (or
+  could not be, which it says).
+- **Each mailbox** says on its card what the person may do with it (their grant: Read, Act, Send,
+  Manage, or full access) and, in a team, who linked it. Folders and Sync now need `read`;
+  authorizing again and removing need `manage`; a mailbox seen without `read` says so instead of
+  offering them, and one that needs authorizing tells whoever does not manage it that someone who
+  does has to. A mailbox someone else linked syncs under their consent: its sheet says so, and the
+  consent card is offered only for mailboxes the person linked.
+- **Who can use a mailbox** (the sheet's Access, in a team): for an owner or an admin of the team,
+  and for whoever manages the mailbox, every active member with their four flags, ticked and then
+  saved. What the caller may not give is shown as such, with why: `read`, `act` and `send` pass only
+  from someone holding them (an owner or an admin without them gives `manage` only, not even
+  themselves `read`), the person the mailbox is linked by keeps all four, and the last holder of
+  `manage` keeps it; ticking `act` ticks `read`. A change that only takes flags away is
+  `DELETE …/access/{user}?flags=` naming them; one that gives anything sets the grant exactly
+  (`PUT`, all four). Someone who only uses the mailbox sees their own flags, and may give them up.
+  An owner or an admin also sees, below the cards, the team's mailboxes they hold nothing on, from
+  the access directory (`GET /v1/workspaces/{id}/access`): addresses and grants, never what they
+  hold. "Nothing" is what the directory's grants say, and only once their own list of that team is
+  in, so a mailbox is never shown as theirs to hold nothing on while it loads; the directory is read
+  again whenever one of the team's mailboxes leaves or joins their list (removed, linked, its
+  access changed). A mailbox's dialog there closes when another workspace is shown, and says so
+  when the mailbox was removed meanwhile.
+- **Taking a link over** is offered to whoever manages the mailbox; it is enabled only for someone
+  holding every flag, an owner or an admin of the team, who agreed to the current text of sync, and
+  otherwise says which of those is missing; someone who agreed to an earlier text reads the current
+  one and agrees to it there. It asks first, saying that the mailbox will sync under the person's
+  agreement and keep its index, that turning their sync off would then delete it for the team, and
+  that the previous linker keeps an ordinary grant.
+- **Connecting a mailbox** is offered only where the person may link one (their personal
+  workspace, or a team they own or administer): in a team where they may not, the button would
+  only ever connect to their personal workspace, so the team's list has none, and an empty one
+  says that its owners and admins connect its mailboxes and offers to show the personal workspace,
+  where theirs go. It asks where once the person owns or administers a team: their personal
+  workspace, listed first, or one of those teams (`workspace_id`). Until they pick, the workspace
+  shown is chosen when they may link into it (a team's empty list says that a mailbox connected
+  there is the team's), and their personal one otherwise. The console shows the workspace chosen
+  before connecting, so the new card lands in the list it belongs to; a provider's return shows the
+  workspace of the mailbox it authorized. Into a team, someone who agreed to an earlier text of
+  sync agrees to the current one first, in the dialog: the mailbox would sync under it at once.
+- **Events.** `event: access` reads the list again (once for several, a second later), Storage if
+  it was read, and what was read of the team shown (its members and its directory), and forgets the
+  folders of a mailbox no longer readable; an edition hears it through `onLiveAccess()`. A stream narrowed to a workspace the person is no longer in ends with
+  `not_found`: the console reads their workspaces again, shows another and says which went.
+- **Members** (the open edition, `teams`): shown for the personal workspace, where a person
+  creates a team (and becomes its owner) and sees the teams they are in, and for a team made here
+  (`source: local`); a team mirrored from elsewhere is changed there, and the section is not shown
+  for it. A team's people with their roles: an owner changes anyone's role and status and removes
+  anyone; an admin disables, enables and removes members only; a member only leaves, and sees no
+  invitations, which the section's line then does not name either. The last
+  active owner and a person mailboxes there are linked by are marked, and the actions their
+  protection refuses are not offered. The server works those marks out across the team, so the
+  members are read again whole after any change of role, status or membership, and whenever one of
+  the team's mailboxes leaves or joins the person's list; the person's own role follows their row
+  as listed. Disabling, removing and leaving ask first, saying what goes
+  (the person's grants in the team, its invitations still waiting for them). Owners and admins
+  rename the team and invite (an admin, members only): the link is shown once, in a dialog that
+  only its own buttons close, copied on request and never kept, in storage or in the list of
+  pending invitations, which only revokes. Before an invitation is made the dialog says who its
+  link works for: someone with an account here, signed in; and someone without one only when the
+  person inviting is an owner of the server.
+- **An invitation opened signed in.** Where teams are made here, an invitation link no longer signs
+  the browser out: the remembered session is restored and asked to join the team the invitation
+  names (`POST /v1/auth/invites/accept`), saying that joining gives access to no mailbox. One for
+  another address offers signing out to use it. Signed out, the link still opens the sign-up form,
+  and someone with an account signs in instead and then accepts it. The invitation's code stays in
+  memory until it is used or set aside. Where teams are not made here (an edition without `teams`),
+  an invitation only ever creates an account, and one the sign-up refuses says only that, and to
+  ask for a new one: there is no signing in to accept it.
 
 ## Errors
 
@@ -268,8 +379,8 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 
 There is no current workspace on the server: a session or a key reaches the caller's mailboxes in
 every workspace they belong to, and every account (and every storage entry) carries its
-`workspace_id`. The console keeps the workspace it shows itself — per tab, remembered in local
-storage — and passes `?workspace=ID` to `GET /v1/accounts`, `GET /v1/messages`,
+`workspace_id`. The console keeps the workspace it shows itself — per tab, remembered for each
+person in local storage — and passes `?workspace=ID` to `GET /v1/accounts`, `GET /v1/messages`,
 `GET /v1/me/storage`, `GET /v1/events` and `GET /v1/events/wait`, which narrows them to that
 workspace's mailboxes, so a view never fetches another workspace's data; a workspace the caller is
 not an active member of is `404`, and with `account` as well the account must be in it
@@ -452,7 +563,7 @@ Each text a person agrees to has a revision, configured on the daemon:
 
 | Variable | Default | The text |
 |---|---|---|
-| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync` | what sync stores (`web/src/open/SyncText.vue`) |
+| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-2` | what sync stores, and who reads a team mailbox's index (`web/src/open/SyncText.vue`) |
 | `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions` | the server changing their mailboxes (`web/src/open/ActionsText.vue`) |
 | `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console has no such text) |
 | `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
@@ -463,7 +574,9 @@ serves another console sets the revisions its texts carry. The console sends the
 text it showed, never `current_version`, and the daemon accepts only the configured one. Changing a
 revision asks everybody again: a consent to another revision of actions or sending stops counting
 (they are refused) until the person agrees to the new text; a consent to another revision of sync
-keeps their mailboxes syncing unless they turn it off; a key keeps the terms it was created under.
+keeps their mailboxes syncing unless they turn it off, but brings no team mailbox under it (linking
+into a team and taking a link over wait for the current one); a key keeps the terms it was created
+under.
 Values are printable ASCII without spaces, at most 64 bytes. A console whose texts carry other
 revisions than the daemon's sees every agreement refused, and offers only a reload.
 
@@ -909,7 +1022,9 @@ CI runs it in a job of its own. `web/README.md` describes the tests and the opti
 - Searching message bodies.
 - Self-service sign-up, email verification, password recovery by email (the operator resets a
   forgotten password: [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
-- A screen to invite and manage people; the routes and the command line exist.
+- A screen for the server's own people: inviting someone to the server, disabling or deleting a
+  person (`POST /v1/users/*`); the routes and the command line exist. A team's people have theirs
+  (Members).
 - OAuth for MCP clients: `/mcp` takes a key as a bearer.
 - Renaming or pausing a mailbox, and replacing the stored password of a password mailbox.
 - Periodic cleanup of expired sessions (they stay with the account; unused invitations are swept).

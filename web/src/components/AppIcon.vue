@@ -15,6 +15,7 @@ export type IconName =
   | 'folder'
   | 'external'
   | 'user'
+  | 'users'
   | 'lock'
   | 'menu'
   | 'chevron-down'
@@ -59,6 +60,7 @@ const paths: Record<IconName, string> = {
   folder: 'M3 6a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6Z',
   external: 'M14 4h6v6m0-6-9 9m8 1v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5',
   user: 'M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-1a8 8 0 0 1 16 0v1',
+  users: 'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Zm10 14v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   lock: 'M6 11h12a1 1 0 0 1 1 1v8a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-8a1 1 0 0 1 1-1Zm2 0V7a4 4 0 0 1 8 0v4',
   menu: 'M4 6h16M4 12h16M4 18h16',
   'chevron-down': 'm6 9 6 6 6-6',

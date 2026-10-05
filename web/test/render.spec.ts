@@ -295,6 +295,12 @@ describe('what the console renders', () => {
     expect(html).toContain(ana.email)
   })
 
+  it('names the person’s role on this server, which a self-hosted server’s people have', async () => {
+    signIn({ ...ana, role: 'member' })
+    const words = (await render(OpenAccount)).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
+    expect(words).toContain('Role on this server Member')
+  })
+
   it('asks nobody to accept a company’s terms, and links no policy, on the sign-in and sign-up cards or in the account section', async () => {
     locale.value = 'pt'
     const signup = await render(SignInView, { invitation: { invite: 'SyntheticInviteCode_0123456789abcdefghijklmn', email: 'new@example.test' } })
@@ -325,11 +331,14 @@ describe('sync, as the console shows it', () => {
     const html = await render(AccountsPanel)
     const card = html.match(/<section class="consent-card"(?:(?!<\/section>).)*<\/section>/s)?.[0] ?? ''
     const words = text(card)
-    for (const item of ['keeps an index of the mail in your connected mailboxes in its own database', 'who sent it and who it was sent to, with their names',
+    for (const item of ['keeps an index of the mail in the mailboxes you connect, in your personal workspace or in a team, in its own database', 'who sent it and who it was sent to, with their names',
       'its subject, dates and size', 'the folder it is in, and flags such as read or starred', 'the identifiers that tie a reply to its conversation',
       'the type, size and file name of each part, but not what the part contains', 'Message bodies and attachments are never stored.',
       'Sync starts with the last 90 days', 'except All Mail, Starred and Important in Gmail', 'unless it is among the 10,000 most recent on this server',
-      'The index is kept until you turn sync off, remove the mailbox, or your account on this server is closed. Turning sync off deletes it.',
+      // Who reads a team mailbox's index, and that turning sync off deletes it for them too (the text's second revision).
+      'Who can read the index: in your personal workspace, only you. In a team, also the members given read access to the mailbox',
+      'Turning sync off deletes the index of every mailbox you connected, team mailboxes included, even while others read them.',
+      'If another member takes over a team mailbox’s link first, its index is kept under their agreement instead of yours.',
       'Whoever runs this server can read its database, this index included.']) expect(words).toContain(item)
     expect(card).not.toMatch(/<a[^>]*href=/)
     expect(words).not.toMatch(/Mailie|privacy|policy/i)
@@ -396,22 +405,21 @@ describe('sync, as the console shows it', () => {
     expect(html).not.toContain('Stopped')
   })
 
-  it('does not offer consent for a mailbox nobody owns, which the operator switches on', async () => {
+  it('says a mailbox someone else linked syncs under their consent, and offers none of the person’s own for it', async () => {
     signIn()
-    consented()
-    // Visible to an owner, and not covered by their consent.
-    const row = account({ state: 'active' })
+    notConsented()
+    // A team mailbox Bea linked and has not agreed to sync: Ana's consent would not sync it.
+    const row = account({ state: 'active', workspace_id: 'wsp_team', linked_by: 'usr_bea', access: { read: true, act: false, send: false, manage: false } })
     Object.assign(accounts, { list: [row], loaded: true, loading: false })
     const html = await render(AccountSheet, { account: row })
-    expect(html).toContain('It is not linked to your Mailie account, so the server’s administrator decides whether it syncs.')
+    expect(html).toContain('Sync is off for this mailbox. It syncs under the agreement of Another member, who linked it, and they have not turned sync on.')
     expect(html).not.toContain('Turn on sync…')
     expect(html).not.toContain('Sync now')
-    // Just after consent the accounts are read again; until then nothing is claimed about ownership.
-    accounts.loading = true
-    const reading = await render(AccountSheet, { account: row })
-    expect(reading).toContain('Sync is off. Nothing from this mailbox is stored.')
-    expect(reading).not.toContain('not linked')
-    expect(reading).not.toContain('Turn on sync…')
+    // A mailbox of the person's own still offers it.
+    const own = account({ id: 'acc_own', state: 'active', linked_by: ana.id })
+    const mine = await render(AccountSheet, { account: own })
+    expect(mine).toContain('Sync is off. Nothing from this mailbox is stored.')
+    expect(mine).toContain('Turn on sync…')
   })
 
   it('offers consent from the sheet of a mailbox that does not sync, and says nothing is stored', async () => {

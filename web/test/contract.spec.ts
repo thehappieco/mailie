@@ -14,11 +14,15 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EventStreamParser } from '../src/api/events'
 import {
-  isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isInvite, isMe, isMessageNew,
-  isMcpAccess, isPersonalKeyList, isProviderList, isServerEvent, isSessionReply, isStorage, isSyncConsent, isToken, isUser, isWaitResult,
-  type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Invite,
-  type PersonalKey, type Provider, type ServerEvent, type SessionReply, type Storage, type SyncConsent, type WaitResult,
+  isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isMailboxAccessList, isMe,
+  isMember, isMemberList, isMessageNew, isMcpAccess, isPersonalKeyList, isProviderList, isServerEvent, isSessionReply, isStorage, isSyncConsent,
+  isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceList,
+  type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
+  type MailboxAccess, type Member, type PersonalKey, type Provider, type ServerEvent, type SessionReply, type Storage, type SyncConsent,
+  type TeamInvite, type WaitResult, type Workspace,
 } from '../src/api/types'
+import { invitationLink } from '../src/api/workspaces'
+import { grantChange } from '../src/ui/access'
 import { listed } from '../src/api/apikeys'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
 import { signupLink } from '../src/ui/signupLink'
@@ -62,6 +66,15 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['send_consent_given', value => isSyncConsent(value, true)],
   ['storage', value => isStorage(value, true)],
   ['mcp', value => isMcpAccess(value, true)],
+  ['workspaces', value => isWorkspaceList(value, true)],
+  ['workspace_created', value => isWorkspace(value, true)],
+  ['invite_accepted', value => isWorkspace(value, true)],
+  ['members', value => isMemberList(value, true)],
+  ['member', value => isMember(value, true)],
+  ['team_invite', value => isTeamInvite(value, true)],
+  ['team_invites', value => isTeamInviteList(value, true)],
+  ['access', value => isMailboxAccessList(value, true)],
+  ['grant', value => isGrant(value, true)],
 ]
 
 describe('the HTTP contract the Go handlers answer with', () => {
@@ -244,6 +257,80 @@ describe('the HTTP contract the Go handlers answer with', () => {
     // Summed per workspace, over the same mailboxes and nothing else.
     expect(storage.workspaces?.reduce((sum, item) => sum + item.mailboxes, 0)).toBe(storage.mailboxes.length)
     expect(storage.workspaces?.reduce((sum, item) => sum + item.bytes, 0)).toBe(storage.total.bytes)
+  })
+
+  it('lists the person’s workspaces with their role in each, their own personal one among them', () => {
+    const list = fixture('workspaces') as Workspace[]
+    expect(list.filter(item => item.kind === 'personal')).toHaveLength(1)
+    // The console names a personal workspace itself; a team carries its own name.
+    expect(list.find(item => item.kind === 'personal')?.name).toBe('')
+    for (const item of list) {
+      expect(item.role, item.id).toMatch(/^(owner|admin|member)$/)
+      expect(item.status, item.id).toBe('active')
+      // Counts are the operator's listing only.
+      expect(item, item.id).not.toHaveProperty('members')
+    }
+    // Every list the console narrows names the workspace a row belongs to.
+    const ids = new Set(list.map(item => item.id))
+    expect(ids.has((fixture('account') as Account).workspace_id!)).toBe(true)
+    for (const mailbox of (fixture('storage') as Storage).mailboxes) expect(ids.has(mailbox.workspace_id!)).toBe(true)
+  })
+
+  it('makes the person who creates a team its owner, and joins an invited person with the role the invitation gives', () => {
+    const created = fixture('workspace_created') as Workspace
+    expect(created).toMatchObject({ kind: 'team', source: 'local', role: 'owner', status: 'active' })
+    expect(created.name).not.toBe('')
+    const joined = fixture('invite_accepted') as Workspace
+    expect(joined.kind).toBe('team')
+    expect(joined.role).toMatch(/^(owner|admin|member)$/)
+  })
+
+  it('marks the team’s protections in its member list before anyone tries a change', () => {
+    const members = fixture('members') as Member[]
+    const owners = members.filter(member => member.role === 'owner' && member.status === 'active')
+    // The team's only active owner is marked, and nobody else.
+    expect(owners).toHaveLength(1)
+    expect(members.filter(member => member.last_owner).map(member => member.user_id)).toEqual(owners.map(member => member.user_id))
+    for (const member of members) expect(member.links, member.user_id).toBeGreaterThanOrEqual(0)
+    expect(isMember(fixture('member'), true)).toBe(true)
+  })
+
+  it('hands an invitation’s link over once, in its fragment, and never lists it', () => {
+    const made = fixture('team_invite') as TeamInvite
+    expect(invitationLink(made.url)).not.toBe('')
+    const url = new URL(made.url!)
+    expect(url.search).toBe('')
+    const linked = signupLink(made.url!)
+    expect(linked.invite).not.toBe('')
+    expect(linked.email).toBe(made.email)
+    for (const pending of fixture('team_invites') as TeamInvite[]) {
+      expect(pending, pending.id).not.toHaveProperty('url')
+      expect(pending.workspace_id).toBe(made.workspace_id)
+    }
+  })
+
+  it('lists who holds what on each mailbox of a team, the person it is linked by holding every flag', () => {
+    const directory = fixture('access') as MailboxAccess[]
+    expect(directory.length).toBeGreaterThan(0)
+    for (const entry of directory) {
+      const linker = entry.grants.find(grant => grant.user_id === entry.linked_by)
+      expect(linker, entry.account_id).toMatchObject({ read: true, act: true, send: true, manage: true })
+    }
+    // A grant answered is one of the grants listed, and a read without act is one the directory can hold.
+    const grant = fixture('grant') as Grant
+    expect(directory.flatMap(entry => entry.grants)).toContainEqual(grant)
+    expect(grant.read && !grant.act).toBe(true)
+    // Act never comes without read: the check refuses it, as the server's own constraint does.
+    expect(isGrant({ ...grant, read: false, act: true }, true)).toBe(false)
+    expect(isGrant({ ...grant, read: false, act: false, send: false, manage: false }, true)).toBe(false)
+  })
+
+  it('changes a grant with a request that only adds what the caller gives, or only takes away', () => {
+    const grant = fixture('grant') as Grant
+    const now = { read: grant.read, act: grant.act, send: grant.send, manage: grant.manage }
+    expect(grantChange(now, { ...now, send: false })).toEqual({ kind: 'revoke', flags: ['send'] })
+    expect(grantChange(now, { read: false, act: false, send: false, manage: false })).toEqual({ kind: 'revoke', flags: [] })
+    expect(grantChange(now, { ...now, act: true })).toEqual({ kind: 'set', flags: { ...now, act: true } })
   })
 
   it('says on every account whether it can send, and why not only when it cannot', () => {

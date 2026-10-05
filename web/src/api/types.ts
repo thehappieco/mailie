@@ -238,6 +238,8 @@ export interface AddAccountRequest {
   email: string
   display_name?: string
   provider: ProviderID
+  /** The workspace to link it into: a team the caller owns or administers. Left out, the caller's personal workspace. */
+  workspace_id?: string
   password?: string
   imap_host?: string
   imap_port?: number
@@ -248,7 +250,105 @@ export interface AddAccountRequest {
   flow?: FlowKind
 }
 
+/**
+ * Where a mailbox belongs (docs/workspaces.md): a person's own (personal),
+ * one shared by people (team), or the one the operator's instance keys reach
+ * (operator), which no person is ever a member of.
+ */
+export type WorkspaceKind = 'personal' | 'team' | 'operator'
+/**
+ * Where a workspace and its memberships come from: created and changed here
+ * (local), or mirrored from elsewhere and never changed here (platform).
+ */
+export type WorkspaceSource = 'local' | 'platform'
+/** A person's role in a workspace: owners and admins administer people and grants, and get no read by it. */
+export type WorkspaceRole = 'owner' | 'admin' | 'member'
+/** A membership that is disabled is listed and reaches nothing. */
+export type MemberStatus = 'active' | 'disabled'
+
+/**
+ * A workspace as the caller sees it (GET /v1/workspaces). role and status
+ * are the caller's own membership; name is a team's, and empty for a
+ * personal workspace, which the console names itself.
+ */
+export interface Workspace {
+  id: string
+  kind: WorkspaceKind | (string & {})
+  source: WorkspaceSource | (string & {})
+  name: string
+  role?: WorkspaceRole | (string & {})
+  status?: MemberStatus | (string & {})
+  /** Counts, in the operator's listing only. */
+  members?: number
+  mailboxes?: number
+  created_at: number
+}
+/**
+ * A membership of a workspace. last_owner and links mark the protections in
+ * advance: the last active owner is never demoted, disabled or removed, and
+ * a person who linked mailboxes there stays while any of them is linked.
+ */
+export interface Member {
+  user_id: string
+  email: string
+  name: string
+  role: WorkspaceRole | (string & {})
+  status: MemberStatus | (string & {})
+  /** Switched off on the server: the membership counts for nothing until they are back. */
+  person_disabled?: boolean
+  last_owner: boolean
+  links: number
+  joined_at: number
+}
+/** What one person holds on one mailbox. act never comes without read. */
+export interface Grant {
+  account_id: string
+  user_id: string
+  read: boolean
+  act: boolean
+  send: boolean
+  manage: boolean
+  /** Who set it last: a person's id, a key's, or the migration's; absent once that person is deleted. */
+  granted_by?: string
+  updated_at: number
+}
+/**
+ * One mailbox of a workspace and who holds what on it: the access directory,
+ * addresses and grants, never what the mailbox holds. linked_by is the person
+ * it syncs under, whose grant nobody changes while it is linked.
+ */
+export interface MailboxAccess {
+  account_id: string
+  email: string
+  provider: ProviderID | (string & {})
+  state: AccountState | (string & {})
+  linked_by?: string
+  grants: Grant[]
+}
+/**
+ * An invitation into a team, as its owners and admins see it. url, the link
+ * to send, is in the answer that creates it and nowhere else.
+ */
+export interface TeamInvite {
+  id: string
+  email: string
+  workspace_id: string
+  role: WorkspaceRole | (string & {})
+  url?: string
+  created_by?: string
+  created_at: number
+  expires_at: number
+}
+/** The four flags of a grant, as a request sets them: exactly these. */
+export interface GrantFlags { read: boolean; act: boolean; send: boolean; manage: boolean }
+/** A change to a membership: a field left out stays as it is. */
+export interface MemberChange { role?: WorkspaceRole; status?: MemberStatus }
+
 export const roles: readonly Role[] = ['owner', 'member']
+export const workspaceKinds: readonly WorkspaceKind[] = ['personal', 'team', 'operator']
+export const workspaceSources: readonly WorkspaceSource[] = ['local', 'platform']
+export const workspaceRoles: readonly WorkspaceRole[] = ['owner', 'admin', 'member']
+export const memberStatuses: readonly MemberStatus[] = ['active', 'disabled']
 export const providerIDs: readonly ProviderID[] = ['gmail', 'microsoft', 'icloud', 'imap']
 export const authKinds: readonly AuthKind[] = ['oauth2', 'password']
 export const accountStates: readonly AccountState[] = ['pending_auth', 'active', 'needs_reauth', 'disabled', 'error']
@@ -447,6 +547,64 @@ export function isCreatedKey(v: unknown, strict = false): v is CreatedKey {
   return record(v) && known(v, [...keyFields, 'key'], strict) && keyListed(v, strict)
     && isToken(v.key) && v.key.length <= 512 && v.key.startsWith(`${v.prefix as string}.`) && v.key.length > (v.prefix as string).length + 1
     && (!strict || /^[0-9a-f]+\.[A-Za-z0-9_-]+$/.test(v.key))
+}
+
+/** An identifier the console puts in a path: bounded, and never a separator. */
+const pathID = (v: unknown): v is string => filled(v, 64) && !/[\s/\\?#]/.test(v)
+/** A closed vocabulary: the contract check holds the daemon to it; the running console reads another word as text. */
+const word = <T extends string>(options: readonly T[], strict: boolean) => (v: unknown): boolean => strict ? oneOf(options)(v) : filled(v, 32)
+
+export function isWorkspace(v: unknown, strict = false): v is Workspace {
+  return record(v) && known(v, ['id', 'kind', 'source', 'name', 'role', 'status', 'members', 'mailboxes', 'created_at'], strict)
+    && pathID(v.id) && word(workspaceKinds, strict)(v.kind) && word(workspaceSources, strict)(v.source) && text(v.name, 1024)
+    && optional(v.role, word(workspaceRoles, strict)) && optional(v.status, word(memberStatuses, strict))
+    && optional(v.members, counter) && optional(v.mailboxes, counter) && seconds(v.created_at)
+    // A team has a name; the others are named by the console.
+    && (!strict || (v.kind === 'team') === (v.name !== ''))
+}
+
+export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {
+  return Array.isArray(v) && v.every(item => isWorkspace(item, strict))
+}
+
+export function isMember(v: unknown, strict = false): v is Member {
+  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'links', 'joined_at'], strict)
+    && pathID(v.user_id) && filled(v.email, 320) && text(v.name, 1024) && word(workspaceRoles, strict)(v.role)
+    && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && flag(v.last_owner) && counter(v.links)
+    && seconds(v.joined_at)
+}
+
+export function isMemberList(v: unknown, strict = false): v is Member[] {
+  return Array.isArray(v) && v.every(item => isMember(item, strict))
+}
+
+export function isGrant(v: unknown, strict = false): v is Grant {
+  return record(v) && known(v, ['account_id', 'user_id', 'read', 'act', 'send', 'manage', 'granted_by', 'updated_at'], strict)
+    && pathID(v.account_id) && pathID(v.user_id) && flag(v.read) && flag(v.act) && flag(v.send) && flag(v.manage)
+    && optional(v.granted_by, x => filled(x, 128)) && seconds(v.updated_at)
+    // Never act without read, and never a grant of nothing: the server deletes those.
+    && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send || v.manage)))
+}
+
+export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess {
+  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'grants'], strict)
+    && pathID(v.account_id) && filled(v.email, 320) && word(providerIDs, strict)(v.provider) && word(accountStates, strict)(v.state)
+    && optional(v.linked_by, pathID) && Array.isArray(v.grants) && v.grants.every(grant => isGrant(grant, strict) && grant.account_id === v.account_id)
+}
+
+export function isMailboxAccessList(v: unknown, strict = false): v is MailboxAccess[] {
+  return Array.isArray(v) && v.every(item => isMailboxAccess(item, strict))
+}
+
+export function isTeamInvite(v: unknown, strict = false): v is TeamInvite {
+  return record(v) && known(v, ['id', 'email', 'workspace_id', 'role', 'url', 'created_by', 'created_at', 'expires_at'], strict)
+    && pathID(v.id) && filled(v.email, 320) && pathID(v.workspace_id) && word(workspaceRoles, strict)(v.role)
+    && optional(v.url, x => filled(x, 4096)) && optional(v.created_by, x => filled(x, 128))
+    && seconds(v.created_at) && seconds(v.expires_at)
+}
+
+export function isTeamInviteList(v: unknown, strict = false): v is TeamInvite[] {
+  return Array.isArray(v) && v.every(item => isTeamInvite(item, strict))
 }
 
 export function isErrorBody(v: unknown, strict = false): v is ErrorBody {

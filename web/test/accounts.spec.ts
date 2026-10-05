@@ -14,6 +14,8 @@ async function signedIn(route: Route) {
   const fetch = serve(request => {
     if (request.path === '/v1/auth/login') return json(reply())
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
+    // A server without workspaces: every list is the person's whole.
+    if (request.path === '/v1/workspaces') return failure('not_found', 404)
     return route(request)
   })
   await session.signIn('ana@example.test', 'correct-password')
@@ -371,11 +373,13 @@ describe('listing an account’s folders', () => {
 
 describe('the accounts list', () => {
   it('drops a reply that arrives after the person signed out', async () => {
-    let answer!: (response: Response) => void
+    let answer: ((response: Response) => void) | undefined
     const { session, store } = await signedIn(() => new Promise<Response>(resolve => { answer = resolve }))
     const loading = store.loadAccounts()
+    // The list is asked for once the workspaces are known (none, on this server).
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
     await session.signOut()
-    answer(json([account({ email: 'someone.else@example.test' })]))
+    answer!(json([account({ email: 'someone.else@example.test' })]))
     await loading
     expect(store.accounts.list).toEqual([])
     expect(store.accounts.loaded).toBe(false)

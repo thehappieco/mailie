@@ -66,6 +66,21 @@ export interface Edition {
    * which an edition that sets this false never asks.
    */
   mcp: boolean
+  /**
+   * Whether people make and run teams here (the server's local workspace
+   * source): creating a team, inviting into it and administering its
+   * members, and accepting a team invitation while signed in. An edition
+   * whose workspaces come from elsewhere leaves it out: an invitation link
+   * then only ever creates an account. Mailboxes, grants and taking a link
+   * over are the core's either way.
+   */
+  teams?: boolean
+  /**
+   * Whether the account section names the person's role on this server (an
+   * owner, who brings people onto it, or a member): a self-hosted server's.
+   * An edition whose people have no role on the server leaves it out.
+   */
+  serverRole?: boolean
   /** The line under the wordmark ("by …"), if any. A name, never translated. */
   byline?: string
   /** A domain whose hosts share the theme and language preferences (a cookie Domain). Unset: this host only. */

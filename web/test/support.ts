@@ -53,6 +53,7 @@ export function stubPage(path = '/'): { history: { state: unknown; replaceState:
   vi.stubGlobal('location', new URL(ORIGIN + path))
   vi.stubGlobal('indexedDB', new IDBFactory())
   vi.stubGlobal('sessionStorage', memoryStorage())
+  vi.stubGlobal('localStorage', memoryStorage())
   vi.stubGlobal('history', history)
   return { history }
 }

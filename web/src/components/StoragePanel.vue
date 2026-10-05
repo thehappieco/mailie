@@ -1,20 +1,35 @@
 <script setup lang="ts">
-// What the person's mailboxes take up in this server's index: per mailbox,
-// the messages indexed and their size on the mail server, the totals, and
-// for an owner the size of the database on disk, which holds everyone's.
-// Read when the section is first shown, on Refresh, when a mailbox is
-// connected or removed, and when sync is turned on or off: the section stays
-// mounted once shown, and turning sync off deletes the index.
+// What the mailboxes the person may read take up in this server's index, in
+// the workspace shown: per mailbox, the messages indexed and their size on
+// the mail server, the workspace's totals (the server sums them per
+// workspace; a mailbox the person may not read is never counted, so a team's
+// figures here are what the person reads of it), and for an owner of the
+// server the size of the database on disk, which holds everyone's. Read when
+// the section is first shown, on Refresh, when a mailbox is connected or
+// removed, when sync is turned on or off, and for another workspace: the
+// section stays mounted once shown, and turning sync off deletes the index.
 import { computed, onMounted, watch } from 'vue'
+import type { WorkspaceStorage } from '../api/types'
 import { accounts } from '../state/accounts'
 import { loadStorage, storage } from '../state/storage'
 import { consent } from '../state/sync'
+import { currentWorkspace, workspaces } from '../state/workspaces'
+import { workspaceName } from '../ui/access'
 import { describe } from '../ui/errors'
 import { count, fileSize } from '../ui/format'
 import { t } from '../ui/i18n'
 import AppIcon from './AppIcon.vue'
 
 const usage = computed(() => storage.usage)
+/** The figures of the workspace shown, as the server summed them; the answer's total on a server without workspaces. */
+const totals = computed(() => {
+  const listed = usage.value?.workspaces?.find(item => item.workspace_id === storage.workspace)
+  return listed ? { mailboxes: listed.mailboxes, messages: listed.messages, bytes: listed.bytes } : usage.value ? { mailboxes: usage.value.mailboxes.length, ...usage.value.total } : null
+})
+/** More than one workspace in the answer: each one's sum, by name. */
+const byWorkspace = computed<WorkspaceStorage[]>(() => (usage.value?.workspaces?.length ?? 0) > 1 ? usage.value!.workspaces! : [])
+const nameOf = (id: string) => workspaceName(workspaces.list.find(item => item.id === id)) || t('Another workspace')
+const where = computed(() => workspaces.list.length > 1 ? workspaceName(currentWorkspace()) : '')
 
 /**
  * What a mailbox's figures mean when it is not syncing now, as the accounts
@@ -41,12 +56,28 @@ watch(() => [consent.consented, ...accounts.list.map(item => `${item.id}:${item.
 
 <template>
   <div class="console-section storage-section">
+    <h2 v-if="where" class="storage-where">{{ t('In {workspace}', { workspace: where }) }}</h2>
     <div class="console-overview" :class="{ owner: usage?.database_bytes !== undefined }">
-      <article><span>{{ t('Mailboxes') }}</span><strong>{{ usage ? count(usage.mailboxes.length) : '—' }}</strong><small>{{ t('yours on this server') }}</small></article>
-      <article><span>{{ t('Messages indexed') }}</span><strong>{{ usage ? count(usage.total.messages) : '—' }}</strong><small>{{ t('a copy in each folder') }}</small></article>
-      <article><span>{{ t('Size on the mail servers') }}</span><strong>{{ usage ? fileSize(usage.total.bytes) : '—' }}</strong><small>{{ t('of the messages indexed') }}</small></article>
+      <article><span>{{ t('Mailboxes') }}</span><strong>{{ totals ? count(totals.mailboxes) : '—' }}</strong><small>{{ t('that you can read') }}</small></article>
+      <article><span>{{ t('Messages indexed') }}</span><strong>{{ totals ? count(totals.messages) : '—' }}</strong><small>{{ t('a copy in each folder') }}</small></article>
+      <article><span>{{ t('Size on the mail servers') }}</span><strong>{{ totals ? fileSize(totals.bytes) : '—' }}</strong><small>{{ t('of the messages indexed') }}</small></article>
       <article v-if="usage?.database_bytes !== undefined"><span>{{ t('Database on disk') }}</span><strong>{{ fileSize(usage.database_bytes) }}</strong><small>{{ t('everyone’s, on this server') }}</small></article>
     </div>
+
+    <template v-if="byWorkspace.length">
+      <div class="section-title"><h2>{{ t('By workspace') }}</h2></div>
+      <ul class="storage-list" :aria-label="t('By workspace')">
+        <li v-for="item in byWorkspace" :key="item.workspace_id">
+          <span class="provider-tile"><AppIcon name="layers" :size="19" /></span>
+          <span class="storage-name grow"><strong>{{ nameOf(item.workspace_id) }}</strong></span>
+          <dl class="storage-figures">
+            <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ count(item.mailboxes) }}</dd></div>
+            <div><dt>{{ t('Messages') }}</dt><dd>{{ count(item.messages) }}</dd></div>
+            <div><dt>{{ t('Size') }}</dt><dd>{{ fileSize(item.bytes) }}</dd></div>
+          </dl>
+        </li>
+      </ul>
+    </template>
 
     <div class="section-title">
       <h2>{{ t('By mailbox') }}</h2>
@@ -68,17 +99,19 @@ watch(() => [consent.consented, ...accounts.list.map(item => `${item.id}:${item.
         </dl>
       </li>
     </ul>
-    <p v-else-if="usage" class="dim">{{ t('No mailboxes are connected yet.') }}</p>
+    <p v-else-if="usage" class="dim">{{ t('No mailboxes you can read here yet.') }}</p>
 
     <div class="storage-notes">
       <p class="hint">{{ t('A message in several folders, such as a Gmail message with several labels, counts once in each. Its size is the one the mail server reports; this server keeps only each message’s details, never bodies or attachments.') }}</p>
-      <p v-if="usage?.database_bytes !== undefined" class="hint">{{ t('The database is the file this server keeps everything in, for every person: the index, saved sign-ins, keys and the log of changes. Only owners see its size.') }}</p>
+      <p v-if="workspaces.supported" class="hint">{{ t('Only the mailboxes you can read are counted: in a team, its other mailboxes are not.') }}</p>
+      <p v-if="usage?.database_bytes !== undefined" class="hint">{{ t('The database is the file this server keeps everything in, for every person: the index, saved sign-ins, keys and the log of changes. Only the server’s owners see its size.') }}</p>
     </div>
   </div>
 </template>
 
 <style scoped>
 .console-section { display: grid; gap: 18px; }
+.storage-where { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 .with-action { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin: 0; }
 .console-overview { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .console-overview.owner { grid-template-columns: repeat(4, minmax(0, 1fr)); }

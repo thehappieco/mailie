@@ -9,6 +9,7 @@
 import { reactive, watch } from 'vue'
 import * as api from '../api/sync'
 import type { SyncConsent } from '../api/types'
+import type { SyncStanding } from '../ui/access'
 import { announce } from '../ui/announce'
 import { edition } from '../edition'
 import { t } from '../ui/i18n'
@@ -90,6 +91,16 @@ export function consentTextOutdated(): boolean {
 /** Whether sync is on for the person: they agreed, to whichever revision. */
 export function syncOn(): boolean {
   return consent.loaded && consent.consented
+}
+
+/**
+ * Where the person stands on sync, for what waits on it: taking a link over,
+ * connecting a mailbox to a team (ui/access.ts). Not read yet, the server
+ * decides.
+ */
+export function syncStanding(): SyncStanding {
+  if (!consent.loaded) return { consented: true, current: true }
+  return { consented: consent.consented, current: consent.consented && consent.version === consent.currentVersion }
 }
 
 export async function loadConsent(): Promise<void> {

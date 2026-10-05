@@ -39,7 +39,7 @@ const browser = await playwright[engine].launch({
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 /** The revision of the open console's sync text, the daemon's default (src/open/versions.ts). */
-const SYNC_VERSION = '2026-10-open-sync'
+const SYNC_VERSION = '2026-10-open-sync-2'
 /** The one that describes actions on messages. */
 const ACTIONS_VERSION = '2026-10-open-actions'
 /** The text a person agrees to by creating an API key. */
@@ -397,6 +397,7 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       // navigation on the same page would not load the app again.
       await page.goto('about:blank')
       await page.goto(`${origin}/#invite=${INVITE}&email=new%40example.test`)
+      // The session was revoked: there is nothing to restore, and the link opens the sign-up form.
       await page.locator('form[name=mailie-signup]').waitFor()
       assert.equal(await page.evaluate(() => location.hash), '', 'the invitation code leaves the address bar at once')
       assert.equal(await page.locator('input[name=username]').inputValue(), 'new@example.test')
@@ -512,6 +513,15 @@ for (const language of only && only !== 'console' ? [] : ['pt-BR', 'de-DE']) {
       await shot('profile')
       await page.goto('about:blank')
       await page.goto(`${origin}/#invite=${INVITE}&email=new%40example.test`)
+      // Still signed in: teams are made here, so an invitation may be one to
+      // join a team, and the remembered session is asked about it. This one
+      // is for another address, which signing out lets use.
+      const invited = page.locator('dialog .invitation')
+      await invited.waitFor()
+      assert.match(await invited.textContent(), /new@example\.test/, 'the invitation names its address')
+      assert.equal(await invited.locator('button.primary').count(), 1, 'only signing out, no joining, for another address')
+      await shot('invitation-signed-in')
+      await invited.locator('button.primary').click()
       await page.locator('form[name=mailie-signup]').waitFor()
       await noLegal(page, 'sign-up')
       await shot('signup')

@@ -1,9 +1,11 @@
-// The email accounts the signed-in person owns, and connecting new ones.
+// The mailboxes the signed-in person sees in the workspace the console shows
+// (state/workspaces.ts), and connecting new ones.
 //
 // Everything here resets when the person changes: a sign-out, a different
-// sign-in. Every async step captures a generation first and drops its result
-// if the generation moved on, so a slow reply for one person can never be
-// drawn in front of the next.
+// sign-in; and the list, when the console shows another workspace. Every
+// async step captures a generation first and drops its result if the
+// generation moved on, so a slow reply for one person, or one workspace, can
+// never be drawn in front of the next.
 //
 // Connecting is a conversation with a provider, so it has phases rather than a
 // result: starting → (redirecting | waiting) → done | failed. Waiting means
@@ -24,6 +26,7 @@ import { server } from './connection'
 import { failure, type Failure, type Operation } from './failure'
 import { FLOW_LIFETIME_MS, rememberOAuthStart, takeOAuthReturn, takeOAuthStart } from './oauthReturn'
 import { authorized, identity } from './session'
+import { selectWorkspace, settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
 
 export const POLL_INTERVAL_MS = 3_000
 /** While the event stream is open, account.state events end the wait; this poll only covers one that went missing. */
@@ -41,6 +44,8 @@ export type Notice =
 
 interface AccountsState {
   list: Account[]
+  /** The workspace the list was read for; empty for every workspace (a server without them). */
+  workspace: string
   loaded: boolean
   loading: boolean
   failure: Failure | null
@@ -76,7 +81,7 @@ export interface ConnectState {
 }
 
 const freshAccounts = (): AccountsState => ({
-  list: [], loaded: false, loading: false, failure: null,
+  list: [], workspace: '', loaded: false, loading: false, failure: null,
   providers: [], providersLoaded: false, providersFailure: null,
   notice: null, detailID: '', removing: false, removeFailure: null, folders: {},
 })
@@ -106,6 +111,41 @@ watch(identity, () => {
   Object.assign(connect, freshConnect())
 }, { flush: 'sync' })
 
+/** The read of the list in flight, if any: what a caller that switched workspaces waits for. */
+let reading: Promise<void> | null = null
+/** The workspace the read in flight asks for; null while it is still learning which, and will ask for the one shown then. */
+let asking: string | null = null
+
+// Another workspace shown: what was listed belongs to the one before. A list
+// that was read, was being read, or failed (waiting for the workspaces too) is
+// read again for the new one; one never asked for is left for whoever asks,
+// and a first read still learning which workspace to ask for asks for this
+// one. A connection in progress is not this list's: it goes on.
+watch(() => workspaces.currentID, (id, before) => {
+  if (accounts.loaded && accounts.workspace === id) return
+  if (!accounts.loaded && accounts.loading && asking === null) return
+  const wanted = accounts.loaded || accounts.loading || accounts.failure !== null
+  accountsGeneration++
+  Object.assign(accounts, {
+    list: [], workspace: '', loaded: false, loading: false, failure: null,
+    detailID: '', removing: false, removeFailure: null, folders: {},
+  })
+  // A notice belongs to the workspace it was said in; the first one known
+  // is where the page already was (a provider's return says it there).
+  if (before) accounts.notice = null
+  if (wanted) void loadAccounts()
+}, { flush: 'sync' })
+
+/** Settles once the list being read, if any, has arrived: after a switch of workspace, the new one's. */
+export async function accountsSettled(): Promise<void> {
+  while (reading) await reading
+}
+
+/** Whether a mailbox belongs in the list shown: the console's workspace, when it has one. */
+function shown(account: Account): boolean {
+  return !workspaces.currentID || !account.workspace_id || account.workspace_id === workspaces.currentID
+}
+
 function currentAccounts(): () => boolean {
   const generation = accountsGeneration
   return () => generation === accountsGeneration
@@ -117,9 +157,16 @@ function stopConnect(): void {
   wake?.()
 }
 
-/** Replaces the row with the server's latest copy, or adds it. */
+/**
+ * Replaces the row with the server's latest copy, or adds it. A mailbox of
+ * another workspace than the one shown is not this list's: it is left out.
+ */
 export function upsert(account: Account): void {
   const index = accounts.list.findIndex(item => item.id === account.id)
+  if (!shown(account)) {
+    if (index >= 0) accounts.list.splice(index, 1)
+    return
+  }
   if (index >= 0) accounts.list.splice(index, 1, account)
   else accounts.list.push(account)
 }
@@ -130,17 +177,36 @@ function forget(id: string): void {
   if (accounts.detailID === id) accounts.detailID = ''
 }
 
-export async function loadAccounts(): Promise<void> {
+/**
+ * Reads the mailboxes of the workspace shown (the person's workspaces are
+ * read first, the first time), or every one on a server without workspaces.
+ * While the workspaces cannot be read the list waits, and says why: it is
+ * read once the workspace shown is known.
+ */
+export function loadAccounts(): Promise<void> {
+  const read = readAccounts()
+  reading = read
+  void read.then(() => { if (reading === read) reading = null })
+  return read
+}
+
+async function readAccounts(): Promise<void> {
   const current = currentAccounts()
   accounts.loading = true
   accounts.failure = null
+  asking = null
   try {
-    const list = await authorized(token => api.listAccounts(token))
+    const workspace = await settleWorkspace()
     if (!current()) return
-    accounts.list = list
+    asking = workspace
+    const list = await authorized(token => api.listAccounts(token, workspace))
+    // Read for a workspace no longer shown: the read for the one shown lands instead.
+    if (!current() || workspace !== workspaces.currentID) return
+    accounts.list = list.filter(shown)
+    accounts.workspace = workspace
     accounts.loaded = true
   } catch (error) {
-    if (current()) accounts.failure = failure('load-accounts', error)
+    if (current()) accounts.failure = error instanceof WorkspacesUnknown ? error.failure : failure('load-accounts', error)
   } finally {
     if (current()) accounts.loading = false
   }
@@ -444,11 +510,16 @@ async function wait(generation: number, accountID: string, baseline: Baseline): 
 
 const refusedBeforeStoring: string[] = ['bad_request', 'not_authorized', 'unauthorized', 'rate_limited', 'aborted']
 
-/** Connects a mailbox that signs in with Google or Microsoft. */
-export async function connectOAuthAccount(input: { provider: ProviderID; email: string; displayName?: string }): Promise<void> {
+/**
+ * Connects a mailbox that signs in with Google or Microsoft: into a team the
+ * person owns or administers when workspaceID names one, otherwise into their
+ * personal workspace.
+ */
+export async function connectOAuthAccount(input: { provider: ProviderID; email: string; displayName?: string; workspaceID?: string }): Promise<void> {
   const generation = begin({ provider: input.provider, email: input.email })
   const body: AddAccountRequest = { email: input.email, provider: input.provider }
   if (input.displayName) body.display_name = input.displayName
+  if (input.workspaceID) body.workspace_id = input.workspaceID
   let result
   try {
     result = await authorized(token => api.addAccount(token, body))
@@ -563,6 +634,17 @@ export function resetConnect(): void {
 }
 
 /**
+ * Shows the workspace a mailbox just authorized belongs to, so the notice
+ * about it sits above its card: the page came back from the provider in the
+ * workspace remembered, which another tab may have changed meanwhile. The
+ * person's workspaces were read before the exchange.
+ */
+function showWorkspaceOf(account: Account): void {
+  const id = account.workspace_id
+  if (id && id !== workspaces.currentID && workspaces.list.some(item => item.id === id)) selectWorkspace(id)
+}
+
+/**
  * finishOAuthReturn posts the provider's redirect, which this tab captured on
  * load, and reports the outcome at the top of the accounts section. It runs
  * once there is a session: straight after restoring one, or after sign-in.
@@ -575,9 +657,15 @@ export async function finishOAuthReturn(now = Date.now()): Promise<void> {
   const email = start?.email ?? ''
   if (now - found.at > FLOW_LIFETIME_MS) { accounts.notice = { kind: 'failed', email, failure: { op: 'complete-auth', code: 'return_expired' } }; return }
   if (!found.url) { accounts.notice = { kind: 'failed', email, failure: { op: 'complete-auth', code: 'return_invalid' } }; return }
+  // Which workspaces there are, to show the one the mailbox lands in; read
+  // first, so nothing waits on it once the provider's code is exchanged. Not
+  // knowing them is no reason to let the code expire.
+  await settleWorkspace().catch(() => '')
+  if (!current()) return
   try {
     const account = await authorized(token => api.completeOAuth(token, found.url))
     if (!current()) return
+    showWorkspaceOf(account)
     upsert(account)
     if (account.state === 'active') notify({ kind: 'connected', email: account.email, syncing: account.sync.enabled })
     // A grant the server stored and then found unusable is not a connection.

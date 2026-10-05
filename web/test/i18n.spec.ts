@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { computed } from 'vue'
 import { fileURLToPath } from 'node:url'
 import { addCatalogs, initializeLocale, locale, setLocale, supportedLocale, t } from '../src/ui/i18n'
-import { count, since, stamp } from '../src/ui/format'
-import { badTranslations, keysOf, repeatedKeys, sourceFiles, usedKeys, type Catalogs } from './i18nGuard'
+import { anyOf, count, since, stamp } from '../src/ui/format'
+import { badTranslations, keysOf, managersGivingAccess, repeatedKeys, sourceFiles, usedKeys, type Catalogs } from './i18nGuard'
 
 const catalogs: Catalogs = import.meta.glob<Record<string, string[]>>('../src/ui/locales/*.json', { eager: true, import: 'default' })
 
@@ -55,6 +55,15 @@ describe('application languages', () => {
     expect(since(Math.floor(Date.now() / 1000) - 180)).toContain('3')
   })
 
+  it('joins alternatives with the page language’s own “or”', () => {
+    expect(anyOf(['Read', 'Act', 'Send'])).toBe('Read, Act, or Send')
+    expect(anyOf(['Act'])).toBe('Act')
+    locale.value = 'pt'
+    expect(anyOf(['Leitura', 'Ações', 'Envio'])).toBe('Leitura, Ações ou Envio')
+    locale.value = 'de'
+    expect(anyOf(['Lesen', 'Senden'])).toBe('Lesen oder Senden')
+  })
+
   it('interpolates values as plain text and leaves unknown text alone', () => {
     locale.value = 'pt'
     const value = '<img src=x onerror=alert(1)>'
@@ -85,6 +94,11 @@ describe('application languages', () => {
     const all = keysOf(catalogs)
     expect([...used].filter(key => !all.has(key))).toEqual([])
     expect([...all].filter(key => !used.has(key))).toEqual([])
+  })
+
+  it('never says that managing a mailbox is enough to give access to it', () => {
+    expect(managersGivingAccess({ old: { 'Whoever manages it can give you access.': [], 'Joining gives no access until someone who manages one gives it.': [] } })).toHaveLength(2)
+    expect(managersGivingAccess(catalogs)).toEqual([])
   })
 
   it('lets an edition add translations without changing the core’s', () => {

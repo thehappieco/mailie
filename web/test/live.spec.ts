@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Account } from '../src/api/types'
 import { account, failure, freshModules, json, reply, stubPage, syncing, syncOff } from './support'
 
-interface Stream { lastEventID: string; token: string; send: (text: string) => void; end: () => void }
+interface Stream { lastEventID: string; token: string; workspace: string; send: (text: string) => void; end: () => void }
 type Api = (request: { path: string; method: string; token: string }) => Response | Promise<Response>
 
 const encoder = new TextEncoder()
@@ -22,6 +22,7 @@ async function console_(api: Api, events?: (stream: Stream, attempt: number) => 
   const accounts = await import('../src/state/accounts')
   const live = await import('../src/state/live')
   const connection = await import('../src/state/connection')
+  const workspaces = await import('../src/state/workspaces')
   live.timing.random = () => 1
   const streams: Stream[] = []
   const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
@@ -37,7 +38,7 @@ async function console_(api: Api, events?: (stream: Stream, attempt: number) => 
     const closed = { value: false }
     init?.signal?.addEventListener('abort', () => { if (!closed.value) { closed.value = true; controller.error(new DOMException('aborted', 'AbortError')) } })
     const stream: Stream = {
-      lastEventID: headers['Last-Event-ID'] ?? '', token,
+      lastEventID: headers['Last-Event-ID'] ?? '', token, workspace: url.searchParams.get('workspace') ?? '',
       send: text => { if (!closed.value) controller.enqueue(encoder.encode(text)) },
       end: () => { if (!closed.value) { closed.value = true; controller.close() } },
     }
@@ -49,7 +50,7 @@ async function console_(api: Api, events?: (stream: Stream, attempt: number) => 
   })
   await session.signIn('ana@example.test', 'correct-password')
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
-  return { session, accounts, live, connection, fetch, streams }
+  return { session, accounts, live, connection, workspaces, fetch, streams }
 }
 
 const gets = (fetch: { mock: { calls: unknown[][] } }, path: string) =>
@@ -182,6 +183,7 @@ describe('the live stream', () => {
   it('announces a first sync that finished', async () => {
     let state = 'initial'
     const { accounts, live, streams } = await console_(({ path }) => {
+      if (path === '/v1/workspaces') return failure('not_found', 404)
       const row = account({ state: 'active', sync: syncing({ state, initial_progress: state === 'live' ? 100 : 42 }) })
       return json(path === '/v1/accounts' ? [row] : row)
     })
@@ -286,6 +288,92 @@ describe('the live stream', () => {
     streams[0]!.send(event(4, 'account.state', 'acc_0000000000000001', { state: 'active', previous_state: 'pending_auth' }))
     await vi.advanceTimersByTimeAsync(0)
     expect(accounts.connect.phase).toBe('done')
+    live.stopLive()
+  })
+
+  it('opens the stream narrowed to the workspace shown, and again, from now, for another', async () => {
+    const list = [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 },
+      { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'member', status: 'active', created_at: 1 }]
+    const { live, workspaces, streams } = await console_(({ path }) => json(path === '/v1/workspaces' ? list : []))
+    await workspaces.loadWorkspaces()
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(streams[0]!.workspace).toBe('wsp_000000000000aaaa')
+    streams[0]!.send(event(7, 'sync.progress'))
+    await vi.advanceTimersByTimeAsync(0)
+    workspaces.selectWorkspace('wsp_000000000000bbbb')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(streams).toHaveLength(2)
+    expect(streams[1]!.workspace).toBe('wsp_000000000000bbbb')
+    // The new workspace's list is read whole; its stream does not replay the other's.
+    expect(streams[1]!.lastEventID).toBe('')
+    live.stopLive()
+  })
+
+  it('reads the list again when read access to a mailbox comes or goes, once for several, and drops its folders when it went', async () => {
+    const indexed = [{ name: 'INBOX', display_name: 'Inbox', role: 'inbox', selectable: true, synced: true, messages: 3, sync_state: 'live' }]
+    const { accounts, live, fetch, streams } = await console_(({ path }) => {
+      if (path === '/v1/workspaces') return failure('not_found', 404)
+      if (path.endsWith('/folders')) return json(indexed)
+      return json(path === '/v1/accounts' ? [account({ state: 'active', sync: syncing() })] : account({ state: 'active', sync: syncing() }))
+    })
+    const heard: string[] = []
+    live.onLiveAccess(change => heard.push(`${change.account_id} ${change.read}`))
+    await accounts.loadAccounts()
+    await accounts.loadFolders('acc_0000000000000001')
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    const before = gets(fetch, '/v1/accounts')
+    // Like lagged, an access change has no id: it is not a journal entry.
+    streams[0]!.send('event: access\ndata: {"account_id":"acc_0000000000000001","read":false}\n\n' + 'event: access\ndata: {"account_id":"acc_0000000000000002","read":true}\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(heard).toEqual(['acc_0000000000000001 false', 'acc_0000000000000002 true'])
+    expect(accounts.accounts.folders.acc_0000000000000001).toBeUndefined()
+    expect(live.lastEventID()).toBe('')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(gets(fetch, '/v1/accounts')).toBe(before + 1)
+    live.stopLive()
+  })
+
+  it('reads again what was read of the team shown when access changes: its people and who holds what', async () => {
+    const list = [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 },
+      { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'admin', status: 'active', created_at: 1 }]
+    const { live, workspaces, fetch, streams } = await console_(({ path }) => json(path === '/v1/workspaces' ? list : []))
+    const team = await import('../src/state/team')
+    await workspaces.loadWorkspaces()
+    workspaces.selectWorkspace('wsp_000000000000bbbb')
+    await Promise.all([team.loadMembers(), team.loadDirectory()])
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    const members = '/v1/workspaces/wsp_000000000000bbbb/members'
+    const directory = '/v1/workspaces/wsp_000000000000bbbb/access'
+    expect([gets(fetch, members), gets(fetch, directory)]).toEqual([1, 1])
+    // A team mailbox removed: whoever read it hears that it went.
+    streams[0]!.send('event: access\ndata: {"account_id":"acc_0000000000000001","read":false}\n\n')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect([gets(fetch, members), gets(fetch, directory)]).toEqual([2, 2])
+    live.stopLive()
+  })
+
+  it('reads the person’s workspaces again when the stream of one they are no longer in ends, and follows where they are', async () => {
+    let list = [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 },
+      { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'member', status: 'active', created_at: 1 }]
+    const { live, workspaces, streams } = await console_(({ path }) => json(path === '/v1/workspaces' ? list : []))
+    await workspaces.loadWorkspaces()
+    workspaces.selectWorkspace('wsp_000000000000bbbb')
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(streams[0]!.workspace).toBe('wsp_000000000000bbbb')
+    list = list.slice(0, 1)
+    streams[0]!.send('event: error\ndata: {"code":"not_found","message":"no such workspace"}\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(workspaces.workspaces.currentID).toBe('wsp_000000000000aaaa')
+    expect(workspaces.workspaces.lost?.name).toBe('Support')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(streams.at(-1)!.workspace).toBe('wsp_000000000000aaaa')
+    // Never again the one it left.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(streams.filter(stream => stream.workspace === 'wsp_000000000000bbbb')).toHaveLength(1)
     live.stopLive()
   })
 

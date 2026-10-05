@@ -172,7 +172,27 @@ var (
 		"only an owner or an admin of the team may take a link over, as only they link mailboxes into it", nil)
 	errTakeOverConsent = E(CodeConflict,
 		"taking a link over needs your consent to sync first: the mailbox would sync under it", nil)
+	errTakeOverOutdated = E(CodeConflict,
+		"taking a link over needs your consent to the current sync text: the mailbox would sync under it, "+
+			"and an earlier text may not say who reads a team mailbox; agree to the current one first", nil)
+	errLinkTeamOutdated = E(CodeConflict,
+		"your consent to sync was given to an earlier text: a mailbox linked into a team syncs under it at once, "+
+			"and that text may not say who reads a team mailbox; agree to the current one first", nil)
 )
+
+// syncCoversTeamTx reads, inside the caller's transaction, whether a person's
+// consent to sync may cover a team mailbox: given, and to the text the
+// server describes sync with now (MAIL_CONSENT_VERSION_SYNC). Eligibility
+// keeps a consent to an earlier text syncing what it already covered, but a
+// team mailbox that comes to sync under someone's consent, by a link or a
+// take-over, does so only under a text that says who reads its index.
+func (s *Service) syncCoversTeamTx(ctx context.Context, tx *sql.Tx, userID string) (consented, current bool, err error) {
+	c, err := store.SyncConsentTx(ctx, tx, userID)
+	if err != nil {
+		return false, false, err
+	}
+	return c.At != 0, c.At != 0 && c.Version == s.consent.Sync, nil
+}
 
 // errGrantNotHeld refuses passing on a flag the caller does not hold.
 func errGrantNotHeld(flag string) error {
@@ -733,8 +753,8 @@ func ParseFlags(list string) (workspace.Flags, error) {
 // consent to sync it then syncs under: the way a team keeps a mailbox when the
 // person who linked it leaves. They must hold every flag on it, be allowed to
 // link into its workspace — an owner or an admin of a team — and have agreed
-// to sync; the index is kept, and the previous linker keeps their grant as an
-// ordinary one.
+// to sync, to the current text; the index is kept, and the previous linker
+// keeps their grant as an ordinary one.
 func (s *Service) TakeOver(ctx context.Context, p Principal, accountID string) (Account, error) {
 	if err := requireSession(p); err != nil {
 		return Account{}, err
@@ -755,12 +775,14 @@ func (s *Service) TakeOver(ctx context.Context, p Principal, accountID string) (
 		if w.Kind == workspace.KindTeam && !adminOf(me) {
 			return errTakeOverRole
 		}
-		consented, err := store.SyncConsentedTx(ctx, tx, p.UserID)
-		if err != nil {
+		consented, current, err := s.syncCoversTeamTx(ctx, tx, p.UserID)
+		switch {
+		case err != nil:
 			return err
-		}
-		if !consented {
+		case !consented:
 			return errTakeOverConsent
+		case !current:
+			return errTakeOverOutdated
 		}
 		return nil
 	})

@@ -20,6 +20,10 @@ export interface Operations {
   'actions-consent': true; 'grant-actions': true; 'withdraw-actions': true
   'load-keys': true; 'create-key': true; 'revoke-key': true
   'load-storage': true
+  'load-workspaces': true; 'create-team': true; 'rename-team': true; 'accept-invite': true
+  'load-members': true; 'change-member': true; 'remove-member': true; 'leave-team': true
+  'load-invites': true; 'create-invite': true; 'revoke-invite': true
+  'load-access': true; 'change-access': true; 'take-over': true
 }
 export type Operation = keyof Operations
 

@@ -35,7 +35,13 @@ function specific(failure: Failure): string | undefined {
       if (code === 'rate_limited') return t('Too many sign-in attempts. Wait a minute and try again.')
       return undefined
     case 'sign-up':
-      if (code === 'not_authorized') return t('This invitation is not valid for this address. It may have expired or already been used.')
+      // Also an invitation into a team made by someone who may not bring people onto the server: it is accepted signed in,
+      // where teams are made here. Elsewhere an invitation only ever creates an account.
+      if (code === 'not_authorized') {
+        return edition().teams
+          ? t('This invitation cannot create an account for this address. It may have expired or been used, or it invites you to a team: sign in to the account you already have, and open the link again.')
+          : t('This invitation cannot create an account for this address. It may have expired or been used: ask for a new one.')
+      }
       if (code === 'bad_request') return t('Check the details. The password needs at least 10 characters.')
       if (code === 'conflict') return t('An account with this email already exists. Sign in instead.')
       if (code === 'rate_limited') return t('Too many sign-in attempts. Wait a minute and try again.')
@@ -58,21 +64,23 @@ function specific(failure: Failure): string | undefined {
     case 'load-providers':
       return t('Could not check which providers this server supports. You can still try to connect.')
     case 'add-account':
-      if (code === 'conflict') return t('This address is already connected. If it is waiting for authorization, finish it from its card.')
+      if (code === 'conflict') return t('This address is already connected in this workspace. If it is waiting for authorization, finish it from its card.')
       if (code === 'bad_request') return t('The server did not accept these details. Check the address and try again.')
-      if (code === 'not_authorized') return t('Your account is not allowed to connect mailboxes.')
+      if (code === 'not_authorized') return t('Your account is not allowed to connect mailboxes here. In a team, only its owners and admins connect them.')
+      if (code === 'not_found') return t('This workspace is no longer yours. Choose another and try again.')
       if (code === 'flow_unsupported') return t('This server offered a way to sign in that this page cannot finish.')
       return undefined
     case 'test-login':
       if (code === 'bad_request') return t('The mail server refused the sign-in or could not be reached. Check the address, the password and the server names.')
-      if (code === 'conflict') return t('This address is already connected.')
-      if (code === 'not_authorized') return t('Your account is not allowed to connect mailboxes.')
+      if (code === 'conflict') return t('This address is already connected in this workspace.')
+      if (code === 'not_authorized' || code === 'not_found') return specific({ op: 'add-account', code })
       return undefined
     case 'test-login-icloud':
       // The usual cause by far: the Apple Account password, which iCloud refuses over IMAP.
       if (code === 'bad_request') return t('iCloud refused the sign-in. Check the address and that you used an app-specific password, not your Apple Account password.')
       return specific({ op: 'test-login', code })
     case 'start-auth':
+      if (code === 'not_authorized') return t('Only someone who manages this mailbox can authorize it again.')
       if (code === 'bad_request') return t('This server cannot start the sign-in for this provider. It may not be configured for it.')
       if (code === 'conflict') return t('This account cannot be authorized right now.')
       if (code === 'not_found') return t('This account no longer exists.')
@@ -91,8 +99,10 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')
+      if (code === 'not_authorized') return t('Only someone who manages this mailbox can remove it.')
       return undefined
     case 'folders':
+      if (code === 'not_authorized') return t('You do not have read access to this mailbox. It comes only from someone who has it and can change who has access.')
       if (code === 'conflict') return t('This account needs to be authorized again before its folders can be listed.')
       if (code === 'unavailable' || code === 'internal') return t('Could not list the folders. The mail server may be slow or unreachable.')
       return undefined
@@ -110,6 +120,7 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'sync-now':
       if (code === 'conflict') return t('Mailie cannot sync this mailbox right now. Try again in a moment.')
+      if (code === 'not_authorized') return specific({ op: 'folders', code })
       return undefined
     case 'actions-consent':
       return t('Could not check whether actions are allowed. Try again in a moment.')
@@ -125,10 +136,10 @@ function specific(failure: Failure): string | undefined {
       if (code === 'unavailable' || code === 'internal') return t('Could not load your API keys. Try again in a moment.')
       return undefined
     case 'create-key':
-      // A mailbox removed meanwhile, or one the person sees without owning it (an owner sees the instance's own).
-      if (code === 'not_found') return t('A chosen mailbox cannot be given to a key: it was removed, or it is not one you connected. Choose again.')
+      // A mailbox removed meanwhile, or one the person no longer sees; one they see without read is not_authorized.
+      if (code === 'not_found') return t('A chosen mailbox cannot be given to a key: it was removed, or you no longer have access to it. Choose again.')
       if (code === 'bad_request') return t('The server did not accept this key. Check its name and the mailboxes, and try again.')
-      if (code === 'not_authorized') return t('Your account is not allowed to create API keys.')
+      if (code === 'not_authorized') return t('Your account is not allowed to create API keys, or a chosen mailbox is one you cannot read.')
       // No answer, or one the console cannot read, says nothing sure about whether the key was made;
       // the list, read again, shows it if it was. Trying again as if it were not leaves a key nobody saw.
       if (code === 'unavailable' || code === 'internal' || code === 'invalid_response') return t('Mailie could not confirm that the key was created. If it is in the list, revoke it and create another: its secret cannot be shown again.')
@@ -140,6 +151,59 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'load-storage':
       if (code === 'unavailable' || code === 'internal') return t('Could not read what your mailboxes take up. Try again in a moment.')
+      return undefined
+    case 'load-workspaces':
+      // Every list waits for them (state/workspaces.ts), whatever kept them from loading.
+      if (code === 'unauthorized') return undefined
+      return t('Could not load your workspaces. Your mailboxes and what they take up are shown once they load: Mailie tries again by itself, or you can try now.')
+    case 'create-team':
+    case 'rename-team':
+      if (code === 'bad_request') return t('Use a name of 1 to 80 characters.')
+      if (code === 'not_authorized') return op === 'create-team' ? t('Your account is not allowed to create teams.') : t('Only owners and admins of the team can rename it.')
+      if (code === 'conflict') return t('Teams are not changed here: they come from elsewhere on this server.')
+      return undefined
+    case 'load-members':
+      if (code === 'unavailable' || code === 'internal') return t('Could not load the members. Try again in a moment.')
+      if (code === 'not_found') return t('You are no longer a member of this team.')
+      return undefined
+    case 'change-member':
+    case 'remove-member':
+      if (code === 'conflict') return t('The team’s protections refuse this: it keeps an active owner, the people mailboxes there are linked by stay while they are, and every mailbox keeps someone who manages it.')
+      if (code === 'not_authorized') return t('Your role in the team does not allow this. Admins change and remove members only, and make nobody an admin or an owner.')
+      if (code === 'not_found') return t('This person is no longer a member of the team.')
+      return undefined
+    case 'leave-team':
+      if (code === 'conflict') return t('You cannot leave yet: you are the team’s only owner, mailboxes there are linked by you, or you are the only one who manages one of them. Make another member an owner, have your links taken over, or give Manage to someone else first.')
+      return undefined
+    case 'load-invites':
+      if (code === 'unavailable' || code === 'internal') return t('Could not load the invitations. Try again in a moment.')
+      if (code === 'not_authorized') return t('Only owners and admins of the team see its invitations.')
+      return undefined
+    case 'create-invite':
+      if (code === 'bad_request') return t('Enter a valid email address.')
+      if (code === 'conflict') return t('This address is already a member of the team, or this server cannot make invitation links now: its public address is not set.')
+      if (code === 'not_authorized') return t('Your role does not allow this invitation. Admins invite members only.')
+      if (code === 'unavailable' || code === 'internal' || code === 'invalid_response') return t('Mailie could not confirm that the invitation was made. If it is in the list, revoke it and make another: its link cannot be shown again.')
+      return undefined
+    case 'revoke-invite':
+      if (code === 'unavailable' || code === 'internal') return t('Could not confirm that the invitation was revoked. Try again: doing it twice is safe.')
+      return undefined
+    case 'accept-invite':
+      if (code === 'not_authorized') return t('This invitation does not work for your account: it may have expired or been used, or be for another address. An invitation to create an account here is used signed out.')
+      if (code === 'conflict') return t('You are already a member of this team.')
+      return undefined
+    case 'load-access':
+      if (code === 'unavailable' || code === 'internal') return t('Could not read who has access. Try again in a moment.')
+      return undefined
+    case 'change-access':
+      if (code === 'not_authorized') return t('You can give only what you hold on this mailbox, and change who has access only as an owner or an admin of the team, or as someone who manages it.')
+      if (code === 'conflict') return t('This mailbox’s protections refuse this: the person it is linked by keeps every access while it is, and it keeps someone who manages it.')
+      if (code === 'bad_request') return t('The server did not accept this access: act needs read, and only active members of the team can be given access.')
+      if (code === 'not_found') return t('This person, or this mailbox, is no longer in the team.')
+      return undefined
+    case 'take-over':
+      if (code === 'conflict') return t('The link cannot be taken over now: it takes every access to the mailbox, being an owner or an admin of the team, and agreeing to the current text of mail sync.')
+      if (code === 'not_found') return t('This mailbox no longer exists.')
       return undefined
     default:
       return undefined

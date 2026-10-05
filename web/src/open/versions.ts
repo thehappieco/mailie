@@ -3,8 +3,11 @@
 // spec holds them to the fixtures the handlers write. A new text comes with a
 // new revision here and there, together.
 
-/** What sync stores (SyncText.vue). */
-export const SYNC_TEXT_VERSION = '2026-10-open-sync'
+/**
+ * What sync stores (SyncText.vue). The second revision says who reads the
+ * index of a team mailbox, and that turning sync off deletes it for them too.
+ */
+export const SYNC_TEXT_VERSION = '2026-10-open-sync-2'
 /** What actions on messages change (ActionsText.vue). */
 export const ACTIONS_TEXT_VERSION = '2026-10-open-actions'
 /** What a tool holding a new key can do (KeyTermsText.vue). */

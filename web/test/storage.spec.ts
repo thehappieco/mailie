@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, h } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import type { Storage } from '../src/api/types'
-import { account, freshModules, json, reply, serve, stubPage, syncOff, syncing, type Route } from './support'
+import { account, failure, freshModules, json, reply, serve, stubPage, syncOff, syncing, type Route } from './support'
 
 const usage: Storage = {
   mailboxes: [
@@ -23,6 +23,8 @@ async function signedIn(route: Route) {
   const fetch = serve(request => {
     if (request.path === '/v1/auth/login') return json(reply())
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
+    // A server without workspaces: every list is the person's whole.
+    if (request.path === '/v1/workspaces') return failure('not_found', 404)
     return route(request)
   })
   await session.signIn('ana@example.test', 'correct-password')

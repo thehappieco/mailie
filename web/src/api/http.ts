@@ -37,7 +37,7 @@ export function isServerCode(value: unknown): value is ServerCode {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PUT' | 'DELETE'
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   body?: unknown
   /**
    * A multipart body (a message and its files), encoded by the browser with

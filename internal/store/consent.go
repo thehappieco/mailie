@@ -47,22 +47,24 @@ func (s *Store) SyncConsentOf(ctx context.Context, userID string) (SyncConsent, 
 	return c, nil
 }
 
-// SyncConsentedTx reports, inside the caller's transaction, whether a person
-// is active and agreed to sync: the half of the eligibility rule a mailbox
-// they link syncs under (syncPermitted). Taking a link over asks it where the
-// link changes hands, so a mailbox never moves to someone whose consent does
-// not cover its index.
-func SyncConsentedTx(ctx context.Context, tx *sql.Tx, userID string) (bool, error) {
-	var at int64
+// SyncConsentTx reads, inside the caller's transaction, a person's consent to
+// sync and the revision it was given to; a person who is not active has none.
+// A consent is the half of the eligibility rule a mailbox they link syncs
+// under (syncPermitted). Taking a link over and linking into a team ask it
+// where the link is made or changes hands, so a team mailbox never comes to
+// sync under a consent whose text did not cover it.
+func SyncConsentTx(ctx context.Context, tx *sql.Tx, userID string) (SyncConsent, error) {
+	var c SyncConsent
 	err := tx.QueryRowContext(ctx,
-		`SELECT sync_consent_at FROM users WHERE id = ? AND status = 'active'`, userID).Scan(&at)
+		`SELECT sync_consent_at, sync_consent_version FROM users WHERE id = ? AND status = 'active'`, userID,
+	).Scan(&c.At, &c.Version)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return false, nil
+		return SyncConsent{}, nil
 	case err != nil:
-		return false, fmt.Errorf("store: read sync consent: %w", err)
+		return SyncConsent{}, fmt.Errorf("store: read sync consent: %w", err)
 	}
-	return at != 0, nil
+	return c, nil
 }
 
 // GrantSyncConsent records that a person agreed to version of the policy and
