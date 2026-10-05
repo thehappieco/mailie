@@ -74,6 +74,57 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # The self-hosting image (deploy/Dockerfile), built and started the way
+  # deploy/compose.yaml runs it: read-only, without capabilities, with a
+  # throwaway credential key. It must answer /v1/healthz, serve the console
+  # and stop cleanly on SIGTERM.
+  image:
+    runs-on: ubuntu-latest
+    env:
+      COMPOSE_FILE: deploy/compose.yaml
+    steps:
+      - uses: actions/checkout@v4
+      - name: A throwaway configuration
+        run: |
+          umask 077
+          key=$(openssl rand -hex 32)
+          echo "::add-mask::$key"
+          printf 'MAIL_CREDENTIAL_KEY_HEX=%s\nMAIL_PUBLIC_URL=http://localhost:8080\n' "$key" > deploy/.env
+      - name: Validate the compose file
+        run: docker compose config --quiet
+      - name: Build the image
+        run: |
+          MAILIE_VERSION="$(git describe --always --dirty)" docker compose build
+          docker image inspect --format 'mailie:local, {{.Size}} bytes' mailie:local
+      - name: Start it and wait for /v1/healthz
+        run: |
+          docker compose up -d
+          for _ in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:8080/v1/healthz; then echo; exit 0; fi
+            sleep 1
+          done
+          echo "no healthy answer within 60 s"
+          exit 1
+      - name: The console and the API answer
+        run: |
+          page=$(curl -fsS http://127.0.0.1:8080/)
+          grep -q '<div id="app">' <<<"$page"
+          asset=$(grep -m 1 -oE '/assets/index-[A-Za-z0-9_-]+\.js' <<<"$page")
+          curl -fsS -o /dev/null "http://127.0.0.1:8080$asset"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/no-such-route)" = 404
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)" = 401
+      - name: Stop it cleanly
+        run: |
+          docker compose stop
+          code=$(docker inspect --format '{{.State.ExitCode}}' "$(docker compose ps --all --quiet mailie)")
+          test "$code" = 0
+      - name: Logs and clean-up
+        if: always()
+        run: |
+          docker compose logs --no-color || true
+          docker compose down --volumes || true
+          rm -f deploy/.env
+
   # The public source as scripts/export-public.py exports it, built and
   # tested out of this checkout: a root left off the exporter's allowlist, or
   # anything that needs commercial/, fails here rather than in the public

@@ -225,3 +225,37 @@ func TestADirectoryWithoutAConsoleIsNotServed(t *testing.T) {
 		}
 	}
 }
+
+// alwaysPolicy is the policy the console has always been served with,
+// written out in full: without extra origins it must not move by a byte.
+const alwaysPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+	"font-src 'self'; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; " +
+	"object-src 'none'; form-action 'self'"
+
+func TestWithoutExtraOriginsThePolicyIsExactlyTheOneItAlwaysWas(t *testing.T) {
+	h, _ := newConsole(t)
+	for _, target := range []string{"/", "/oauth/return", "/assets/main-1a2b.js", "/assets/gone-9z.js", "/v1/nope"} {
+		if got := get(t, h, http.MethodGet, target).Header().Get("Content-Security-Policy"); got != alwaysPolicy {
+			t.Errorf("%s: CSP = %q\nwant %q", target, got, alwaysPolicy)
+		}
+	}
+}
+
+func TestExtraOriginsAreAddedToConnectSrcAndNowhereElse(t *testing.T) {
+	dist := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte(page), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := webui.New(dist, "https://id.example.com", "http://localhost:9000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+	want := strings.Replace(alwaysPolicy, "connect-src 'self';",
+		"connect-src 'self' https://id.example.com http://localhost:9000;", 1)
+	for _, target := range []string{"/", "/v1/nope"} {
+		if got := get(t, h, http.MethodGet, target).Header().Get("Content-Security-Policy"); got != want {
+			t.Errorf("%s: CSP = %q\nwant %q", target, got, want)
+		}
+	}
+}

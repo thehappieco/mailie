@@ -14,6 +14,10 @@
 // daemon runs — that is the point of it — through a read-only connection,
 // and takes no lock; `backup restore` runs wherever the backups may be
 // decrypted and needs none of the daemon's configuration (docs/backup.md).
+//
+// `mcp connect` and `mcp install` are not administration at all: they run on
+// the machine of a person whose MCP client should reach a Mailie server, and
+// talk to that server's /mcp with the person's own key (docs/mcp.md).
 package main
 
 import (
@@ -59,13 +63,21 @@ func run(argv []string) error {
 		return nil
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// Before the .env and the configuration: mcp runs on a person's machine,
+	// beside an MCP client, often in a directory nobody chose, and needs none
+	// of the daemon's variables.
+	if command == "mcp" {
+		return mcpCommand(ctx, args)
+	}
+
 	// A .env file is read before the configuration, and never overrides a
 	// variable the environment already carries.
 	if err := config.LoadDotEnv(".env"); err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	// Before config.Load: a backup needs none of the daemon's secrets, and a
 	// restore runs where there are none.
@@ -125,6 +137,13 @@ Usage:
                                           (daemon stopped; typed twice at a terminal, or one line piped)
   mailserver migrate [--dry-run]          Apply pending schema migrations
   mailserver rewrap-credentials           Re-encrypt credentials under the active key
+  mailserver mcp connect --url URL        Run a local stdio MCP server relaying to the Mailie server at URL,
+                                          with the key in MAILIE_API_KEY (for a client that launches one)
+  mailserver mcp install --client CLIENT --url URL [--name mailie] [--force]
+                                          Configure claude-desktop or cursor to reach the server at URL
+                                          (the key is typed, or piped; claude-code: prints the command)
+  mailserver mcp install --client CLIENT --uninstall [--name mailie]
+                                          Remove that server from the client's configuration
   mailserver backup                       Encrypt a snapshot of the database and upload it to S3
   mailserver backup restore --object s3://BUCKET/KEY --kms-key-arn ARN --out PATH
                                           Download, verify and decrypt a backup (the decrypting AWS principal)
@@ -140,6 +159,12 @@ stored refresh token and IMAP password. Generate one with:
 
 serve answers MCP over HTTP at /mcp unless MAIL_MCP_HTTP=false; --mcp-stdio
 speaks it on standard input and output either way.
+
+mcp connect and mcp install run where the MCP client runs, need no MAIL_*
+variable and read no .env. Neither takes the key as an argument: connect
+reads MAILIE_API_KEY, install asks for it (without echo) or reads one line of
+standard input, and checks it against the server before writing anything.
+Addresses are https://, or http:// for this machine only. See docs/mcp.md.
 
 The administrative subcommands talk to a running daemon over its REST API using
 MAIL_ADMIN_KEY; apikey create, list and revoke use its /v1/apikeys routes, which

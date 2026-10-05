@@ -61,7 +61,7 @@ function specific(failure: Failure): string | undefined {
       if (code === 'conflict') return t('This address is already connected. If it is waiting for authorization, finish it from its card.')
       if (code === 'bad_request') return t('The server did not accept these details. Check the address and try again.')
       if (code === 'not_authorized') return t('Your account is not allowed to connect mailboxes.')
-      if (code === 'flow_unsupported') return t('This server offered a way to sign in that this console cannot finish.')
+      if (code === 'flow_unsupported') return t('This server offered a way to sign in that this page cannot finish.')
       return undefined
     case 'test-login':
       if (code === 'bad_request') return t('The mail server refused the sign-in or could not be reached. Check the address, the password and the server names.')
@@ -76,7 +76,7 @@ function specific(failure: Failure): string | undefined {
       if (code === 'bad_request') return t('This server cannot start the sign-in for this provider. It may not be configured for it.')
       if (code === 'conflict') return t('This account cannot be authorized right now.')
       if (code === 'not_found') return t('This account no longer exists.')
-      if (code === 'flow_unsupported') return t('This server offered a way to sign in that this console cannot finish.')
+      if (code === 'flow_unsupported') return t('This server offered a way to sign in that this page cannot finish.')
       return undefined
     case 'wait-auth':
       if (code === 'not_found') return t('The account was removed while waiting for authorization.')
@@ -85,9 +85,9 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'complete-auth':
       if (code === 'bad_request') return t('The provider did not grant access. You can try again from the account.')
-      if (code === 'not_found') return t('This authorization expired or was started by another sign-in. Start again from the console.')
-      if (code === 'return_invalid') return t('The provider sent back an incomplete answer. Start again from the console.')
-      if (code === 'return_expired') return t('This authorization took too long and expired. Start again from the console.')
+      if (code === 'not_found') return t('This authorization expired or was started by another sign-in. Start again.')
+      if (code === 'return_invalid') return t('The provider sent back an incomplete answer. Start again.')
+      if (code === 'return_expired') return t('This authorization took too long and expired. Start again.')
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')
@@ -155,12 +155,12 @@ function general(failure: Failure): string {
     case 'not_found': return t('This item no longer exists.')
     case 'conflict': return t('This conflicts with the current state. Reload and try again.')
     case 'bad_request': return t('The server did not accept this request.')
-    case 'invalid_response': return t('The server sent an answer this console cannot read. Reload the page and try again.')
+    case 'invalid_response': return t('The server sent an answer this page cannot read. Reload the page and try again.')
     case 'flow_expired': return t('The sign-in window closed before it was completed. Try again.')
     case 'flow_failed': return t('The provider did not complete the authorization. Try again.')
-    case 'flow_unsupported': return t('This server offered a way to sign in that this console cannot finish.')
-    case 'return_invalid': return t('The provider sent back an incomplete answer. Start again from the console.')
-    case 'return_expired': return t('This authorization took too long and expired. Start again from the console.')
+    case 'flow_unsupported': return t('This server offered a way to sign in that this page cannot finish.')
+    case 'return_invalid': return t('The provider sent back an incomplete answer. Start again.')
+    case 'return_expired': return t('This authorization took too long and expired. Start again.')
     case 'key_limit': return t('You have {count} active keys, the most you can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'aborted':

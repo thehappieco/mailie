@@ -17,7 +17,7 @@ import { accounts } from '../src/state/accounts'
 import { session } from '../src/state/session'
 import { languageOptions, locale } from '../src/ui/i18n'
 import { hostedName } from './hosted'
-import { sourceFiles } from './i18nGuard'
+import { literalKeys, sourceFiles } from './i18nGuard'
 import { ana } from './support'
 
 const src = fileURLToPath(new URL('../src', import.meta.url))
@@ -65,6 +65,15 @@ describe('the core and the editions', () => {
     expect(offenders).toEqual([])
   })
 
+  it('words no shared sentence as a console’s: only the open edition calls its frame one, another calls its own an app', () => {
+    const catalogs = import.meta.glob<Record<string, string[]>>('../src/ui/locales/*.json', { eager: true, import: 'default' })
+    const naming = Object.values(catalogs).flatMap(catalog => Object.entries(catalog))
+      .filter(([key, translations]) => /console|consola|konsole/i.test([key, ...translations].join(' '))).map(([key]) => key)
+    expect(naming.sort()).toEqual(['Console', 'Console navigation'])
+    const users = sourceFiles(src).filter(file => literalKeys(readFileSync(file, 'utf8')).some(key => naming.includes(key)))
+    expect(users.map(file => relative(src, file))).toEqual(['open/edition.ts'])
+  })
+
   it('refuses to render a screen before an edition is configured', async () => {
     vi.resetModules()
     const { edition } = await import('../src/edition')
@@ -92,5 +101,20 @@ describe('the open edition', () => {
     expect(nav.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).toBe('Mailboxes 0 API keys &amp; MCP Storage Account')
     expect(html).not.toMatch(/Compose|mail-compose|Mail sent|by The Happie Co/)
     expect(html).not.toContain('lockup-by')
+  })
+
+  it('calls its frame the server’s console, in the person’s language', async () => {
+    vi.stubGlobal('location', new URL('https://mail.example.org/'))
+    Object.assign(session, { phase: 'ready', user: ana, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
+    Object.assign(accounts, { list: [], loaded: true })
+    const breadcrumb = (html: string) => (html.match(/<div class="console-breadcrumb"[^>]*>(.*?)<\/div>/)?.[1] ?? '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')
+    const html = await render(OpenConsole)
+    expect(html).toMatch(/<aside class="console-sidebar" aria-label="Console navigation"/)
+    expect(html).toMatch(/<span class="lockup"[^>]*role="img" aria-label="Mailie · Console"/)
+    expect(breadcrumb(html)).toBe('Console / Mailboxes')
+    locale.value = 'pt'
+    const pt = await render(OpenConsole)
+    expect(pt).toMatch(/<aside class="console-sidebar" aria-label="Navegação do console"/)
+    expect(breadcrumb(pt)).toBe('Console / Caixas de email')
   })
 })

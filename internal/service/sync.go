@@ -13,7 +13,7 @@ import (
 
 // SyncController is the sync engine as the service sees it.
 //
-// Defined here and implemented by internal/sync, which serve.go wires in:
+// Defined here and implemented by internal/sync, which internal/app wires in:
 // the service decides who may ask for what, the engine decides how mail
 // moves, and neither imports the other's internals. A nil controller means
 // the daemon runs without the engine (tests, and tools that only open the

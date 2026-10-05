@@ -8,7 +8,9 @@ entry fails the export, so a new top-level directory is never dropped without
 a decision. The export refuses symlinks, environment files other than
 .env.example, local settings and secrets (*.local.*, .npmrc), local databases,
 anything under commercial/, and any file whose path or bytes hold a forbidden
-string.
+string. The one local file it skips inside a root, without reading it, is
+deploy/.env: the environment file deploy/compose.yaml reads, which
+docs/self-hosting.md has an operator create there and Git ignores.
 
 In a Git checkout (.git at the root) the export is exactly the files Git
 tracks under ROOTS and FILES, read from the working tree. A file there that
@@ -37,10 +39,10 @@ import sys
 import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-ROOTS = ("cmd", "internal", "it", "web", "docs", "scripts", ".github")
+ROOTS = ("cmd", "internal", "it", "web", "docs", "scripts", "deploy", ".github")
 FILES = (
     "go.mod", "go.sum", "README.md", "LICENSE", "NOTICE", "CONTRIBUTING.md", "SECURITY.md", "Makefile",
-    ".env.example", ".gitignore", ".golangci.yml", ".gitleaks.toml", "CLAUDE.md",
+    ".env.example", ".gitignore", ".dockerignore", ".golangci.yml", ".gitleaks.toml", "CLAUDE.md",
 )
 PRIVATE = "commercial"
 # Top-level entries that are local and never exported (.gitignore): build
@@ -51,6 +53,10 @@ LOCAL_ARTIFACTS = {
     "bin", "dist", "mailserver", "coverage.out", "data", ".env", "CLAUDE.local.md", ".claude", ".vscode",
     ".idea", ".DS_Store", ".git",
 }
+# Local files inside a root that are expected there and never exported nor
+# read: the Compose stack's environment file, which holds the credential key.
+# Only while Git does not track them: a tracked one is refused.
+LOCAL_IN_ROOTS = {"deploy/.env"}
 # Path parts never exported from inside a root: dependencies, builds, caches.
 EXCLUDED = {"node_modules", "dist", ".git", ".DS_Store", "__pycache__", "bin", "coverage", "test-results"}
 # Build and test outputs inside a root, skipped like EXCLUDED.
@@ -119,8 +125,8 @@ class Git:
         for path in sorted(self.tracked - found):
             public = path in FILES or ("/" in path and path.split("/", 1)[0] in ROOTS)
             if public and os.path.lexists(ROOT / path):
-                out[path] = (f"refusing to drop {path}: Git tracks it, but its name is in EXCLUDED or "
-                             "SKIPPED_SUFFIXES of scripts/export-public.py; rename it, or untrack it")
+                out[path] = (f"refusing to drop {path}: Git tracks it, but its name is in EXCLUDED, "
+                             "SKIPPED_SUFFIXES or LOCAL_IN_ROOTS of scripts/export-public.py; rename it, or untrack it")
         return out
 
 
@@ -190,6 +196,8 @@ def walk(root):
         for name in sorted(files):
             path = here / name
             relative = path.relative_to(ROOT)
+            if relative.as_posix() in LOCAL_IN_ROOTS:
+                continue
             if path.is_symlink():
                 raise Refused(f"refusing symlink: {relative}")
             if name in EXCLUDED or name.endswith(SKIPPED_SUFFIXES):
