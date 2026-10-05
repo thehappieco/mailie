@@ -589,7 +589,7 @@ func (r *Registry) startBrowserFlow(ctx context.Context, a Account, kind FlowKin
 
 	// Outlives this request: the person still has to sign in.
 	//nolint:contextcheck // bounded by the flow's own deadline, not the request's
-	r.launch(a.ID, state, flow.ExpiresAt, func(ctx context.Context) {
+	r.launch(a.ID, state, flowTTL, func(ctx context.Context) {
 		r.awaitLoopback(ctx, a.ID, state, listener)
 	})
 	return flow, nil
@@ -662,8 +662,13 @@ func (r *Registry) startDeviceFlow(ctx context.Context, a Account, state, owner 
 	flow.AccountID = a.ID
 	flow.Kind = FlowDevice
 	flow.State = state
+	// A provider's expiry is on the real clock — oauth2 counts expires_in
+	// from time.Now, and polls until then — so the wait is measured on it.
+	wait := flowTTL
 	if flow.ExpiresAt.IsZero() {
 		flow.ExpiresAt = r.repo.now().Add(flowTTL)
+	} else {
+		wait = time.Until(flow.ExpiresAt)
 	}
 
 	if err := r.repo.SaveFlow(ctx, PendingFlow{
@@ -674,7 +679,7 @@ func (r *Registry) startDeviceFlow(ctx context.Context, a Account, state, owner 
 	}
 	// Outlives this request: the person is typing a code on another device.
 	//nolint:contextcheck // bounded by the device code's own expiry, not the request's
-	r.launch(a.ID, state, flow.ExpiresAt, func(ctx context.Context) {
+	r.launch(a.ID, state, wait, func(ctx context.Context) {
 		r.awaitDevice(ctx, a.ID, state, config, flow)
 	})
 	return flow, nil
@@ -727,11 +732,15 @@ func (r *Registry) awaitDevice(ctx context.Context, accountID, state string, con
 }
 
 // launch runs an attempt the daemon completes by itself, on a context of the
-// daemon's bounded by the attempt's deadline, and registers it so it can be
-// stopped. An attempt the account already had is cancelled: there is only
-// ever one.
-func (r *Registry) launch(accountID, state string, deadline time.Time, run func(context.Context)) {
-	ctx, cancel := context.WithDeadline(r.baseCtx, deadline)
+// daemon's that ends after wait, and registers it so it can be stopped. An
+// attempt the account already had is cancelled: there is only ever one.
+//
+// wait is a span, not the instant the flow's row expires at: that instant is
+// on the registry's clock, which a test may hold still, and a deadline read
+// off a clock held in the past is one the real clock passed long ago — every
+// attempt would expire the moment it started.
+func (r *Registry) launch(accountID, state string, wait time.Duration, run func(context.Context)) {
+	ctx, cancel := context.WithTimeout(r.baseCtx, wait)
 	w := &waiter{state: state, cancel: cancel, done: make(chan struct{})}
 
 	r.mu.Lock()
