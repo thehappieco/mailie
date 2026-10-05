@@ -55,6 +55,9 @@ type serviceOptions struct {
 	// mcpHTTP is whether the daemon serves MCP over HTTP at /mcp, which
 	// GET /v1/me/mcp reports.
 	mcpHTTP bool
+	// externalSignInOnly is a daemon whose people sign in only through an
+	// extension: passwords and invitations are off.
+	externalSignInOnly bool
 }
 
 // newService wires the real service to a temporary database, because testing
@@ -88,6 +91,7 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		SpoolDir:           opts.SpoolDir,
 		ConsentVersions:    o.consent,
 		MCPHTTP:            o.mcpHTTP,
+		ExternalSignInOnly: o.externalSignInOnly,
 	})
 }
 

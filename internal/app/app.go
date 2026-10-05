@@ -7,9 +7,12 @@
 // `mailserver serve` is a thin caller of Run. Another binary that must run
 // exactly the same server calls Run too, and adds what is its own through
 // Options: routes beside the core's (Extension), which can never take a
-// request a core route answers. Nothing else of the assembly is open to a
-// caller, because a server that differed from `mailserver serve` in what it
-// checks, sweeps or refuses would be a second implementation of it.
+// request a core route answers, and, for a binary whose people sign in
+// through such a route (service.SignInExternal), the switch that turns the
+// core's passwords and invitations off (ExternalSignInOnly). Nothing else of
+// the assembly is open to a caller, because a server that differed from
+// `mailserver serve` in what it checks, sweeps or refuses would be a second
+// implementation of it.
 package app
 
 import (
@@ -60,6 +63,14 @@ type Options struct {
 	// that embeds the daemon sets it: there is no environment variable, and
 	// `serve` never does.
 	WorkspaceSource workspace.Source
+	// ExternalSignInOnly says people sign in only through an extension,
+	// which calls service.SignInExternal: the core refuses, not_authorized,
+	// every route that signs in with a password, signs up or accepts an
+	// invitation, changes a password, or creates an invitation, to the
+	// instance or into a team. The service decides it, for every transport.
+	// Only a binary that embeds the daemon sets it: there is no environment
+	// variable, and `serve` never does.
+	ExternalSignInOnly bool
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -210,6 +221,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		Workspaces: workspaces,
 		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
+		ExternalSignInOnly: opts.ExternalSignInOnly,
 	})
 
 	// One limiter for REST and MCP: a key has one budget whichever way it
@@ -309,7 +321,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 			logger.Warn(msg, "hint", hint)
 		}
 	}
-	if cfg.WebDir != "" || cfg.PublicURL != "" {
+	// An invitation is how people arrive, unless they sign in only through
+	// an extension: then no command here brings anyone, and nobody is an
+	// owner by arriving.
+	if (cfg.WebDir != "" || cfg.PublicURL != "") && !opts.ExternalSignInOnly {
 		userCount, err := users.Count(ctx)
 		if err != nil {
 			return err

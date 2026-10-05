@@ -349,7 +349,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 	}
 
 	now := u.now().UTC().Truncate(time.Second)
-	user := User{ID: userID, Email: email, Name: name, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
+	user := User{ID: userID, Email: email, Name: name, HasPassword: true, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
 	var token string
 	var session Session
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
@@ -404,7 +404,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 		if err := dropOtherInvitesTx(ctx, tx, email, team, true); err != nil {
 			return err
 		}
-		token, session, err = startSessionTx(ctx, tx, user.ID, req.UserAgent, now)
+		token, session, err = startSessionTx(ctx, tx, user.ID, req.UserAgent, now, SessionTTL)
 		return err
 	})
 	if err != nil {

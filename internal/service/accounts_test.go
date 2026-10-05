@@ -71,6 +71,9 @@ type fixtureOptions struct {
 	// consent is the revisions of the texts people agree to, as
 	// MAIL_CONSENT_VERSION_* configure them; empty ones are the defaults.
 	consent config.ConsentVersions
+	// externalSignInOnly is a daemon whose people sign in only through an
+	// extension: passwords and invitations are off.
+	externalSignInOnly bool
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -150,6 +153,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		SendHashKey:        f.opts.sendHashKey,
 		SendSpoolBytes:     f.opts.sendSpool,
 		ConsentVersions:    f.opts.consent,
+		ExternalSignInOnly: f.opts.externalSignInOnly,
 	}), registry
 }
 

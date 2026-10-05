@@ -35,7 +35,7 @@ func NewUser(t *testing.T, db *store.Store, email string, role auth.Role) auth.U
 	now := db.Now().UTC().Truncate(time.Second)
 	user := auth.User{
 		ID: "usr_" + randomHex(t, 8), Email: email, Role: role,
-		PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now,
+		HasPassword: true, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	err := db.Write(t.Context(), func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(t.Context(),

@@ -61,9 +61,10 @@ const housekeepingInterval = time.Hour
 
 // housekeep enforces retention: now, and then every interval until ctx ends.
 // Today that is the unused invites, deleted within auth.InviteRetention of
-// expiring, and the send records and their send.finished notices, deleted
-// store.SendRetention after their last change. scrub then takes the deleted
-// rows out of the write-ahead log too.
+// expiring; the keys pinned for an identity that never signed anyone in,
+// deleted once they are auth.UnlinkedPinGrace old; and the send records and
+// their send.finished notices, deleted store.SendRetention after their last
+// change. scrub then takes the deleted rows out of the write-ahead log too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
@@ -77,6 +78,16 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 			logger.Warn("sweeping expired invites failed", "err", err)
 		case n > 0:
 			logger.Info("deleted expired invites", "count", n)
+			deleted += n
+		}
+		// A grace, not a retention: a pin younger than it may belong to a
+		// sign-in still under way, so it waits for the next sweep.
+		n, err = users.SweepUnlinkedPins(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.Warn("sweeping the keys pinned for no identity failed", "err", err)
+		case n > 0:
+			logger.Info("deleted the keys pinned for no identity", "count", n)
 			deleted += n
 		}
 		records, notices, err := sweepSends(ctx, every)

@@ -72,6 +72,10 @@ type Service struct {
 	consent config.ConsentVersions
 	// mcpHTTP is whether this server answers MCP over HTTP at /mcp.
 	mcpHTTP bool
+	// externalSignInOnly is whether people sign in only through an
+	// extension (external.go): every password and invitation route is
+	// refused.
+	externalSignInOnly bool
 }
 
 // Deps is what the service needs.
@@ -123,6 +127,12 @@ type Deps struct {
 	// (MAIL_MCP_HTTP), which the service only reports (MCPAccess): the
 	// transport decides what it mounts.
 	MCPHTTP bool
+	// ExternalSignInOnly says people sign in only through an extension of
+	// the daemon (SignInExternal): signing in with a password, signing up
+	// or accepting an invitation, changing a password and creating an
+	// invitation are refused, not_authorized. False, the default, changes
+	// nothing. Only internal/app sets it, from its Options.
+	ExternalSignInOnly bool
 }
 
 // New builds the service.
@@ -171,7 +181,7 @@ func New(d Deps) *Service {
 		downloads: newDownloadBudget(d.DownloadSpoolBytes, d.DownloadsPerCaller),
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
 		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
-		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP,
+		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP, externalSignInOnly: d.ExternalSignInOnly,
 	}
 }
 

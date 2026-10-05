@@ -311,6 +311,22 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			[]byte(strings.Repeat(inv.hash, 32)[:32]), inv.email, inv.createdBy, now, now+3600, inv.usedAt, inv.usedBy)
 	}
 
+	// The identities ana and bob sign in with through a provider, and the
+	// keys pinned for each; and a key pinned for an identity no sign-in ever
+	// linked, which is not hers: the hourly sweep deletes such a pin
+	// (auth.SweepUnlinkedPins), whoever is deleted meanwhile.
+	const issuer = "https://accounts.example.com"
+	f.exec(t, `INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES (?, 'subject-of-ana', ?, ?), (?, 'subject-of-bob', ?, ?)`,
+		issuer, ana.UserID, now, issuer, bob.UserID, now)
+	for _, pin := range []struct{ subject, keyID, key string }{
+		{"subject-of-ana", "k1", "key-of-ana-one"}, {"subject-of-ana", "k2", "key-of-ana-two"},
+		{"subject-of-bob", "k1", "key-of-bob"}, {"subject-of-nobody", "k1", "key-of-nobody"},
+	} {
+		if _, _, err := f.svc.PinIdentityKey(t.Context(), issuer, pin.subject, pin.keyID, []byte(pin.key)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// The scan below proves something only about tables that hold rows. A
 	// table a later migration adds starts out empty here, and would pass
 	// without anyone having decided what deleting a person does to it; this
@@ -343,6 +359,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		ana.UserID, "ana@example.com", ana.SessionID, anaKey,
 		anaHome, anaWork, "ana@mail.example", "ana.work@mail.example",
 		"state-by-ana", "state-on-anas", anaPersonal.ID, anaAlone.ID, "Ana alone",
+		"subject-of-ana", "key-of-ana",
 	}
 	if found := f.mentions(t, needles); len(found) > 0 {
 		t.Errorf("rows still name ana or her mailboxes:\n  %s", strings.Join(found, "\n  "))
@@ -350,7 +367,8 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	// Gone from the files too, not only from the tables: what a deletion
 	// frees would otherwise sit in free pages and in the write-ahead log
 	// until SQLite happened to overwrite it.
-	if found := f.onDisk(t, ana.UserID, "ana@example.com", "Ana Quaresma", "ana@mail.example", "ana.work@mail.example"); len(found) > 0 {
+	if found := f.onDisk(t, ana.UserID, "ana@example.com", "Ana Quaresma", "ana@mail.example", "ana.work@mail.example",
+		"subject-of-ana", "key-of-ana"); len(found) > 0 {
 		t.Errorf("deleted, but still on disk:\n  %s", strings.Join(found, "\n  "))
 	}
 	if n := f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'zebra'`); n != 0 {
@@ -376,6 +394,9 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			`SELECT count(*) FROM sends WHERE account_id = ? AND idempotency_key = 'k-ana' AND user_id = '' AND created_by = ''`, shared),
 		"its notice, unsigned": f.count(t, `SELECT count(*) FROM events WHERE type = 'send.finished' AND account_id = ?
 			AND json_extract(payload_json, '$.key') = 'k-ana' AND json_extract(payload_json, '$.user_id') IS NULL`, shared),
+		"bob's identity":            f.count(t, `SELECT count(*) FROM user_identities WHERE subject = 'subject-of-bob' AND user_id = ?`, bob.UserID),
+		"bob's pinned key":          f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-bob'`),
+		"the key pinned for nobody": f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-nobody'`),
 	} {
 		if n != 1 {
 			t.Errorf("%s: %d rows, want 1", what, n)

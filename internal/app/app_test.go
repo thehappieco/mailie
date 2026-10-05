@@ -220,10 +220,31 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 		return false
 	}
 
+	// A key pinned for a sign-in that was refused, long enough ago that no
+	// sign-in can still be under way: its identity signs nobody in.
+	mu.Lock()
+	now = now.Add(-auth.UnlinkedPinGrace - time.Minute)
+	mu.Unlock()
+	if _, _, err := users.PinKey(t.Context(), "https://accounts.example.com", "subject-of-nobody-here", "k1", []byte("k")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	now = now.Add(auth.UnlinkedPinGrace + time.Minute)
+	mu.Unlock()
+	unlinked := func() int {
+		var n int
+		if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM identity_key_pins`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
 	// With an hour to the first tick, only the sweep at start can do this.
 	expire("first@example.com")
 	stop := run(time.Hour)
-	waitFor("the sweep at start", func() bool { return pending() == 0 && !onDisk("first@example.com") })
+	waitFor("the sweep at start", func() bool {
+		return pending() == 0 && !onDisk("first@example.com") && unlinked() == 0 && !onDisk("subject-of-nobody-here")
+	})
 	stop()
 
 	stop = run(20 * time.Millisecond)

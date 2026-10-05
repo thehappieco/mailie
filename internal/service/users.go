@@ -8,13 +8,17 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 )
 
-// User is a person, as the console shows them.
+// User is a person, as the console shows them to themselves.
 type User struct {
 	ID        string `json:"id"`
 	Email     string `json:"email"`
 	Name      string `json:"name"`
 	Role      string `json:"role"`
 	CreatedAt int64  `json:"created_at"`
+	// HasPassword is false for a person who signs in only through an
+	// identity provider: there is no password to change, and a console
+	// does not offer to.
+	HasPassword bool `json:"has_password"`
 }
 
 // Session is a new sign-in. The token is in this reply and nowhere else: only
@@ -91,9 +95,13 @@ const hashWaitRetry = 5 * time.Second
 
 // SignIn checks an address and a password and starts a session.
 //
-// A wrong password, an address with no account and a disabled account all get
-// the same answer, after the same amount of work.
+// A wrong password, an address with no account, a disabled account and a
+// person with no password all get the same answer, after the same amount of
+// work. Refused outright where people sign in only through an extension.
 func (s *Service) SignIn(ctx context.Context, req SignInRequest, userAgent string) (Session, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return Session{}, err
+	}
 	token, session, user, err := s.users.SignIn(ctx, req.Email, req.Password, userAgent)
 	switch {
 	case errors.Is(err, auth.ErrBadCredentials):
@@ -104,8 +112,12 @@ func (s *Service) SignIn(ctx context.Context, req SignInRequest, userAgent strin
 	return presentSession(token, session, user), nil
 }
 
-// SignUp redeems an invite: it creates the account and signs it in.
+// SignUp redeems an invite: it creates the account and signs it in. Refused
+// where people sign in only through an extension.
 func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent string) (Session, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return Session{}, err
+	}
 	token, session, user, err := s.users.SignUp(ctx, auth.SignUpRequest{
 		Invite: req.Invite, Email: req.Email, Name: req.Name, Password: req.Password, UserAgent: userAgent,
 	})
@@ -155,8 +167,13 @@ func (s *Service) SignOut(ctx context.Context, p Principal, req SignOutRequest) 
 }
 
 // ChangePassword replaces the caller's password, ends every session they
-// have — this one included — and signs them in again with a new token.
+// have — this one included — and signs them in again with a new token. A
+// person with no password has no current one to prove; and where people sign
+// in only through an extension, nobody changes one here.
 func (s *Service) ChangePassword(ctx context.Context, p Principal, req PasswordRequest, userAgent string) (Session, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return Session{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return Session{}, err
 	}
@@ -198,7 +215,11 @@ func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileReq
 // instance. A team invite, which any person may make into a team of their
 // own, signs a new person up only when an instance owner or the operator made
 // it (auth.SignUp); anyone else's adds an existing account to the team.
+// Where people sign in only through an extension, nobody invites anyone.
 func (s *Service) CreateInvite(ctx context.Context, p Principal, req InviteRequest) (Invite, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return Invite{}, err
+	}
 	switch {
 	case p.IsSession() && p.UserRole == auth.RoleOwner:
 	case p.IsInstance() && len(p.AccountIDs) == 0:
@@ -270,7 +291,10 @@ func fromUsers(err error, what string) error {
 }
 
 func presentUser(u auth.User) User {
-	return User{ID: u.ID, Email: u.Email, Name: u.Name, Role: string(u.Role), CreatedAt: u.CreatedAt.Unix()}
+	return User{
+		ID: u.ID, Email: u.Email, Name: u.Name, Role: string(u.Role), CreatedAt: u.CreatedAt.Unix(),
+		HasPassword: u.HasPassword,
+	}
 }
 
 func presentSession(token string, s auth.Session, u auth.User) Session {

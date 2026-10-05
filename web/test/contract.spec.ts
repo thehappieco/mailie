@@ -16,10 +16,10 @@ import { EventStreamParser } from '../src/api/events'
 import {
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isMailboxAccessList, isMe,
   isMember, isMemberList, isMessageNew, isMcpAccess, isPersonalKeyList, isProviderList, isServerEvent, isSessionReply, isStorage, isSyncConsent,
-  isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceList,
+  isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceList, hasPassword,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
-  type MailboxAccess, type Member, type PersonalKey, type Provider, type ServerEvent, type SessionReply, type Storage, type SyncConsent,
-  type TeamInvite, type WaitResult, type Workspace,
+  type MailboxAccess, type Me, type Member, type PersonalKey, type Provider, type ServerEvent, type SessionReply, type Storage, type SyncConsent,
+  type TeamInvite, type User, type WaitResult, type Workspace,
 } from '../src/api/types'
 import { invitationLink } from '../src/api/workspaces'
 import { grantChange } from '../src/ui/access'
@@ -41,6 +41,7 @@ function fixture(name: string): unknown {
 const shapes: [string, (value: unknown) => boolean][] = [
   ['session', value => isSessionReply(value, true)],
   ['me', value => isMe(value, true)],
+  ['me_without_password', value => isMe(value, true)],
   ['user', value => isUser(value, true)],
   ['account', value => isAccount(value, true)],
   ['account_icloud', value => isAccount(value, true)],
@@ -81,6 +82,18 @@ describe('the HTTP contract the Go handlers answer with', () => {
   it.each(shapes)('%s.json has exactly the shape the console reads', (name, valid) => {
     const value = fixture(name)
     expect(valid(value), JSON.stringify(value, null, 2)).toBe(true)
+  })
+
+  it('says whether the person has a password: everyone signed up with one, nobody who signs in only another way', () => {
+    expect((fixture('session') as SessionReply).user.has_password).toBe(true)
+    expect((fixture('me') as Me).user.has_password).toBe(true)
+    expect((fixture('user') as User).has_password).toBe(true)
+    const external = fixture('me_without_password') as Me
+    expect(external.user.has_password).toBe(false)
+    expect(hasPassword(external.user)).toBe(false)
+    expect(hasPassword((fixture('me') as Me).user)).toBe(true)
+    // A session of the length the extension asked for, never a password's fourteen days.
+    expect(external.session.expires_at - external.session.created_at).toBe(86_400)
   })
 
   it('a session token is an opaque bearer, not an API key', () => {

@@ -20,7 +20,19 @@ export type AccountState = 'pending_auth' | 'active' | 'needs_reauth' | 'disable
 export type FlowKind = 'web' | 'loopback' | 'pasted' | 'device'
 export type SMTPSecurity = 'implicit' | 'starttls'
 
-export interface User { id: string; email: string; name: string; role: Role; created_at: number }
+export interface User {
+  id: string
+  email: string
+  name: string
+  role: Role
+  created_at: number
+  /**
+   * False for a person who signs in only through an edition's own sign-in
+   * (an identity provider), with no password to change. A server older than
+   * the field leaves it out: a password, as every person had one then.
+   */
+  has_password?: boolean
+}
 /** What sign-in, sign-up and a password change answer: a fresh bearer token. */
 export interface SessionReply { token: string; expires_at: number; user: User }
 export interface SessionInfo { id: string; created_at: number; expires_at: number }
@@ -362,8 +374,15 @@ export const eventTypes = ['message.new', 'message.flags', 'message.moved', 'mes
 export const folderSyncStates = ['new', 'initial', 'live', 'resync', 'error', 'disabled'] as const
 
 export function isUser(v: unknown, strict = false): v is User {
-  return record(v) && known(v, ['id', 'email', 'name', 'role', 'created_at'], strict)
+  return record(v) && known(v, ['id', 'email', 'name', 'role', 'created_at', 'has_password'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && text(v.name, 1024) && oneOf(roles)(v.role) && seconds(v.created_at)
+    // The daemon that writes the fixtures always says; an older one may not.
+    && (strict ? flag(v.has_password) : optional(v.has_password, flag))
+}
+
+/** Whether the person signs in with a password here, which they may change: every person, but one who signs in only another way. */
+export function hasPassword(user: User | null | undefined): boolean {
+  return user?.has_password !== false
 }
 
 /** Bearer tokens are opaque here; the bounds only keep a corrupt value out of a header. */

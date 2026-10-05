@@ -64,6 +64,18 @@ say "this page". Other extension points are `onLiveEvent()`/`onLiveLagged()`/`on
 `state/failure.ts`), `onActionsConsent()` and the account section's pieces (`AccountPanel`,
 `SyncPermission`, `ActionsPermission`, `PermissionRow`).
 
+An edition whose people sign in another way (see
+[Signing in through an extension](#signing-in-through-an-extension)) sets `signIn`, a component
+that takes the password card's place on the signed-out screen inside the same frame (the brand and
+appearance menu above, the notes about an ended session or a mailbox waiting to finish connecting,
+`legal.signInFooter` below); no invitation signs anyone up there. Its component calls
+`adoptSession(reply)` (`state/session.ts`) with what its route answered, the shape
+`POST /v1/auth/login` answers: the same path the password sign-in takes to store the session and
+load the person, so no edition keeps a session of its own. `signedOut` is called once the person has
+signed out on purpose, after the session ended in this browser and the server was told, never when
+one expires, is refused or ends in another tab; an edition may navigate away there. A person whose
+`has_password` is `false` is not offered to change a password. The open edition sets none of these.
+
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
 imports from outside it or through an alias, and the open console names nothing of the hosted
@@ -77,7 +89,9 @@ has one). Keep both in mind when you change the core: an edition you cannot see 
 
 A session is an opaque **bearer token, never a cookie**: 32 random bytes in base64url (43
 characters, without a dot, which is how the daemon tells it from an API key `<prefix>.<secret>`),
-stored as SHA-256, with an absolute lifetime of 14 days and no sliding renewal. The browser keeps
+stored as SHA-256, with an absolute lifetime of 14 days and no sliding renewal (one started through
+an extension may be given less, never more: see
+[Signing in through an extension](#signing-in-through-an-extension)). The browser keeps
 it in memory and an encrypted copy in IndexedDB under a non-extractable AES-GCM key, tells other
 tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`. Routes for a person
 (`/v1/auth/*`) refuse API keys.
@@ -85,9 +99,12 @@ tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`. Rou
 ### Passwords and sign-in
 
 Passwords are hashed with Argon2id on the server (64 MiB, t=3, p=1), at least 10 characters of
-valid UTF-8, with at most two hashes running at once. An unknown address and a disabled person cost
-the same work as a wrong password and get the same answer. Changing the password ends every other
-session.
+valid UTF-8, with at most two hashes running at once. An unknown address, a disabled person and a
+person with no password (one who signs in only through an extension) cost the same work as a wrong
+password and get the same answer: a password is checked against a dummy hash in all three, and
+nothing matches the empty hash a person without a password has. Changing the password ends every
+other session; a person without one has no current password to prove, and the console does not
+offer the change (`user.has_password` is `false` in `GET /v1/auth/me`).
 
 A forgotten password is reset by the operator, with the daemon stopped:
 `mailserver user password --bootstrap --email X`. It asks for the new password twice without
@@ -96,7 +113,8 @@ variable), applies the same rules as sign-up (bytes in another encoding, such as
 are refused: no sign-in could send them), and ends every session the person has in the same
 transaction. A disabled person stays disabled. There is no route for it, by design: nothing remote
 sets someone's password. `--email -` reads the address from standard input; the password must then
-be typed at a terminal.
+be typed at a terminal. It is also how a person who signs in through an extension, and has no
+password, is given one.
 
 ### Invitations
 
@@ -133,6 +151,72 @@ whose only member they were. Both take `--email -` to read the address from stan
 keeps it out of `sudo` logs and shell history, and refuse without `--force` to remove the last
 active owner of the server, the last active owner of a team others remain in, or the person a team
 mailbox others read syncs under; the refusal names those teams and mailboxes.
+
+### Signing in through an extension
+
+A binary that embeds the daemon (`internal/app`) may sign people in through an identity provider it
+trusts, on routes of its own (`Options.Extensions`). The core has no provider and names none: the
+extension does the provider's protocol, then calls `Service.SignInExternal` with who the provider
+says the person is, and answers its page with the `Session` that comes back, exactly as
+`POST /v1/auth/login` answers the console; the console adopts it the same way
+(`adoptSession`, below). No route of the core calls it.
+
+- **Identities.** The provider names a person by its **issuer**, an origin exactly as a browser
+  writes one (`https://host[:port]`, or `http://` on loopback or a name under `.localhost`, with no
+  path), and a **subject**, its own stable id for them (1 to 255 bytes of text, never an address).
+  The pair is linked to one person (`user_identities`) and signs that person in from then on,
+  whatever the provider later says of the address.
+- **A pair seen for the first time** is believed only with an address the provider verified
+  (`email_verified`); otherwise nothing is linked or created (`not_authorized`). Nor with an
+  address that lower case would turn into another (`bad_request`): the Kelvin sign is not the letter
+  K, nor the dotted capital I the letter i, and the mailbox the provider verified is not the one
+  lower case makes of it, which may be somebody else's here. The person with that address, compared
+  without regard to case, gets the pair linked, unless they already sign in with another subject
+  from the same issuer (`conflict`). With nobody at that address, a new person is created: an
+  instance **member**, never an owner, with the name given, no password, and what the workspace
+  source creates for a person, exactly as signing up creates one; the instance invitations waiting
+  for the address are spent, as signing up spends them. The name is the provider's, so it is made
+  into one the server takes (control characters become spaces, a name past 120 characters is cut)
+  rather than refused; somebody who already has an account keeps theirs, whatever the provider now
+  calls them. All of this, and the session, is one transaction. A disabled person is refused
+  (`unauthorized`), as their password sign-in is, and nothing is linked to them.
+- **No password.** Such a person's `password_hash` is empty and `password_changed_at` is 0. No
+  password check accepts an empty hash (it costs a dummy derivation, as an unknown address does),
+  and `user.has_password` is `false`. `user password --bootstrap` gives them one.
+- **The session's lifetime** is the extension's to choose: more than nothing and at most 14 days
+  (`auth.SessionTTL`), absolute from its start. Nothing renews a session on use, and no statement
+  can move an existing session's expiry later: the schema refuses an update that would
+  (`sessions_expiry_fixed`, an upsert's included) and an insert under an id or token a session
+  already has (`sessions_started_once`), which is how `INSERT OR REPLACE` would get around the
+  first. The code only ever starts a session new, under a new id and token.
+- **A personal key outlives the session it was created in.** A key the person creates while
+  signed in (`POST /v1/me/apikeys`) lasts what they chose, 30, 90 or 365 days, whatever their
+  session's lifetime: a short session bounds how long a browser stays signed in, not what the
+  person deliberately hands a tool, which is what a key is for. So a session kept short because the
+  provider cannot yet tell this server that it closed or locked someone does not close that gap for
+  keys: until it can, the operator disabling the person here (`user disable`) is what revokes their
+  keys and ends their sessions, in one transaction.
+- **Key pins.** `Service.PinIdentityKey(issuer, subject, keyID, key)` keeps the public keys an
+  identity is known by (`identity_key_pins`, at most 4096 bytes each): inserted the first time a key
+  id is seen, then read back, in one transaction, so of two sign-ins racing each other both get the
+  key that won. A pin is **never replaced**: an update is refused, and an insert under a key id
+  already pinned changes nothing, whatever its conflict clause. It is **deleted only with the person
+  it identifies**: the schema refuses to delete a pin while its identity is linked, and deleting the
+  person (`user delete`, the second step of closing an account) removes their identities and then
+  their pins in the same transaction. Disabling the person, the first step, keeps both, as it keeps
+  their password: a person switched back on signs in as before, and the pin must still hold then.
+  An extension pins a key before the sign-in that links its identity; when that sign-in is
+  refused (an address not verified, another subject for an address, a disabled person), the pin
+  signs nobody in, and the hourly retention sweep deletes it once it is ten minutes old
+  (`auth.UnlinkedPinGrace`), so it is kept a little over an hour at most.
+- **`ExternalSignInOnly`** (`app.Options`, set only by a binary that embeds the daemon; there is no
+  variable, and `serve` never sets it) is a server whose people sign in only that way. The service
+  then refuses, `not_authorized`, every route that signs in with a password, signs up or accepts an
+  invitation, changes a password, or creates an invitation to the instance or into a team:
+  `POST /v1/auth/login`, `/v1/auth/signup`, `/v1/auth/invites/accept`, `/v1/auth/password`,
+  `/v1/users/invites` and `/v1/workspaces/{id}/invites`. The command line's `--bootstrap` commands
+  still write to the database, but an invitation they print signs nobody up there. Left at its zero
+  value nothing changes.
 
 ### Keys and scopes
 
@@ -329,7 +413,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET /v1/healthz` | anyone | `{status, version, uptime_seconds}` |
 | `POST /v1/auth/login` | anyone | `{email, password}` → `Session` |
 | `POST /v1/auth/signup` | anyone | `{invite, email, name, password}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
-| `GET /v1/auth/me` | session | `{user, session}` |
+| `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password` | session | `{current, next}` → a new `Session`; every other session ends |
 | `PUT /v1/auth/profile` | session | `{name}` → `User` |
@@ -375,7 +459,10 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET /v1/sends/{key}?account=` | send | the record of one of the caller's own sends |
 | `GET/POST /v1/apikeys`, `DELETE /v1/apikeys/{prefix}` | admin, only with `MAIL_ADMIN_API=true` | instance keys; `mailserver apikey create\|list\|revoke` without `--bootstrap` call these |
 
-`/v1/users/disable` and `/v1/users/delete` carry the address in the body, never in the URL.
+`/v1/users/disable` and `/v1/users/delete` carry the address in the body, never in the URL. A
+server whose people sign in only through an extension answers `403 not_authorized` to the routes
+that sign in with a password, sign up or accept an invitation, change a password or create an
+invitation ([Signing in through an extension](#signing-in-through-an-extension)).
 
 There is no current workspace on the server: a session or a key reaches the caller's mailboxes in
 every workspace they belong to, and every account (and every storage entry) carries its

@@ -903,12 +903,7 @@ func TestMigrationNineTakesTheMailboxesTheirPersonCannotReadOutOfPersonKeys(t *t
 	seedSelfHosted(t, s)
 	migrateTo(t, s, 8)
 	before := dumpTables(t, s)
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
-	if v, err := s.SchemaVersion(context.Background()); err != nil || v != 9 {
-		t.Fatalf("user_version = %d (%v), want 9", v, err)
-	}
+	migrateTo(t, s, 9)
 	after := dumpTables(t, s)
 	for table, rows := range before {
 		if table == "api_key_accounts" || table == "api_keys" {

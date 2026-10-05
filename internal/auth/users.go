@@ -30,6 +30,10 @@ import (
 // in the console, it names the one address it is for, and it works once. A
 // forgotten password is set again by the operator, from the command line
 // (SetPassword).
+//
+// The one other way in is an identity provider an extension of the daemon
+// trusts (identities.go): a person who arrives that way has no password until
+// the operator sets one.
 
 // Role is a person's role on the instance: the self-hosted server's own
 // administration, apart from any workspace.
@@ -68,11 +72,16 @@ const maxEmailLength = 254
 // User is a person who can sign in. The password hash never leaves this
 // package.
 type User struct {
-	ID                string
-	Email             string
-	Name              string
-	Role              Role
-	Disabled          bool
+	ID       string
+	Email    string
+	Name     string
+	Role     Role
+	Disabled bool
+	// HasPassword is false for a person who signs in only through an
+	// identity provider (SignInExternal) and has never been given a
+	// password: no password signs them in, and none can be changed.
+	HasPassword bool
+	// PasswordChangedAt is zero for a person without a password.
 	PasswordChangedAt time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -151,7 +160,9 @@ func NormalizeName(s string) (string, error) {
 	return s, nil
 }
 
-const userColumns = `id, email, name, role, status, password_changed_at, created_at, updated_at`
+// userColumns are a person as User holds them. Whether they have a password
+// is read from the hash, never the hash itself.
+const userColumns = `id, email, name, role, status, password_hash <> '', password_changed_at, created_at, updated_at`
 
 // Get reads one user.
 func (u *Users) Get(ctx context.Context, id string) (User, error) {
@@ -226,7 +237,9 @@ func (u *Users) SetDisabled(ctx context.Context, id string, disabled bool) error
 //
 // The shape is the security property, as in Keys.Authenticate: exactly one
 // Argon2id derivation whether or not the address exists, and one error for
-// every way of failing.
+// every way of failing. A person without a password (SignInExternal) is one
+// more way of failing, at the same cost: verifyPassword checks against the
+// dummy and accepts nothing.
 func (u *Users) SignIn(ctx context.Context, email, password, userAgent string) (string, Session, User, error) {
 	var (
 		user   User
@@ -235,7 +248,7 @@ func (u *Users) SignIn(ctx context.Context, email, password, userAgent string) (
 	)
 	err := u.store.Reader().QueryRowContext(ctx,
 		`SELECT `+userColumns+`, password_hash FROM users WHERE email = ?`, strings.TrimSpace(email),
-	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status, &user.HasPassword,
 		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt}, &hash)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -276,7 +289,7 @@ func (u *Users) SignIn(ctx context.Context, email, password, userAgent string) (
 			return ErrBadCredentials
 		}
 		var err error
-		token, session, err = startSessionTx(ctx, tx, user.ID, userAgent, u.now())
+		token, session, err = startSessionTx(ctx, tx, user.ID, userAgent, u.now(), SessionTTL)
 		return err
 	})
 	if err != nil {
@@ -292,6 +305,9 @@ func (u *Users) SignIn(ctx context.Context, email, password, userAgent string) (
 // Everything goes, because the usual reason for changing a password is no
 // longer trusting where the old one was typed; a session opened under it that
 // survived the change would be that distrust ignored.
+//
+// A person without a password has none to prove, and is refused as a wrong
+// one is, after the same work: SetPassword is how they get one.
 func (u *Users) ChangePassword(ctx context.Context, userID, current, next, userAgent string) (string, Session, error) {
 	if err := CheckPassword(next); err != nil {
 		return "", Session{}, err
@@ -336,7 +352,7 @@ func (u *Users) ChangePassword(ctx context.Context, userID, current, next, userA
 		if _, err := revokeSessionsTx(ctx, tx, userID, now.Unix()); err != nil {
 			return err
 		}
-		token, session, err = startSessionTx(ctx, tx, userID, userAgent, now)
+		token, session, err = startSessionTx(ctx, tx, userID, userAgent, now, SessionTTL)
 		return err
 	})
 	if err != nil {
@@ -350,6 +366,9 @@ func (u *Users) ChangePassword(ctx context.Context, userID, current, next, userA
 // recovered, and only the operator reaches it: `mailserver user password
 // --bootstrap`, with the database open and the daemon stopped. No route calls
 // it, so nothing remote can set someone's password.
+//
+// It is also how a person who signs in through an identity provider, and
+// has no password, is given one.
 //
 // The rules and the hash are sign-up's. Every session the person has ends in
 // the same transaction, as with a change: whoever forgot a password may also
@@ -388,7 +407,7 @@ func (u *Users) SetPassword(ctx context.Context, userID, password string) (int, 
 func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var user User
 	var status string
-	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status,
+	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status, &user.HasPassword,
 		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

@@ -82,6 +82,12 @@ func hashPassword(ctx context.Context, password string) (string, error) {
 // verifyPassword checks a password against a stored PHC string, or against
 // dummyPasswordHash when there is nothing real to compare with. Either way it
 // costs one full derivation, which is the point.
+//
+// An empty phc is a person who has no password (they sign in through an
+// identity provider, SignInExternal): nothing matches it, whatever is
+// presented, the empty password included, and finding that out costs the
+// derivation a wrong password costs, so the refusal says nothing about how
+// the person signs in.
 func verifyPassword(ctx context.Context, password, phc string) (bool, error) {
 	if len(password) > MaxPasswordBytes {
 		// Never a password anyone could have set. Refusing it without
@@ -94,6 +100,10 @@ func verifyPassword(ctx context.Context, password, phc string) (bool, error) {
 		return false, err
 	}
 	defer release()
+	if phc == "" {
+		_ = verifySecret(password, dummyPasswordHash)
+		return false, nil
+	}
 	return verifySecret(password, phc), nil
 }
 
@@ -103,9 +113,10 @@ func verifyPassword(ctx context.Context, password, phc string) (bool, error) {
 // longer waiting on.
 func acquireHashSlot(ctx context.Context) (func(), error) { return hashSlots.acquire(ctx) }
 
-// dummyPasswordHash is what an unknown address or a disabled account is
-// checked against, so that a miss costs the same derivation as a wrong
-// password and the response time does not say which it was.
+// dummyPasswordHash is what an unknown address, a disabled account or a
+// person with no password is checked against, so that a miss costs the same
+// derivation as a wrong password and the response time does not say which it
+// was.
 //
 // A constant rather than a hash computed at start-up: verification reads the
 // cost from the string, so a fixed salt and a digest nothing hashes to cost

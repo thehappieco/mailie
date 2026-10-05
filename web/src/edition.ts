@@ -81,6 +81,25 @@ export interface Edition {
    * An edition whose people have no role on the server leaves it out.
    */
   serverRole?: boolean
+  /**
+   * The edition's own sign-in, in place of the core's password card on the
+   * signed-out screen (components/SignInView.vue): for people who sign in
+   * another way, through a route of the edition's own whose reply is what
+   * POST /v1/auth/login answers. It hands that reply to adoptSession
+   * (state/session.ts), which stores the session and loads the person as the
+   * password sign-in does. The core keeps the frame around it: the brand and
+   * the appearance menu above, the notes about a session that ended or a
+   * mailbox waiting to finish connecting, and legal.signInFooter below. An
+   * invitation link signs nobody up through it. Unset: the core's card.
+   */
+  signIn?: Component
+  /**
+   * Called once the person has signed out on purpose (from the frame, the
+   * account section, or everywhere), after the core has ended the session in
+   * this browser and told the server; never when a session expires, is
+   * refused, or ends in another tab. An edition may navigate away from here.
+   */
+  signedOut?: () => void
   /** The line under the wordmark ("by …"), if any. A name, never translated. */
   byline?: string
   /** A domain whose hosts share the theme and language preferences (a cookie Domain). Unset: this host only. */

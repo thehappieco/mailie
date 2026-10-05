@@ -19,10 +19,14 @@ import PasswordInput from './PasswordInput.vue'
 // form and says where invitations come from. Where teams are made here, an
 // invitation may also be one to join a team, which someone who already has an
 // account accepts once signed in. What creating an account agrees to, and the
-// links at the card's foot, are the edition's (legal), if any.
+// links at the card's foot, are the edition's (legal), if any. An edition
+// whose people sign in another way puts its own sign-in in place of the
+// password card (signIn), inside the same frame; no invitation signs anyone
+// up there.
 const props = defineProps<{ invitation: Invitation | null }>()
 const legal = edition().legal
 const teams = edition().teams === true
+const editionSignIn = edition().signIn
 
 type Mode = 'sign-in' | 'sign-up'
 const mode = ref<Mode>(props.invitation ? 'sign-up' : 'sign-in')
@@ -86,50 +90,60 @@ async function submit(event: SubmitEvent) {
         <BrandLockup :size="44" animate="load" label="Mailie" />
         <AppearanceMenu />
       </div>
-      <h1>{{ title }}</h1>
-      <p v-if="mode === 'sign-up'" class="sub">{{ t('This invitation is for the address below. Choose your name and a password to finish.') }}</p>
-      <p v-else class="sub">{{ t('Your email accounts, connected in one place. Sign in to continue.') }}</p>
+      <template v-if="editionSignIn">
+        <p v-if="session.notice === 'expired'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
+        <p v-if="returning" class="note" role="status">{{ t('Sign in to finish connecting your email account.') }}</p>
+        <component :is="editionSignIn" />
+        <div v-if="legal?.signInFooter" class="auth-footer">
+          <p class="auth-legal"><component :is="legal.signInFooter" /></p>
+        </div>
+      </template>
+      <template v-else>
+        <h1>{{ title }}</h1>
+        <p v-if="mode === 'sign-up'" class="sub">{{ t('This invitation is for the address below. Choose your name and a password to finish.') }}</p>
+        <p v-else class="sub">{{ t('Your email accounts, connected in one place. Sign in to continue.') }}</p>
 
-      <p v-if="session.notice === 'expired' && mode === 'sign-in'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
-      <p v-if="returning" class="note" role="status">{{ t('Sign in to finish connecting your email account.') }}</p>
-      <p v-if="teams && invitation && mode === 'sign-in'" class="note">{{ t('Once you are signed in, you can accept the invitation to join a team.') }}</p>
-      <div v-if="problemText" class="alert" role="alert">{{ problemText }}</div>
+        <p v-if="session.notice === 'expired' && mode === 'sign-in'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
+        <p v-if="returning" class="note" role="status">{{ t('Sign in to finish connecting your email account.') }}</p>
+        <p v-if="teams && invitation && mode === 'sign-in'" class="note">{{ t('Once you are signed in, you can accept the invitation to join a team.') }}</p>
+        <div v-if="problemText" class="alert" role="alert">{{ problemText }}</div>
 
-      <form :name="mode === 'sign-in' ? 'mailie-login' : 'mailie-signup'" method="post" autocomplete="on" @submit.prevent="submit">
-        <div v-if="mode === 'sign-up'" class="field">
-          <label for="name">{{ t('Your name') }}</label>
-          <input id="name" v-model="name" name="name" required maxlength="120" autocomplete="name" :disabled="busy" />
-        </div>
-        <div class="field">
-          <label for="email">{{ t('Email') }}</label>
-          <input id="email" v-model="email" name="username" type="email" autocomplete="username" required autocapitalize="off"
-            spellcheck="false" inputmode="email" :readonly="mode === 'sign-up' && !!invitation?.email" :disabled="busy" />
-          <p v-if="mode === 'sign-up' && invitation?.email" class="hint">{{ t('The invitation only works for this address.') }}</p>
-        </div>
-        <div class="field">
-          <label for="password">{{ t('Password') }}</label>
-          <PasswordInput id="password" v-model="password" name="password" required :disabled="busy"
-            :minlength="mode === 'sign-in' ? undefined : MIN_PASSWORD"
-            :autocomplete="mode === 'sign-in' ? 'current-password' : 'new-password'" />
-          <p v-if="mode === 'sign-up'" class="hint">{{ t('Use at least {count} characters.', { count: MIN_PASSWORD }) }}</p>
-        </div>
-        <div v-if="mode === 'sign-up'" class="field">
-          <label for="confirm">{{ t('Repeat the password') }}</label>
-          <PasswordInput id="confirm" v-model="confirm" name="confirm-password" required :minlength="MIN_PASSWORD" autocomplete="new-password" :disabled="busy" />
-        </div>
-        <button class="primary" type="submit" :disabled="busy">
-          <span v-if="busy" class="loading-spinner inline" aria-hidden="true" />
-          {{ busy ? (mode === 'sign-up' ? t('Creating your account…') : t('Signing in…')) : title }}
-        </button>
-        <p v-if="mode === 'sign-up' && legal?.signUp" class="consent"><component :is="legal.signUp" /></p>
-      </form>
+        <form :name="mode === 'sign-in' ? 'mailie-login' : 'mailie-signup'" method="post" autocomplete="on" @submit.prevent="submit">
+          <div v-if="mode === 'sign-up'" class="field">
+            <label for="name">{{ t('Your name') }}</label>
+            <input id="name" v-model="name" name="name" required maxlength="120" autocomplete="name" :disabled="busy" />
+          </div>
+          <div class="field">
+            <label for="email">{{ t('Email') }}</label>
+            <input id="email" v-model="email" name="username" type="email" autocomplete="username" required autocapitalize="off"
+              spellcheck="false" inputmode="email" :readonly="mode === 'sign-up' && !!invitation?.email" :disabled="busy" />
+            <p v-if="mode === 'sign-up' && invitation?.email" class="hint">{{ t('The invitation only works for this address.') }}</p>
+          </div>
+          <div class="field">
+            <label for="password">{{ t('Password') }}</label>
+            <PasswordInput id="password" v-model="password" name="password" required :disabled="busy"
+              :minlength="mode === 'sign-in' ? undefined : MIN_PASSWORD"
+              :autocomplete="mode === 'sign-in' ? 'current-password' : 'new-password'" />
+            <p v-if="mode === 'sign-up'" class="hint">{{ t('Use at least {count} characters.', { count: MIN_PASSWORD }) }}</p>
+          </div>
+          <div v-if="mode === 'sign-up'" class="field">
+            <label for="confirm">{{ t('Repeat the password') }}</label>
+            <PasswordInput id="confirm" v-model="confirm" name="confirm-password" required :minlength="MIN_PASSWORD" autocomplete="new-password" :disabled="busy" />
+          </div>
+          <button class="primary" type="submit" :disabled="busy">
+            <span v-if="busy" class="loading-spinner inline" aria-hidden="true" />
+            {{ busy ? (mode === 'sign-up' ? t('Creating your account…') : t('Signing in…')) : title }}
+          </button>
+          <p v-if="mode === 'sign-up' && legal?.signUp" class="consent"><component :is="legal.signUp" /></p>
+        </form>
 
-      <div class="auth-footer">
-        <button v-if="mode === 'sign-up'" class="linkish" type="button" @click="switchTo('sign-in')">{{ t('I already have an account') }}</button>
-        <button v-else-if="invitation" class="linkish" type="button" @click="switchTo('sign-up')">{{ t('Use my invitation') }}</button>
-        <p v-else class="auth-footnote"><AppIcon name="info" :size="16" />{{ t('Accounts are created by invitation. Ask the administrator of this server for a link.') }}</p>
-        <p v-if="legal?.signInFooter" class="auth-legal"><component :is="legal.signInFooter" /></p>
-      </div>
+        <div class="auth-footer">
+          <button v-if="mode === 'sign-up'" class="linkish" type="button" @click="switchTo('sign-in')">{{ t('I already have an account') }}</button>
+          <button v-else-if="invitation" class="linkish" type="button" @click="switchTo('sign-up')">{{ t('Use my invitation') }}</button>
+          <p v-else class="auth-footnote"><AppIcon name="info" :size="16" />{{ t('Accounts are created by invitation. Ask the administrator of this server for a link.') }}</p>
+          <p v-if="legal?.signInFooter" class="auth-legal"><component :is="legal.signInFooter" /></p>
+        </div>
+      </template>
     </div>
   </div>
 </template>

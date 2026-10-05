@@ -24,9 +24,12 @@ import (
 //
 // The lifetime is absolute. Nothing renews a session by using it; after
 // SessionTTL the person signs in again. A console that can remove mailboxes
-// should not stay open for as long as somebody keeps a tab alive.
+// should not stay open for as long as somebody keeps a tab alive. A session
+// started through an identity provider (SignInExternal) may be given less,
+// never more, and the schema refuses to move any expiry later (migration
+// 0010): what a session was started for is all it ever gets.
 
-// SessionTTL is how long a sign-in lasts.
+// SessionTTL is how long a sign-in lasts, and the longest any session lasts.
 const SessionTTL = 14 * 24 * time.Hour
 
 const (
@@ -166,8 +169,8 @@ func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 
 // startSessionTx issues a token inside the caller's transaction, so a session
 // is created in the same commit as whatever justified it: a sign-up, a
-// password change.
-func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, now time.Time) (string, Session, error) {
+// password change. It expires ttl after it starts, and nothing extends it.
+func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, now time.Time, ttl time.Duration) (string, Session, error) {
 	raw := make([]byte, sessionTokenBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", Session{}, fmt.Errorf("auth: read random: %w", err)
@@ -180,7 +183,7 @@ func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, n
 	now = now.UTC().Truncate(time.Second)
 	s := Session{
 		ID: id, UserID: userID, UserAgent: truncateUTF8(userAgent, maxUserAgent),
-		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(SessionTTL),
+		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions(id, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at)

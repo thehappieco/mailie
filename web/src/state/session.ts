@@ -8,8 +8,9 @@
 
 import { reactive } from 'vue'
 import * as auth from '../api/auth'
-import { ApiError } from '../api/http'
-import type { SessionReply, User } from '../api/types'
+import { ApiError, checked } from '../api/http'
+import { isSessionReply, type SessionReply, type User } from '../api/types'
+import { edition } from '../edition'
 import { uuid } from '../ui/uuid'
 import { clearLocalSession, loadLocalSession, localSessionWasCleared, observeLocalSession, saveLocalSession, type BrowserLogin } from './sessionVault'
 
@@ -147,14 +148,29 @@ export async function forgetRemembered(): Promise<void> {
   if (login) await clearLocalSession(login.id).catch(() => {})
 }
 
-export async function signIn(email: string, password: string): Promise<void> {
-  const reply = await auth.login(email, password)
+/** begin makes a session the server just issued the current one: every sign-in ends here. */
+async function begin(reply: SessionReply): Promise<void> {
   await adopt(loginFrom(reply), reply.user, reply.expires_at)
 }
 
+export async function signIn(email: string, password: string): Promise<void> {
+  await begin(await auth.login(email, password))
+}
+
 export async function signUp(input: { invite: string; email: string; name: string; password: string }): Promise<void> {
-  const reply = await auth.signup(input)
-  await adopt(loginFrom(reply), reply.user, reply.expires_at)
+  await begin(await auth.signup(input))
+}
+
+/**
+ * adoptSession is how an edition's own sign-in (Edition.signIn) signs the
+ * person in: it hands over what its route answered, which is what POST
+ * /v1/auth/login answers, and the session begins exactly as a password
+ * sign-in's does, stored for this browser and its other tabs, with the person
+ * it names. A reply of any other shape is refused (ApiError
+ * 'invalid_response') and changes nothing.
+ */
+export async function adoptSession(reply: unknown): Promise<void> {
+  await begin(checked(reply, isSessionReply))
 }
 
 /**
@@ -179,6 +195,9 @@ export async function signOut(options: { everywhere?: boolean } = {}): Promise<v
     id ? clearLocalSession(id) : Promise.resolve(),
     current && !options.everywhere ? auth.logout(current) : Promise.resolve(),
   ])
+  // Only now: the server has been told, so an edition that navigates away
+  // does not cut the request short.
+  edition().signedOut?.()
 }
 
 /**

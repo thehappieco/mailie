@@ -46,7 +46,9 @@ type Extension func(ctx context.Context, r *Router, d Deps) error
 // Deps is what an extension may use. It holds the service every core route
 // goes through, and never the store, the sync engine or the account registry
 // behind it: an extension decides nothing the service does not, authorization
-// and account ownership included.
+// and account ownership included. An extension that signs people in through
+// an identity provider calls Service.SignInExternal, and Service.PinIdentityKey
+// for the keys it pins, under SignInLimits.
 type Deps struct {
 	// Config is the daemon's configuration, as loaded.
 	Config config.Config

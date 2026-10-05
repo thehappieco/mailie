@@ -4,10 +4,13 @@
 // the edition puts in its account section (the default slot): the permission
 // rows, and anything else of its own. A password change ends every session on
 // the server, this one included, and hands back the one that replaces it; the
-// other browsers find out on their next request. One success line serves the
-// whole section: the rows say what they did through accountNotice.
+// other browsers find out on their next request. A person who signs in only
+// another way (an edition's own sign-in) has no password, and is not offered
+// to change one. One success line serves the whole section: the rows say what
+// they did through accountNotice.
 import { computed, provide, ref, shallowRef, watch } from 'vue'
 import { MIN_PASSWORD } from '../api/auth'
+import { hasPassword } from '../api/types'
 import { edition } from '../edition'
 import { failure, type Failure } from '../state/failure'
 import { changePassword, session, signOut, updateProfile } from '../state/session'
@@ -46,6 +49,8 @@ async function saveProfile() {
   finally { profileBusy.value = false }
 }
 
+/** Whether there is a password to change: not for a person who signs in only another way. */
+const withPassword = computed(() => hasPassword(session.user))
 const passwordOpen = ref(false)
 const current = ref('')
 const next = ref('')
@@ -118,7 +123,7 @@ async function leave(all: boolean) {
     <p v-if="done" class="success"><AppIcon name="check" :size="18" />{{ done() }}</p>
 
     <div class="security-options">
-      <button class="security-summary" type="button" aria-haspopup="dialog" @click="openPassword">
+      <button v-if="withPassword" class="security-summary" type="button" aria-haspopup="dialog" @click="openPassword">
         <span class="summary-icon"><AppIcon name="lock" :size="22" /></span>
         <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Change the password you sign in with') }}</small></span>
         <AppIcon name="chevron-right" :size="18" />
@@ -144,7 +149,7 @@ async function leave(all: boolean) {
       <slot />
     </div>
 
-    <ConsoleDialog v-if="passwordOpen" :title="t('Change password')" :busy="passwordBusy" @close="closePassword">
+    <ConsoleDialog v-if="passwordOpen && withPassword" :title="t('Change password')" :busy="passwordBusy" @close="closePassword">
       <p v-if="passwordProblem || mismatch" class="alert" role="alert">{{ mismatch ? t('The new passwords do not match.') : passwordProblem ? describe(passwordProblem) : '' }}</p>
       <form class="form-stack" name="mailie-password-change" method="post" autocomplete="on" @submit.prevent="rotatePassword">
         <p class="dim">{{ t('Use at least {count} characters. Changing the password signs you out of every other browser.', { count: MIN_PASSWORD }) }}</p>

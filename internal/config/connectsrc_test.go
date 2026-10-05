@@ -110,3 +110,45 @@ func TestConnectSrcReportsEveryBadOriginAtOnceAndProdRequiresHTTPS(t *testing.T)
 		}
 	}
 }
+
+func TestConnectSrcTakesCleartextOnANameUnderLocalhostOutsideProd(t *testing.T) {
+	// A browser resolves every name under .localhost to loopback and treats
+	// it as a secure context, so a local service on one (an identity
+	// provider in development, say) is as safe over http as localhost is.
+	setenv(t, map[string]string{
+		"MAIL_CREDENTIAL_KEY_HEX": validKey, "MAIL_DATA_DIR": t.TempDir(),
+		"MAIL_CONNECT_SRC": "http://accounts.example.localhost:8290 http://Sign-In.Example.LOCALHOST http://a.localhost:80",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"http://accounts.example.localhost:8290", "http://sign-in.example.localhost", "http://a.localhost"}
+	if !slices.Equal(cfg.ConnectSrc, want) {
+		t.Errorf("ConnectSrc = %q\nwant %q", cfg.ConnectSrc, want)
+	}
+
+	// Only a name that ends in .localhost: one that merely contains it, or
+	// ends in it without the dot, leaves the machine, and so does anything
+	// in prod.
+	for raw, complaint := range map[string]string{
+		"http://localhost.example.com:8290":           "http is only allowed",
+		"http://accounts.localhost.example.com":       "http is only allowed",
+		"http://accountslocalhost:8290":               "http is only allowed",
+		"http://accounts.example.localhost.evil:8290": "http is only allowed",
+		"http://.localhost:8290":                      "a DNS name or an IPv4 address",
+		"http://accounts..localhost":                  "a DNS name or an IPv4 address",
+	} {
+		setenv(t, map[string]string{"MAIL_CREDENTIAL_KEY_HEX": validKey, "MAIL_DATA_DIR": t.TempDir(), "MAIL_CONNECT_SRC": raw})
+		if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), complaint) {
+			t.Errorf("%s: want a complaint about %q, got %v", raw, complaint, err)
+		}
+	}
+	setenv(t, map[string]string{
+		"MAIL_ENV": "prod", "MAIL_CREDENTIAL_KEY_HEX": validKey, "MAIL_DATA_DIR": t.TempDir(),
+		"MAIL_CONNECT_SRC": "http://accounts.example.localhost:8290",
+	})
+	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "prod requires https") {
+		t.Errorf("prod took cleartext on a localhost name: %v", err)
+	}
+}

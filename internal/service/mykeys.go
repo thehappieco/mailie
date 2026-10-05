@@ -116,7 +116,10 @@ func (s *Service) ListMyAPIKeys(ctx context.Context, p Principal) ([]PersonalKey
 	return out, nil
 }
 
-// CreateMyAPIKey issues a key acting as the signed-in person.
+// CreateMyAPIKey issues a key acting as the signed-in person. It lasts what
+// they chose, whatever is left of the session it was created in, which an
+// extension may have started for less than a password's (SignInExternal):
+// disabling the person is what revokes it sooner.
 func (s *Service) CreateMyAPIKey(ctx context.Context, p Principal, req PersonalKeyRequest) (CreatedPersonalKey, error) {
 	if err := requireSession(p); err != nil {
 		return CreatedPersonalKey{}, err

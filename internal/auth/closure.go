@@ -14,10 +14,12 @@ import (
 
 // Closing a person's account is two steps, as the privacy policy describes
 // them. First they are disabled, which ends every session and revokes every
-// key they hold, so nothing of theirs still gets in. Then they are deleted:
-// their mailboxes, those mailboxes' credentials, their sessions, their keys and
-// their invite. The mailboxes belong to internal/account, so the deletion is
-// one transaction that package opens and this one finishes (DeleteTx).
+// key they hold, so nothing of theirs still gets in; the identities they sign
+// in with through a provider stay, and sign nobody in while they are off.
+// Then they are deleted: their mailboxes, those mailboxes' credentials, their
+// sessions, their keys, their invite, and their identities with the keys
+// pinned for them. The mailboxes belong to internal/account, so the deletion
+// is one transaction that package opens and this one finishes (DeleteTx).
 //
 // Invites have a retention of their own: one that is never used is deleted
 // InviteRetention after it expires, by the daemon's hourly sweep.
@@ -157,13 +159,18 @@ type Removed struct {
 	// Teams counts the teams deleted with the person, who was their only
 	// member.
 	Teams int
+	// Identities counts the identities they signed in with through a
+	// provider, deleted with the keys pinned for each.
+	Identities int
 }
 
 // DeleteTx deletes a person inside the caller's transaction: their sessions,
 // the keys issued for them together with those keys' account restrictions,
 // every invite for their address — the one they signed up with and any other,
-// used or not — their personal workspace and every team whose only member
-// they are, their memberships and grants elsewhere, and then the person.
+// used or not — the identities they signed in with through a provider and the
+// keys pinned for those identities, their personal workspace and every team
+// whose only member they are, their memberships and grants elsewhere, and
+// then the person.
 //
 // The accounts they linked must already be gone from the same transaction:
 // the row cannot be deleted while an account names it, which is
@@ -203,6 +210,11 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE invites SET created_by = '' WHERE created_by = ?`, id); err != nil {
 		return Removed{}, fmt.Errorf("auth: forget who sent invites: %w", err)
+	}
+	// Explicitly, rather than by the cascade from users: a pin goes only
+	// with the person its identity signs in, and the cascade would leave it.
+	if out.Identities, err = deleteIdentitiesTx(ctx, tx, id); err != nil {
+		return Removed{}, err
 	}
 	var linked int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE owner_user_id = ?`, id).Scan(&linked); err != nil {

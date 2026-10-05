@@ -13,8 +13,9 @@ import (
 // Closing a person's account, on their request, is two steps, as the privacy
 // policy promises. Disabling ends every session and revokes every key the
 // person holds; deleting removes the mailboxes they linked and those
-// mailboxes' credentials, their sessions, their keys, their invite and their
-// personal workspace, in one transaction.
+// mailboxes' credentials, their sessions, their keys, their invite, the
+// identities they sign in with through a provider with the keys pinned for
+// them, and their personal workspace, in one transaction.
 //
 // Both are for an unrestricted instance admin key — the operator, answering a
 // request that arrived by email and was verified — and for an owner of the
@@ -98,7 +99,9 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 // they linked, in every workspace, with those mailboxes' credentials, folders
 // and everything else indexed for them, since the consent they synced under
 // goes with them; their sessions; their keys; every invite for their address;
-// their personal workspace, and every team they were the only member of. One
+// the identities they signed in with through a provider, and the keys pinned
+// for those identities; their personal workspace, and every team they were
+// the only member of. One
 // transaction, so an interruption leaves the person whole rather than half
 // deleted.
 //
@@ -134,7 +137,8 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 	s.accessChanged()
 	s.compact(ctx)
 	s.log.Info("user deleted", "user", user.ID, "accounts", accounts,
-		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites, "teams", removed.Teams)
+		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites, "teams", removed.Teams,
+		"identities", removed.Identities)
 	return DeletedUser{
 		ID: user.ID, Email: user.Email, AccountsRemoved: accounts,
 		SessionsDeleted: removed.Sessions, KeysDeleted: removed.Keys, InvitesDeleted: removed.Invites,

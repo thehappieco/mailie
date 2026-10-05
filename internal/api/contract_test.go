@@ -324,6 +324,18 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
 		`{"read":true,"act":false,"send":true,"manage":false}`)
 	capture("access", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
+
+	// A person who signs in only through an identity provider, as an
+	// extension of the daemon signs them in: no password to change, and a
+	// session of the length the extension asked for.
+	external, _, _, err := h.users.SignInExternal(t.Context(), auth.ExternalSignIn{
+		Issuer: "https://accounts.example.com", Subject: "subject-of-cy", Email: "cy@example.com",
+		EmailVerified: true, Name: "Cy Lima", TTL: 24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture("me_without_password", http.StatusOK, http.MethodGet, "/v1/auth/me", external, "")
 }
 
 // capsWithoutUIDPlus is a server with MOVE and without UIDPLUS: a move

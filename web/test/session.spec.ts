@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ana, failure, json, now, reply, serve, settle, stubPage } from './support'
+import { ana, failure, freshModules, json, now, reply, serve, settle, stubPage } from './support'
 
 // Each test gets fresh modules: the session is module state, and a leftover
-// token from one test must not be the reason another passes.
+// token from one test must not be the reason another passes. They are
+// configured with the open edition, as the page is before anything runs.
 async function load() {
-  vi.resetModules()
+  await freshModules()
   const session = await import('../src/state/session')
   const vault = await import('../src/state/sessionVault')
   // The same graph's ApiError: instanceof across reset modules would never match.
