@@ -23,6 +23,9 @@ import (
 	"testing"
 	"time"
 
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
+
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/backup"
@@ -44,12 +47,15 @@ const (
 
 // writerEnv makes the test binary a writer process instead of a test run:
 // the daemon's half of the point-in-time test, in a process of its own, as
-// on the host.
-const writerEnv = "MAILIE_BACKUP_TEST_WRITER"
+// on the host. holdEnv makes that writer stop after its first commit.
+const (
+	writerEnv = "MAILIE_BACKUP_TEST_WRITER"
+	holdEnv   = "MAILIE_BACKUP_TEST_HOLD"
+)
 
 func TestMain(m *testing.M) {
 	if path := os.Getenv(writerEnv); path != "" {
-		os.Exit(runWriter(path))
+		os.Exit(runWriter(path, os.Getenv(holdEnv) != ""))
 	}
 	os.Exit(m.Run())
 }
@@ -57,8 +63,9 @@ func TestMain(m *testing.M) {
 // runWriter commits to the ledger in a loop through the daemon's own store,
 // until its standard input closes. Every transaction adds row n+1 and sets
 // meta.ledger to n+1, so in any consistent state the row count, the highest
-// n and the counter are one number.
-func runWriter(path string) int {
+// n and the counter are one number. With hold, it commits once and then
+// keeps the database open without writing: the daemon between two commits.
+func runWriter(path string, hold bool) int {
 	ctx := context.Background()
 	db, err := store.Open(ctx, path, store.Options{SkipMigrate: true})
 	if err != nil {
@@ -96,6 +103,10 @@ func runWriter(path string) int {
 		}
 		if !ready {
 			fmt.Println("ready")
+			if hold {
+				<-stop
+				return 0
+			}
 		}
 	}
 }
@@ -701,8 +712,23 @@ func seedLedger(t *testing.T, path string) {
 // committed.
 func startWriter(t *testing.T, path string) {
 	t.Helper()
+	startWriterProcess(t, path, false)
+}
+
+// startHolder runs the writer process on path with hold set, and returns once
+// it has committed the one time it does.
+func startHolder(t *testing.T, path string) {
+	t.Helper()
+	startWriterProcess(t, path, true)
+}
+
+func startWriterProcess(t *testing.T, path string, hold bool) {
+	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^$")
 	cmd.Env = append(os.Environ(), writerEnv+"="+path)
+	if hold {
+		cmd.Env = append(cmd.Env, holdEnv+"=1")
+	}
 	cmd.Stderr = os.Stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -747,7 +773,9 @@ func startWriter(t *testing.T, path string) {
 	}
 }
 
-// ledger reads the counter through a read-only connection.
+// ledger reads the counter through a connection like the snapshot's. With
+// the data directory read-only, its read meets the writer's commits in the
+// same race the snapshot's does, and starts over the same way.
 func ledger(t *testing.T, path string) int64 {
 	t.Helper()
 	db, err := sql.Open("sqlite", backup.SourceDSN(path))
@@ -756,7 +784,10 @@ func ledger(t *testing.T, path string) int64 {
 	}
 	defer db.Close()
 	var v string
-	if err := db.QueryRow(`SELECT value FROM meta WHERE key = 'ledger'`).Scan(&v); err != nil {
+	err = backup.ReadLive(context.Background(), func() error {
+		return db.QueryRow(`SELECT value FROM meta WHERE key = 'ledger'`).Scan(&v)
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
@@ -839,6 +870,140 @@ func TestTheSnapshotIsAPointInTimeWhileAnotherProcessWrites(t *testing.T) {
 			}
 			t.Logf("snapshot of %d commits in %v while the writer went from %d to %d", rows, took, before, after)
 		})
+	}
+}
+
+// isReadOnlyRecovery reports whether err carries SQLITE_READONLY_RECOVERY.
+func isReadOnlyRecovery(err error) bool {
+	var e *sqlite.Error
+	return errors.As(err, &e) && e.Code() == sqlite3.SQLITE_READONLY_RECOVERY
+}
+
+// caughtMidCommit is a live database, held open by a writer that commits no
+// more, behind a read-only data directory, whose -shm is left as a reader
+// without write access sees it when it loses the race with a commit: the WAL
+// index header's two copies disagree, as they do while a commit rewrites
+// them, and the writer's lock is free, as it is once the commit is over.
+// Every read through SourceDSN fails with SQLITE_READONLY_RECOVERY until
+// mend puts the header back; the test's end does that too.
+func caughtMidCommit(t *testing.T) (path string, mend func()) {
+	t.Helper()
+	dir := t.TempDir()
+	path = filepath.Join(dir, "mail.db")
+	seedLedger(t, path)
+	startHolder(t, path)
+
+	// Opened before readOnly takes the write permission away.
+	shm, err := os.OpenFile(path+"-shm", os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two copies of the 48-byte header come first, then the checkpoint
+	// information.
+	whole := make([]byte, 96)
+	if _, err := shm.ReadAt(whole, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(whole[:48], whole[48:]) {
+		t.Fatal("the WAL index header is torn before the test tears it")
+	}
+	write := func(b []byte) {
+		if _, err := shm.WriteAt(b, 0); err != nil {
+			t.Error(err)
+		}
+	}
+	torn := bytes.Clone(whole)
+	torn[48+8]++ // iChange, in the second copy
+	write(torn)
+	mend = func() { write(whole) }
+	t.Cleanup(func() {
+		mend()
+		shm.Close()
+	})
+	readOnly(t, dir)
+
+	// Otherwise the tests below prove nothing about the race.
+	db, err := sql.Open("sqlite", backup.SourceDSN(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var rows int64
+	if err := db.QueryRow(`SELECT count(*) FROM ledger`).Scan(&rows); !isReadOnlyRecovery(err) {
+		t.Fatalf("a read with the header torn: %v, want SQLITE_READONLY_RECOVERY", err)
+	}
+	return path, mend
+}
+
+func TestASnapshotStartsOverWhenSQLiteCatchesTheDaemonMidCommit(t *testing.T) {
+	path, mend := caughtMidCommit(t)
+	var caught []error
+	defer backup.SetBeforeReadRetry(func(err error) {
+		caught = append(caught, err)
+		mend() // the commit SQLite caught is over
+	})()
+
+	out := filepath.Join(t.TempDir(), "snap.db")
+	if err := backup.Snapshot(context.Background(), path, out); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if len(caught) != 1 || !isReadOnlyRecovery(caught[0]) {
+		t.Fatalf("the snapshot started over after %v, want once after SQLITE_READONLY_RECOVERY", caught)
+	}
+	if _, err := backup.Inspect(context.Background(), out); err != nil {
+		t.Fatalf("the snapshot: %v", err)
+	}
+	snap, err := sql.Open("sqlite", "file:"+out+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Close()
+	var rows int64
+	var counter string
+	if err := snap.QueryRow(`SELECT count(*), (SELECT value FROM meta WHERE key = 'ledger') FROM ledger`).
+		Scan(&rows, &counter); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 || counter != "1" {
+		t.Fatalf("the snapshot holds %d rows and counter %s, want the writer's one commit", rows, counter)
+	}
+}
+
+func TestASnapshotGivesUpOnAWALIndexHeaderThatStaysTorn(t *testing.T) {
+	path, _ := caughtMidCommit(t)
+	retries := 0
+	defer backup.SetBeforeReadRetry(func(error) { retries++ })()
+
+	out := filepath.Join(t.TempDir(), "snap.db")
+	err := backup.Snapshot(context.Background(), path, out)
+	if !isReadOnlyRecovery(err) {
+		t.Fatalf("err = %v, want SQLITE_READONLY_RECOVERY", err)
+	}
+	if retries != backup.ReadAttempts-1 {
+		t.Fatalf("the snapshot started over %d times, want %d", retries, backup.ReadAttempts-1)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a failed attempt left its output behind: %v", err)
+	}
+}
+
+func TestASnapshotWaitingToStartOverStopsWithItsContext(t *testing.T) {
+	path, _ := caughtMidCommit(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	retries := 0
+	defer backup.SetBeforeReadRetry(func(error) {
+		retries++
+		cancel()
+	})()
+
+	out := filepath.Join(t.TempDir(), "snap.db")
+	err := backup.Snapshot(ctx, path, out)
+	if !errors.Is(err, context.Canceled) || retries != 1 {
+		t.Fatalf("err = %v after %d retries, want context.Canceled after one", err, retries)
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a failed attempt left its output behind: %v", err)
 	}
 }
 
