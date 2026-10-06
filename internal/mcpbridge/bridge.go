@@ -70,7 +70,9 @@ var (
 
 // Run relays MCP between the client on local and the server o names, until
 // the client closes local or ctx ends (nil), or the server gives an answer
-// that ends it (a *Refusal: the key refused, MCP not served there).
+// that ends it (a *Refusal: the key refused, MCP not served there). Once the
+// bridge has such an answer it is what Run returns, also when the client
+// closes local first, as a client told of the refusal does at once.
 func Run(ctx context.Context, local sdk.Transport, o Options) error {
 	client, keys, err := o.client()
 	if err != nil {
@@ -84,7 +86,7 @@ func Run(ctx context.Context, local sdk.Transport, o Options) error {
 	}
 	b := &bridge{
 		ctx: ctx, endpoint: mustEndpoint(o.Endpoint), client: client, keys: keys, local: conn,
-		log: o.logger(), stop: make(chan error, 1), subs: map[string]bool{}, timings: defaultListenTimings,
+		log: o.logger(), stop: make(chan struct{}), subs: map[string]bool{}, timings: defaultListenTimings,
 	}
 	b.log.Info("relaying MCP", "endpoint", b.endpoint)
 	//nolint:contextcheck // ctx is the bridge's, held in it: every request and goroutine it starts uses it
@@ -105,8 +107,13 @@ type bridge struct {
 	local    sdk.Connection
 	log      *slog.Logger
 	timings  listenTimings
-	// stop carries what ends the bridge: nil for a client that went away.
-	stop chan error
+	// stop is closed when the bridge ends (end).
+	stop     chan struct{}
+	stopOnce sync.Once
+	// failure is the error the bridge ends with (fail); nil for a client that
+	// went away.
+	failMu  sync.Mutex
+	failure error
 	// ids numbers the requests the bridge makes itself.
 	ids atomic.Int64
 
@@ -126,12 +133,53 @@ type bridge struct {
 	subs map[string]bool
 }
 
-// end stops the bridge with err, or cleanly with nil; the first call wins.
+// end stops the bridge with err, or cleanly with nil when the client went
+// away. An error wins over the client going away, whichever came first: a
+// client that cannot be written to may be one that was just told of the
+// refusal and left.
 func (b *bridge) end(err error) {
-	select {
-	case b.stop <- err:
-	default:
+	b.fail(err)
+	b.stopOnce.Do(func() { close(b.stop) })
+}
+
+// fail records err as what the bridge ends with, without ending it yet: the
+// first error wins, and nil records nothing. An error that ends the bridge
+// is recorded before the client is told of it (replyAndEnd), so that a
+// client that leaves as soon as it is told never ends the bridge cleanly
+// instead.
+func (b *bridge) fail(err error) {
+	if err == nil {
+		return
 	}
+	b.failMu.Lock()
+	defer b.failMu.Unlock()
+	if b.failure == nil {
+		b.failure = err
+	}
+}
+
+// failed is the error the bridge ends with; nil while there is none.
+func (b *bridge) failed() error {
+	b.failMu.Lock()
+	defer b.failMu.Unlock()
+	return b.failure
+}
+
+// replyAndEnd answers the client's call id with err, which ends the bridge.
+func (b *bridge) replyAndEnd(id jsonrpc.ID, err error) {
+	b.fail(err)
+	b.replyError(id, err)
+	b.end(err)
+}
+
+// replyAndEndIfFatal answers the client's call id with err, which ends the
+// bridge when nothing it could retry would change the answer (fatal).
+func (b *bridge) replyAndEndIfFatal(id jsonrpc.ID, err error) {
+	if fatal(err) {
+		b.replyAndEnd(id, err)
+		return
+	}
+	b.replyError(id, err)
 }
 
 func (b *bridge) run() error {
@@ -156,15 +204,19 @@ func (b *bridge) run() error {
 		case msg := <-in:
 			b.fromClient(msg)
 		case err := <-readErr:
+			if failure := b.failed(); failure != nil {
+				// A client told why the bridge ends leaves at once.
+				return failure
+			}
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || b.ctx.Err() != nil {
 				b.log.Info("the client closed its side; ending")
 				return nil //nolint:nilerr // the client closing its side is the bridge's clean end
 			}
 			return fmt.Errorf("mcpbridge: reading from the client: %w", err)
-		case err := <-b.stop:
-			return err
+		case <-b.stop:
+			return b.failed()
 		case <-b.ctx.Done():
-			return nil
+			return b.failed()
 		}
 	}
 }
@@ -213,8 +265,7 @@ func (b *bridge) fromClient(msg jsonrpc.Message) {
 func (b *bridge) initialize(req *jsonrpc.Request) {
 	r, err := b.dial()
 	if err != nil {
-		b.replyError(req.ID, err)
-		b.end(err)
+		b.replyAndEnd(req.ID, err)
 		return
 	}
 	b.opening.Lock()
@@ -239,8 +290,7 @@ func (b *bridge) initialize(req *jsonrpc.Request) {
 		return
 	}
 	err = classify(out, err, false)
-	b.replyError(req.ID, err)
-	b.end(err)
+	b.replyAndEnd(req.ID, err)
 }
 
 // beforeSession sends a call made before initialize on a connection that is
@@ -257,10 +307,7 @@ func (b *bridge) beforeSession(req *jsonrpc.Request) {
 	if err != nil {
 		if r.take(req.ID) != nil {
 			err = classify(out, err, false)
-			b.replyError(req.ID, err)
-			if fatal(err) {
-				b.end(err)
-			}
+			b.replyAndEndIfFatal(req.ID, err)
 		}
 		return
 	}
@@ -288,10 +335,7 @@ func (b *bridge) call(req *jsonrpc.Request) {
 	for attempt := 0; ; attempt++ {
 		r, err := b.session()
 		if err != nil {
-			b.replyError(req.ID, err)
-			if fatal(err) {
-				b.end(err)
-			}
+			b.replyAndEndIfFatal(req.ID, err)
 			return
 		}
 		if r.track(req) == nil {
@@ -319,10 +363,7 @@ func (b *bridge) call(req *jsonrpc.Request) {
 				continue
 			}
 		}
-		b.replyError(req.ID, err)
-		if fatal(err) {
-			b.end(err)
-		}
+		b.replyAndEndIfFatal(req.ID, err)
 		return
 	}
 }
@@ -708,6 +749,8 @@ func (b *bridge) listen(r *remote) {
 		case status == http.StatusUnauthorized, status == http.StatusForbidden, status >= 300 && status < 400:
 			closeBody(resp)
 			err := classify(out, errors.New(resp.Status), true)
+			// Recorded before lost answers the calls in flight, as replyAndEnd.
+			b.fail(err)
 			b.lost(r, err)
 			b.end(err)
 			return
