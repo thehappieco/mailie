@@ -167,7 +167,10 @@ func guessUTF8(raw []byte, cut bool) []byte {
 	return bytes.ToValidUTF8(raw, replacement)
 }
 
-var replacement = []byte("\uFFFD")
+var (
+	replacement   = []byte("\uFFFD")
+	byteOrderMark = []byte("\uFEFF")
+)
 
 // countRunes counts valid multi-byte UTF-8 sequences and invalid bytes.
 func countRunes(b []byte) (validMulti, invalid int) {
@@ -242,8 +245,14 @@ func truncateUTF8(b []byte, maxBytes int64) ([]byte, bool) {
 // normalizeText makes the result predictable for every consumer: no
 // byte-order mark, and LF line endings (CRLF and lone CR both become LF).
 // It only ever shrinks its input, so the cap still holds afterwards.
+//
+// Every U+FEFF at the start goes, not only the first: a sender that writes a
+// mark before text that already has one leaves two, and the second is as
+// invisible as the first (a zero-width no-break space).
 func normalizeText(b []byte) []byte {
-	b = bytes.TrimPrefix(b, []byte("\uFEFF"))
+	for bytes.HasPrefix(b, byteOrderMark) {
+		b = b[len(byteOrderMark):]
+	}
 	if bytes.IndexByte(b, '\r') < 0 {
 		return b
 	}

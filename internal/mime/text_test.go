@@ -137,6 +137,17 @@ func TestAByteOrderMarkIsDropped(t *testing.T) {
 	}
 }
 
+func TestEveryByteOrderMarkAtTheStartIsDropped(t *testing.T) {
+	for _, c := range []struct{ charset, in, want string }{
+		{"utf-8", "\xef\xbb\xbf\xef\xbb\xbfhello", "hello"},
+		{"utf-16le", "\xff\xfe\xff\xfeh\x00i\x00", "hi"},
+	} {
+		if got := decode(t, textPart("text/plain", c.charset, "7bit"), c.in, 1<<20); got.Text != c.want {
+			t.Errorf("%s: got %q, want %q", c.charset, got.Text, c.want)
+		}
+	}
+}
+
 func TestTruncationNeverSplitsACharacter(t *testing.T) {
 	in := strings.Repeat("á", 10) // 20 bytes
 	for maxBytes := int64(1); maxBytes < 20; maxBytes++ {
