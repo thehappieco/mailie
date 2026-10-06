@@ -146,13 +146,19 @@ func TestAnExternalSessionIsAnsweredAsAPasswordSignInIs(t *testing.T) {
 func TestExternalSignInRefusalsUseTheFixedCodes(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
-	if _, err := f.svc.SignInExternal(ctx, vouched("subject-of-cy", "cy@example.com")); err != nil {
-		t.Fatal(err)
+	// Cy and Dee came through the provider, and Dee was disabled since; the
+	// owner and Gone signed up with a password, and Gone was disabled.
+	for _, name := range []string{"cy", "dee"} {
+		if _, err := f.svc.SignInExternal(ctx, vouched("subject-of-"+name, name+"@example.com")); err != nil {
+			t.Fatal(err)
+		}
 	}
-	gone := f.person(t, "gone@example.com", auth.RoleMember)
+	f.person(t, "gone@example.com", auth.RoleMember)
 	f.person(t, "owner@example.com", auth.RoleOwner)
-	if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "gone@example.com"}); err != nil {
-		t.Fatal(err)
+	for _, email := range []string{"dee@example.com", "gone@example.com"} {
+		if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: email}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	edit := func(change func(*service.ExternalSignIn)) service.ExternalSignIn {
@@ -164,24 +170,35 @@ func TestExternalSignInRefusalsUseTheFixedCodes(t *testing.T) {
 		in   service.ExternalSignIn
 		want service.Code
 	}{
-		"an issuer with a path":          {edit(func(in *service.ExternalSignIn) { in.Issuer = identityProvider + "/realm" }), service.CodeBadRequest},
-		"an issuer over http":            {edit(func(in *service.ExternalSignIn) { in.Issuer = "http://accounts.example.com" }), service.CodeBadRequest},
-		"no subject":                     {edit(func(in *service.ExternalSignIn) { in.Subject = "" }), service.CodeBadRequest},
-		"a malformed address":            {edit(func(in *service.ExternalSignIn) { in.Email = "someone" }), service.CodeBadRequest},
-		"an address lower case changes":  {edit(func(in *service.ExternalSignIn) { in.Email = "\u212Aaren@example.com" }), service.CodeBadRequest},
-		"a session of no time":           {edit(func(in *service.ExternalSignIn) { in.TTL = 0 }), service.CodeBadRequest},
-		"a session past 14 days":         {edit(func(in *service.ExternalSignIn) { in.TTL = auth.SessionTTL + time.Hour }), service.CodeBadRequest},
-		"an unverified address":          {edit(func(in *service.ExternalSignIn) { in.EmailVerified = false }), service.CodeNotAuthorized},
-		"another subject for an address": {vouched("subject-of-another-cy", "cy@example.com"), service.CodeConflict},
-		"a disabled person":              {vouched("subject-of-gone", "gone@example.com"), service.CodeUnauthorized},
+		"an issuer with a path":         {edit(func(in *service.ExternalSignIn) { in.Issuer = identityProvider + "/realm" }), service.CodeBadRequest},
+		"an issuer over http":           {edit(func(in *service.ExternalSignIn) { in.Issuer = "http://accounts.example.com" }), service.CodeBadRequest},
+		"no subject":                    {edit(func(in *service.ExternalSignIn) { in.Subject = "" }), service.CodeBadRequest},
+		"a malformed address":           {edit(func(in *service.ExternalSignIn) { in.Email = "someone" }), service.CodeBadRequest},
+		"an address lower case changes": {edit(func(in *service.ExternalSignIn) { in.Email = "\u212Aaren@example.com" }), service.CodeBadRequest},
+		"a session of no time":          {edit(func(in *service.ExternalSignIn) { in.TTL = 0 }), service.CodeBadRequest},
+		"a session past 14 days":        {edit(func(in *service.ExternalSignIn) { in.TTL = auth.SessionTTL + time.Hour }), service.CodeBadRequest},
+		"an unverified address":         {edit(func(in *service.ExternalSignIn) { in.EmailVerified = false }), service.CodeNotAuthorized},
+		"an unverified address somebody has": {edit(func(in *service.ExternalSignIn) {
+			in.Email, in.EmailVerified = "owner@example.com", false
+		}), service.CodeNotAuthorized},
+		"another subject for a provider's person's address": {vouched("subject-of-another-cy", "cy@example.com"), service.CodeConflict},
+		"the address of a person with a password":           {vouched("subject-of-owner", "Owner@example.com"), service.CodeConflict},
+		"a disabled person's address":                       {vouched("subject-of-gone", "gone@example.com"), service.CodeConflict},
+		"a disabled person's own identity":                  {vouched("subject-of-dee", "dee@example.com"), service.CodeUnauthorized},
 	} {
 		_, err := f.svc.SignInExternal(ctx, c.in)
 		if got := service.CodeOf(err); got != c.want {
 			t.Errorf("%s: %s (%v), want %s", name, got, err, c.want)
 		}
+		// A conflict here is no invitation to sign in with a password.
+		if c.want == service.CodeConflict && !strings.Contains(service.MessageOf(err), "never takes over") {
+			t.Errorf("%s: %q", name, service.MessageOf(err))
+		}
 	}
-	if n := f.count(t, `SELECT count(*) FROM user_identities WHERE user_id = ?`, gone.UserID); n != 0 {
-		t.Error("a refused sign-in linked an identity to a disabled person")
+	// No refusal linked anything: the identities are Cy's and Dee's, each
+	// from the sign-in that created its person.
+	if n := f.count(t, `SELECT count(*) FROM user_identities`); n != 2 {
+		t.Errorf("%d identities, want Cy's and Dee's", n)
 	}
 
 	if _, _, err := f.svc.PinIdentityKey(ctx, identityProvider, "subject-of-cy", "", []byte("k")); service.CodeOf(err) != service.CodeBadRequest {

@@ -38,7 +38,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id password
   on the server, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as
   SHA-256, 14 days at most, never extended) and single-use invites, to the instance or into a team.
-  External identities (issuer + subject, linked only with a verified address) and their key pins
+  External identities (issuer + subject, linked only to the new person a first sign-in with a
+  verified address creates; an existing address is a conflict, never a link) and their key pins
   (insert only, deleted only with the person, or by the hourly sweep when no sign-in linked them);
   a person who signs in that way has an empty password hash, which no password check accepts.
   `authtest` creates cheap users and keys for tests.
@@ -185,6 +186,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and
   API keys are told apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API
   keys.
+- **An external identity never takes over a person.** Accounts are never linked by matching
+  addresses: a first sign-in through an extension only creates a new person, and an address that
+  already has one here is `conflict`, with nothing created or linked.
 - **Access to a mailbox is decided in `internal/service`.** A person sees one as an active member
   of its workspace holding a grant on it, and each use needs its flag; an instance key reaches only
   the operator workspace's. Another workspace's mailbox, or one the caller holds nothing on, is

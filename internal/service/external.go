@@ -33,14 +33,15 @@ type ExternalSignIn struct {
 	Subject string
 	// Email is the person's address at the provider, and EmailVerified
 	// whether the provider vouches for it. An identity seen for the first
-	// time links to, or creates, a person only with a verified address, and
-	// never with one that lower case would make another (the Kelvin sign
-	// is not the letter K).
+	// time creates a person only with a verified address, never with one
+	// that lower case would make another (the Kelvin sign is not the letter
+	// K), and never with one somebody here has already: it is never linked
+	// to a person who exists. A linked identity does not look at either.
 	Email         string
 	EmailVerified bool
 	// Name is a new person's display name, made into one the server takes
-	// rather than refused; someone who already has an account keeps theirs,
-	// and it is not looked at.
+	// rather than refused; the person a linked identity signs in keeps
+	// theirs, and it is not looked at.
 	Name string
 	// UserAgent is the browser's, as the session list shows it.
 	UserAgent string
@@ -58,11 +59,11 @@ type ExternalSignIn struct {
 //
 //   - an identity (issuer, subject) already linked signs in its person; a
 //     disabled person is refused as their password sign-in is;
-//   - an identity seen for the first time needs a verified address. The
-//     person with that address gets it linked, unless they already sign in
-//     with another subject from this issuer (conflict); with nobody at that
-//     address, a new person is created, an instance member with no password,
-//     as signing up creates one;
+//   - an identity seen for the first time needs a verified address, and
+//     only ever creates a person: an instance member with no password, as
+//     signing up creates one, to whom it is linked. An address somebody here
+//     has already, however they sign in, is a conflict, and nothing is
+//     created or linked: accounts are never linked by matching addresses;
 //   - the session expires TTL after it starts, and is never extended.
 //
 // What an extension of internal/app uses; no transport calls it.
@@ -124,8 +125,9 @@ func fromExternal(err error, what string) error {
 			auth.MaxKeyIDLength, auth.MaxPinnedKeyBytes)
 	case errors.Is(err, auth.ErrEmailNotVerified):
 		return E(CodeNotAuthorized, "the identity provider has not verified this address", err)
-	case errors.Is(err, auth.ErrIdentityConflict):
-		return E(CodeConflict, "this address belongs to an account that signs in with another identity from this provider", err)
+	case errors.Is(err, auth.ErrEmailTaken):
+		// Before fromUsers, whose answer tells a person to sign in instead.
+		return E(CodeConflict, "this address already has an account here, which signing in through an identity provider never takes over", err)
 	case errors.Is(err, auth.ErrUserDisabled):
 		// As a disabled person's password sign-in is refused.
 		return E(CodeUnauthorized, "this account cannot sign in", err)

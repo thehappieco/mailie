@@ -20,17 +20,20 @@ import (
 // identity provider vouched for, as an extension of the daemon presents them
 // after it has done the provider's protocol (internal/app, Options.Extensions;
 // the service's SignInExternal). The provider names the person by its issuer,
-// an origin, and a subject, its own stable id for them; that pair is linked to
-// one person here (user_identities), and signs that person in from then on.
+// an origin, and a subject, its own stable id for them; that pair is recorded
+// with the one person its first sign-in created here (user_identities), and
+// signs that person in from then on.
 //
 // What this package decides is who the pair is, and the session it gets:
 //
 //   - a pair already linked signs in its person, unless they are disabled;
-//   - otherwise only an address the provider verified is believed, and
-//     never one lower case would make another. A person with that address
-//     gets the pair linked, unless they already have another subject from
-//     the same issuer; nobody with it is a new person, an instance member
-//     without a password, named as the provider names them;
+//   - a pair seen for the first time only ever creates a person, and only
+//     with an address the provider verified, never one lower case would make
+//     another, and never one somebody here has already (ErrEmailTaken):
+//     whoever has it, however they sign in, disabled or not, is not the
+//     pair's to take over, and accounts are never linked by matching
+//     addresses. The new person is an instance member without a password,
+//     named as the provider names them;
 //   - the session lasts what the extension asks, never more than SessionTTL,
 //     and nothing extends it.
 //
@@ -63,12 +66,10 @@ var (
 	// MaxSubjectLength bytes, not UTF-8, or carries control characters.
 	ErrInvalidSubject = errors.New("auth: a subject is 1 to 255 bytes of text without control characters")
 	// ErrEmailNotVerified is an identity seen for the first time whose
-	// provider does not vouch for its address: nothing is linked or
-	// created on an address nobody verified.
+	// provider does not vouch for its address: nothing is created on an
+	// address nobody verified, and the refusal does not say whether
+	// somebody here has it.
 	ErrEmailNotVerified = errors.New("auth: the identity provider has not verified that address")
-	// ErrIdentityConflict is an address whose person already signs in with
-	// another subject from the same issuer.
-	ErrIdentityConflict = errors.New("auth: that address's person signs in with another identity from this issuer")
 	// ErrInvalidSessionTTL is a session asked to last nothing, or longer
 	// than SessionTTL.
 	ErrInvalidSessionTTL = errors.New("auth: a session lasts more than nothing and at most 14 days")
@@ -83,15 +84,16 @@ type ExternalSignIn struct {
 	// Subject is the provider's stable id for the person.
 	Subject string
 	// Email is the person's address at the provider, and EmailVerified
-	// whether the provider vouches for it. An address nobody verified links
-	// and creates nothing, nor does one that lower case would make another
-	// address (lowerCaseMakesAnother).
+	// whether the provider vouches for it. Only an identity seen for the
+	// first time looks at them: it creates nobody with an address nobody
+	// verified, one that lower case would make another address
+	// (lowerCaseMakesAnother), or one somebody here has already.
 	Email         string
 	EmailVerified bool
 	// Name is a new person's display name, as the provider has it: made
 	// into one this server takes rather than refused (providerName), since
-	// the person did not type it here. A person who already exists keeps
-	// theirs, and it is not looked at.
+	// the person did not type it here. The person a linked identity signs
+	// in keeps theirs, and it is not looked at.
 	Name string
 	// UserAgent is the browser's, for the session list.
 	UserAgent string
@@ -103,13 +105,16 @@ type ExternalSignIn struct {
 // SignInExternal signs in the person an identity provider vouched for, and
 // starts a session for them that expires TTL after it starts. In one
 // transaction: the pair already linked signs in its person; otherwise, with
-// an address the provider verified, the person with that address gets the
-// pair linked, or a new person is created for it, an instance member with no
-// password, with what the workspace source creates for a person, as sign-up
-// creates one.
+// an address the provider verified that nobody here has, a new person is
+// created for it, an instance member with no password, with what the
+// workspace source creates for a person, as sign-up creates one, and the pair
+// is linked to them.
 //
-// A disabled person is refused with ErrUserDisabled, and nothing is linked
-// to them. No password is hashed, so this takes no hashing slot.
+// An address somebody here has already is refused with ErrEmailTaken, and
+// nothing is created or linked: an identity never takes over a person who
+// exists, however they sign in. The person of a linked identity who is
+// disabled is refused with ErrUserDisabled. No password is hashed, so this
+// takes no hashing slot.
 func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, Session, User, error) {
 	if err := CheckIssuer(in.Issuer); err != nil {
 		return "", Session{}, User{}, err
@@ -143,7 +148,7 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, 
 		case err != nil:
 			return err
 		case user.Disabled:
-			// Returning rolls back whatever was linked to them on the way.
+			// Only a linked identity's person can be: a new one is active.
 			return ErrUserDisabled
 		}
 		token, session, err = startSessionTx(ctx, tx, user.ID, in.UserAgent, now, in.TTL)
@@ -155,9 +160,9 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, 
 	return token, session, user, nil
 }
 
-// identifyTx finds, links or creates the person in's identity signs in,
-// inside SignInExternal's transaction, and returns the person's ID. email is
-// in.Email normalized.
+// identifyTx returns the ID of the person in's identity signs in, inside
+// SignInExternal's transaction: the one it is linked to, or a new person
+// created for it and linked to it. email is in.Email normalized.
 func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, email string, now time.Time) (string, error) {
 	issuer, subject := in.Issuer, in.Subject
 	var userID string
@@ -169,38 +174,31 @@ func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, e
 	case !errors.Is(err, sql.ErrNoRows):
 		return "", fmt.Errorf("auth: look up identity: %w", err)
 	case !in.EmailVerified:
+		// Before the address is looked up: an address the provider has not
+		// verified learns nothing of who has an account here.
 		return "", ErrEmailNotVerified
 	case lowerCaseMakesAnother(in.Email):
 		return "", ErrInvalidEmail
 	}
 
-	// users.email compares without regard to case, as sign-in does.
-	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE email = ?`, email).Scan(&userID)
-	switch {
-	case err == nil:
-		var linked int
-		if err := tx.QueryRowContext(ctx,
-			`SELECT count(*) FROM user_identities WHERE user_id = ? AND issuer = ?`, userID, issuer).Scan(&linked); err != nil {
-			return "", fmt.Errorf("auth: look up identity: %w", err)
-		}
-		if linked > 0 {
-			return "", ErrIdentityConflict
-		}
-	case errors.Is(err, sql.ErrNoRows):
-		if userID, err = u.createPasswordlessTx(ctx, tx, email, providerName(in.Name), now); err != nil {
-			return "", err
-		}
-	default:
+	// An identity seen for the first time only ever creates a person. The
+	// one who has the address here already, compared as sign-in compares it
+	// (users.email is COLLATE NOCASE), is not its to take over, whoever they
+	// are and however they sign in: accounts are never linked by matching
+	// addresses.
+	var taken int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE email = ?`, email).Scan(&taken); err != nil {
 		return "", fmt.Errorf("auth: look up address: %w", err)
 	}
-
-	_, err = tx.ExecContext(ctx,
+	if taken > 0 {
+		return "", ErrEmailTaken
+	}
+	if userID, err = u.createPasswordlessTx(ctx, tx, email, providerName(in.Name), now); err != nil {
+		return "", err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)`,
-		issuer, subject, userID, now.Unix())
-	switch {
-	case store.IsUnique(err):
-		return "", ErrIdentityConflict
-	case err != nil:
+		issuer, subject, userID, now.Unix()); err != nil {
 		return "", fmt.Errorf("auth: link identity: %w", err)
 	}
 	return userID, nil
@@ -242,9 +240,9 @@ func (u *Users) createPasswordlessTx(ctx context.Context, tx *sql.Tx, email, nam
 // becomes the letter k, the capital I with a dot (U+0130) the letter i, the
 // Ohm sign (U+2126) the omega. An identity provider verified the address as
 // it wrote it, and that mailbox is not the one lower case makes of it, which
-// may be somebody else's here; so such an address neither links nor creates
-// anyone (ErrInvalidEmail). A letter whose lower case is its own pair (K and
-// k, Ä and ä) is what NormalizeEmail has always folded.
+// may be somebody else's here, or somebody's to come; so such an address
+// creates nobody (ErrInvalidEmail). A letter whose lower case is its own pair
+// (K and k, Ä and ä) is what NormalizeEmail has always folded.
 func lowerCaseMakesAnother(s string) bool {
 	for _, r := range s {
 		if lower := unicode.ToLower(r); lower != r && unicode.ToUpper(lower) != r {
@@ -361,8 +359,8 @@ func deletedIdentities(ctx context.Context, tx *sql.Tx, userID string) ([]identi
 // before SweepUnlinkedPins deletes it. An extension pins a key just before
 // the sign-in that links its identity, seconds later; a pin still unlinked
 // after this was pinned for a sign-in that was refused (an address nobody
-// verified, another subject for an address, a disabled person), and is the
-// provider's id and key for somebody who has no account here.
+// verified, an address somebody here has already), and is the provider's id
+// and key for an identity that signs nobody in here.
 const UnlinkedPinGrace = 10 * time.Minute
 
 // SweepUnlinkedPins deletes the pins older than UnlinkedPinGrace whose

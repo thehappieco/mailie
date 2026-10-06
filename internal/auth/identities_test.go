@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -172,12 +173,13 @@ func TestANewExternalPersonIsAMemberWithTheirWorkspaceAndNoPassword(t *testing.T
 	}
 }
 
-func TestALinkedAddressNeedsAVerifiedEmail(t *testing.T) {
+func TestAFirstSeenIdentityNeedsAVerifiedAddress(t *testing.T) {
 	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 
-	// Neither linked to the person who has the address, nor a new person:
-	// an address nobody verified proves nothing about whose it is.
+	// Nobody is created on an address nobody verified, and the refusal is
+	// the same whether somebody here has the address or not: what the
+	// provider has not verified learns nothing of who has an account.
 	for _, email := range []string{"Ana@Example.com", "nobody@example.com"} {
 		in := external("subject-of-someone", email)
 		in.EmailVerified = false
@@ -192,50 +194,111 @@ func TestALinkedAddressNeedsAVerifiedEmail(t *testing.T) {
 		t.Fatalf("an unverified address created a person (%d people)", n)
 	}
 
-	// Verified, the address is the person's, compared as sign-in compares it.
-	token, _, user := signInExternal(t, users, external("subject-of-ana", "ANA@example.com"))
-	if user.ID != ana.ID || !user.HasPassword {
-		t.Fatalf("signed in %+v, want ana, who keeps her password", user)
-	}
-	if p, err := users.AuthenticateSession(t.Context(), token); err != nil || p.UserID != ana.ID {
-		t.Fatalf("the session is %+v (%v)", p, err)
-	}
-	// She still signs in with her password too.
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); err != nil {
-		t.Errorf("linking an identity took her password away: %v", err)
+	// Verified, the address nobody has here is a new person's.
+	_, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
+	if cy.Email != "cy@example.com" || cy.HasPassword {
+		t.Fatalf("created %+v", cy)
 	}
 
 	// Once linked, the identity is hers whatever the provider says of the
 	// address now: verified or not, changed or not.
-	later := external("subject-of-ana", "ana.new@example.com")
+	later := external("subject-of-cy", "cy.new@example.com")
 	later.EmailVerified = false
-	if _, _, again := signInExternal(t, users, later); again.ID != ana.ID || again.Email != "ana@example.com" {
+	if _, _, again := signInExternal(t, users, later); again.ID != cy.ID || again.Email != "cy@example.com" {
 		t.Errorf("the linked identity signed in %+v", again)
 	}
 }
 
-func TestAPersonSignsInWithOneSubjectPerIssuer(t *testing.T) {
+// rowsOf is every row of the tables a sign-in writes, as text: equal before
+// and after a refusal when it created, linked and changed nothing.
+func rowsOf(t *testing.T, db *store.Store) []string {
+	t.Helper()
+	var out []string
+	for _, table := range []string{"users", "sessions", "user_identities", "workspaces", "workspace_members", "mailbox_access", "invites"} {
+		func() {
+			rows, err := db.Reader().QueryContext(t.Context(), `SELECT * FROM `+table)
+			if err != nil {
+				t.Fatalf("read %s: %v", table, err)
+			}
+			defer func() { _ = rows.Close() }()
+			columns, err := rows.Columns()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for rows.Next() {
+				values := make([]any, len(columns))
+				ptrs := make([]any, len(columns))
+				for i := range values {
+					ptrs[i] = &values[i]
+				}
+				if err := rows.Scan(ptrs...); err != nil {
+					t.Fatal(err)
+				}
+				out = append(out, fmt.Sprintf("%s %v", table, values))
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+		}()
+	}
+	return out
+}
+
+func TestAnExternalIdentityNeverTakesOverAnExistingAddress(t *testing.T) {
 	users, db, _ := newUsers(t)
-	_, _, cy := signInExternal(t, users, external("subject-one", "cy@example.com"))
+	// Ana signed up with a password and is signed in; Cy came through the
+	// provider, and signs in with the identity that created her.
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+	anaToken := authtest.SignIn(t, users, "ana@example.com")
+	cyToken, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
+	before := rowsOf(t, db)
 
-	// Another subject from the same issuer, claiming the same address: it is
-	// not the identity she signs in with, and it does not become a second.
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-two", "cy@example.com")); !errors.Is(err, auth.ErrIdentityConflict) {
-		t.Fatalf("a second subject for her address: %v, want ErrIdentityConflict", err)
-	}
-	if n := count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, cy.ID); n != 1 {
-		t.Fatalf("she has %d identities", n)
+	// Every identity seen for the first time with an address somebody here
+	// has, verified by its provider as it may be, is refused: from Cy's
+	// provider or another one, under a new subject or one that names Cy at
+	// her provider, with the address as written here or in another case.
+	other := "https://login.example.org"
+	for name, in := range map[string]auth.ExternalSignIn{
+		"Ana's address":                       external("subject-of-someone", "ana@example.com"),
+		"Ana's address in another case":       external("subject-of-someone", "ANA@Example.com"),
+		"Ana's address from another provider": withIssuer(external("subject-of-ana", "ana@example.com"), other),
+		"another subject for Cy's address":    external("subject-two", "cy@example.com"),
+		"Cy's subject from another provider":  withIssuer(external("subject-of-cy", "cy@example.com"), other),
+		"Cy's address from another provider":  withIssuer(external("subject-of-someone", "Cy@example.com"), other),
+	} {
+		token, session, user, err := users.SignInExternal(t.Context(), in)
+		if !errors.Is(err, auth.ErrEmailTaken) || token != "" || session != (auth.Session{}) || user != (auth.User{}) {
+			t.Errorf("%s: signed in %+v (%v), want ErrEmailTaken and nobody", name, user, err)
+		}
 	}
 
-	// Another issuer is another provider: one subject there too.
-	other := external("subject-one", "cy@example.com")
-	other.Issuer = "https://login.example.org"
-	if _, _, user := signInExternal(t, users, other); user.ID != cy.ID {
-		t.Errorf("the other provider's identity signed in %s, want %s", user.ID, cy.ID)
+	// Nothing was created, linked or changed: no person, no identity, no
+	// session, no workspace, and the people who were here as they were.
+	if after := rowsOf(t, db); !slices.Equal(after, before) {
+		t.Fatalf("a refused sign-in wrote:\nbefore %v\nafter  %v", before, after)
 	}
-	if n := count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, cy.ID); n != 2 {
-		t.Errorf("she has %d identities, want one per issuer", n)
+	if n := count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, ana.ID); n != 0 {
+		t.Errorf("%d identities sign ana in", n)
 	}
+	// Each still signs in as before: Ana with her password, both with their
+	// sessions, and Cy with the one identity that signs her in.
+	if _, _, user, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); err != nil || user.ID != ana.ID {
+		t.Errorf("Ana's password: %+v, %v", user, err)
+	}
+	for token, id := range map[string]string{anaToken: ana.ID, cyToken: cy.ID} {
+		if p, err := users.AuthenticateSession(t.Context(), token); err != nil || p.UserID != id {
+			t.Errorf("the session of %s authenticated %+v (%v)", id, p, err)
+		}
+	}
+	if _, _, again := signInExternal(t, users, external("subject-of-cy", "cy@example.com")); again.ID != cy.ID {
+		t.Errorf("Cy's identity signed in %+v", again)
+	}
+}
+
+// withIssuer is in from another provider.
+func withIssuer(in auth.ExternalSignIn, issuer string) auth.ExternalSignIn {
+	in.Issuer = issuer
+	return in
 }
 
 func TestADisabledPersonIsRefusedAnExternalSignInAndNothingIsLinked(t *testing.T) {
@@ -248,11 +311,14 @@ func TestADisabledPersonIsRefusedAnExternalSignInAndNothingIsLinked(t *testing.T
 		}
 	}
 
+	// Cy's own identity: refused, as a disabled person's password sign-in is.
 	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-cy", "cy@example.com")); !errors.Is(err, auth.ErrUserDisabled) {
 		t.Errorf("a disabled person's identity: %v, want ErrUserDisabled", err)
 	}
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-ana", "ana@example.com")); !errors.Is(err, auth.ErrUserDisabled) {
-		t.Errorf("a disabled person's address: %v, want ErrUserDisabled", err)
+	// An identity seen for the first time with her address takes her over
+	// no more than anybody's: disabled, she is still somebody here.
+	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+		t.Errorf("a disabled person's address: %v, want ErrEmailTaken", err)
 	}
 	if n := count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, ana.ID); n != 0 {
 		t.Errorf("a refused sign-in linked an identity to her")
@@ -416,34 +482,30 @@ func TestAProviderNameNeverKeepsAPersonOut(t *testing.T) {
 		}
 	}
 
-	// Somebody who already exists is signed in whatever the provider now
-	// calls them, and keeps their name: through a linked identity, and
-	// through a verified address the identity is linked by.
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	for _, c := range []struct{ subject, email, keeps string }{
-		{"subject-of-cy", "cy@example.com", "Cy Lima"},
-		{"subject-of-ana", "ana@example.com", ana.Name},
-	} {
-		for _, name := range []string{long, "Cy\tLima", "\xff"} {
-			in := external(c.subject, c.email)
-			in.Name = name
-			_, _, user, err := users.SignInExternal(t.Context(), in)
-			if err != nil || user.Name != c.keeps {
-				t.Errorf("%s, provider name %q: %+v, %v; want them signed in as %q", c.email, name, user, err, c.keeps)
-			}
+	// The person a linked identity signs in is signed in whatever the
+	// provider now calls them, and keeps their name.
+	for _, name := range []string{long, "Dee\tLima", "\xff", ""} {
+		in := external("subject-of-cy", "cy@example.com")
+		in.Name = name
+		_, _, user, err := users.SignInExternal(t.Context(), in)
+		if err != nil || user.Name != "Cy Lima" {
+			t.Errorf("provider name %q: %+v, %v; want her signed in as Cy Lima", name, user, err)
 		}
+	}
+	if n := count(t, db, `SELECT count(*) FROM users`); n != 4 {
+		t.Errorf("%d people, want the 4 created", n)
 	}
 }
 
-func TestALookalikeAddressNeverLinksToAnotherPerson(t *testing.T) {
+func TestALookalikeAddressNeverBecomesAnotherPersonsAddress(t *testing.T) {
 	users, db, _ := newUsers(t)
-	karen := authtest.NewUser(t, db, "karen@example.com", auth.RoleOwner)
+	authtest.NewUser(t, db, "karen@example.com", auth.RoleOwner)
 	authtest.NewUser(t, db, "ida@example.com", auth.RoleMember)
 
 	// The provider verified these mailboxes as it wrote them: the Kelvin
 	// sign is not the letter K, nor the dotted capital I the letter i, nor
 	// the Ohm sign the omega. Lower case would make each the address of
-	// somebody here, or of somebody to come; neither is linked nor created.
+	// somebody here, or of somebody to come; nobody is created with it.
 	for _, email := range []string{"\u212Aaren@example.com", "\u0130da@example.com", "\u2126mega@example.com"} {
 		in := external("subject-of-"+email, email)
 		if _, _, user, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrInvalidEmail) {
@@ -455,18 +517,20 @@ func TestALookalikeAddressNeverLinksToAnotherPerson(t *testing.T) {
 	}
 
 	// A letter whose lower case is its own pair is the same address, as it
-	// always was: Karen's, and a new person's with a letter beyond ASCII.
-	if _, _, user := signInExternal(t, users, external("subject-of-karen", "KAREN@example.com")); user.ID != karen.ID {
-		t.Errorf("her own address signed in %s, want %s", user.ID, karen.ID)
+	// always was: Karen's, which is hers and nobody else's to take, and a
+	// new person's with a letter beyond ASCII.
+	if _, _, user, err := users.SignInExternal(t.Context(), external("subject-of-karen", "KAREN@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+		t.Errorf("her own address in capitals signed in %+v (%v), want ErrEmailTaken", user, err)
 	}
-	if _, _, user := signInExternal(t, users, external("subject-of-ase", "\u00C5se@example.com")); user.Email != "\u00E5se@example.com" {
-		t.Errorf("an address with \u00C5 was created as %q", user.Email)
+	_, _, ase := signInExternal(t, users, external("subject-of-ase", "\u00C5se@example.com"))
+	if ase.Email != "\u00E5se@example.com" {
+		t.Errorf("an address with \u00C5 was created as %q", ase.Email)
 	}
 
 	// Once linked, an identity signs its person in whatever the provider
 	// now says of the address, a lookalike included.
-	if _, _, user := signInExternal(t, users, external("subject-of-karen", "\u212Aaren@example.com")); user.ID != karen.ID {
-		t.Errorf("her linked identity signed in %s", user.ID)
+	if _, _, user := signInExternal(t, users, external("subject-of-ase", "\u212Aaren@example.com")); user.ID != ase.ID {
+		t.Errorf("her linked identity signed in %s, want %s", user.ID, ase.ID)
 	}
 }
 
@@ -526,8 +590,8 @@ func TestAPinGoesOnlyWithItsPerson(t *testing.T) {
 func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 	users, db, clock := newUsers(t)
 	start := *clock
-	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	signInExternal(t, users, external("subject-of-ana", "ana@example.com"))
+	authtest.NewUser(t, db, "bob@example.com", auth.RoleMember)
 	pin := func(subject string) {
 		t.Helper()
 		if _, _, err := users.PinKey(t.Context(), issuer, subject, "k1", []byte("key of "+subject)); err != nil {
@@ -539,7 +603,8 @@ func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 	}
 
 	// An extension pins before it signs in, and the sign-in is refused: an
-	// address nobody verified, another subject for an address that has one.
+	// address nobody verified, an address somebody here has already, whether
+	// they came through the provider or signed up with a password.
 	pin("subject-of-ana")
 	pin("subject-of-unverified")
 	unverified := external("subject-of-unverified", "someone@example.com")
@@ -548,7 +613,11 @@ func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 		t.Fatal(err)
 	}
 	pin("subject-of-another-ana")
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-another-ana", "ana@example.com")); !errors.Is(err, auth.ErrIdentityConflict) {
+	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-another-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+		t.Fatal(err)
+	}
+	pin("subject-of-bob")
+	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-bob", "bob@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Fatal(err)
 	}
 
@@ -558,14 +627,15 @@ func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 		t.Fatalf("a sweep within the grace deleted %d (%v)", n, err)
 	}
 	// After it, the pins of the refused sign-ins go: they are the provider's
-	// id and key for people who have no account here. Ana's stays, however
-	// old, while her identity signs her in.
+	// id and key for identities that sign nobody in here. Ana's stays,
+	// however old, while her identity signs her in.
 	*clock = start.Add(auth.UnlinkedPinGrace + time.Second)
-	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 2 {
-		t.Fatalf("the sweep deleted %d (%v), want the 2 pins of refused sign-ins", n, err)
+	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 3 {
+		t.Fatalf("the sweep deleted %d (%v), want the 3 pins of refused sign-ins", n, err)
 	}
-	if pins("subject-of-unverified")+pins("subject-of-another-ana") != 0 || pins("subject-of-ana") != 1 {
-		t.Errorf("after the sweep: %d, %d and %d pins", pins("subject-of-unverified"), pins("subject-of-another-ana"), pins("subject-of-ana"))
+	if pins("subject-of-unverified")+pins("subject-of-another-ana")+pins("subject-of-bob") != 0 || pins("subject-of-ana") != 1 {
+		t.Errorf("after the sweep: %d, %d, %d and %d pins", pins("subject-of-unverified"), pins("subject-of-another-ana"),
+			pins("subject-of-bob"), pins("subject-of-ana"))
 	}
 	*clock = start.Add(365 * 24 * time.Hour)
 	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 0 || pins("subject-of-ana") != 1 {

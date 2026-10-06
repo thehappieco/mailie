@@ -164,22 +164,32 @@ says the person is, and answers its page with the `Session` that comes back, exa
 - **Identities.** The provider names a person by its **issuer**, an origin exactly as a browser
   writes one (`https://host[:port]`, or `http://` on loopback or a name under `.localhost`, with no
   path), and a **subject**, its own stable id for them (1 to 255 bytes of text, never an address).
-  The pair is linked to one person (`user_identities`) and signs that person in from then on,
-  whatever the provider later says of the address.
-- **A pair seen for the first time** is believed only with an address the provider verified
-  (`email_verified`); otherwise nothing is linked or created (`not_authorized`). Nor with an
-  address that lower case would turn into another (`bad_request`): the Kelvin sign is not the letter
-  K, nor the dotted capital I the letter i, and the mailbox the provider verified is not the one
-  lower case makes of it, which may be somebody else's here. The person with that address, compared
-  without regard to case, gets the pair linked, unless they already sign in with another subject
-  from the same issuer (`conflict`). With nobody at that address, a new person is created: an
-  instance **member**, never an owner, with the name given, no password, and what the workspace
-  source creates for a person, exactly as signing up creates one; the instance invitations waiting
-  for the address are spent, as signing up spends them. The name is the provider's, so it is made
-  into one the server takes (control characters become spaces, a name past 120 characters is cut)
-  rather than refused; somebody who already has an account keeps theirs, whatever the provider now
-  calls them. All of this, and the session, is one transaction. A disabled person is refused
-  (`unauthorized`), as their password sign-in is, and nothing is linked to them.
+  The pair is linked to the person its first sign-in created (`user_identities`) and signs that
+  person in from then on, whatever the provider later says of the address.
+- **A pair seen for the first time only ever creates a person.** It is believed only with an
+  address the provider verified (`email_verified`); otherwise nothing is created
+  (`not_authorized`), and the answer is the same whether somebody here has the address or not. Nor
+  with an address that lower case would turn into another (`bad_request`): the Kelvin sign is not
+  the letter K, nor the dotted capital I the letter i, and the mailbox the provider verified is not
+  the one lower case makes of it, which may be somebody else's here. With nobody at that address,
+  a new person is created: an instance **member**, never an owner, with the name given, no
+  password, and what the workspace source creates for a person, exactly as signing up creates
+  one; the instance invitations waiting for the address are spent, as signing up spends them. The
+  name is the provider's, so it is made into one the server takes (control characters become
+  spaces, a name past 120 characters is cut) rather than refused; the person a linked pair signs in
+  keeps theirs, whatever the provider now calls them. All of this, and the session, is one
+  transaction.
+- **An identity never takes over a person who exists.** Accounts are never linked by matching
+  addresses: when somebody here already has the address, compared without regard to case, the
+  sign-in is refused (`conflict`) and nothing is created or linked, whoever they are, however they
+  sign in (with a password, or through another identity from this provider or another), and
+  whether or not they are disabled. Their password, sessions, identities and workspaces stay as
+  they were. A server that turns an extension's sign-in on over people who signed up with a
+  password therefore either leaves them their passwords (`ExternalSignInOnly` off) or closes their
+  accounts first (`user disable`, then `user delete`, which removes the mailboxes they linked and
+  everything indexed from them), after which they sign in through the provider as new people and
+  link their mailboxes again. A disabled person whose own pair signs in is refused
+  (`unauthorized`), as their password sign-in is.
 - **No password.** Such a person's `password_hash` is empty and `password_changed_at` is 0. No
   password check accepts an empty hash (it costs a dummy derivation, as an unknown address does),
   and `user.has_password` is `false`. `user password --bootstrap` gives them one.
@@ -206,8 +216,8 @@ says the person is, and answers its page with the `Session` that comes back, exa
   their pins in the same transaction. Disabling the person, the first step, keeps both, as it keeps
   their password: a person switched back on signs in as before, and the pin must still hold then.
   An extension pins a key before the sign-in that links its identity; when that sign-in is
-  refused (an address not verified, another subject for an address, a disabled person), the pin
-  signs nobody in, and the hourly retention sweep deletes it once it is ten minutes old
+  refused (an address not verified, an address somebody here has already), the pin signs nobody
+  in, and the hourly retention sweep deletes it once it is ten minutes old
   (`auth.UnlinkedPinGrace`), so it is kept a little over an hour at most.
 - **`ExternalSignInOnly`** (`app.Options`, set only by a binary that embeds the daemon; there is no
   variable, and `serve` never sets it) is a server whose people sign in only that way. The service
