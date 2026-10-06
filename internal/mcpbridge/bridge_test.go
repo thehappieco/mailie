@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thehappieco/mailie/internal/auth"
@@ -187,6 +188,43 @@ func TestAWrongKeyEndsTheBridgeWithTheServersRefusal(t *testing.T) {
 		if strings.Contains(s, secretOf(wrong)) {
 			t.Errorf("%s repeats the key: %s", what, s)
 		}
+	}
+}
+
+func TestAWrongKeyEndsTheBridgeWithTheRefusalWhenTheClientLeftBeforeTheAnswer(t *testing.T) {
+	m := newMailie(t, mcp.HTTPOptions{})
+	prefix, _, _ := strings.Cut(m.key(auth.ScopeRead), ".")
+	wrong := prefix + ".notTheSecretOfThisKeyAtAllxxxxxxxxxxxxxxxxx"
+	client, local := sdk.NewInMemoryTransports()
+	done := make(chan error, 1)
+	go func() {
+		done <- mcpbridge.Run(t.Context(), local, mcpbridge.Options{Endpoint: m.endpoint(), Key: wrong})
+	}()
+	conn, err := client.Connect(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := jsonrpc.MakeID("init")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Write(t.Context(), &jsonrpc.Request{ID: id, Method: "initialize", Params: json.RawMessage(
+		`{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	// A client that gives up on its initialize closes the bridge's standard
+	// input before the server's answer, which the bridge then cannot tell it.
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case end := <-done:
+		var refusal *mcpbridge.Refusal
+		if !errors.Is(end, mcpbridge.ErrKeyRefused) || !errors.As(end, &refusal) || refusal.Status != http.StatusUnauthorized {
+			t.Errorf("the bridge ended with %v; want the server's 401", end)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the bridge did not end within 15 s")
 	}
 }
 

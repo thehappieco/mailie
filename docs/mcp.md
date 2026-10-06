@@ -191,7 +191,8 @@ whole daemon).
   non-zero exit when the server refuses the key (`401`: wrong, expired or revoked — at the start, or at
   the first request after it was revoked), refuses it MCP (`403`: a key an administrator made for a
   person), has no MCP endpoint at that address (`404`: not a Mailie server, or `MAIL_MCP_HTTP=false`
-  there) or answers with a redirect. A client shows that line in its log of the server.
+  there) or answers with a redirect — also when the client, told of it, closes standard input at
+  once. A client shows that line in its log of the server.
 
 For a client that launches a local server, the entry is the one `mcp install` writes for Claude
 Desktop:
