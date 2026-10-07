@@ -39,6 +39,8 @@ const standing = computed(() => key.value ? keyStanding(key.value) : 'revoked')
 const live = computed(() => standing.value === 'live')
 const me = computed(() => session.user?.id ?? '')
 const sendOffered = computed(keysMaySend)
+// Where keys never send, the legend says nothing of sending.
+const legendFlags = computed(() => keyFlagNames.filter(flag => flag !== 'send' || sendOffered.value))
 
 interface Row { id: string; email: string; provider: Account['provider'] | ''; reads: boolean; held: KeyFlags; grantedBy: string; updatedAt: number }
 
@@ -178,7 +180,7 @@ onMounted(() => { if (sendsShown.value) void readSends() })
           </li>
         </ul>
         <dl class="flag-legend">
-          <div v-for="flag in keyFlagNames" :key="flag"><dt>{{ keyFlagLabel(flag) }}</dt><dd>{{ keyFlagHint(flag) }}</dd></div>
+          <div v-for="flag in legendFlags" :key="flag"><dt>{{ keyFlagLabel(flag) }}</dt><dd>{{ keyFlagHint(flag) }}</dd></div>
         </dl>
       </section>
 

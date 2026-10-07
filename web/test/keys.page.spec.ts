@@ -191,6 +191,9 @@ describe('creating a key', () => {
     await fill(find('dialog input[name=key-name]'), 'Reader')
     await submit(find('dialog form'))
     expect(posts(fetch).map(body => body.scope)).toEqual(['write'])
+    // The key's card names no sends either.
+    expect(words(find('.key-card')!)).toContain('Mailboxes…')
+    expect(words(find('.key-card')!)).not.toContain('Mailboxes and sends…')
   })
 
   it('offers Read in a team only on a mailbox the person reads, says why, and names the team in the terms', async () => {

@@ -14,7 +14,7 @@ import type { WorkspaceKey } from '../api/types'
 import { accounts } from '../state/accounts'
 import { apiKeys, atKeyLimit, loadKeys, revokeKey } from '../state/apikeys'
 import type { Failure } from '../state/failure'
-import { loadMcpAccess, mcpOffered } from '../state/mcp'
+import { keysMaySend, loadMcpAccess, mcpOffered } from '../state/mcp'
 import { session } from '../state/session'
 import { loadMembers, personName, team } from '../state/team'
 import { currentWorkspace, workspaces } from '../state/workspaces'
@@ -149,7 +149,7 @@ watch(() => workspaces.currentID, () => {
         </dl>
         <p v-if="keyOriginNote(key)" class="hint origin-note">{{ keyOriginNote(key) }}</p>
         <div class="row-actions">
-          <button class="ghost" type="button" aria-haspopup="dialog" @click="open(key)"><AppIcon :name="standing === 'live' ? 'pencil' : 'eye'" :size="15" />{{ standing === 'live' ? t('Mailboxes and sends…') : t('Details…') }}</button>
+          <button class="ghost" type="button" aria-haspopup="dialog" @click="open(key)"><AppIcon :name="standing === 'live' ? 'pencil' : 'eye'" :size="15" />{{ standing === 'live' ? (keysMaySend() ? t('Mailboxes and sends…') : t('Mailboxes…')) : t('Details…') }}</button>
           <button v-if="standing === 'live'" class="ghost revoke" type="button" aria-haspopup="dialog" @click="askRevoke(key)"><AppIcon name="close" :size="15" />{{ t('Revoke') }}</button>
         </div>
       </article>
