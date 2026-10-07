@@ -47,10 +47,11 @@ const (
 	StateError State = "error"
 )
 
-// PersonInitialDays is how far back the first sync of a person's mailbox
-// reaches: the last 90 days, as the privacy policy they consented to says.
-// The service refuses anything else from a person, and the sync engine uses
-// it for every owned mailbox whatever the row holds.
+// PersonInitialDays is how far back the first sync of a mailbox of a personal
+// workspace or of a team reaches: the last 90 days, as the text its consent
+// was given to says. The service refuses anything else from a person, and the
+// sync engine uses it for every mailbox but the operator's whatever the row
+// holds.
 const PersonInitialDays = 90
 
 // Account is one mailbox this server knows about.
@@ -73,11 +74,22 @@ type Account struct {
 	// and one an instance key creates in the operator workspace, unless it
 	// names another.
 	WorkspaceID string
-	// OwnerUserID is the person who linked the account: "linked by" in the
-	// API and the documents, the column keeps its name. The mailbox syncs
-	// under their consent. Empty exactly for a mailbox of the operator
-	// workspace, which an instance key created.
+	// OwnerUserID is the person whose mailbox it is: set exactly for a
+	// mailbox of a personal workspace, to that workspace's person, whose own
+	// consent it syncs under. Empty for a team's mailbox, which belongs to
+	// the team, and for the operator's. Create sets it from the workspace.
 	OwnerUserID string
+	// LinkedBy is who linked the mailbox, for attribution only: "usr_…",
+	// "key:<prefix>" or "cli"; empty once that person is deleted. Create
+	// records it, or the linker when it is empty.
+	LinkedBy string
+	// SyncConsent is the mailbox's own consent to sync: a team mailbox's,
+	// given by an owner or an admin on its workspace's behalf, or the
+	// operator's switch for an operator mailbox. Zero for a personal mailbox.
+	// Create records it, at the time of its own transaction, for a team
+	// mailbox linked with the workspace's consent (any non-zero At), and
+	// refuses it anywhere else.
+	SyncConsent store.MailboxConsent
 	// OAuthClient is which registration issued the stored grant, "installed"
 	// or "web": a refresh token only works with the client it came from.
 	OAuthClient string
@@ -124,6 +136,10 @@ var (
 	// cannot go into: a linked mailbox in the operator workspace, one nobody
 	// linked anywhere else, or a person with no personal workspace.
 	ErrNoWorkspace = errors.New("account: no such workspace for this mailbox")
+	// ErrNoWorkspaceConsent is a consent to sync of its own recorded for a
+	// mailbox that cannot have one at creation: only a team mailbox is
+	// linked with its workspace's consent.
+	ErrNoWorkspaceConsent = errors.New("account: only a team mailbox is linked with its workspace's consent")
 )
 
 // Repository reads and writes accounts and their sealed credentials.
@@ -237,7 +253,8 @@ func (r *Repository) WithClock(now func() time.Time) *Repository {
 const accountColumns = `id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 	smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, coalesce(owner_user_id, ''), oauth_client,
 	sync_tier, sync_tier_resolved, save_sent_copy, initial_days, folder_overrides, state, state_reason,
-	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at`
+	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at,
+	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration'`
 
 // OAuth clients an account's grant can come from.
 const (
@@ -249,21 +266,23 @@ const (
 // internal/service from the caller, and turned into SQL here, so listing and
 // fetching one account apply the rule the same way.
 //
-// A person sees a mailbox when they are an active member of its workspace
-// (an active membership, and active on the instance) and hold a grant on it:
-// any grant shows it, and Need narrows to the mailboxes on which they hold
-// those flags.
+// A person sees a mailbox as an active member of its workspace, active on
+// the instance, who holds a grant on it or, as an owner or an admin of the
+// workspace, manages it by their role. Need narrows to the mailboxes on which
+// they may do what it names: read, act and send come only from a grant, never
+// from a role; manage from either.
 type Visibility struct {
-	// All is an instance credential over REST, as the service has it until
-	// it moves instance keys to the operator workspace: every account.
+	// All is every account, for the daemon's own reads.
 	All bool
-	// UserID sees the mailboxes of their workspaces they hold a grant on.
+	// UserID sees the mailboxes of their workspaces they hold a grant on or
+	// manage by their role.
 	UserID string
-	// Unowned also sees the operator workspace's mailboxes: those nobody
-	// linked, which an instance key created.
+	// Unowned also sees the operator workspace's mailboxes: what an instance
+	// key reaches.
 	Unowned bool
-	// Need is the flags a person must hold on the mailbox; the zero value
-	// is any grant. It narrows only the person's half of the rule.
+	// Need is what a person must be able to do with the mailbox; the zero
+	// value is seeing its card. It narrows only the person's half of the
+	// rule.
 	Need workspace.Flags
 	// Workspace narrows to one workspace's mailboxes; empty is every one.
 	Workspace string
@@ -274,13 +293,16 @@ type Visibility struct {
 func (v Visibility) clause() (string, []any) {
 	where, args := "1", []any(nil)
 	if !v.All {
-		where = `(EXISTS (SELECT 1 FROM mailbox_access g
-		            JOIN workspace_members m ON m.workspace_id = g.workspace_id AND m.user_id = g.user_id
-		            JOIN users u ON u.id = g.user_id
-		           WHERE g.account_id = accounts.id AND g.user_id = ? AND m.status = 'active' AND u.status = 'active'
-		             AND g.read >= ? AND g.act >= ? AND g.send >= ? AND g.manage >= ?)
+		byRole := !v.Need.Read && !v.Need.Act && !v.Need.Send
+		where = `(EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
+		           WHERE m.workspace_id = accounts.workspace_id AND m.user_id = ? AND m.status = 'active'
+		             AND u.status = 'active'
+		             AND (EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = accounts.id AND g.user_id = m.user_id
+		                            AND g.read >= ? AND g.act >= ? AND g.send >= ?
+		                            AND (g.manage >= ? OR m.role IN ('owner', 'admin')))
+		                  OR (? AND m.role IN ('owner', 'admin'))))
 		      OR (? AND accounts.workspace_id = '` + workspace.OperatorID + `'))`
-		args = []any{v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, v.Unowned}
+		args = []any{v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, byRole, v.Unowned}
 	}
 	if v.Workspace != "" {
 		where += ` AND accounts.workspace_id = ?`
@@ -292,17 +314,19 @@ func (v Visibility) clause() (string, []any) {
 // Create registers an account. It starts in pending_auth: nothing syncs until
 // a credential has been stored for it.
 //
-// A linked mailbox (OwnerUserID) goes into WorkspaceID, or their personal
-// workspace when it is empty, and its linker gets every flag on it in the
-// same transaction, which also checks they are an active member there. One
-// nobody linked goes into the operator workspace.
-func (r *Repository) Create(ctx context.Context, a Account) (Account, error) {
-	return r.create(ctx, a, nil)
+// linker is the person who links it, who gets read, act and send on it in
+// the same transaction, which also checks they are an active member of its
+// workspace; empty for the operator. The mailbox goes into a.WorkspaceID, or
+// else the linker's personal workspace, or the operator workspace when nobody
+// links it. It names its person (OwnerUserID) exactly when that workspace is
+// personal.
+func (r *Repository) Create(ctx context.Context, a Account, linker string) (Account, error) {
+	return r.create(ctx, a, linker, nil)
 }
 
 // create is Create with a check run first in its transaction; nil checks
 // nothing.
-func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) error) (Account, error) {
+func (r *Repository) create(ctx context.Context, a Account, linker string, also func(*sql.Tx) error) (Account, error) {
 	now := r.now().UTC().Truncate(time.Second)
 	a.CreatedAt, a.UpdatedAt = now, now
 	if a.State == "" {
@@ -317,6 +341,9 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 	if a.OAuthClient == "" {
 		a.OAuthClient = ClientInstalled
 	}
+	if a.LinkedBy == "" {
+		a.LinkedBy = linker
+	}
 	overrides, err := json.Marshal(a.FolderOverrides)
 	if err != nil {
 		return Account{}, fmt.Errorf("account: encode folder overrides: %w", err)
@@ -328,19 +355,32 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 				return err
 			}
 		}
-		if a.WorkspaceID, err = workspaceForTx(ctx, tx, a); err != nil {
+		w, err := workspaceForTx(ctx, tx, a.WorkspaceID, linker)
+		if err != nil {
 			return err
 		}
-		_, err := tx.ExecContext(ctx,
+		a.WorkspaceID, a.OwnerUserID = w.ID, w.PersonID
+		consent := a.SyncConsent
+		switch {
+		case consent.At == 0:
+			consent = store.MailboxConsent{}
+		case w.Kind != workspace.KindTeam || consent.Migrated:
+			return ErrNoWorkspaceConsent
+		default:
+			// Given in this transaction, whatever the caller's clock said.
+			consent.At = now.Unix()
+		}
+		a.SyncConsent = consent
+		_, err = tx.ExecContext(ctx,
 			`INSERT INTO accounts(id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 			 smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, owner_user_id, oauth_client,
 			 sync_tier, save_sent_copy, initial_days, folder_overrides, state, state_reason,
-			 state_changed_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+			 state_changed_at, created_at, updated_at, linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)`,
 			a.ID, a.WorkspaceID, a.Email, a.DisplayName, string(a.Provider), a.AuthKind, a.IMAPHost, a.IMAPPort,
 			a.SMTPHost, a.SMTPPort, a.SMTPTLS, a.LoginUser, a.Tenant, nullable(a.OwnerUserID), a.OAuthClient,
 			orDefault(a.SyncTier, "auto"), boolToInt(a.SaveSentCopy), a.InitialDays, string(overrides),
-			string(a.State), now.Unix(), now.Unix(), now.Unix())
+			string(a.State), now.Unix(), now.Unix(), now.Unix(), a.LinkedBy, consent.At, consent.By, consent.Version)
 		if store.IsUnique(err) {
 			return ErrDuplicate
 		}
@@ -350,10 +390,10 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 		if err != nil {
 			return fmt.Errorf("account: insert: %w", err)
 		}
-		if a.OwnerUserID == "" {
+		if linker == "" {
 			return nil
 		}
-		return workspace.GrantLinkerTx(ctx, tx, a.ID, a.WorkspaceID, a.OwnerUserID, now)
+		return workspace.GrantLinkTx(ctx, tx, a.ID, a.WorkspaceID, linker, now)
 	})
 	if err != nil {
 		return Account{}, err
@@ -364,33 +404,30 @@ func (r *Repository) create(ctx context.Context, a Account, also func(*sql.Tx) e
 
 // workspaceForTx is the workspace a new account goes into, checked: the one
 // it names, or else its linker's personal workspace, or the operator's for a
-// mailbox nobody linked. A linked mailbox never goes into the operator
-// workspace, and one nobody linked never anywhere else.
-func workspaceForTx(ctx context.Context, tx *sql.Tx, a Account) (string, error) {
+// mailbox nobody links. A mailbox somebody links never goes into the operator
+// workspace, and one nobody links never anywhere else.
+func workspaceForTx(ctx context.Context, tx *sql.Tx, workspaceID, linker string) (workspace.Workspace, error) {
 	switch {
-	case a.WorkspaceID == "" && a.OwnerUserID == "":
-		return workspace.OperatorID, nil
-	case a.WorkspaceID == "":
-		w, err := workspace.PersonalOfTx(ctx, tx, a.OwnerUserID)
+	case workspaceID == "" && linker == "":
+		return workspace.GetTx(ctx, tx, workspace.OperatorID)
+	case workspaceID == "":
+		w, err := workspace.PersonalOfTx(ctx, tx, linker)
 		if errors.Is(err, workspace.ErrNotFound) {
-			return "", fmt.Errorf("%w: the person has no personal workspace", ErrNoWorkspace)
+			return workspace.Workspace{}, fmt.Errorf("%w: the person has no personal workspace", ErrNoWorkspace)
 		}
-		if err != nil {
-			return "", err
-		}
-		return w.ID, nil
+		return w, err
 	}
-	w, err := workspace.GetTx(ctx, tx, a.WorkspaceID)
+	w, err := workspace.GetTx(ctx, tx, workspaceID)
 	if errors.Is(err, workspace.ErrNotFound) {
-		return "", ErrNoWorkspace
+		return workspace.Workspace{}, ErrNoWorkspace
 	}
 	if err != nil {
-		return "", err
+		return workspace.Workspace{}, err
 	}
-	if (w.Kind == workspace.KindOperator) != (a.OwnerUserID == "") {
-		return "", ErrNoWorkspace
+	if (w.Kind == workspace.KindOperator) != (linker == "") {
+		return workspace.Workspace{}, ErrNoWorkspace
 	}
-	return w.ID, nil
+	return w, nil
 }
 
 // Get reads one account.
@@ -418,10 +455,10 @@ func (r *Repository) GetByEmail(ctx context.Context, workspaceID, email string) 
 	return a, err
 }
 
-// WorkspaceFor is the workspace Create would put a into, without creating
-// anything: for a check made before a slow step, which create repeats in its
-// own transaction.
-func (r *Repository) WorkspaceFor(ctx context.Context, a Account) (string, error) {
+// WorkspaceFor is the workspace Create would put a mailbox into, without
+// creating anything: for a check made before a slow step, which create
+// repeats in its own transaction.
+func (r *Repository) WorkspaceFor(ctx context.Context, workspaceID, linker string) (string, error) {
 	// A read-only transaction on the reader pool: nothing here writes.
 	tx, err := r.store.Reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -429,7 +466,11 @@ func (r *Repository) WorkspaceFor(ctx context.Context, a Account) (string, error
 	}
 	//nolint:errcheck // a read-only transaction; nothing to keep or lose
 	defer func() { _ = tx.Rollback() }()
-	return workspaceForTx(ctx, tx, a)
+	w, err := workspaceForTx(ctx, tx, workspaceID, linker)
+	if err != nil {
+		return "", err
+	}
+	return w.ID, nil
 }
 
 // GetVisible reads one account if v may see it, and reports ErrNotFound
@@ -451,14 +492,14 @@ func (r *Repository) List(ctx context.Context) ([]Account, error) {
 	return r.ListVisible(ctx, Visibility{All: true})
 }
 
-// LinkedBy returns the accounts a person linked, in every workspace, oldest
-// first, whatever their access to them now and whether or not they are still
-// active: the mailboxes that sync under their consent.
-func (r *Repository) LinkedBy(ctx context.Context, userID string) ([]Account, error) {
+// OwnedBy returns the mailboxes of a person's personal workspace, oldest
+// first, whether or not they are still active: the mailboxes that sync under
+// their own consent.
+func (r *Repository) OwnedBy(ctx context.Context, userID string) ([]Account, error) {
 	rows, err := r.store.Reader().QueryContext(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE owner_user_id = ? ORDER BY created_at, id`, userID)
 	if err != nil {
-		return nil, fmt.Errorf("account: list linked: %w", err)
+		return nil, fmt.Errorf("account: list owned: %w", err)
 	}
 	//nolint:errcheck // read-only query
 	defer func() { _ = rows.Close() }()
@@ -471,7 +512,7 @@ func (r *Repository) LinkedBy(ctx context.Context, userID string) ([]Account, er
 		out = append(out, a)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("account: list linked: %w", err)
+		return nil, fmt.Errorf("account: list owned: %w", err)
 	}
 	return out, nil
 }
@@ -505,7 +546,18 @@ func (r *Repository) ListVisible(ctx context.Context, v Visibility) ([]Account, 
 
 // Delete removes an account and everything that hangs off it.
 func (r *Repository) Delete(ctx context.Context, id string) error {
+	return r.deleteChecked(ctx, id, nil)
+}
+
+// deleteChecked is Delete with a check run first in its transaction; nil
+// checks nothing.
+func (r *Repository) deleteChecked(ctx context.Context, id string, check func(*sql.Tx) error) error {
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
 		n, err := purgeTx(ctx, tx, []string{id}, r.now().Unix())
 		if err != nil {
 			return err
@@ -528,11 +580,12 @@ type attempt struct {
 	state     string
 }
 
-// deleteOwner removes, in one transaction, every account a person owns — as
-// Delete removes one — and every consent attempt they started on an account
-// they do not own, and then runs also, where the caller deletes the person. It
-// returns the accounts removed and the attempts dropped, which the registry
-// then stops waiting on.
+// deleteOwner removes, in one transaction, the mailboxes that go with a
+// person — their personal workspace's, and those of every team whose only
+// member they are — as Delete removes one, and every consent attempt they
+// started anywhere, and then runs also, where the caller deletes the person.
+// It returns the accounts removed and the attempts dropped, which the
+// registry then stops waiting on.
 func (r *Repository) deleteOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) ([]string, []attempt, error) {
 	var (
 		owned    []string
@@ -548,8 +601,8 @@ func (r *Repository) deleteOwner(ctx context.Context, userID string, before, als
 		if owned, err = ownedTx(ctx, tx, userID); err != nil {
 			return err
 		}
-		// An owner may have started consent on an account the CLI created;
-		// the attempt is theirs, the account is not.
+		// They may have started consent on a mailbox that stays, a team's;
+		// the attempt is theirs, the mailbox is not.
 		if attempts, err = deleteFlowsByTx(ctx, tx, userID); err != nil {
 			return err
 		}
@@ -576,8 +629,17 @@ func (r *Repository) deleteFlowsBy(ctx context.Context, userID string) ([]attemp
 	return attempts, err
 }
 
+// ownedTx lists the mailboxes that go with a person: the ones of their
+// personal workspace, and those of every team whose only member they are,
+// which goes with them.
 func ownedTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE owner_user_id = ? ORDER BY id`, userID)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE owner_user_id = ?1
+		UNION
+		SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
+		 WHERE w.kind = 'team'
+		   AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?1)
+		   AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
+		ORDER BY 1`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("account: list owned: %w", err)
 	}
@@ -1123,7 +1185,8 @@ func scanAccount(row scanner) (Account, error) {
 		&a.SMTPHost, &a.SMTPPort, &a.SMTPTLS, &a.LoginUser, &a.Tenant, &a.OwnerUserID, &a.OAuthClient,
 		&a.SyncTier, &a.SyncTierResolved,
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
-		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated)
+		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated,
+		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, err

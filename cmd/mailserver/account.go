@@ -365,7 +365,9 @@ func accountRemove(ctx context.Context, cfg config.Config, args []string) error 
 			return nil
 		}
 	}
-	if _, err := adminDo(ctx, cfg, "DELETE", "/v1/accounts/"+url.PathEscape(accountID), nil); err != nil {
+	// The daemon removes nothing unless the request repeats the id.
+	if _, err := adminDo(ctx, cfg, "DELETE",
+		"/v1/accounts/"+url.PathEscape(accountID)+"?confirm="+url.QueryEscape(accountID), nil); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "removed")

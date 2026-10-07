@@ -17,10 +17,12 @@ import { actionsConsent } from '../src/state/actionsConsent'
 import { apiKeys } from '../src/state/apikeys'
 import { mcpAccess } from '../src/state/mcp'
 import { consent, syncRequests } from '../src/state/sync'
+import { workspaces } from '../src/state/workspaces'
 import { emptyDraft } from '../src/ui/accountDraft'
 import { locale } from '../src/ui/i18n'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SYNC_TEXT_VERSION } from '../src/open/versions'
 import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED } from '../src/ui/reasons'
+import type { Workspace } from '../src/api/types'
 import { account, ana, syncing } from './support'
 
 const hostile = '<img src=x onerror=alert(1)>'
@@ -53,6 +55,7 @@ afterEach(() => {
   Object.assign(actionsConsent, { loaded: false, consented: false, version: '', consentedAt: 0, currentVersion: '', dismissed: false, busy: '', problem: null, failure: null })
   Object.assign(apiKeys, { list: [], loaded: false, loading: false, failure: null, revoking: '' })
   Object.assign(mcpAccess, { loaded: false, loading: false, served: false })
+  Object.assign(workspaces, { list: [], loaded: false, supported: false, currentID: '', failure: null, lost: null })
   locale.value = 'en'
   vi.unstubAllGlobals()
 })
@@ -331,14 +334,20 @@ describe('sync, as the console shows it', () => {
     const html = await render(AccountsPanel)
     const card = html.match(/<section class="consent-card"(?:(?!<\/section>).)*<\/section>/s)?.[0] ?? ''
     const words = text(card)
-    for (const item of ['keeps an index of the mail in the mailboxes you connect, in your personal workspace or in a team, in its own database', 'who sent it and who it was sent to, with their names',
+    for (const item of ['keeps an index of a mailbox’s mail in its own database', 'who sent it and who it was sent to, with their names',
       'its subject, dates and size', 'the folder it is in, and flags such as read or starred', 'the identifiers that tie a reply to its conversation',
       'the type, size and file name of each part, but not what the part contains', 'Message bodies and attachments are never stored.',
       'Sync starts with the last 90 days', 'except All Mail, Starred and Important in Gmail', 'unless it is among the 10,000 most recent on this server',
-      // Who reads a team mailbox's index, and that turning sync off deletes it for them too (the text's second revision).
-      'Who can read the index: in your personal workspace, only you. In a team, also the members given read access to the mailbox',
-      'Turning sync off deletes the index of every mailbox you connected, team mailboxes included, even while others read them.',
-      'If another member takes over a team mailbox’s link first, its index is kept under their agreement instead of yours.',
+      // Whose agreement a mailbox syncs under, who reads a team mailbox's index, and what turning sync off reaches (the text's third revision).
+      'The mailboxes of your personal workspace sync under your agreement, which you give here.',
+      'A team’s mailbox syncs under the team’s agreement: the owner or admin of the team who connects it, or turns its sync on later, agrees to this same text on the team’s behalf.',
+      'Of a team’s mailbox, the members given read access to it, which only an owner or an admin of the team who reads it can give',
+      'Owners and admins read nothing by their role',
+      'Turning your sync off deletes the index of your personal workspace’s mailboxes only',
+      'Any owner or admin of a team can turn a team mailbox’s sync off, which deletes its index for everyone who reads it',
+      'Closing your account on this server does not remove the mailboxes of a team other people are in, nor their index; a team you are the only member of is deleted with your account, with its mailboxes and their index.',
+      // The upgrade's exception: a team mailbox still under the person's own agreement stops with it until the team agrees.
+      'a team mailbox that still syncs under the agreement you gave for your own mailboxes stays tied to it until an owner or an admin of the team agrees for the team. Until then, turning your sync off, or closing your account, stops it and deletes its index.',
       'Whoever runs this server can read its database, this index included.']) expect(words).toContain(item)
     expect(card).not.toMatch(/<a[^>]*href=/)
     expect(words).not.toMatch(/Mailie|privacy|policy/i)
@@ -405,18 +414,21 @@ describe('sync, as the console shows it', () => {
     expect(html).not.toContain('Stopped')
   })
 
-  it('says a mailbox someone else linked syncs under their consent, and offers none of the person’s own for it', async () => {
+  it('says a team’s mailbox syncs under the team’s agreement, and offers a member none of their own for it', async () => {
     signIn()
     notConsented()
-    // A team mailbox Bea linked and has not agreed to sync: Ana's consent would not sync it.
-    const row = account({ state: 'active', workspace_id: 'wsp_team', linked_by: 'usr_bea', access: { read: true, act: false, send: false, manage: false } })
-    Object.assign(accounts, { list: [row], loaded: true, loading: false })
+    // A mailbox of Support, whose sync its owners and admins have not turned on: Ana's own agreement would not sync it.
+    const team: Workspace = { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'member', status: 'active', created_at: 1_790_000_000 }
+    Object.assign(workspaces, { list: [team], loaded: true, supported: true, currentID: team.id })
+    const row = account({ state: 'active', workspace_id: team.id, access: { read: true, act: false, send: false, manage: false } })
+    Object.assign(accounts, { list: [row], loaded: true, loading: false, workspace: team.id })
     const html = await render(AccountSheet, { account: row })
-    expect(html).toContain('Sync is off for this mailbox. It syncs under the agreement of Another member, who linked it, and they have not turned sync on.')
+    expect(html).toContain('Sync is off for this mailbox. The owners and admins of Support turn it on, for the team.')
     expect(html).not.toContain('Turn on sync…')
     expect(html).not.toContain('Sync now')
     // A mailbox of the person's own still offers it.
-    const own = account({ id: 'acc_own', state: 'active', linked_by: ana.id })
+    Object.assign(workspaces, { list: [], loaded: false, supported: false, currentID: '' })
+    const own = account({ id: 'acc_own', state: 'active' })
     const mine = await render(AccountSheet, { account: own })
     expect(mine).toContain('Sync is off. Nothing from this mailbox is stored.')
     expect(mine).toContain('Turn on sync…')

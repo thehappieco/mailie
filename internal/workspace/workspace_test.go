@@ -65,8 +65,8 @@ func (f *fixture) link(workspaceID, linker, email string) account.Account {
 		ID:    "acc_" + strings.NewReplacer("@", "_", ".", "_").Replace(email) + "_" + workspaceID[len(workspaceID)-4:],
 		Email: email, Provider: provider.KindGmail, AuthKind: "oauth2",
 		IMAPHost: "imap.example.com", IMAPPort: 993, SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPTLS: "implicit",
-		LoginUser: email, OwnerUserID: linker, WorkspaceID: workspaceID,
-	})
+		LoginUser: email, WorkspaceID: workspaceID,
+	}, linker)
 	if err != nil {
 		f.t.Fatalf("link %s: %v", email, err)
 	}
@@ -192,96 +192,275 @@ func TestTheLastOwnerCannotLeaveOrBeDemoted(t *testing.T) {
 	}(), workspace.ErrLastOwner)
 }
 
-func TestTheLinkerCannotBeRemovedWhileTheirMailboxIsLinked(t *testing.T) {
+func TestATeamMailboxNamesNoPersonAndItsLinkerHoldsReadActAndSend(t *testing.T) {
+	// A team mailbox is the team's: no person's, whoever linked it. They
+	// hold read, act and send, and manage it by their role, as every owner
+	// and admin of the team does; who linked it is attribution only.
 	f := newFixture(t)
 	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
 	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleAdmin})
 	shared := f.link(team.ID, bea.ID, "support@example.org")
+	mine := f.link(f.personal(ana.ID), ana.ID, "ana@gmail.com")
 	ctx := t.Context()
 
-	want(t, "removing the linker", f.ws.RemoveMember(ctx, team.ID, bea.ID, nil), workspace.ErrLinker)
-	want(t, "disabling the linker", func() error {
+	if shared.OwnerUserID != "" || shared.LinkedBy != bea.ID || shared.WorkspaceID != team.ID {
+		t.Errorf("the team mailbox: owner %q, linked by %q, in %s", shared.OwnerUserID, shared.LinkedBy, shared.WorkspaceID)
+	}
+	if mine.OwnerUserID != ana.ID || mine.LinkedBy != ana.ID {
+		t.Errorf("the personal mailbox: owner %q, linked by %q", mine.OwnerUserID, mine.LinkedBy)
+	}
+	if g, err := f.ws.Grant(ctx, shared.ID, bea.ID); err != nil || g.Flags != workspace.LinkFlags() || g.GrantedBy != bea.ID {
+		t.Errorf("the linker's grant = %+v, %v; want read, act and send, granted by themselves", g, err)
+	}
+	access, err := f.ws.Access(ctx, ana.ID, []string{shared.ID, mine.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if access[shared.ID] != manageOnly() {
+		t.Errorf("the team's owner, holding no grant, may %+v on its mailbox; want manage by the role, and nothing else", access[shared.ID])
+	}
+	if access[mine.ID] != (workspace.Flags{Read: true, Act: true, Send: true, Manage: true}) {
+		t.Errorf("Ana may %+v on her own mailbox", access[mine.ID])
+	}
+	// The linker is an ordinary member of the team: their grant changes,
+	// and they go, as anyone's does, while someone else reads the mailbox.
+	f.grant(shared.ID, ana.ID, readOnly())
+	if _, err := f.ws.SetGrant(ctx, shared.ID, bea.ID, workspace.Flags{Send: true}, ana.ID, nil); err != nil {
+		t.Errorf("changing the linker's grant: %v", err)
+	}
+	if err := f.ws.RemoveMember(ctx, team.ID, bea.ID, nil); err != nil {
+		t.Errorf("removing the linker: %v", err)
+	}
+	if a, err := f.accounts.Get(ctx, shared.ID); err != nil || a.LinkedBy != bea.ID || a.OwnerUserID != "" {
+		t.Errorf("the mailbox once its linker left: %+v, %v", a, err)
+	}
+}
+
+func TestTheLastReaderCannotLoseReadBeDisabledOrRemoved(t *testing.T) {
+	f := newFixture(t)
+	ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
+	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleAdmin, cid.ID: workspace.RoleMember})
+	shared := f.link(team.ID, bea.ID, "support@example.org")
+	ctx := t.Context()
+
+	// Bea linked it and is its only reader; Ana owns the team and reads
+	// nothing, which no role makes up for.
+	want(t, "revoking the last reader's read", func() error {
+		_, err := f.ws.Revoke(ctx, shared.ID, bea.ID, readOnly(), nil)
+		return err
+	}(), workspace.ErrLastReader)
+	want(t, "setting the last reader's grant without read", func() error {
+		_, err := f.ws.SetGrant(ctx, shared.ID, bea.ID, workspace.Flags{Send: true}, ana.ID, nil)
+		return err
+	}(), workspace.ErrLastReader)
+	want(t, "disabling the last reader", func() error {
 		_, err := f.ws.SetMember(ctx, team.ID, bea.ID, workspace.MemberChange{Status: status(workspace.StatusDisabled)}, nil)
 		return err
-	}(), workspace.ErrLinker)
-	want(t, "changing the linker's grant", func() error {
-		_, err := f.ws.SetGrant(ctx, shared.ID, bea.ID, readOnly(), "usr_x", nil)
-		return err
-	}(), workspace.ErrLinker)
-	want(t, "revoking the linker's grant", func() error {
-		_, err := f.ws.Revoke(ctx, shared.ID, bea.ID, workspace.Flags{}, nil)
-		return err
-	}(), workspace.ErrLinker)
-	// Their role may change: it is not what the mailbox syncs under.
+	}(), workspace.ErrLastReader)
+	want(t, "removing the last reader", f.ws.RemoveMember(ctx, team.ID, bea.ID, nil), workspace.ErrLastReader)
+	// A role change is no loss of read.
 	if _, err := f.ws.SetMember(ctx, team.ID, bea.ID, workspace.MemberChange{Role: role(workspace.RoleMember)}, nil); err != nil {
-		t.Errorf("demoting the linker: %v", err)
+		t.Errorf("demoting the last reader: %v", err)
 	}
 	members, err := f.ws.Members(ctx, team.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, m := range members {
-		if want := map[string]int{ana.ID: 0, bea.ID: 1}[m.UserID]; m.Links != want {
-			t.Errorf("%s is marked with %d links, want %d", m.Email, m.Links, want)
+		wantLast := m.UserID == bea.ID
+		if (len(m.LastReaderOf) == 1 && m.LastReaderOf[0] == shared.ID) != wantLast {
+			t.Errorf("%s is marked the last reader of %v", m.Email, m.LastReaderOf)
 		}
 	}
-	if g, err := f.ws.Grant(ctx, shared.ID, bea.ID); err != nil || !g.All() || g.GrantedBy != bea.ID {
-		t.Errorf("the linker's grant = %+v, %v; want every flag, granted by themselves", g, err)
+	if m, err := f.ws.Member(ctx, team.ID, bea.ID); err != nil || len(m.LastReaderOf) != 1 {
+		t.Errorf("Bea, read alone: %+v, %v", m, err)
+	}
+	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || len(b.LastReaderOf) != 1 || b.LastReaderOf[0] != shared.ID {
+		t.Errorf("closing Bea would be blocked by %+v, %v", b, err)
+	}
+
+	// A reader disabled on the instance reads nothing: Cid with read does
+	// not count while she is off.
+	f.grant(shared.ID, cid.ID, readOnly())
+	if _, err := f.db.Writer().ExecContext(ctx, `UPDATE users SET status = 'disabled' WHERE id = ?`, cid.ID); err != nil {
+		t.Fatal(err)
+	}
+	want(t, "removing the last reader beside one disabled on the instance", f.ws.RemoveMember(ctx, team.ID, bea.ID, nil),
+		workspace.ErrLastReader)
+	if _, err := f.db.Writer().ExecContext(ctx, `UPDATE users SET status = 'active' WHERE id = ?`, cid.ID); err != nil {
+		t.Fatal(err)
+	}
+	// With another reader, Bea goes; and then Cid is the last.
+	if err := f.ws.RemoveMember(ctx, team.ID, bea.ID, nil); err != nil {
+		t.Fatalf("removing a reader while another reads: %v", err)
+	}
+	want(t, "revoking the new last reader", func() error {
+		_, err := f.ws.Revoke(ctx, shared.ID, cid.ID, workspace.Flags{}, nil)
+		return err
+	}(), workspace.ErrLastReader)
+	// A team mailbox nobody reads was never guarded (removing it is the
+	// way out), and a personal mailbox is no team's.
+	if g, err := f.ws.Grant(ctx, shared.ID, cid.ID); err != nil || !g.Read {
+		t.Errorf("the refusals changed Cid's grant: %+v, %v", g, err)
 	}
 }
 
-func TestATakeOverMovesTheLinkAndKeepsTheIndex(t *testing.T) {
+func TestConcurrentRemovalsAlwaysKeepAReader(t *testing.T) {
+	// Two readers, and at the same time each is taken off the mailbox by a
+	// different way: one write has to be refused, whichever commits first.
+	for round := range 8 {
+		f := newFixture(t)
+		ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
+		team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember, cid.ID: workspace.RoleMember})
+		shared := f.link(team.ID, bea.ID, "support@example.org")
+		f.grant(shared.ID, cid.ID, readOnly())
+		ctx := t.Context()
+
+		ways := []func() error{
+			func() error { _, err := f.ws.Revoke(ctx, shared.ID, bea.ID, readOnly(), nil); return err },
+			func() error { return f.ws.RemoveMember(ctx, team.ID, cid.ID, nil) },
+		}
+		if round%2 == 1 {
+			ways[1] = func() error {
+				_, err := f.ws.SetMember(ctx, team.ID, cid.ID, workspace.MemberChange{Status: status(workspace.StatusDisabled)}, nil)
+				return err
+			}
+		}
+		errs := make(chan error, len(ways))
+		start := make(chan struct{})
+		for _, way := range ways {
+			go func() { <-start; errs <- way() }()
+		}
+		close(start)
+		var refused, done int
+		for range ways {
+			switch err := <-errs; {
+			case err == nil:
+				done++
+			case errors.Is(err, workspace.ErrLastReader):
+				refused++
+			default:
+				t.Fatalf("round %d: %v", round, err)
+			}
+		}
+		if done != 1 || refused != 1 {
+			t.Errorf("round %d: %d went through and %d were refused, want one each", round, done, refused)
+		}
+		if n := f.count(`SELECT count(*) FROM mailbox_access g JOIN workspace_members m
+			ON m.workspace_id = g.workspace_id AND m.user_id = g.user_id
+			WHERE g.account_id = ? AND g.read = 1 AND m.status = 'active'`, shared.ID); n != 1 {
+			t.Errorf("round %d: %d readers left, want 1", round, n)
+		}
+	}
+}
+
+func TestManageIsStoredForMembersOnlyAndOwnersAndAdminsManageByRole(t *testing.T) {
 	f := newFixture(t)
-	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
-	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
-	shared := f.link(team.ID, bea.ID, "support@example.org")
+	ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
+	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleAdmin, cid.ID: workspace.RoleMember})
+	shared := f.link(team.ID, ana.ID, "support@example.org")
 	ctx := t.Context()
-	if _, err := f.db.Writer().ExecContext(ctx,
-		`INSERT INTO folders(id, account_id, name, display_name) VALUES (77, ?, 'INBOX', 'Inbox')`, shared.ID); err != nil {
+
+	want(t, "manage stored for an admin", func() error {
+		_, err := f.ws.SetGrant(ctx, shared.ID, bea.ID, workspace.Flags{Read: true, Manage: true}, ana.ID, nil)
+		return err
+	}(), workspace.ErrManageByRole)
+	want(t, "manage stored for the owner", func() error {
+		_, err := f.ws.SetGrant(ctx, shared.ID, ana.ID, workspace.Flags{Read: true, Manage: true}, ana.ID, nil)
+		return err
+	}(), workspace.ErrManageByRole)
+	// Both manage it all the same, and so a consent attempt of theirs
+	// stores its grant; a member does once they hold manage.
+	err := f.db.Write(ctx, func(tx *sql.Tx) error {
+		for _, who := range []string{ana.ID, bea.ID} {
+			if err := workspace.ManagesTx(ctx, tx, shared.ID, who); err != nil {
+				t.Errorf("%s manages the mailbox: %v", who, err)
+			}
+		}
+		if err := workspace.ManagesTx(ctx, tx, shared.ID, cid.ID); !errors.Is(err, workspace.ErrNoGrant) {
+			t.Errorf("a member holding nothing manages it: %v", err)
+		}
+		return nil
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
+	f.grant(shared.ID, cid.ID, manageOnly())
+	if a, err := f.ws.Access(ctx, cid.ID, []string{shared.ID}); err != nil || a[shared.ID] != manageOnly() {
+		t.Errorf("Cid, holding manage, may %+v, %v", a, err)
+	}
 
-	want(t, "a take-over with no grant", func() error { _, err := f.ws.TakeOver(ctx, shared.ID, ana.ID, nil); return err }(),
-		workspace.ErrNeedsFullGrant)
-	f.grant(shared.ID, ana.ID, workspace.Flags{Read: true, Act: true, Send: true})
-	want(t, "a take-over without manage", func() error { _, err := f.ws.TakeOver(ctx, shared.ID, ana.ID, nil); return err }(),
-		workspace.ErrNeedsFullGrant)
-	f.grant(shared.ID, ana.ID, workspace.AllFlags())
+	// Made an admin, Cid manages by the role: the stored flag goes, and a
+	// grant that held nothing else with it.
+	if _, err := f.ws.SetMember(ctx, team.ID, cid.ID, workspace.MemberChange{Role: role(workspace.RoleAdmin)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	want(t, "Cid's grant once an admin", func() error { _, err := f.ws.Grant(ctx, shared.ID, cid.ID); return err }(), workspace.ErrNoGrant)
+	if a, err := f.ws.Access(ctx, cid.ID, []string{shared.ID}); err != nil || a[shared.ID] != manageOnly() {
+		t.Errorf("Cid, an admin, may %+v, %v", a, err)
+	}
 
-	refused := errors.New("has not agreed to sync")
-	want(t, "a take-over the check refuses", func() error {
-		_, err := f.ws.TakeOver(ctx, shared.ID, ana.ID, func(*sql.Tx) error { return refused })
-		return err
-	}(), refused)
+	// A consent attempt an admin started ends when they stop being one:
+	// they manage none of the team's mailboxes then.
+	if _, err := f.db.Writer().ExecContext(ctx, `INSERT INTO oauth_pending(state, account_id, owner_user_id, flow,
+		redirect_uri, expires_at) VALUES ('st-cid', ?, ?, 'web', 'https://c.example/oauth/return', 9999999999)`,
+		shared.ID, cid.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ws.SetMember(ctx, team.ID, cid.ID, workspace.MemberChange{Role: role(workspace.RoleMember)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT count(*) FROM oauth_pending WHERE owner_user_id = ?`, cid.ID); n != 0 {
+		t.Errorf("a demoted admin's consent attempt survived: %d", n)
+	}
+}
 
-	previous, err := f.ws.TakeOver(ctx, shared.ID, ana.ID, nil)
-	if err != nil || previous != bea.ID {
-		t.Fatalf("TakeOver = %q, %v", previous, err)
+func TestARoleOrStatusChangeExpiresTheInvitesThePersonCreated(t *testing.T) {
+	f := newFixture(t)
+	ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
+	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleAdmin, cid.ID: workspace.RoleAdmin})
+	other := f.team("Sales", bea, nil)
+	ctx := t.Context()
+	invite := func(id, workspaceID, createdBy string) {
+		t.Helper()
+		if _, err := f.db.Writer().ExecContext(ctx, `INSERT INTO invites(id, code_hash, email, role, created_by,
+			created_at, expires_at, workspace_id, workspace_role)
+			VALUES (?, randomblob(32), ? || '@example.org', 'member', ?, 1, 9999999999, ?, 'member')`,
+			id, id, createdBy, workspaceID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	a, err := f.accounts.Get(ctx, shared.ID)
-	if err != nil || a.OwnerUserID != ana.ID {
-		t.Fatalf("linked by %q after the take-over (%v)", a.OwnerUserID, err)
+	live := func(id string) bool {
+		t.Helper()
+		return f.count(`SELECT count(*) FROM invites WHERE id = ? AND expires_at > unixepoch()`, id) == 1
 	}
-	if n := f.count(`SELECT count(*) FROM folders WHERE account_id = ?`, shared.ID); n != 1 {
-		t.Errorf("the take-over left %d folders, want the index kept", n)
+	invite("inv_by_bea", team.ID, bea.ID)
+	invite("inv_by_bea_sales", other.ID, bea.ID)
+	invite("inv_by_cid", team.ID, cid.ID)
+	invite("inv_by_ana", team.ID, ana.ID)
+
+	if _, err := f.ws.SetMember(ctx, team.ID, bea.ID, workspace.MemberChange{Role: role(workspace.RoleMember)}, nil); err != nil {
+		t.Fatal(err)
 	}
-	// The previous linker is an ordinary member now, grant and all.
-	if g, err := f.ws.Grant(ctx, shared.ID, bea.ID); err != nil || !g.All() {
-		t.Errorf("the previous linker's grant = %+v, %v", g, err)
+	if live("inv_by_bea") {
+		t.Error("an invite survived its creator's demotion")
 	}
-	if _, err := f.ws.Revoke(ctx, shared.ID, bea.ID, workspace.Flags{}, nil); err != nil {
-		t.Errorf("revoking the previous linker: %v", err)
+	if !live("inv_by_bea_sales") || !live("inv_by_ana") {
+		t.Error("a demotion expired invites made elsewhere or by someone else")
 	}
-	if err := f.ws.RemoveMember(ctx, team.ID, bea.ID, nil); err != nil {
-		t.Errorf("removing the previous linker: %v", err)
+	if err := f.ws.RemoveMember(ctx, team.ID, cid.ID, nil); err != nil {
+		t.Fatal(err)
 	}
-	// Taking over one's own link changes nothing.
-	if previous, err := f.ws.TakeOver(ctx, shared.ID, ana.ID, nil); err != nil || previous != ana.ID {
-		t.Errorf("taking over one's own link = %q, %v", previous, err)
+	if live("inv_by_cid") {
+		t.Error("an invite survived its creator's removal")
 	}
-	operator := f.link(workspace.OperatorID, "", "ops@example.org")
-	want(t, "a take-over of an operator mailbox", func() error { _, err := f.ws.TakeOver(ctx, operator.ID, ana.ID, nil); return err }(),
-		workspace.ErrOperator)
+	// Changing nothing expires nothing.
+	if _, err := f.ws.SetMember(ctx, team.ID, ana.ID, workspace.MemberChange{Role: role(workspace.RoleOwner)}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !live("inv_by_ana") {
+		t.Error("a change that changed nothing expired an invite")
+	}
 }
 
 func TestAGrantOnlyGoesToAnActiveMemberOfTheMailboxesWorkspace(t *testing.T) {
@@ -432,30 +611,6 @@ func TestDisablingAMemberRemovesTheirGrantsAndEnablingDoesNotRestoreThem(t *test
 	}
 }
 
-func TestTheLastManagerCannotLoseManage(t *testing.T) {
-	// The linker always holds manage, so this holds while the linker rule
-	// does; it is checked on its own all the same. The linker's manage is
-	// taken away behind the repository's back to reach it.
-	f := newFixture(t)
-	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
-	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
-	shared := f.link(team.ID, ana.ID, "support@example.org")
-	f.grant(shared.ID, bea.ID, workspace.Flags{Read: true, Manage: true})
-	ctx := t.Context()
-	if _, err := f.db.Writer().ExecContext(ctx,
-		`UPDATE mailbox_access SET manage = 0 WHERE account_id = ? AND user_id = ?`, shared.ID, ana.ID); err != nil {
-		t.Fatal(err)
-	}
-	want(t, "revoking the last manage", func() error {
-		_, err := f.ws.Revoke(ctx, shared.ID, bea.ID, manageOnly(), nil)
-		return err
-	}(), workspace.ErrLastManager)
-	want(t, "removing the last manager", f.ws.RemoveMember(ctx, team.ID, bea.ID, nil), workspace.ErrLastManager)
-	if g, err := f.ws.Grant(ctx, shared.ID, bea.ID); err != nil || !g.Manage {
-		t.Errorf("the refusal changed the grant: %+v, %v", g, err)
-	}
-}
-
 func TestPersonalAndOperatorWorkspacesTakeNoMembersOrGrants(t *testing.T) {
 	f := newFixture(t)
 	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
@@ -490,18 +645,18 @@ func TestPersonalAndOperatorWorkspacesTakeNoMembersOrGrants(t *testing.T) {
 	// nobody linked never anywhere else.
 	if _, err := f.accounts.Create(ctx, account.Account{ID: "acc_x", Email: "x@example.org", Provider: provider.KindGmail,
 		AuthKind: "oauth2", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465, SMTPTLS: "implicit", LoginUser: "x",
-		OwnerUserID: ana.ID, WorkspaceID: workspace.OperatorID}); !errors.Is(err, account.ErrNoWorkspace) {
+		WorkspaceID: workspace.OperatorID}, ana.ID); !errors.Is(err, account.ErrNoWorkspace) {
 		t.Errorf("a linked mailbox in the operator workspace: %v", err)
 	}
 	if _, err := f.accounts.Create(ctx, account.Account{ID: "acc_y", Email: "y@example.org", Provider: provider.KindGmail,
 		AuthKind: "oauth2", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465, SMTPTLS: "implicit", LoginUser: "y",
-		WorkspaceID: personal}); !errors.Is(err, account.ErrNoWorkspace) {
+		WorkspaceID: personal}, ""); !errors.Is(err, account.ErrNoWorkspace) {
 		t.Errorf("a mailbox nobody linked in a personal workspace: %v", err)
 	}
 	// And nobody links into a workspace they are not an active member of.
 	if _, err := f.accounts.Create(ctx, account.Account{ID: "acc_z", Email: "z@example.org", Provider: provider.KindGmail,
 		AuthKind: "oauth2", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465, SMTPTLS: "implicit", LoginUser: "z",
-		OwnerUserID: bea.ID, WorkspaceID: personal}); !errors.Is(err, workspace.ErrNotMember) {
+		WorkspaceID: personal}, bea.ID); !errors.Is(err, workspace.ErrNotMember) {
 		t.Errorf("Bea linking into Ana's personal workspace: %v", err)
 	}
 }
@@ -606,7 +761,7 @@ func TestATeamNameIsChecked(t *testing.T) {
 	}
 }
 
-func TestTheDirectoryShowsAddressesAndGrantsToTheirManagers(t *testing.T) {
+func TestTheDirectoryShowsAddressesGrantsReadersAndTheTeamsConsent(t *testing.T) {
 	f := newFixture(t)
 	ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
 	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember, cid.ID: workspace.RoleMember})
@@ -615,23 +770,41 @@ func TestTheDirectoryShowsAddressesAndGrantsToTheirManagers(t *testing.T) {
 	f.grant(first.ID, bea.ID, workspace.Flags{Read: true, Manage: true})
 	f.grant(second.ID, cid.ID, readOnly())
 	ctx := t.Context()
-
-	all, err := f.ws.Directory(ctx, team.ID, "")
-	if err != nil || len(all) != 2 {
-		t.Fatalf("the whole directory = %+v, %v", all, err)
+	if _, err := f.db.SetMailboxSync(ctx, first.ID, true, ana.ID, "sync-3", nil); err != nil {
+		t.Fatal(err)
 	}
-	for _, mb := range all {
-		if (mb.AccountID != first.ID && mb.AccountID != second.ID) || mb.LinkedBy != ana.ID || len(mb.Grants) != 2 {
-			t.Errorf("in the whole directory: %+v", mb)
+
+	list, err := f.ws.Directory(ctx, team.ID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("the directory = %+v, %v", list, err)
+	}
+	all := map[string]workspace.MailboxAccess{}
+	for _, mb := range list {
+		all[mb.AccountID] = mb
+		if (mb.AccountID != first.ID && mb.AccountID != second.ID) || mb.LinkedBy != ana.ID || len(mb.Grants) != 2 ||
+			mb.Readers != 2 || mb.NoReader {
+			t.Errorf("in the directory: %+v", mb)
 		}
 	}
-	managed, err := f.ws.Directory(ctx, team.ID, bea.ID)
-	if err != nil || len(managed) != 1 || managed[0].AccountID != first.ID || managed[0].Email != "support@example.org" {
-		t.Fatalf("Bea's directory = %+v, %v", managed, err)
+	if c := all[first.ID].Sync; c.At.IsZero() || c.By != ana.ID || c.Version != "sync-3" || c.Migrated {
+		t.Errorf("the first mailbox's consent: %+v", c)
+	}
+	if c := all[second.ID].Sync; !c.At.IsZero() || c.By != "" {
+		t.Errorf("the second mailbox's consent: %+v", c)
 	}
 	access, err := f.ws.Access(ctx, bea.ID, []string{first.ID, second.ID})
 	if err != nil || len(access) != 1 || access[first.ID] != (workspace.Flags{Read: true, Manage: true}) {
 		t.Errorf("Bea's access = %+v, %v", access, err)
+	}
+	// Nobody reading a team mailbox shows, in advance.
+	if _, err := f.db.Writer().ExecContext(ctx, `DELETE FROM mailbox_access WHERE account_id = ?`, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	list, err = f.ws.Directory(ctx, team.ID)
+	for _, mb := range list {
+		if mb.AccountID == second.ID && (err != nil || mb.Readers != 0 || !mb.NoReader) {
+			t.Errorf("a mailbox nobody reads: %+v, %v", mb, err)
+		}
 	}
 }
 
@@ -646,13 +819,16 @@ func TestBlocksNameWhatAPersonWouldLeaveBehindInTheirTeams(t *testing.T) {
 	f.team("Sales", cid, map[string]workspace.Role{ana.ID: workspace.RoleMember})
 	ctx := t.Context()
 
+	// She owns Support, others are in it, and she alone reads its mailbox;
+	// the team she is alone in and her personal workspace block nothing.
 	b, err := f.ws.Blocks(ctx, ana.ID)
-	if err != nil || b.Any() != true || len(b.LastOwnerOf) != 1 || b.LastOwnerOf[0] != support.ID || len(b.Linked) != 0 {
-		t.Fatalf("blocks before anyone reads the mailbox = %+v, %v", b, err)
+	if err != nil || !b.Any() || len(b.LastOwnerOf) != 1 || b.LastOwnerOf[0] != support.ID ||
+		len(b.LastReaderOf) != 1 || b.LastReaderOf[0] != shared.ID {
+		t.Fatalf("blocks = %+v, %v", b, err)
 	}
 	f.grant(shared.ID, bea.ID, readOnly())
 	b, err = f.ws.Blocks(ctx, ana.ID)
-	if err != nil || len(b.Linked) != 1 || b.Linked[0] != shared.ID {
+	if err != nil || len(b.LastReaderOf) != 0 || len(b.LastOwnerOf) != 1 {
 		t.Fatalf("blocks once Bea reads it = %+v, %v", b, err)
 	}
 	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || b.Any() {
@@ -668,6 +844,13 @@ func TestDeletingAPersonTakesTheirPersonalWorkspaceAndTheTeamsTheyWereAloneIn(t 
 	shared := f.link(support.ID, bea.ID, "support@example.org")
 	f.grant(shared.ID, ana.ID, readOnly())
 	ctx := t.Context()
+	// A mailbox Ana linked into Support, and the team's consent to sync it
+	// she gave: both stay, without her name.
+	linked := f.link(support.ID, ana.ID, "ana-linked@example.org")
+	if _, err := f.db.SetMailboxSync(ctx, linked.ID, true, ana.ID, "sync-3", nil); err != nil {
+		t.Fatal(err)
+	}
+	f.grant(linked.ID, bea.ID, readOnly())
 	// Ana grants something to someone else, which keeps but forgets her.
 	cid := f.person("cid@example.org")
 	f.join(support.ID, cid.ID, workspace.RoleMember)
@@ -709,6 +892,10 @@ func TestDeletingAPersonTakesTheirPersonalWorkspaceAndTheTeamsTheyWereAloneIn(t 
 	}
 	if g, err := f.ws.Grant(ctx, shared.ID, cid.ID); err != nil || !g.Read || g.GrantedBy != "" {
 		t.Errorf("the grant Ana gave = %+v, %v; want it kept, without her name", g, err)
+	}
+	if a, err := f.accounts.Get(ctx, linked.ID); err != nil || a.LinkedBy != "" || a.SyncConsent.By != "" ||
+		a.SyncConsent.At == 0 || a.SyncConsent.Version != "sync-3" {
+		t.Errorf("the mailbox Ana linked = %+v, %v; want it kept, its consent standing, without her name", a, err)
 	}
 }
 

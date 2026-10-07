@@ -1,36 +1,48 @@
 # Workspaces
 
-**Status: phase 2, approved by the owner on 2026-10-05, implemented on the server and in the
-console**: migration 0008 and the runner's rebuild procedure, `internal/workspace`, the service's
-authorization on workspaces and grants for every path (REST, MCP, the event stream and the long
-poll), the routes, the command line's commands and the contract fixtures; and the console's screens
-(step 3): the workspace switcher, each mailbox's grant and access panel, taking a link over, and,
-in the open edition, a team's members and invitations. Not yet: the platform's workspace source, of
-which only the stub is here. [`console.md`](console.md) describes the routes as the console reads
-them, and its screens. Where this document had to choose between readings of the
-plan, or found a rule that conflicts with the code or with another rule, it says so in
+**Status:** phase 2 (approved by the owner on 2026-10-05) is implemented on the server and in the
+console: migrations 0008 and 0009 and the runner's rebuild procedure, `internal/workspace`, the
+service's authorization on workspaces and grants for every path (REST, MCP, the event stream and
+the long poll), the routes, the command line and the contract fixtures. **The workspace model of
+2026-10-06** — Mailie follows Wappie's: a team's mailbox belongs to the team, its owners and admins
+manage it by their role, the last reader is protected — was approved by the owner on 2026-10-06,
+and its first step is implemented on the server (migration 0011, the service, the routes, the
+command line, the contract fixtures and the open texts' revisions); the console follows it. Its
+**API keys of the workspace (step 3) are not built yet**: until then a person's keys work as
+[Keys, tools and the operator](#keys-tools-and-the-operator) says. Not yet either: the platform's
+workspace source, of which only the stub is here. [`console.md`](console.md) describes the routes
+as the console reads them, and its screens. Where this document had to choose between readings of
+the plan, or found a rule that conflicts with the code or with another rule, it says so in
 [Conflicts and resolutions](#conflicts-and-resolutions).
 
 ## In short
 
 - Every mailbox belongs to a **workspace**: a person's **personal** workspace, a **team**
   workspace, or the one **operator** workspace, which has no members and is what instance keys and
-  the command line act on.
-- Seeing a mailbox takes two things: **active membership** in its workspace and a **grant** on it.
-  A grant has four flags, `read`, `act`, `send` and `manage`. Whoever links a mailbox gets all four.
-  Owners and admins of a team administer people and grants, but **get no automatic read**, and
-  nobody can hand out a flag they do not hold.
-- **Consents stay per person.** A mailbox syncs under the consent of the person who linked it; an
-  action needs the actor's consent and the `act` flag; a send needs the sender's consent and the
-  `send` flag, and goes out under the sender's name.
+  the command line act on. A personal mailbox is its person's; a team's mailbox is the **team's**,
+  whoever linked it; who linked it is attribution only.
+- Using a mailbox takes **active membership** in its workspace and a **grant** on it: `read`,
+  `act` and `send` each open one use. **Owners and admins manage every mailbox of their workspace
+  by their role** — its card, re-authorizing it, removing it, who holds what — and **read none of
+  them by being one**. `read` passes only from an owner or an admin who reads the mailbox now;
+  `act` (to someone who reads) and `send` from any owner or admin. `manage` is stored only for
+  members, where it means the card and re-authorizing.
+- **Consents.** A personal mailbox syncs under its person's consent; a team mailbox under its
+  **workspace's**, which an owner or an admin gives on the team's behalf, to the current sync text,
+  and any of them withdraws, deleting its index for everyone. A team mailbox also syncs only while
+  someone can read it. An action needs the actor's own consent and the `act` flag; a send the
+  sender's consent and the `send` flag, and goes out under the sender's name.
+- **Protections:** a team keeps an active owner, and a team mailbox someone reads keeps a
+  **reader**. Nobody is protected for having linked a mailbox; there is no taking a link over.
+- Members see only the mailboxes they hold a grant on; only owners and admins (and the operator)
+  see the team's members and who holds what, invite, and remove; a member or an admin does not
+  leave by themselves; an owner leaves while another owner remains.
 - The same address may be linked in several workspaces; each link is an independent mailbox with
   its own credentials, worker and index. Within one workspace an address is linked at most once.
-- `users.role` (`owner`, `member`) becomes purely the **instance role** of a self-hosted server. It
+- `users.role` (`owner`, `member`) is purely the **instance role** of a self-hosted server. It
   gives no mailbox visibility. The first owner comes only from `user invite --bootstrap`.
-- Migration 0008 creates the workspaces and **rebuilds `accounts`**, through a new rebuild
-  procedure in the migration runner that cannot cascade into credentials, folders or messages.
-  Nothing of the index, credentials, folders, messages, events or sends changes. Migration 0009
-  then sets right the two things 0008 could not change (see [Migration 0009](#migration-0009)).
+- Migration 0008 created the workspaces and rebuilt `accounts`; 0009 set right what 0008 could not
+  change; **0011** makes team mailboxes their team's (see [Migration 0011](#migration-0011)).
 
 ## The model
 
@@ -59,8 +71,8 @@ workspaces(id, kind, source, name, person_id, created_at, updated_at)
   personal workspace explicitly, in the deletion's transaction, as their mailboxes are today.
 - A unique partial index on `kind` where `kind = 'operator'` keeps the operator workspace single.
 
-Deleting a team workspace, and moving a mailbox from one workspace to another, are not part of this
-phase.
+A team is deleted only with its last member (`user delete`), with its mailboxes; moving a mailbox
+from one workspace to another is not part of this phase.
 
 ### Members
 
@@ -74,6 +86,11 @@ workspace_members(workspace_id, user_id, role, status, created_at, updated_at)  
 - A disabled membership stays listed but carries no access: disabling deletes the person's grants
   in that workspace in the same transaction, and enabling again restores the membership only, never
   the grants (as Wappie does).
+- Any real change of a member's role or status **expires the invites they created** in that team
+  that are still waiting: each was made under a standing they may no longer have. Being made an
+  owner or an admin takes a stored `manage` away (the role gives it; a schema trigger does it, and
+  a grant that held nothing else goes); losing that role ends the consent attempts they started on
+  the team's mailboxes.
 - A personal workspace's single membership never changes; the operator workspace has none. A
   trigger refuses a membership in the operator workspace, and one in a personal workspace for
   anyone but its person, beside the repository's own check.
@@ -83,10 +100,13 @@ workspace_members(workspace_id, user_id, role, status, created_at, updated_at)  
 ### Mailboxes
 
 - `accounts.workspace_id` is required and never changes (a trigger refuses an update).
-- `accounts.owner_user_id` keeps its name and now means **linked by**: the person who linked the
-  mailbox, whose sync consent it syncs under. It is `NULL` exactly for the operator workspace's
-  mailboxes; a trigger refuses any other combination. In prose, the API and Go comments it is
-  "linked by"; the column keeps its name (see [conflict 12](#conflicts-and-resolutions)).
+- `accounts.owner_user_id` means what its name says: **the person whose mailbox it is**. It is set
+  exactly for a mailbox of a personal workspace, to that workspace's person, and `NULL` for a team's
+  and for the operator's; a trigger refuses any other combination (0011 replaced 0008's "linker"
+  triggers). A team's mailbox belongs to the team.
+- `accounts.linked_by` is **attribution only**: who linked the mailbox (`usr_…`, `key:<prefix>` or
+  `cli`). It decides nothing, is shown only in the access directory, and is blanked when that
+  person is deleted.
 - Addresses are unique per workspace, `UNIQUE (workspace_id, email)` with `email COLLATE NOCASE`,
   instead of across the daemon. A second link of an address already linked in the same workspace is
   `409` with the generic "that address is already connected".
@@ -106,20 +126,18 @@ Who may link a mailbox:
 | a team workspace | an `owner` or `admin` of it | a session |
 | the operator workspace | the operator | an unrestricted instance admin key |
 
-The plan does not say who links into a team; this document makes it an owner's or admin's act,
-because a link puts a mailbox's index in a space the team shares. A member asks.
+The person who links a mailbox gets `read`, `act` and `send` on it in the transaction that creates
+it, which re-checks their membership and role there (like `CheckOwnersWith`); they manage it by
+their role. They also start, and own, its OAuth consent flow: only they finish it, whoever else
+manages the mailbox. `POST /v1/accounts` takes an optional `workspace_id`; without it a person links
+into their personal workspace and an instance key into the operator workspace. Into a team it also
+takes `sync_consent_version`: naming the current revision of the sync text gives the team's consent
+to sync it, on the team's behalf, in the same transaction; left out, the mailbox is linked with sync
+off, until an owner or an admin turns it on. A personal or operator link refuses it.
 
-The linker gets a grant with all four flags in the transaction that creates the mailbox, which
-re-checks their membership and role there (like `CheckOwnersWith` today). `POST /v1/accounts` takes
-an optional `workspace_id`; without it a person links into their personal workspace and an instance
-key into the operator workspace.
-
-A team mailbox syncs at once under its linker's consent, so linking into a team also needs that
-consent, when there is one, to be to the current revision of the sync text
-(`MAIL_CONSENT_VERSION_SYNC`): an earlier one may not say who reads a team mailbox's index, and is
-refused with `409` until the person agrees to the current text. With no consent at all the link is
-made, and nothing syncs until they agree, which they can only do to the current text. The same
-transaction re-checks it (`Service.syncCoversTeamTx`).
+Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`), or nothing is removed
+(`400`). A team's mailbox is its owners' and admins' to remove, a personal one its person's, an
+operator one the operator's.
 
 ### Grants
 
@@ -134,23 +152,28 @@ mailbox_access(account_id, workspace_id, user_id, read, act, send, manage, grant
 
 `workspace_id` is carried on the grant so that the two composite foreign keys make "a grant only
 for a member of the mailbox's own workspace" a property of the schema, and make removing a member
-or a mailbox take the grants with it. A row with no flag left is deleted, never stored.
+or a mailbox take the grants with it. A row with no flag left is deleted, never stored. Since 0011
+a trigger refuses a stored `manage` for an owner or an admin of the grant's workspace.
 
 | Flag | Lets the holder | Requires |
 |---|---|---|
 | `read` | search and read messages, fetch originals and attachments, list folders, receive the mailbox's events, see its storage, ask for a sync pass (with the `write` scope) | |
 | `act` | mark read or unread, star, archive, move, trash, undo a move | `read` (an action names messages the caller can read), and the actor's actions consent |
 | `send` | send from the mailbox, read the records of their own sends | the sender's send consent; a reply or forward also needs `read` on the original |
-| `manage` | re-authorize the mailbox, remove it, see and change who has access to it (within the [grant rules](#who-may-change-a-grant)) | |
+| `manage` | see the mailbox's card and re-authorize it | held by owners and admins through their role, on every mailbox of their workspace, who also remove it and change who holds what on it; stored only for members |
+
+**Effective manage** is one SQL expression, as Wappie's `role IN ('owner','admin') OR can_manage`:
+the role, or a stored `manage` of a member. It never opens the index.
 
 Two levels of seeing follow from this:
 
-- **Any grant** shows the mailbox in `GET /v1/accounts`, `GET /v1/accounts/{id}` and
-  `GET /v1/accounts/{id}/sync`: its card (address, provider, state, sync status, `access`).
+- **Any grant, or managing it by the role**, shows the mailbox in `GET /v1/accounts`,
+  `GET /v1/accounts/{id}` and `GET /v1/accounts/{id}/sync`: its card — address, provider, state,
+  sync counters, `access` — and nothing it holds: no subject, no correspondent, no folder name.
 - **`read`** opens its index: folders, messages, events, storage.
 
-Without any grant the mailbox does not exist for the caller (`404`). With a grant but without the
-flag an operation needs, it is `403 not_authorized`.
+Without any grant or role the mailbox does not exist for the caller (`404`). With the card but
+without the flag an operation needs, it is `403 not_authorized`.
 
 ### People on the instance
 
@@ -158,14 +181,12 @@ flag an operation needs, it is `403 not_authorized`.
 
 - An instance `owner` may invite people to the server, disable and delete people, and is the only
   role that may change the server's instance-level settings (none is changed over the API yet).
-- It gives **no mailbox visibility**. Today an owner also sees, acts on and sends from the mailboxes
-  nobody owns; those become the operator workspace's, reached only by instance keys and the command
-  line. No person ever gets operator powers through the operator workspace.
+- It gives **no mailbox visibility**. Mailboxes nobody's are the operator workspace's, reached only
+  by instance keys and the command line. No person ever gets operator powers through the operator
+  workspace.
 - The first owner comes only from `mailserver user invite --bootstrap --role owner`. The rule
-  "whoever signs up first becomes an owner, whatever the invite says" (`auth.SignUp`) goes, with its
-  warnings in the command line and the startup hint, and with the README's and
-  `self-hosting.md`'s wording. See [conflict 6](#conflicts-and-resolutions) for the bootstrap
-  default.
+  "whoever signs up first becomes an owner, whatever the invite says" (`auth.SignUp`) is gone (see
+  [conflict 6](#conflicts-and-resolutions) for the bootstrap default).
 
 Invitations stay single use, bound to one address, valid for 7 days, and their code travels in the
 link's fragment. There are two kinds, in the same `invites` table:
@@ -193,32 +214,65 @@ the same address, and a sign-up also the instance invites still waiting for that
 never sign it up again (and would count as an owner on the way); only an instance owner's or the
 operator's team invite signs anyone up, the same people who make instance invites. A member leaving
 a team — removed, or their membership disabled — takes the team's invites still waiting for their
-address with them.
-Otherwise a duplicate invite made before they joined would let a removed person back in, with the
-role it names, within its 7 days. An invite to another team stays: that team decided it.
+address with them. Otherwise a duplicate invite made before they joined would let a removed person
+back in, with the role it names, within its 7 days. An invite to another team stays: that team
+decided it.
+
+An invite also **expires with its creator's standing** (Wappie's rule): when their role or status
+in the team changes, when they are removed from it, and, for every invite they made, instance and
+team alike, when they are disabled or deleted on the instance. The record stays, and the hourly
+sweep deletes it 30 days on; deleting the person then blanks `created_by`. Migration 0011 expired
+the invites whose creator could no longer make them.
 
 ### Consents
 
-Consents stay per person, exactly as today (`users.*_consent_at` and `*_version`):
-
 | Use | Whose consent | And |
 |---|---|---|
-| Sync (storing the index) | the mailbox's **linker** (`owner_user_id`), as `store/eligibility.go` reads it today: unchanged | an operator mailbox syncs when the operator switches it on, as today |
+| Sync of a personal mailbox (storing the index) | its **person**'s (`users.sync_consent_*`), as `store/eligibility.go` reads it | |
+| Sync of a team mailbox | its **workspace**'s, on the mailbox: `sync_enabled_at`, `sync_enabled_by` (who gave it, an id), `sync_consent_version` (the revision of the sync text) | someone reads it: an active member, active on the instance, holding `read` |
+| Sync of an operator mailbox | the operator's switch, in the same columns, with no revision | |
 | Actions | the **actor**'s, at the current revision | the actor's `act` flag |
 | Sending | the **sender**'s, at the current revision | the sender's `send` flag |
 | `\Answered` after a reply | the sender's actions consent | the sender's `act` flag |
 
-- The From name is the **sender's** profile name (`fromName` reads the caller, not the linker), so
-  an account's `send.from_name` is per caller. An instance key sends under the address alone.
-- Withdrawing the sync consent deletes, in the same transaction, the index of every mailbox the
-  person **linked**, in every workspace, including team mailboxes other members read. The console
-  has to say so before the person confirms; [taking over](#taking-over-a-link) a link first is how
-  a team keeps it.
-- A consent to an earlier revision of the sync text keeps syncing what it covered, as for any
-  revision, but brings no team mailbox under it: a link into a team and a take-over need the
-  current revision (see [Mailboxes](#mailboxes) and [Taking over a link](#taking-over-a-link)).
-- Disabling a person on the instance stops the sync of every mailbox they linked (the eligibility
-  rule requires the linker to be active); the index stays until they are enabled again or deleted.
+- An owner or an admin gives a team mailbox's consent on the team's behalf, signed in, to the
+  current revision of the sync text (`MAIL_CONSENT_VERSION_SYNC`, the same text that covers
+  personal mailboxes): with the link (`sync_consent_version`) or later
+  (`PUT /v1/accounts/{id}/sync` `{"enabled": true, "version": "…"}`). It is recorded separately,
+  per mailbox, even when the person also agreed for themselves. A consent to an earlier revision
+  keeps syncing, as a person's does; agreeing again takes the current one.
+- Any owner or admin turns it off (`{"enabled": false}`): the same transaction deletes the
+  mailbox's index for every reader — its messages, folders and events — and the service compacts
+  and scrubs.
+- A person's withdrawal of their own sync consent deletes the index of **their personal
+  mailboxes only**; it never reaches a team's (but for a migrated consent still bound to them,
+  below).
+- Disabling, removing or closing a person does not stop a team mailbox of a team others are in,
+  nor remove it: it is the team's — but for a migrated consent still bound to them, below, and a
+  mailbox only they read, which no reader is left for. Disabling a person stops their personal
+  mailboxes (the eligibility rule requires the person active); deleting them removes those, and
+  every team whose only member they were, with its mailboxes. The open sync text says both.
+- A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
+  admins see it marked (`no_reader`). Read passes only from someone who reads it, so its sync is
+  never turned on again (`409`), and the way out is removing it, or removing it and linking it
+  again (the linker gets `read`); turning it off deletes what is still indexed.
+- **A migrated consent stays bound to its linker.** Migration 0011 copied each team mailbox's
+  linker's own consent (when the linker was active and had agreed) to the mailbox, with its date
+  and revision, and marked it (`sync_enabled_via = 'migration'`, `sync_enabled_by` = the linker).
+  The text they agreed to promised that turning their sync off deletes the index of every mailbox
+  they linked; until an owner or an admin confirms the team's consent at the current revision —
+  which replaces the mark — that promise holds: the linker withdrawing their consent, or being
+  disabled or deleted on the instance, stops the mailbox and deletes its index in the same
+  transaction (`store.StopBoundTx`). While someone else reads such a mailbox, disabling or
+  deleting its linker on the instance is refused without `force`, naming it (`Blocks.BoundTo`),
+  since it deletes that reader's index; with `force`, the answer lists what stopped
+  (`team_syncs_stopped`). A team mailbox whose linker was disabled at the migration kept its index
+  and stays stopped, bound the same way (its consent off), until an owner or an admin turns it on
+  for the team, or off, or removes it; deleting the linker deletes that index, and disabling them
+  again changes nothing. The daemon lists these at start; one only the disabled linker read is
+  listed as read by nobody instead, and can only be removed or turned off.
+- The From name is the **sender's** profile name (`fromName` reads the caller), so an account's
+  `send.from_name` is per caller. An instance key sends under the address alone.
 
 ## Who may do what
 
@@ -226,18 +280,15 @@ Consents stay per person, exactly as today (`users.*_consent_at` and `*_version`
 
 | Operation | A person (session, or their key within its scope) | An instance key |
 |---|---|---|
-| list it, read its card | any grant | operator mailbox |
+| list it, read its card | any grant; or owner or admin of its workspace, by the role | operator mailbox |
 | folders, search, read, originals, attachments, events, storage | `read` | operator mailbox, `read` scope |
 | ask for a sync pass | `read`, `write` scope | operator mailbox, `write` scope |
-| switch sync on or off | never (their sync consent decides) | operator mailbox, unrestricted admin key |
+| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent); a personal one: never (its person's own consent decides) | operator mailbox, unrestricted admin key |
 | act | `act`, actions consent, `write` scope | operator mailbox, `write` scope |
 | send, read own send records | `send`, send consent, a session (personal keys never have `send`) | operator mailbox, `send` scope |
-| re-authorize, remove | `manage`, a session | operator mailbox, `admin` scope |
+| re-authorize | manage (owner or admin, or a member holding `manage`), a session | operator mailbox, `admin` scope |
+| remove (repeating its id) | a team's: its owners and admins; a personal one: its person; a session | operator mailbox, `admin` scope |
 | restrict a new key to it | `read` | operator mailbox |
-
-A person's key reaches only what that person can, at the moment of each request: the visibility
-rule runs in SQL on every call, so **a key never reaches a mailbox its person lost access to**. A
-key restricted to mailboxes reaches only those, as today.
 
 ### Administering a workspace
 
@@ -245,42 +296,50 @@ key restricted to mailboxes reaches only those, as today.
 |---|---|---|---|---|
 | list my workspaces | yes | yes | yes | sees every workspace |
 | rename the team | yes | yes | no | yes |
-| list members | yes | yes | yes | yes |
+| list members | yes | yes | no (`403`) | yes |
+| see the access directory | every mailbox | every mailbox | no (`403`) | every mailbox |
+| see each team mailbox's card | every one, by the role | every one, by the role | those they hold a grant on | operator mailboxes only |
 | invite | any role | `member` only | no | any role |
 | list and revoke pending invites | yes | yes, `member` invites | no | yes |
 | change a role or status | anyone's | members' only, never to `admin` or `owner` | no | anyone's |
-| remove a member | anyone | members only | only themselves (leave) | anyone |
-| link a mailbox | yes | yes | no | no (operator mailboxes only) |
-| see the access directory | every mailbox | every mailbox | mailboxes they `manage` | every mailbox |
-| grant | within the grant rules | within the grant rules | if they hold `manage` on it, within the grant rules | `manage` only |
-| revoke | yes | yes | if they hold `manage` on it; their own flags always | yes |
+| remove a member | anyone, themselves included while another active owner remains | members only, never themselves | no one, not themselves | anyone |
+| link a mailbox; give or withdraw the team's consent to sync it | yes | yes | no | no (operator mailboxes only) |
+| remove a mailbox | yes | yes | no | operator mailboxes only |
+| re-authorize a mailbox | yes | yes | with a stored `manage` on it | operator mailboxes only |
+| grant `read` | on a mailbox they read themselves, now | likewise | no | no |
+| grant `act` | to someone who reads after the change, themselves included | likewise | no | no |
+| grant `send` | to any active member, themselves included | likewise | no | no |
+| grant `manage` | to members | to members | no | to members |
+| revoke | any flag, their own included | any flag, their own included | no, not their own | any flag |
 
 Any person may create a team, with a session, and becomes its owner; the operator creates one for
-a named existing person. Personal workspaces have no administration: no invites, no other members,
-no renaming. The
-operator workspace has no members, grants or invites. Every row is subject to the
-[protections](#protections). A person's key never administers anything: these routes take a
-session or the operator's key.
+a named existing person. A personal workspace's person is its owner, and holds every power above
+in it, with `read`, `act` and `send` on each of its mailboxes; personal workspaces have no invites,
+other members or renaming. The operator workspace has no members, grants or invites. Every row is
+subject to the [protections](#protections). A person's key never administers anything: these routes
+take a session or the operator's key.
 
 ### Who may change a grant
 
-1. **Who.** An owner or admin of the mailbox's workspace, or a member holding `manage` on that
-   mailbox. The operator may revoke, and grant `manage`.
-2. **What.** `read`, `act` and `send` can only be granted by someone who holds that flag on the
-   mailbox themselves; `manage` by an owner, an admin or a holder of `manage`. Access to mail passes
-   only from someone who already has it: this is Mailie's form of Wappie's rule that read access
-   needs a key grant from a client holding the key, and it is what makes "owners and admins get no
-   automatic read" true rather than one click away ([conflict 2](#conflicts-and-resolutions)).
-   Losing `manage` — the flag revoked, or the person's place in the workspace — ends, in the same
-   transaction, the consent attempts they started on that mailbox (`oauth_pending`). Storing what a
-   consent produced checks again, in its own transaction, that its starter still manages the
-   mailbox, or for an attempt an instance key started that the mailbox is the operator's
-   (`workspace.ManagesTx`, installed by the service with `account.Registry.CheckFlowsWith`): a
-   loopback listener or a device poll the daemon finishes by itself, which no request re-checks,
-   stores nothing for someone who stopped managing the mailbox while the person was signing in.
+1. **Who.** An active owner or admin of the mailbox's workspace, re-read inside the transaction; or
+   the operator, who grants `manage` to members and revokes. A member who holds a grant on it sees
+   the mailbox and is `403`; anyone else is `404`.
+2. **What.** `read` that the person did not hold passes only from an owner or an admin who **reads
+   the mailbox themselves, now**, checked in the same transaction: this stands in for Wappie's
+   sealed grant, which only a holder of the device key can pass on, and it is what makes "owners
+   and admins read nothing by their role" true rather than one click away. `act` needs `read` after
+   the change (`CHECK act = 0 OR read = 1`), and `send` nothing: any owner or admin gives them, to
+   anyone, themselves included, without holding them. `manage` is stored for members only; for an
+   owner or an admin it is `400` ("owners and admins manage every team mailbox by their role").
+   Losing `manage` ends, in the same transaction, the consent attempts the person started on that
+   mailbox (`oauth_pending`). Storing what a consent produced checks again, in its own transaction,
+   that its starter still manages the mailbox, or for an attempt an instance key started that the
+   mailbox is the operator's (`workspace.ManagesTx`, installed by the service with
+   `account.Registry.CheckFlowsWith`).
 3. **To whom.** An active member of the mailbox's workspace. Nobody else, and nobody in a personal
-   or the operator workspace but the person and the operator respectively.
-4. **Revoking** is any of the above, or the person dropping their own flags.
+   or the operator workspace.
+4. **Revoking** any flag is an owner's, an admin's or the operator's, under the
+   [last-reader rule](#protections); an owner or an admin drops their own flags, a member does not.
 5. The grant records `granted_by` (`usr_…`, `key:<prefix>`, `cli`, or `migration`).
 
 ### Instance administration
@@ -297,36 +356,41 @@ session or the operator's key.
 
 Each is checked inside the transaction that would break it, re-reading the actor's own authority
 there, and refused with `409 conflict`. The member and access listings mark them in advance
-(`last_owner`, `links`, `linked_by`) so a console can explain before anyone tries, as Wappie's
-directory does; the mutation enforces them regardless.
+(`last_owner`, `last_reader_of`, `readers`, `no_reader`) so a console can explain before anyone
+tries, as Wappie's directory does; the mutation enforces them regardless.
 
 | | Refused | The way out |
 |---|---|---|
 | **Last owner** | demoting, disabling or removing the last active owner of a team, or that owner leaving | promote another member first |
-| **Linker** | removing or disabling the linker of a mailbox still linked in that workspace, or changing any flag of the linker's grant on it | the linker removes the mailbox, or another member [takes the link over](#taking-over-a-link) |
-| **Last manager** | the last holder of `manage` on a linked mailbox losing it | always satisfied while the linker rule holds (the linker holds `manage`); kept as its own check |
-| **Personal** | any change to a personal workspace's membership; an invite into one | |
+| **Last reader** | taking `read` from the last person who can read a team mailbox — revoking it, disabling or removing their membership, leaving, closing their account without `force` | give another member `read` first (an owner or an admin who reads it can), or remove the mailbox |
+| **Personal** | any change to a personal workspace's membership; an invite into one; a grant change on one of its mailboxes | |
 | **Operator** | a membership, grant or invite in the operator workspace | |
 
+The **last-reader rule** is Mailie's form of Wappie's `requireRemainingReader`: a team mailbox with
+at least one reader is never left with none. A reader is an active member, active on the instance,
+holding `read`; keys, disabled members and a role on its own never count ("ownership is not a
+recovery path"). Removing the mailbox is not guarded, nor is a role change. The database has one
+writer, so two changes that would each leave one reader are ordered, and the second is refused.
+The refusal says: "that is the last person who can read a mailbox of the workspace; give another
+member read on it first, or remove the mailbox".
+
 On the instance, `user disable` and `user delete` also refuse, unless `force`, a person who is the
-last active owner of a team with other active members, or the linker of a team mailbox that another
-active member can read; the instance's own last-owner rule stays as it is. With `force`, a team can
-be left without an owner (the operator assigns one with `mailserver member role`), and deleting a
-linker removes every mailbox they linked, everywhere, with its index, because the consent it synced
-under goes with them. A team whose only member is deleted is deleted with them, together with the
-mailboxes in it, which they linked.
+last active owner of a team with other active members; the last reader of a team mailbox of a team
+that outlives them — any other member remains, whatever their status, since a team goes only with
+its last member and nobody could read the mailbox again; or the linker a migrated team consent is
+still bound to while someone else reads that mailbox. The instance's own last-owner rule stays as
+it is. With `force`, a team can be left without an owner (the operator assigns one with `mailserver
+member role`), a team mailbox without a reader, which then syncs nothing and is marked
+`no_reader`, and a bound mailbox stopped with its index deleted.
+Deleting a person removes the mailboxes of their personal workspace and every team whose only member
+they were, with its mailboxes, through the account registry's usual clean-up (workers, cached
+credentials, consent attempts, compaction); a team mailbox of a team others are in stays.
 
 ### Taking over a link
 
-`POST /v1/accounts/{id}/take-over` (a session) makes the caller the mailbox's linker. The caller
-must hold all four flags on it, be allowed to link into its workspace (owner or admin of a team),
-and have agreed to sync, to the current revision of its text; otherwise `409`. In one transaction
-`owner_user_id` becomes the caller; the previous linker keeps their grant as an ordinary one, no
-longer protected. The index is kept: from that moment it is stored under the new linker's consent,
-which covers it because it was given to the current text, the one that says who reads a team
-mailbox's index (an earlier one may not, so a consent to it is refused here, as for a link into a
-team). This is the step that lets a team keep a mailbox when the person who linked it leaves (see
-[conflict 1](#conflicts-and-resolutions)).
+Gone with the linker. Phase 2 kept a team mailbox syncing under its linker's consent, so the linker
+was protected and `POST /v1/accounts/{id}/take-over` moved the link to someone else; a team mailbox
+is the team's now, and that route answers `404`.
 
 ## Errors
 
@@ -334,19 +398,23 @@ The seven codes do not change.
 
 | Situation | Code |
 |---|---|
-| a mailbox with no grant for the caller, another workspace's mailbox, a workspace the caller is not an active member of | `404 not_found`, never `403` |
-| a mailbox the caller sees, without the flag the operation needs; a role that may not do this; a person's key on an administration route | `403 not_authorized` |
-| a protection; a missing consent; a platform-sourced workspace changed locally | `409 conflict` |
-| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read` | `400 bad_request` |
+| a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of | `404 not_found`, never `403` |
+| a mailbox the caller sees, without the flag the operation needs; a role that may not do this (a member listing members, leaving, granting); a person's key on an administration route | `403 not_authorized` |
+| a protection; a platform-sourced workspace changed locally; a missing actions or send consent | `409 conflict` |
+| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one | `400 bad_request` |
 
 ## Keys, tools and the operator
 
+The approved model makes every API key its workspace's, created by an owner or an admin, with
+mailboxes given by someone who reads them (step 3 of the plan of 2026-10-06, **not built yet**).
+Until it is, keys work as phase 2 made them:
+
 - **Instance keys** (no person) reach only the operator workspace's mailboxes, over REST and MCP
-  alike. Today an instance key over REST sees every mailbox and can read a person's index; that ends
-  ([conflict 3](#conflicts-and-resolutions)). A restriction to accounts keeps working, and may name
-  only operator mailboxes, through the route and through `apikey create --bootstrap` alike.
+  alike ([conflict 3](#conflicts-and-resolutions)). A restriction to accounts keeps working, and may
+  name only operator mailboxes, through the route and through `apikey create --bootstrap` alike.
 - **Person keys** reach what their person can, live, within their scope (`read` or `write`) and
-  their optional restriction. Losing `read` on a mailbox also deletes it from the restrictions of
+  their optional restriction: the cards of what their person manages by a role included, and
+  never the index of a mailbox their person does not read. Losing `read` on a mailbox also deletes it from the restrictions of
   that person's keys in the same transaction, so a key made for that mailbox alone is revoked by
   0005's trigger, as when a mailbox is removed today, rather than waking up again if the person is
   granted access later. A key with other mailboxes left keeps working for those. What a caller
@@ -383,7 +451,10 @@ see it, assuming that never changes. With grants it does:
 
 - The service keeps an **access epoch**, a counter it advances after every commit that can give or
   take `read` from someone: a grant set or revoked, a membership disabled or removed, a mailbox
-  removed or taken over, a person disabled or deleted. One daemon writes the database (the lock),
+  linked or removed, a person disabled or deleted. A role never gives `read`, so a role change
+  moves nothing a stream carries; an owner's or an admin's stream carries a team mailbox's events
+  only while they hold `read` on it. Switching a team mailbox's sync off deletes its events with
+  its index; nothing journals the switch itself. One daemon writes the database (the lock),
   so a counter in memory sees every change; the `--bootstrap` commands run with the daemon stopped.
 - Each subscription keeps the set of mailboxes the caller can read and the epoch it read it at.
   Before deciding on an event, if the epoch moved, it reads the set again (one query). Events are
@@ -445,28 +516,31 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `GET /v1/workspaces` | read | `[Workspace]`: a person's active memberships; an instance key the operator workspace; the operator every workspace |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team, `local` source only |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
-| `GET /v1/workspaces/{id}/members` | member; operator | `[Member]` |
+| `GET /v1/workspaces/{id}/members` | owner or admin; operator (a member: `403`) | `[Member]` |
 | `PATCH /v1/workspaces/{id}/members/{user_id}` | see the table; operator | `{role?, status?}` → `Member` |
-| `DELETE /v1/workspaces/{id}/members/{user_id}` | see the table; the member themselves; operator | `204` |
+| `DELETE /v1/workspaces/{id}/members/{user_id}` | see the table (an owner themselves while another owner remains); operator | `204` |
 | `GET /v1/workspaces/{id}/invites` | owner or admin; operator | `[Invite]`, pending only |
 | `POST /v1/workspaces/{id}/invites` | owner or admin; operator | `{email, role}` → `Invite` with its `url` (201) |
 | `DELETE /v1/workspaces/{id}/invites/{invite_id}` | owner or admin; operator | `204`; the unused invite is deleted |
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins with the invite's role |
-| `GET /v1/workspaces/{id}/access` | owner or admin: every mailbox; a `manage` holder: theirs; operator | `[MailboxAccess]` |
+| `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`, every mailbox of the workspace |
 | `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant); session; operator for `manage` | `{read, act, send, manage}`, all four required, not all false → `Grant` |
-| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | see the grant rules; the person themselves; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it |
-| `POST /v1/accounts/{id}/take-over` | session | → `Account`; see [Taking over a link](#taking-over-a-link) |
+| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it |
+
+Gone: `POST /v1/accounts/{id}/take-over` (`404`; see [Taking over a link](#taking-over-a-link)).
 
 Changed routes:
 
 | Route | Change |
 |---|---|
-| `POST /v1/accounts` | optional `workspace_id`; who may link where, as [above](#mailboxes) |
+| `POST /v1/accounts` | optional `workspace_id`; who may link where, as [above](#mailboxes); into a team, optional `sync_consent_version` (the current sync text: the team's consent, given with the link) |
+| `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
-| `DELETE /v1/accounts/{id}`, `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | `manage` (callback: the flow is still only its starter's) |
-| `PUT /v1/accounts/{id}/sync` | unchanged: operator mailboxes, the operator |
+| `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners and admins, a personal mailbox's person, the operator for its own |
+| `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's) |
+| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; `400` for a personal mailbox; `409` to turn on a team mailbox nobody can read. Answers `AccountSync` |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
-| `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections |
+| `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
 | `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)) |
 
 Shapes:
@@ -477,15 +551,24 @@ Shapes:
  "role": "admin", "status": "active", "created_at": 1790000000}
 // the operator's listing has no role or status, and adds "members" and "mailboxes" counts
 
-// Member ("person_disabled": true only for a person switched off on the instance)
+// Member ("person_disabled": true only for a person switched off on the instance; last_reader_of
+// lists the team mailboxes they alone read, always present)
 {"user_id": "usr_…", "email": "bea@example.org", "name": "Bea Lima", "role": "member",
- "status": "active", "last_owner": false, "links": 1, "joined_at": 1790000000}
+ "status": "active", "last_owner": false, "last_reader_of": ["acc_…"], "joined_at": 1790000000}
 
-// MailboxAccess, whose grants are each a Grant
+// MailboxAccess, whose grants are each a Grant. linked_by is attribution only (absent once that
+// person is deleted); readers counts who can read it; no_reader marks a team mailbox nobody can
+// read; sync is the mailbox's own consent (absent for a personal mailbox): migrated marks one the
+// upgrade copied from its linker and nobody confirmed yet, current whether version is the
+// revision asked for now.
 {"account_id": "acc_…", "email": "support@example.org", "provider": "gmail", "state": "active",
- "linked_by": "usr_…",
+ "linked_by": "usr_…", "readers": 2, "no_reader": false,
+ "sync": {"enabled": true, "enabled_at": 1790000000, "enabled_by": "usr_…",
+          "version": "2026-10-open-sync-3", "current": true},
  "grants": [{"account_id": "acc_…", "user_id": "usr_…", "read": true, "act": true, "send": true,
-             "manage": true, "granted_by": "migration", "updated_at": 1790000000}]}
+             "manage": false, "granted_by": "migration", "updated_at": 1790000000}]}
+// a Grant's manage is the stored flag, which only a member holds; owners and admins manage by
+// their role, which the members list says
 
 // TeamInvite (role is the role in the team; url only in the answer that creates it). An instance
 // invite keeps the shape POST /v1/users/invites always answered: {email, role, url, expires_at}.
@@ -494,18 +577,18 @@ Shapes:
  "expires_at": 1790604800}
 ```
 
-`Account` gains:
+`Account` gains (and, since 0011, no longer carries `linked_by`):
 
 ```jsonc
 {
   "workspace_id": "wsp_…",
-  "linked_by": "usr_…",                     // absent for an operator mailbox
   "access": {"read": true, "act": true, "send": true, "manage": true},
   "send": {"available": false, "reason": "not_granted"}
 }
 ```
 
-`access` is the caller's grant; for an instance key, what its scope allows on an operator mailbox.
+`access` is what the caller may do: their grant, with `manage` from it or from their role; for an
+instance key, what its scope allows on an operator mailbox.
 `send.reason` `not_owner` becomes `not_granted` (no `send` flag). The contract fixtures change only
 through `go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`, and the
 console's types and `web/test/contract.spec.ts` hold them to the new fields.
@@ -529,15 +612,20 @@ mailserver user invite --email EMAIL [--role owner|member]                      
 mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
 ```
 
-- `access grant` grants `manage` only: `read`, `act` and `send` pass from a holder, in the console
-  ([conflict 7](#conflicts-and-resolutions)).
+- `access grant` grants `manage` only, to a member: `read` passes from an owner or an admin who
+  reads the mailbox, and `act` and `send` from an owner or an admin, in the console
+  ([conflict 7](#conflicts-and-resolutions)). `access list` shows each mailbox's own consent to sync
+  and marks one nobody can read.
 - `account add|list|authorize|folders|remove|sync` and `apikey` keep working, on the operator
-  workspace. `account list` no longer lists people's mailboxes.
+  workspace. `account list` no longer lists people's mailboxes; `account remove` repeats the id
+  (`?confirm=`).
 - `user invite --bootstrap` takes `--workspace` too. Without `--role`, `--bootstrap` makes an
   `owner` invite while the instance has no active owner and no live owner invite, and a `member`
   invite otherwise ([conflict 6](#conflicts-and-resolutions)).
-- `user disable|delete` take `--force` for the protections as for the last instance owner; without
-  it the daemon's refusal, which the command prints, names the teams and mailboxes it is about.
+- `user disable|delete` take `--force` for the protections (the last owner of a team, the last
+  reader of a team mailbox) as for the last instance owner; without it the daemon's refusal, which
+  the command prints, names the teams and mailboxes it is about. With `--bootstrap` they run the
+  very same service method against the database.
   `user delete` also prints how many teams went with the person.
 
 ## The workspace source
@@ -689,9 +777,43 @@ made for themselves. A server with people and no active owner (the last one dele
 say) is not changed: the daemon says so at start, and the operator invites one, with an address
 that has no account yet.
 
+## Migration 0011
+
+`0011_team_mailboxes.sql`, an ordinary migration in one transaction with foreign keys on: three
+columns added to `accounts` (`sync_consent_version`, `sync_enabled_via`, `linked_by`), rows
+updated, two triggers replaced, three added, nothing dropped but 0008's two linker triggers. What
+becomes of a schema-10 database:
+
+| Before | After |
+|---|---|
+| a personal mailbox | unchanged; `linked_by` = its person. The new rule on `owner_user_id` runs over every row (`UPDATE accounts SET owner_user_id = owner_user_id`): one naming another person than its workspace's fails the migration, which then changes nothing |
+| a team mailbox whose linker is active and agreed to sync | its linker's consent becomes the team's, with its date and revision (`sync_enabled_at`, `sync_consent_version`), `sync_enabled_by` = the linker and `sync_enabled_via = 'migration'`: bound to them until an owner or an admin confirms it ([Consents](#consents)); `owner_user_id` `NULL`, `linked_by` = the linker. It keeps syncing |
+| a team mailbox whose linker agreed and is **disabled** | no consent copied: stopped, its index kept as it was, bound to them (`sync_enabled_by`, `migration`), so deleting them deletes it; listed by the daemon at start, as one to turn on again (or off, or remove) while someone else reads it, and otherwise as one nobody can read, which can only be removed or turned off |
+| a team mailbox whose linker never agreed, or withdrew | no consent; sync stays off, with the empty index the withdrawal left |
+| an operator mailbox | unchanged |
+| the linker's grant | kept, as an ordinary grant |
+| an owner's or an admin's grant | `manage` taken away (the role gives it); a grant of `manage` alone deleted |
+| a member's grant | unchanged, `manage` included |
+| an invite waiting whose creator could not make it now: deleted (schema 10 blanked `created_by` and left the invite pending); a `usr_` creator no longer active; an instance invite from someone no longer an instance owner; a team invite from someone no longer an active owner of the team, or an admin of it for a role other than member | expired (`expires_at` = the migration's time); the sweep deletes it 30 days on. `cli` and `key:` creators untouched |
+| sessions, keys, consents of people, everything else | untouched, value for value |
+
+New triggers: a mailbox names a person exactly when it is in that person's personal workspace
+(`accounts_person_on_insert`, `…_on_update`); a stored `manage` is refused for an owner or an admin
+(`mailbox_access_manage_insert`, `…_update`); a member made an owner or an admin loses a stored
+`manage`, and a grant that held nothing else (`workspace_members_promoted`).
+
+The hosted service's shape — one person, two personal mailboxes, no team — changes no team row:
+the two grants keep `read`, `act` and `send`, with `manage` from the role, and the consents stay as
+they were. The tests in `internal/store/migrate_eleven_test.go` dump every table before and after,
+on that shape and on a self-hosted one with teams, and compare them value by value except the
+columns named.
+
 ## Going back
 
-From this release on the runner refuses a database whose `user_version` is past the last migration
+Schemas 10 and 11 are refused by an older binary like any newer one: going back past 0011 is the
+backup taken before the upgrade, restored with the binary of its time.
+
+From the release of 0008 on the runner refuses a database whose `user_version` is past the last migration
 the binary embeds (`store.ErrSchemaTooNew`): `Open`, `mailserver migrate` and
 `mailserver migrate --dry-run` say which schema the database is at and which the binary knows, and
 stop. A binary rolled back alone would read and write a schema it does not know.
@@ -750,18 +872,51 @@ Test names state the guarantee. At least:
 
 - Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, MCP, the event stream, the
   long poll and storage (one test per transport, the same fixture);
-  `TestOwnersAndAdminsGetNoAutomaticRead`; `TestAnAdminCannotGrantReadTheyDoNotHold`;
+  `TestAnOwnerOrAdminManagesEveryTeamMailboxAndReadsNone` (the service, every path) with
+  `TestAnOwnerOrAdminSeesATeamMailboxsCardAndReadsNoneOfItOverREST` and
+  `TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey` (MCP);
+  `TestOwnersAndAdminsSeeEveryTeamMailboxsCardAndReadNone` (the SQL rule);
+  `TestOnlyAnOwnerOrAdminWhoReadsPassesRead`; `TestAnAdminTurnsOnSendForAnyoneAndActForAReader`;
+  `TestManageIsStoredForMembersOnlyAndOwnersAndAdminsManageByRole`;
   `TestAGrantOnlyGoesToAnActiveMemberOfTheMailboxesWorkspace`;
-  `TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden`.
-- Links: `TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes`;
-  `TestAnAddressIsLinkedOnceInAWorkspace`; `TestTheLinkerCannotBeRemovedWhileTheirMailboxIsLinked`;
-  `TestATakeOverKeepsTheIndexAndMovesTheConsent`;
-  `TestATeamMailboxComesToSyncOnlyUnderAConsentToTheCurrentSyncText`;
-  `TestWithdrawingSyncDeletesTheIndexOfEveryMailboxThePersonLinked`.
-- Members: `TestTheLastOwnerCannotLeaveOrBeDemoted`;
+  `TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden`;
+  `TestOnlyOwnersAndAdminsSeeMembersAndTheDirectory`.
+- Links and team mailboxes: `TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes`;
+  `TestAnAddressIsLinkedOnceInAWorkspace`;
+  `TestATeamMailboxNamesNoPersonAndItsLinkerHoldsReadActAndSend`;
+  `TestAnOwnerLinksAnOAuthTeamMailboxCompletesItAndOnlyTheyCanComplete`;
+  `TestRemovingAMailboxNeedsItsIdRepeated`.
+- Consents: `TestATeamMailboxSyncsUnderItsWorkspacesConsent`;
+  `TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange`;
+  `TestSwitchingATeamMailboxsSyncOffDeletesItsIndexForEveryone`;
+  `TestWithdrawingAPersonsSyncNeverTouchesATeamMailbox`;
+  `TestATeamMailboxWithNoReaderStopsSyncing`;
+  `TestAMigratedTeamConsentStopsWhenItsLinkerWithdrawsUntilTheTeamConfirmsIt` (withdrawing,
+  disabled, deleted: refused without force while someone else reads it);
+  `TestConfirmingAMigratedTeamConsentDetachesItFromTheLinker`;
+  `TestADisabledLinkersTeamMailboxIsKeptStoppedWithItsIndex`;
+  `TestDisablingSomeoneAlreadyDisabledKeepsTheIndexKeptForThem`;
+  `TestATeamMailboxNobodyCanReadCannotBeTurnedOnAndStaysBound`;
+  `TestMigrationElevenKeepsADisabledLinkersOwnMailboxBoundAndListsItAsReadByNobody`.
+- Members and protections: `TestTheLastOwnerCannotLeaveOrBeDemoted`;
+  `TestTheLastReaderCannotLoseReadBeDisabledOrRemoved`; `TestConcurrentRemovalsAlwaysKeepAReader`;
+  `TestAMemberOrAdminCannotLeave`;
+  `TestARoleOrStatusChangeExpiresTheInvitesThePersonCreated`;
   `TestRemovingAMemberRemovesTheirGrantsAndStopsTheirEventStream`;
   `TestDisablingAMemberRemovesTheirGrantsAndEnablingDoesNotRestoreThem`;
   `TestAnAdminCannotChangeAnotherAdmin`.
+- Closure: `TestClosingAPersonNeverStopsOrRemovesATeamMailbox`;
+  `TestDisablingOrDeletingTheLastReaderOnTheInstanceIsRefusedWithoutForce`, over REST
+  (`TestDisablingOrDeletingTheLastReaderOverRESTNeedsForce`) and `--bootstrap`
+  (`TestClosingTheLastReaderOfATeamMailboxWithBootstrapNeedsForce`), and its concurrent variant
+  `TestConcurrentClosureAndRevocationAlwaysKeepAReader`;
+  `TestClosingTheLastReaderOfATeamThatOutlivesThemIsRefusedWithoutForce` (its other members
+  disabled), over REST and `--bootstrap`, and its concurrent variant
+  `TestConcurrentlyDisablingTheOtherMembersNeverLetsTheLastReaderGoWithoutForce`;
+  `TestClosingTheOnlyMemberOfATeamIsNotRefusedForItsMailbox`;
+  `TestAForcedClosureLeavesAMailboxNobodyCanReadMarked`;
+  `TestDeletingTheOnlyMemberOfATeamStopsItsMailboxesWorkersAndAttempts`;
+  `TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes` (every form of attribution).
 - Keys: `TestAnInstanceKeyReachesOnlyOperatorMailboxes` (REST and MCP);
   `TestAPersonKeyLosesAMailboxWhenItsPersonLosesTheGrant`;
   `TestAKeyMadeForALostMailboxIsRevoked`;
@@ -810,24 +965,30 @@ Test names state the guarantee. At least:
   and `foreign_keys`, as they were. `TestOnlyARebuildMayDropAReferencedTable` is the guard above.
   `TestMigrationNineTakesTheMailboxesTheirPersonCannotReadOutOfPersonKeys` and
   `TestMigrationNineGivesAServerNobodySignedUpToItsFirstOwner` cover 0009, and
-  `TestADatabaseANewerBinaryMigratedIsRefused` the guard of [Going back](#going-back).
+  `TestADatabaseANewerBinaryMigratedIsRefused` the guard of [Going back](#going-back). 0011:
+  `TestMigrationElevenMakesTheLinkersConsentTheWorkspacesAndLeavesPersonalMailboxesAlone` (both
+  shapes, every table compared value by value), `TestMigrationElevenLeavesATeamMailboxOfADisabledLinkerStoppedWithItsIndex`,
+  `TestMigrationElevenRefusesAPersonalMailboxThatNamesAnotherPerson`,
+  `TestMigrationElevenTakesStoredManageFromOwnersAndAdminsOnly`,
+  `TestMigrationElevenExpiresTheInvitesTheirCreatorCouldNotMakeNow` and
+  `TestMigrationElevenRefusesWhatItsSchemaForbids`.
 
 ## Conflicts and resolutions
 
-1. **The linker's consent outlives the linker's membership.** The plan lets a linker be removed once
-   someone else holds `manage`, but keeps the mailbox syncing under the linker's consent: a person
-   who left would answer for a team's index they cannot see, and their withdrawal would delete it.
-   *Resolution:* the linker is protected while the link stands, and a member with all four flags
-   who may link there **takes the link over** (`POST /v1/accounts/{id}/take-over`, one small
-   transaction), after which the old linker is an ordinary member. The plan's "last holder of
-   `manage`" rule stays, and is implied. Alternative, if the take-over is unwanted: the only way out
-   is removing the mailbox.
-2. **"Owners and admins grant" against "owners and admins get no automatic read".** If an admin
-   could grant any flag to anyone, they could grant themselves `read`, and "no automatic read" would
-   be one click. Wappie's barrier is cryptographic (a key grant from a holder); Mailie has no keys.
-   *Resolution:* `read`, `act` and `send` pass only from someone who holds them; owners and admins
-   grant `manage`, revoke anything, and grant the rest only when they hold it. A member holding
-   `manage` on a mailbox may grant on it too, or a mailbox linked by a member could never be shared.
+1. **The linker's consent outlived the linker's membership.** Phase 2 kept a team mailbox syncing
+   under its linker's consent, protected the linker while the link stood and let an owner or an
+   admin take the link over. *Resolution (the owner, 2026-10-06):* the mailbox is the team's, as a
+   number is in Wappie: it syncs under the team's consent, nobody is protected for having linked it,
+   and the take-over is gone. The last-reader rule keeps someone able to read it.
+2. **"Owners and admins grant" against "owners and admins read nothing by their role".** If an
+   owner or an admin could grant `read` to anyone, themselves included, "no automatic read" would be
+   one click. Wappie's barrier is cryptographic (a sealed grant from a holder of the device key);
+   Mailie holds plaintext. *Resolution (the owner, 2026-10-06):* `read` passes only from an owner
+   or an admin who reads the mailbox now — not from a member who reads it, as in Wappie only owners
+   and admins add grants; `act` and `send` are any owner's or admin's to give, to anyone,
+   themselves included (`act` to someone who reads), since neither reads mail and each still needs
+   the actor's own consent; owners and admins manage by their role, and `manage` is stored for
+   members only.
 3. **Instance keys over REST see every mailbox today**, a person's index included (`visibility`
    gives a non-tool instance key `All`). The plan restricts them to the operator workspace. Intended,
    and a change for self-hosted operators: `account list` shows only operator mailboxes, and an
@@ -847,15 +1008,16 @@ Test names state the guarantee. At least:
    server is upgraded with nobody on it, is the owner's it was meant to be:
    [0009](#migration-0009) makes the oldest one an owner invite. And the daemon warns at start when
    people exist and nobody administers the server.
-7. **`access grant` from the command line.** The operator holds no flag on anyone's mailbox, so under
-   conflict 2's rule it cannot grant `read`, `act` or `send`; letting it would hand the operator
+7. **`access grant` from the command line.** The operator holds no flag on anyone's mailbox and
+   reads none, so it cannot grant `read`; letting it grant `act` or `send` would hand the operator
    people's mail by proxy, which the plan's own instance-key rule forbids. *Resolution:* the command
-   grants `manage` only, and revokes anything.
-8. **Withdrawing sync consent reaches team mailboxes.** A direct consequence of syncing under the
-   linker's consent. *Resolution:* keep the consent rule; the console warns and names the team
-   mailboxes before the person confirms (the dialog that turns sync off reads every workspace's
-   mailboxes for it, and is not confirmed before they are named); a take-over first keeps the
-   team's index.
+   grants `manage` only, to members, and revokes anything.
+8. **Withdrawing sync consent reached team mailboxes.** Phase 2's consequence of syncing under the
+   linker's consent, warned about in the console. *Resolution (2026-10-06):* reversed: a person's
+   withdrawal deletes their personal mailboxes' index only. A team mailbox's index goes when an owner
+   or an admin turns the team's sync off, for everyone. The one exception is transitional: a
+   consent migration 0011 copied from a linker stays bound to them until the team confirms it,
+   because the text they agreed to promised exactly that ([conflict 15](#conflicts-and-resolutions)).
 9. **Team invites bring new people onto a self-hosted server**, which today only an instance owner
    can. Any person may create a team and invite into it, so if every team invite could sign a new
    person up, any member could create an account for any address without one, with a password of
@@ -877,42 +1039,74 @@ Test names state the guarantee. At least:
     mailbox's: it carries its sender (`user_id`, absent for an instance key and once that person is
     deleted) and reaches only who may read the record (see [Events](#events)).
 11. **"Seeing a mailbox requires a grant" against administering it.** Owners and admins must see
-    which mailboxes exist in their team to grant and revoke. *Resolution:* the account routes keep
-    the rule, and the access directory (`GET /v1/workspaces/{id}/access`) shows owners, admins and
-    managers the addresses and grants, never the index, as Wappie's device directory does.
-12. **The column name.** The plan keeps `owner_user_id` to avoid a rebuild, but `accounts` is
-    rebuilt anyway, so renaming it to `linked_by` would cost no extra migration. *Resolution:* keep
-    the name as the plan says, to keep the eligibility SQL, the earlier migrations' tests and
-    `oauth_pending.owner_user_id` reading alike; documents and the API say "linked by".
+    which mailboxes exist in their team to grant, revoke, re-authorize and remove. *Resolution
+    (2026-10-06):* they see each team mailbox's card by their role — address, state, sync counters,
+    nothing it holds — and the access directory (`GET /v1/workspaces/{id}/access`) shows them the
+    addresses and grants, never the index, as Wappie's device directory does.
+12. **The column name.** Phase 2 kept `owner_user_id` and read it as "linked by". *Resolution
+    (2026-10-06):* it means the person whose mailbox it is again — set exactly for a personal
+    workspace's mailbox, as the eligibility SQL always read it — and who linked a mailbox is a
+    column of its own, `linked_by`, attribution only. `oauth_pending.owner_user_id` is who started a
+    consent flow, as before.
 13. **`act` without `read`** is a grant that can do nothing (an action names messages the caller
     reads). *Resolution:* `CHECK (act = 0 OR read = 1)`. `send` without `read` stays meaningful (a
     send-only member) and allowed.
-14. **The consent texts.** The open console's sync text said what is stored for "your" mailboxes,
-    and that only whoever runs the server reads it besides the person; with grants, the members
-    given `read` on a team mailbox read its index too, and withdrawing deletes it for them.
-    *Resolution:* a second revision of the open sync text, `2026-10-open-sync-2`
-    (`web/src/open/SyncText.vue`, `web/src/open/versions.ts`, `config.DefaultSyncConsentVersion`),
-    says where the mailboxes a person connects may be (their personal workspace or a team), who
-    reads a team mailbox's index, and that turning sync off deletes the index of every mailbox they
-    connected, team ones included, unless another member took the link over first. As for any new
-    revision, everyone is asked again, and sync keeps running for whoever agreed to the first one
-    until they turn it off; but a team mailbox comes under someone's consent, by a link or a
-    take-over, only once they agreed to this revision, which is the first to say who reads its
-    index (the service refuses both otherwise, and the console asks for the current text first).
-    The API key text speaks of the mailboxes a key names, which grants do not change, and keeps its
-    revision.
-    *Open, the owner's decision:* the actions text (`web/src/open/ActionsText.vue`,
-    `2026-10-open-actions`) opens with "this server changes your mailboxes only when it is asked
-    to: by you, or by a tool you gave an API key that can act". For a team mailbox the person
-    linked, other members given `act` change it too, each under their own actions consent, so that
-    sentence stops being true of it once they do. Either a second revision of the actions text says
-    so (every person is then asked again, and actions are refused until they agree, as for any
-    revision of actions), or the sentence is read as being about the person's own mailboxes and the
-    text keeps its revision. Until the owner decides, the text and its revision are unchanged.
+14. **The consent texts.** The open console's sync text said, at revision `2026-10-open-sync-2`,
+    that a mailbox syncs under the agreement of whoever connected it and that turning sync off
+    deletes the index of every mailbox they connected, team ones included, unless another member
+    took the link over; the actions text, at `2026-10-open-actions`, that the server changes "your
+    mailboxes" only when you or your tool ask. Neither is true of a team's mailbox now.
+    *Resolution (the owner, 2026-10-06):* new revisions, `2026-10-open-sync-3` and
+    `2026-10-open-actions-2` (`web/src/open/SyncText.vue`, `ActionsText.vue`, `versions.ts`, and
+    `config.DefaultSyncConsentVersion` / `DefaultActionsConsentVersion`). The sync text says that a
+    personal mailbox syncs under the person's agreement and turning it off deletes only theirs; a
+    team mailbox under the team's agreement, given by an owner or an admin to this same text, which
+    any of them turns off for everyone; who reads a team mailbox's index (the members given read,
+    which only an owner or an admin who has it gives, and the tools they give a key); that owners
+    and admins read nothing by their role, and see a team mailbox's address, state and sync
+    counters; that closing an account does not remove the mailboxes of a team others are in, while
+    a team whose only member closes their account goes with it; that a team mailbox still syncing
+    under its linker's own agreement since the upgrade stops with it until the team agrees
+    ([conflict 15](#conflicts-and-resolutions)); and that whoever runs the server can read its
+    database. The actions text says the server changes a mailbox only when
+    someone allowed to act on it asks, under their own agreement. As for any revision, everyone is
+    asked again; sync keeps running for whoever agreed before, and actions are refused until they
+    agree again. Linking into a team with the team's consent, or turning it on, needs `-3`. The API
+    key text keeps its revision until step 3.
+15. **A migrated consent and the promise it was given under.** Migration 0011 turns each team
+    mailbox's linker's own consent into the team's, which would otherwise be a consent its person
+    can no longer withdraw, recorded under a revision whose text promised the opposite.
+    *Resolution:* the copy stays bound to the linker (`sync_enabled_via = 'migration'`) until an
+    owner or an admin confirms the team's consent at the current revision; until then the linker's
+    withdrawal, disable or deletion stops the mailbox and deletes its index in the same
+    transaction. Because that deletes the index of whoever else reads it, closing such a linker on
+    the instance is refused without `force` while someone else does, as Phase 2 refused closing a
+    linker whose mailbox others read. A linker found disabled by the migration gets nothing copied:
+    the mailbox stays stopped with its index, as it was, still bound to them (deleting them
+    deletes it; disabling them again changes nothing), and the daemon lists it at start for the
+    team to turn on, off or remove — or, when only that linker read it, as one nobody can read,
+    which is never turned on again. The open sync text says so, as its one exception.
+16. **Closing the last reader.** Closing an account must never be blockable for good, and a team
+    mailbox read by nobody can never be read again (read passes only from a reader). *Resolution:*
+    `user disable|delete` refuse the last reader of a team mailbox, in a team that outlives them
+    (any other member remains, whatever their status: the same test as whether the team goes with
+    them), unless `force`, as for the last owner; forced, the mailbox keeps its consent, syncs
+    nothing more (the eligibility rule needs a reader), cannot be turned on, and is marked
+    `no_reader` for the team's owners and admins, who remove it, or remove it and link it again.
+17. **Members do not leave by themselves.** Phase 2 let any member leave. Wappie has no leave route,
+    and an admin removes members only. *Resolution (the owner, 2026-10-06):* only an owner leaves,
+    while another owner remains; a member or an admin asks an owner (or, for a member, an admin) to
+    remove them.
+18. **Keys of the workspace.** The owner decided that API keys belong to their workspace, made by
+    its owners and admins, may send, and hold their own mailboxes. That is step 3, not built yet;
+    until it is, a person's key reaches what its person can, as phase 2 made it, and a member of a
+    self-hosted team still creates keys for the mailboxes they read.
 
 ## Not in this phase
 
-- Deleting a team workspace; moving a mailbox between workspaces (link it again instead).
+- API keys of the workspace (step 3 of the plan of 2026-10-06).
+- Deleting a team workspace but with its last member; moving a mailbox between workspaces (link it
+  again instead).
 - The platform source beyond its stub, a later step; with it, an edition's own screens for teams
   (the open edition's Members section is for the local source only).
 - Selecting a workspace per MCP session; an MCP tool for workspaces.
@@ -932,4 +1126,5 @@ Test names state the guarantee. At least:
 | `cmd/mailserver` | `workspace`, `member`, `access`; `user invite --workspace`; the bootstrap default; the startup hint |
 | `.golangci.yml` | `internal/workspace` joins the packages transports may not import |
 | docs | `console.md` (ownership becomes workspaces, routes, storage, events, the current workspace), `architecture.md` and `CLAUDE.md` (the ownership rule), `mcp.md` (instance keys), `self-hosting.md` and the README (the first owner) |
-| `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, taking a link over, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |
+| `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |
+| 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

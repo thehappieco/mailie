@@ -390,6 +390,61 @@ invites waiting and nobody signed up yet gets its oldest invite turned into an o
 quick start of earlier releases had you make for yourself. If the daemon logs at start that nobody
 administers the server, invite an owner, with an address that has no account yet.
 
+### Team mailboxes belong to their team (migration 0011)
+
+The release that makes a team's mailbox the team's ([`workspaces.md`](workspaces.md)) changes what
+a team's people can do, the API and the open console's texts. **Back up first**, as above: going
+back is that copy.
+
+- **Sync.** A team mailbox syncs under the team's consent, which an owner or an admin gives in the
+  console, to the current sync text, and any of them turns off, deleting its index for everyone. The
+  upgrade copies the consent of the person who linked each team mailbox, when that person is active
+  and had agreed, so the mailbox keeps syncing; until an owner or an admin confirms it (turns it on
+  again at the current text, in the Sync section of the mailbox's details in the console), that
+  person turning their own sync off, or being disabled or deleted, stops it and deletes its index,
+  as the text they agreed to said. Disabling or deleting that person is refused without `--force`
+  while someone else reads the mailbox, and names it; with `--force`, the answer lists the
+  mailboxes it stopped (`team_syncs_stopped`). A team mailbox whose linker is **disabled** stays
+  stopped with its index, as it was, still tied to that person: deleting them deletes that index.
+  The daemon lists them at start (`team mailboxes are stopped with their index kept`): turn each on
+  again for its team, or off, or remove it. One that only the disabled linker read is listed with
+  the mailboxes nobody can read instead: it can never be read again nor turned on, only removed (or
+  turned off, which deletes its index). A person turning their own sync off now touches only their
+  personal mailboxes, and those still tied to them.
+- **Texts.** The open console's sync text is now `2026-10-open-sync-3` and its actions text
+  `2026-10-open-actions-2`: everyone is asked again, actions are refused until they agree, and sync
+  keeps running for whoever agreed before. A server that sets `MAIL_CONSENT_VERSION_SYNC` or
+  `MAIL_CONSENT_VERSION_ACTIONS` keeps its own.
+- **Roles.** Owners and admins manage every mailbox of their team by their role (its card,
+  re-authorizing it, who holds what) and read none of them by being one. They give `act` and `send`
+  to anyone in the team (`act` to someone who reads), and `read` only while they read the mailbox
+  themselves. A member sees only the mailboxes they hold something on, no longer lists the team's
+  members or who holds what, and no longer leaves by themselves (neither does an admin): an owner or
+  an admin removes them. A stored `manage` goes from owners and admins, whose role gives it, and
+  stays for members, for whom it means the card and re-authorizing.
+- **Protections.** The last person who can read a team mailbox keeps `read`, and is not disabled,
+  removed, or closed (`user disable|delete`) without `--force`, unless they are the team's only
+  member and it goes with them; a team whose other members are all disabled outlives them, so it
+  counts. Nobody else is protected for having linked a mailbox, and taking a link over is gone. A
+  mailbox left with no reader (a forced closure) syncs nothing more, cannot be turned on, is marked
+  for its team's owners and admins, and is listed at start: remove it, or remove it and link it
+  again.
+- **Invites** waiting whose creator could no longer make them (deleted, disabled, no longer an
+  instance owner, no longer an owner or an admin of the team allowed that role) are expired. From
+  now on an invite expires when its creator's role or status in the team changes, when they leave
+  it, and when they are disabled or deleted.
+- **API changes** for scripts: `POST /v1/accounts/{id}/take-over` is gone; `DELETE
+  /v1/accounts/{id}` needs `?confirm=<the same id>` (`mailserver account remove` sends it);
+  `linked_by` is gone from accounts, and is attribution only in the access directory, which also
+  says each mailbox's readers and its team's consent; a member's `links` became `last_reader_of`;
+  `GET /v1/workspaces/{id}/members` and `/access` answer `403` to members; `PUT
+  /v1/accounts/{id}/sync` also takes a team mailbox, from its owners and admins, with the sync
+  text's `version`, and answers `409` for one nobody can read; `POST /v1/accounts` into a team takes
+  `sync_consent_version`. `GET /v1/accounts` (and MCP's `list_accounts`) now list every team mailbox
+  to its team's owners and admins, including those they do not read, with `access.read` false:
+  check `access.read` before searching or reading one, or it answers `403`. `POST
+  /v1/users/disable|delete` add `team_syncs_stopped` to their answer.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to

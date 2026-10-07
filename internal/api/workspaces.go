@@ -189,16 +189,3 @@ func (h *Handler) revokeAccess(q *request) {
 	}
 	q.finish(http.StatusNoContent, nil)
 }
-
-func (h *Handler) takeOver(q *request) {
-	if _, err := q.query(); err != nil {
-		q.fail(err)
-		return
-	}
-	out, err := h.Service.TakeOver(q.ctx(), q.principal, q.r.PathValue("id"))
-	if err != nil {
-		q.fail(err)
-		return
-	}
-	q.finish(http.StatusOK, out)
-}

@@ -83,17 +83,13 @@ func (h *Handler) triggerSync(q *request) {
 	q.finish(http.StatusAccepted, status)
 }
 
-func (h *Handler) setInstanceSync(q *request) {
-	var req service.InstanceSyncRequest
+func (h *Handler) setMailboxSync(q *request) {
+	var req service.MailboxSyncRequest
 	if err := q.decode(&req); err != nil {
 		q.fail(err)
 		return
 	}
-	if req.Enabled == nil {
-		q.fail(service.E(service.CodeBadRequest, "enabled is required: true or false", nil))
-		return
-	}
-	status, err := h.Service.EnableInstanceAccountSync(q.ctx(), q.principal, q.r.PathValue("id"), *req.Enabled)
+	status, err := h.Service.SetMailboxSync(q.ctx(), q.principal, q.r.PathValue("id"), req)
 	if err != nil {
 		q.fail(err)
 		return

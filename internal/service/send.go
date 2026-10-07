@@ -748,8 +748,9 @@ func (s *Service) maySend(ctx context.Context, p Principal, a account.Account) e
 // mailbox of the operator workspace sends with an instance key, the only
 // credential that sees it.
 func (s *Service) maySendFrom(ctx context.Context, p Principal, a account.Account) error {
-	if p.IsInstance() || a.OwnerUserID == "" {
-		if p.IsInstance() && a.OwnerUserID == "" {
+	operator := a.WorkspaceID == workspace.OperatorID
+	if p.IsInstance() || operator {
+		if p.IsInstance() && operator {
 			return nil
 		}
 		// Unreachable while visibility holds.

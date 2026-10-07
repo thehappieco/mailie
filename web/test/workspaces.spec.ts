@@ -9,6 +9,7 @@
 // out their protections across the team.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MailboxAccess, Member, TeamInvite, User, Workspace } from '../src/api/types'
+import { SYNC_TEXT_VERSION } from '../src/open/versions'
 import { memberPermissions } from '../src/ui/access'
 import { account, ana, failure, freshModules, json, memoryStorage, reply, stubPage } from './support'
 
@@ -19,9 +20,9 @@ const CODE = 'SUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUk'
 const personal: Workspace = { id: PERSONAL, kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }
 const support: Workspace = { id: TEAM, kind: 'team', source: 'local', name: 'Support', role: 'admin', status: 'active', created_at: 1_790_000_000 }
 const full = { read: true, act: true, send: true, manage: true }
-const mine = account({ id: 'acc_mine', email: 'ana@gmail.example', state: 'active', workspace_id: PERSONAL, linked_by: ana.id, access: full })
-const shared = account({ id: 'acc_shared', email: 'suporte@example.test', state: 'active', workspace_id: TEAM, linked_by: BEA, access: { read: true, act: false, send: false, manage: false } })
-const bea: Member = { user_id: BEA, email: 'bea@example.test', name: 'Bea Lima', role: 'member', status: 'active', last_owner: false, links: 1, joined_at: 1_790_000_000 }
+const mine = account({ id: 'acc_mine', email: 'ana@gmail.example', state: 'active', workspace_id: PERSONAL, access: full })
+const shared = account({ id: 'acc_shared', email: 'suporte@example.test', state: 'active', workspace_id: TEAM, access: { read: true, act: false, send: false, manage: true } })
+const bea: Member = { user_id: BEA, email: 'bea@example.test', name: 'Bea Lima', role: 'member', status: 'active', last_owner: false, last_reader_of: [], joined_at: 1_790_000_000 }
 
 interface Request { path: string; method: string; query: Record<string, string>; body: unknown }
 
@@ -291,7 +292,11 @@ describe('a team’s people and grants', () => {
     await shown.accounts.loadAccounts()
     return shown
   }
-  const directory = (grant: object): MailboxAccess[] => [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, grants: [{ account_id: shared.id, user_id: BEA, ...full, updated_at: 1 }, { account_id: shared.id, user_id: ana.id, read: true, act: false, send: false, manage: false, ...grant, updated_at: 1 }] }]
+  const directory = (grant: object): MailboxAccess[] => [{
+    account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, readers: 2, no_reader: false,
+    sync: { enabled: true, enabled_at: 1, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true },
+    grants: [{ account_id: shared.id, user_id: BEA, read: true, act: true, send: true, manage: false, updated_at: 1 }, { account_id: shared.id, user_id: ana.id, read: true, act: false, send: false, manage: false, ...grant, updated_at: 1 }],
+  }]
 
   it('gives with the whole grant, and takes flags away with a revoke naming them', async () => {
     const { team, requests } = await inTeam(request => {
@@ -325,15 +330,37 @@ describe('a team’s people and grants', () => {
     expect(accounts.accounts.list.find(item => item.id === shared.id)?.access?.send).toBe(false)
   })
 
-  it('takes a link over, and keeps the mailbox’s card', async () => {
+  it('turns a team mailbox’s sync on for the team to the text the console shows, and off for everyone, reading its record again', async () => {
+    let enabled = false
     const { team, accounts, requests } = await inTeam(request => {
-      if (request.path === `/v1/accounts/${shared.id}/take-over`) return json({ ...shared, linked_by: ana.id, access: full })
-      if (request.path === `/v1/workspaces/${TEAM}/access` || request.path === `/v1/workspaces/${TEAM}/members`) return json([])
+      if (request.path === `/v1/accounts/${shared.id}/sync` && request.method === 'PUT') {
+        enabled = (request.body as { enabled: boolean }).enabled
+        return json({ enabled, running: enabled, state: enabled ? 'initial' : 'off', folders_synced: 0, folders_total: 0, messages: 0, initial_progress: 0 })
+      }
+      if (request.path === `/v1/workspaces/${TEAM}/access`) return json(directory({}))
       return undefined
     })
-    expect(await team.takeOverLink(shared.id)).toBeNull()
-    expect(requests.find(request => request.path.endsWith('/take-over'))?.method).toBe('POST')
-    expect(accounts.accounts.list.find(item => item.id === shared.id)?.linked_by).toBe(ana.id)
+    accounts.accounts.folders[shared.id] = { loading: false, loaded: true, list: [{ name: 'INBOX', display_name: 'Inbox', selectable: true, synced: true }], failure: null }
+    expect(await team.switchTeamSync(shared.id, true)).toBeNull()
+    expect(await team.switchTeamSync(shared.id, false)).toBeNull()
+    const puts = requests.filter(request => request.method === 'PUT' && request.path.endsWith('/sync'))
+    // On names the revision of the text this console carries, never the one the server asks about; off names none.
+    expect(puts.map(request => request.body)).toEqual([{ enabled: true, version: SYNC_TEXT_VERSION }, { enabled: false }])
+    // Its card says what the answer says, and what was read of its folders is read again when next wanted.
+    expect(accounts.accounts.list.find(item => item.id === shared.id)?.sync.enabled).toBe(false)
+    expect(accounts.accounts.folders[shared.id]).toBeUndefined()
+    // Who gave the team's agreement, and to which text, is the directory's record: read again after each change.
+    expect(reads(requests, `/v1/workspaces/${TEAM}/access`)).toHaveLength(2)
+  })
+
+  it('says a refused switch of a team mailbox’s sync, and reads the directory again when the mailbox is gone', async () => {
+    const { team, requests } = await inTeam(request => {
+      if (request.path === `/v1/accounts/${shared.id}/sync` && request.method === 'PUT') return failure('not_found', 404)
+      if (request.path === `/v1/workspaces/${TEAM}/access`) return json([])
+      return undefined
+    })
+    expect(await team.switchTeamSync(shared.id, false)).toEqual({ op: 'team-sync-off', code: 'not_found' })
+    await vi.waitFor(() => expect(reads(requests, `/v1/workspaces/${TEAM}/access`)).toHaveLength(1))
   })
 
   it('hands an invitation’s link to the caller alone, and keeps it nowhere', async () => {
@@ -378,8 +405,8 @@ describe('a team’s people and grants', () => {
     // again says that Ana is now the one owner, who may neither leave nor
     // step down.
     let members: Member[] = [
-      { ...bea, user_id: ana.id, email: ana.email, name: ana.name, role: 'owner', links: 0 },
-      { ...bea, role: 'owner', links: 0 },
+      { ...bea, user_id: ana.id, email: ana.email, name: ana.name, role: 'owner' },
+      { ...bea, role: 'owner' },
     ]
     const { team, workspaces } = await page(request => {
       if (request.path === `/v1/workspaces/${TEAM}/members` && request.method === 'GET') return json(members)
@@ -400,10 +427,35 @@ describe('a team’s people and grants', () => {
     expect(mine.roles).toEqual(['owner'])
   })
 
+  it('reads the pending invitations again after a change to a member, since the server ended the ones they made', async () => {
+    // Bea, an admin, invited Cid. Ana makes her a member: the server expires
+    // the invitations Bea made in the team, and the pending list says so.
+    const invite: TeamInvite = { id: 'inv_by_bea', email: 'cid@example.test', workspace_id: TEAM, role: 'member', created_by: BEA, created_at: 1_790_000_000, expires_at: 1_790_600_000 }
+    let pending: TeamInvite[] = [invite]
+    const { team, workspaces, requests } = await page(request => {
+      if (request.path === `/v1/workspaces/${TEAM}/members` && request.method === 'GET') return json([{ ...bea, user_id: ana.id, email: ana.email, name: ana.name, role: 'owner' }, { ...bea, role: 'admin' }])
+      if (request.path === `/v1/workspaces/${TEAM}/invites` && request.method === 'GET') return json(pending)
+      if (request.path === `/v1/workspaces/${TEAM}/members/${BEA}` && request.method === 'PATCH') {
+        pending = []
+        return json({ ...bea, role: 'member' })
+      }
+      return listing(request)
+    }, { workspaces: () => [personal, { ...support, role: 'owner' }] })
+    await workspaces.loadWorkspaces()
+    workspaces.selectWorkspace(TEAM)
+    await team.loadMembers()
+    await team.loadInvites()
+    expect(team.team.invites.list.map(item => item.id)).toEqual(['inv_by_bea'])
+    const before = reads(requests, `/v1/workspaces/${TEAM}/invites`).length
+    expect(await team.changeMember(BEA, { role: 'member' })).toBeNull()
+    await vi.waitFor(() => expect(reads(requests, `/v1/workspaces/${TEAM}/invites`)).toHaveLength(before + 1))
+    await vi.waitFor(() => expect(team.team.invites.list).toEqual([]))
+  })
+
   it('follows the caller’s own role as their row lists it, and reads their workspaces again when their role refuses them', async () => {
     let role = 'admin'
     const { team, workspaces, requests } = await page(request => {
-      if (request.path === `/v1/workspaces/${TEAM}/members`) return json([{ ...bea, user_id: ana.id, email: ana.email, name: ana.name, role, links: 0 }, bea])
+      if (request.path === `/v1/workspaces/${TEAM}/members`) return json([{ ...bea, user_id: ana.id, email: ana.email, name: ana.name, role }, bea])
       if (request.path === `/v1/accounts/${shared.id}/access/${BEA}`) return failure('not_authorized', 403)
       return listing(request)
     }, { workspaces: () => [personal, { ...support, role }] })
@@ -422,15 +474,20 @@ describe('a team’s people and grants', () => {
     await vi.waitFor(() => expect(workspaces.currentWorkspace()?.role).toBe('admin'))
   })
 
-  it('reads the team again when one of its mailboxes leaves the person’s list: the directory drops it, and its linker is no longer kept', async () => {
-    const linked = account({ id: 'acc_linked', email: 'vendas@example.test', state: 'active', workspace_id: TEAM, linked_by: ana.id, access: full })
+  it('removes a mailbox with its id repeated, and reads the team again: the directory drops it, and its last reader is no longer kept', async () => {
+    const linked = account({ id: 'acc_linked', email: 'vendas@example.test', state: 'active', workspace_id: TEAM, access: full })
     let removed = false
     const { team, accounts, workspaces, requests } = await page(request => {
-      if (request.path === `/v1/accounts/${linked.id}` && request.method === 'DELETE') { removed = true; return new Response(null, { status: 204 }) }
+      if (request.path === `/v1/accounts/${linked.id}` && request.method === 'DELETE') {
+        // The server removes nothing unless the id is repeated.
+        if (request.query.confirm !== linked.id) return failure('bad_request', 400)
+        removed = true
+        return new Response(null, { status: 204 })
+      }
       if (request.path === '/v1/accounts' && request.method === 'GET') return json(removed ? [] : [linked])
-      if (request.path === `/v1/workspaces/${TEAM}/members`) return json([{ ...bea, user_id: ana.id, email: ana.email, name: ana.name, role: 'admin', links: removed ? 0 : 1 }])
+      if (request.path === `/v1/workspaces/${TEAM}/members`) return json([{ ...bea, user_id: ana.id, email: ana.email, name: ana.name, role: 'admin', last_reader_of: removed ? [] : [linked.id] }])
       if (request.path === `/v1/workspaces/${TEAM}/access`) {
-        return json(removed ? [] : [{ account_id: linked.id, email: linked.email, provider: 'gmail', state: 'active', linked_by: ana.id, grants: [{ account_id: linked.id, user_id: ana.id, ...full, updated_at: 1 }] }])
+        return json(removed ? [] : [{ account_id: linked.id, email: linked.email, provider: 'gmail', state: 'active', linked_by: ana.id, readers: 1, no_reader: false, sync: { enabled: false, current: false }, grants: [{ account_id: linked.id, user_id: ana.id, read: true, act: true, send: true, manage: false, updated_at: 1 }] }])
       }
       return undefined
     })
@@ -438,10 +495,11 @@ describe('a team’s people and grants', () => {
     workspaces.selectWorkspace(TEAM)
     await accounts.loadAccounts()
     await Promise.all([team.loadMembers(), team.loadDirectory()])
-    expect(team.memberOf(ana.id)?.links).toBe(1)
+    expect(team.memberOf(ana.id)?.last_reader_of).toEqual([linked.id])
     expect(await accounts.removeAccount(linked.id)).toBe(true)
+    expect(requests.find(request => request.method === 'DELETE' && request.path === `/v1/accounts/${linked.id}`)?.query).toEqual({ confirm: linked.id })
     await vi.waitFor(() => expect(team.team.directory.list).toEqual([]))
-    await vi.waitFor(() => expect(team.memberOf(ana.id)?.links).toBe(0))
+    await vi.waitFor(() => expect(team.memberOf(ana.id)?.last_reader_of).toEqual([]))
     expect(reads(requests, `/v1/workspaces/${TEAM}/access`)).toHaveLength(2)
     expect(reads(requests, `/v1/workspaces/${TEAM}/members`)).toHaveLength(2)
   })

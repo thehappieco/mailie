@@ -67,14 +67,14 @@ func (m *mailFixture) fakeAccount(t *testing.T, owner service.Principal, email s
 	t.Helper()
 	id := fmt.Sprintf("acc_%016x", len(m.boxes)+1)
 	if _, err := m.repo.Create(t.Context(), account.Account{
-		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: owner.UserID,
+		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
-	}); err != nil {
+	}, owner.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if owner.UserID == "" {
-		if _, err := m.svc.EnableInstanceAccountSync(t.Context(), admin(), id, true); err != nil {
+		if _, err := m.svc.SetMailboxSync(t.Context(), admin(), id, switchSync(true)); err != nil {
 			t.Fatal(err)
 		}
 	} else if _, err := m.svc.GrantSyncConsent(t.Context(), owner, m.consent().Sync); err != nil {
@@ -346,7 +346,7 @@ func TestReadingThroughARealIMAPConnectionLeavesTheMessageUnread(t *testing.T) {
 	m := newMailFixture(t)
 	m.withIMAPAccount(t, provider.KindIMAP, providertest.RichCaps())
 	id := m.accountID(t)
-	if _, err := m.svc.EnableInstanceAccountSync(t.Context(), admin(), id, true); err != nil {
+	if _, err := m.svc.SetMailboxSync(t.Context(), admin(), id, switchSync(true)); err != nil {
 		t.Fatal(err)
 	}
 	uid := m.imap.Append(t, "INBOX", report, nil, time.Unix(1_790_000_000, 0))

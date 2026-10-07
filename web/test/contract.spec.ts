@@ -122,6 +122,12 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(providers[1]!.password).toBe(false)
   })
 
+  it('names no linker on a mailbox: who connected one is the access directory’s record, never the card’s', () => {
+    for (const name of ['account', 'account_icloud', 'account_syncing']) expect(fixture(name), name).not.toHaveProperty('linked_by')
+    expect((fixture('add_account') as AddAccountResult).account).not.toHaveProperty('linked_by')
+    expect(isAccount({ ...(fixture('account') as Account), linked_by: 'usr_0000000000000001' }, true)).toBe(false)
+  })
+
   it('takes iCloud as a provider of its own, as the server presents an IMAP account on Apple’s servers', () => {
     const stored = fixture('account') as Account
     expect(isAccount({ ...stored, provider: 'icloud' }, true)).toBe(true)
@@ -304,8 +310,25 @@ describe('the HTTP contract the Go handlers answer with', () => {
     // The team's only active owner is marked, and nobody else.
     expect(owners).toHaveLength(1)
     expect(members.filter(member => member.last_owner).map(member => member.user_id)).toEqual(owners.map(member => member.user_id))
-    for (const member of members) expect(member.links, member.user_id).toBeGreaterThanOrEqual(0)
+    // The last reader of a mailbox is marked with it: the one person the directory says reads it.
+    const directory = fixture('access') as MailboxAccess[]
+    const marked = members.flatMap(member => (member.last_reader_of ?? []).map(id => [member.user_id, id] as const))
+    expect(marked.length).toBeGreaterThan(0)
+    for (const [userID, id] of marked) {
+      const entry = directory.find(item => item.account_id === id)
+      expect(entry, id).toBeDefined()
+      expect(entry!.readers, id).toBe(1)
+      expect(entry!.grants.filter(grant => grant.read).map(grant => grant.user_id), id).toEqual([userID])
+    }
+    // And a mailbox two people read marks neither.
+    for (const entry of directory.filter(item => (item.readers ?? 0) > 1)) {
+      expect(marked.filter(([, id]) => id === entry.account_id), entry.account_id).toEqual([])
+    }
     expect(isMember(fixture('member'), true)).toBe(true)
+    // Always named, [] for none: a list without it is not this daemon's.
+    const { last_reader_of: _, ...older } = fixture('member') as Member
+    expect(isMember(older, true)).toBe(false)
+    expect(isMember(older)).toBe(true)
   })
 
   it('hands an invitation’s link over once, in its fragment, and never lists it', () => {
@@ -322,13 +345,27 @@ describe('the HTTP contract the Go handlers answer with', () => {
     }
   })
 
-  it('lists who holds what on each mailbox of a team, the person it is linked by holding every flag', () => {
+  it('lists who holds what on each mailbox of a team, how many read it, and its own agreement to sync', () => {
     const directory = fixture('access') as MailboxAccess[]
+    const members = fixture('members') as Member[]
     expect(directory.length).toBeGreaterThan(0)
+    const roleOf = (userID: string) => members.find(member => member.user_id === userID)?.role
     for (const entry of directory) {
-      const linker = entry.grants.find(grant => grant.user_id === entry.linked_by)
-      expect(linker, entry.account_id).toMatchObject({ read: true, act: true, send: true, manage: true })
+      // Every member listed is active: each grant with read is a reader, and only those.
+      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => grant.read).length)
+      expect(entry.no_reader, entry.account_id).toBe(entry.readers === 0)
+      // Owners and admins manage by their role: Manage is stored for members only.
+      for (const grant of entry.grants.filter(grant => grant.manage)) expect(roleOf(grant.user_id), grant.user_id).toBe('member')
+      // Whoever linked it is named for the record, and holds no flag for having done it.
+      expect(entry.linked_by, entry.account_id).toMatch(/^usr_/)
+      // A team mailbox's agreement is the team's, given to the current text or not at all.
+      const sync = entry.sync!
+      expect(sync, entry.account_id).toBeDefined()
+      if (sync.enabled) expect(sync, entry.account_id).toMatchObject({ version: CONSENT_TEXT_VERSION, current: true })
+      else expect(sync, entry.account_id).toEqual({ enabled: false, current: false })
     }
+    // One team mailbox linked with the team's agreement, one without.
+    expect(directory.map(entry => entry.sync?.enabled).sort()).toEqual([false, true])
     // A grant answered is one of the grants listed, and a read without act is one the directory can hold.
     const grant = fixture('grant') as Grant
     expect(directory.flatMap(entry => entry.grants)).toContainEqual(grant)

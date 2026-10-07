@@ -342,7 +342,13 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       if (one) {
         const index = mine.findIndex(item => item.id === one[1])
         if (index < 0) return fail(404, 'not_found')
-        if (method === 'DELETE') { calls.removed.push(mine[index].email); mine.splice(index, 1); return route.fulfill({ status: 204 }) }
+        if (method === 'DELETE') {
+          // As the daemon does: nothing is removed unless the id is repeated.
+          if (url.searchParams.get('confirm') !== one[1]) return fail(400, 'bad_request')
+          calls.removed.push(mine[index].email)
+          mine.splice(index, 1)
+          return route.fulfill({ status: 204 })
+        }
         const account = mine[index]
         calls.polls++
         // A loopback consent "completes" on the third poll, or fails on the

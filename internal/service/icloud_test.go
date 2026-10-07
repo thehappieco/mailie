@@ -72,7 +72,7 @@ func TestAnICloudAccountIsPresentedAsICloud(t *testing.T) {
 	} {
 		a.Provider, a.AuthKind, a.State = provider.KindIMAP, "password", account.StateActive
 		a.IMAPPort, a.SMTPHost, a.SMTPPort, a.SMTPTLS, a.LoginUser = 993, "smtp.mail.me.com", 587, "starttls", a.Email
-		if _, err := f.repo.Create(t.Context(), a); err != nil {
+		if _, err := f.repo.Create(t.Context(), a, ""); err != nil {
 			t.Fatal(err)
 		}
 	}

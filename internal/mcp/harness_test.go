@@ -139,15 +139,22 @@ func (h *harness) mailbox(id, ownerID, email string) *providertest.FakeMailbox {
 // their personal workspace.
 func (h *harness) mailboxIn(id, workspaceID, ownerID, email string) *providertest.FakeMailbox {
 	h.t.Helper()
-	if _, err := account.NewRepository(h.store, nil).Create(h.t.Context(), account.Account{
-		ID: id, WorkspaceID: workspaceID, Email: email, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ownerID,
+	created, err := account.NewRepository(h.store, nil).Create(h.t.Context(), account.Account{
+		ID: id, WorkspaceID: workspaceID, Email: email, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
-	}); err != nil {
+	}, ownerID)
+	if err != nil {
 		h.t.Fatal(err)
 	}
-	if ownerID == "" {
-		if _, err := h.store.SetInstanceSync(h.t.Context(), id, true, "cli"); err != nil {
+	switch {
+	case ownerID == "":
+		if _, err := h.store.SetMailboxSync(h.t.Context(), id, true, "cli", "", nil); err != nil {
+			h.t.Fatal(err)
+		}
+	case created.OwnerUserID == "":
+		// A team's mailbox: its linker gives the team's consent to sync it.
+		if _, err := h.store.SetMailboxSync(h.t.Context(), id, true, ownerID, service.DefaultSyncConsentVersion, nil); err != nil {
 			h.t.Fatal(err)
 		}
 	}
@@ -169,13 +176,19 @@ func (h *harness) team(owner person, members ...person) (string, *workspace.Repo
 		h.t.Fatal(err)
 	}
 	for _, m := range members {
-		if err := h.store.Write(h.t.Context(), func(tx *sql.Tx) error {
-			return ws.AddMemberTx(h.t.Context(), tx, team.ID, m.user.ID, workspace.RoleMember, time.Now())
-		}); err != nil {
-			h.t.Fatal(err)
-		}
+		h.join(ws, team.ID, m, workspace.RoleMember)
 	}
 	return team.ID, ws
+}
+
+// join makes a person a member of a team with a role.
+func (h *harness) join(ws *workspace.Repository, teamID string, m person, role workspace.Role) {
+	h.t.Helper()
+	if err := h.store.Write(h.t.Context(), func(tx *sql.Tx) error {
+		return ws.AddMemberTx(h.t.Context(), tx, teamID, m.user.ID, role, time.Now())
+	}); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 // deliver puts a message in the mailbox's inbox, indexes the mailbox as

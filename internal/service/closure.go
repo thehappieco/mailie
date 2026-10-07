@@ -11,18 +11,26 @@ import (
 )
 
 // Closing a person's account, on their request, is two steps, as the privacy
-// policy promises. Disabling ends every session and revokes every key the
-// person holds; deleting removes the mailboxes they linked and those
-// mailboxes' credentials, their sessions, their keys, their invite, the
-// identities they sign in with through a provider with the keys pinned for
-// them, and their personal workspace, in one transaction.
+// policy promises. Disabling ends every session, revokes every key the person
+// holds and expires the invites they made; deleting removes the mailboxes of
+// their personal workspace and of every team they were alone in, with those
+// mailboxes' credentials and index, their sessions, their keys, their
+// invite, the identities they sign in with through a provider with the keys
+// pinned for them, and their personal workspace, in one transaction. A team
+// mailbox of a team others are in is the team's: closing a person never stops
+// or removes it, but for one whose consent to sync migration 0011 copied from
+// theirs and nobody has confirmed since, which stops with its index deleted,
+// as the text they agreed to promised — and, while someone else reads it,
+// only when the caller insists.
 //
 // Both are for an unrestricted instance admin key — the operator, answering a
 // request that arrived by email and was verified — and for an owner of the
 // instance signed in to the console, who administers its people, never on
-// themselves. A person their teams depend on — a team's last active owner, or
-// the linker of a team mailbox another member reads — is refused unless the
-// caller insists (force), as the last owner of the instance is.
+// themselves. A person their teams depend on — a team's last active owner,
+// the last person who can read a mailbox of a team that outlives them, or the
+// person whose consent a team mailbox someone else reads still syncs under —
+// is refused unless the caller insists (force), as the last owner of the
+// instance is.
 
 // CloseUserRequest names the person whose account is being closed. Their
 // address travels in the body, never in the URL, where every proxy on the way
@@ -32,7 +40,11 @@ type CloseUserRequest struct {
 	// Force allows disabling or deleting the last active owner of the
 	// instance, which leaves nobody able to invite people from the console,
 	// and a person their teams depend on: a team can then be left without
-	// an owner, and the team mailboxes they linked go with them.
+	// an owner; a team mailbox without anyone who can read it, which syncs
+	// nothing more and is marked so for the team's owners and admins until
+	// they remove it; and a team mailbox whose consent to sync was still
+	// the person's own (migration 0011) stopped, its index deleted, until an
+	// owner or an admin of the team turns its sync on again.
 	Force bool `json:"force,omitempty"`
 }
 
@@ -42,6 +54,9 @@ type DisabledUser struct {
 	Email         string `json:"email"`
 	SessionsEnded int    `json:"sessions_ended"`
 	KeysRevoked   int    `json:"keys_revoked"`
+	// TeamSyncsStopped are the team mailboxes whose consent to sync was
+	// still the person's own (migration 0011): stopped, their index deleted.
+	TeamSyncsStopped []string `json:"team_syncs_stopped,omitempty"`
 }
 
 // DeletedUser is what deleting a person removed. ID is empty when the address
@@ -56,18 +71,26 @@ type DeletedUser struct {
 	// TeamsDeleted counts the teams whose only member they were, deleted
 	// with them.
 	TeamsDeleted int `json:"teams_deleted"`
+	// TeamSyncsStopped are the team mailboxes whose consent to sync was
+	// still the person's own (migration 0011): stopped, their index deleted.
+	// The mailboxes stay, the team's.
+	TeamSyncsStopped []string `json:"team_syncs_stopped,omitempty"`
 }
 
 // DisableUser switches a person off: every session they have ends, every key
-// issued for them is revoked, and every consent attempt they started stops.
-// Their memberships and grants stay, and count for nothing while they are
-// off; the mailboxes they linked stop syncing. Disabling someone already
-// disabled is not an error.
+// issued for them is revoked, every invite they made expires, and every
+// consent attempt they started stops. Their memberships and grants stay, and
+// count for nothing while they are off; the mailboxes of their personal
+// workspace stop syncing, and so does a team mailbox whose consent was still
+// bound to theirs, its index deleted (refused without force while somebody
+// else reads it). Other team mailboxes carry on.
+// Disabling someone already disabled is not an error.
 func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserRequest) (DisabledUser, error) {
 	user, err := s.closing(ctx, p, req.Email)
 	if err != nil {
 		return DisabledUser{}, err
 	}
+	read := s.readBy(ctx, user.ID)
 	ended, err := s.users.Disable(ctx, user.ID, req.Force)
 	if err != nil {
 		return DisabledUser{}, fromClosure(err, "disabling the user failed")
@@ -80,30 +103,44 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 	if err := s.accounts.StopFlowsBy(ctx, user.ID); err != nil {
 		return DisabledUser{}, E(CodeInternal, "the user is disabled, but stopping their pending authorisations failed", err)
 	}
-	// The mailboxes they linked stop syncing: nothing is indexed any further
+	// Their personal mailboxes stop syncing: nothing is indexed any further
 	// under the consent of a person who is off. The accounts themselves did
-	// not change, so the registry has not told the engine; this does.
-	owned, err := s.accounts.Repo().LinkedBy(ctx, user.ID)
+	// not change, so the registry has not told the engine; this does. A
+	// team mailbox whose consent was bound to theirs stopped, and its index
+	// went, in the same transaction; a team mailbox they alone read stops
+	// too, read by nobody now.
+	owned, err := s.accounts.Repo().OwnedBy(ctx, user.ID)
 	if err != nil {
 		return DisabledUser{}, E(CodeInternal, "the user is disabled, but listing their mailboxes to stop them failed", err)
 	}
 	for _, a := range owned {
 		s.reconcile(a.ID)
 	}
+	s.reconcile(ended.Stopped...)
+	s.reconcile(read...)
+	if len(ended.Stopped) > 0 {
+		s.log.Info("team mailboxes whose consent to sync was bound to a disabled person stopped; index deleted",
+			"user", user.ID, "accounts", ended.Stopped)
+		s.forgetMoves(ended.Stopped)
+		s.compact(ctx)
+	}
 	return DisabledUser{
 		ID: user.ID, Email: user.Email, SessionsEnded: ended.Sessions, KeysRevoked: ended.Keys,
+		TeamSyncsStopped: ended.Stopped,
 	}, nil
 }
 
 // DeleteUser deletes a person and everything kept about them: the mailboxes
-// they linked, in every workspace, with those mailboxes' credentials, folders
-// and everything else indexed for them, since the consent they synced under
-// goes with them; their sessions; their keys; every invite for their address;
-// the identities they signed in with through a provider, and the keys pinned
-// for those identities; their personal workspace, and every team they were
-// the only member of. One
-// transaction, so an interruption leaves the person whole rather than half
-// deleted.
+// of their personal workspace, with those mailboxes' credentials, folders and
+// everything else indexed for them, since the consent they synced under goes
+// with them; their sessions; their keys; every invite for their address; the
+// identities they signed in with through a provider, and the keys pinned for
+// those identities; their personal workspace, and every team they were the
+// only member of, with its mailboxes. Their name goes from what they did for
+// others — the grants they gave, the mailboxes they linked, the team consents
+// they gave — which stays. A team mailbox whose consent was still bound to
+// theirs stops, its index deleted. One transaction, so an interruption leaves
+// the person whole rather than half deleted.
 //
 // An address with no account but with invites — somebody invited who never
 // signed up — has those invites deleted.
@@ -118,8 +155,8 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 	}
 
 	var removed auth.Removed
-	// Their teams are asked about before their mailboxes go: afterwards,
-	// the team mailboxes they linked would no longer be there to refuse on.
+	read := s.readBy(ctx, user.ID)
+	// Their teams are asked about before anything of theirs goes.
 	blocks := func(tx *sql.Tx) error { return s.users.RequireNoBlocksTx(ctx, tx, user.ID, req.Force) }
 	accounts, err := s.accounts.RemoveOwner(ctx, user.ID, blocks, func(tx *sql.Tx) error {
 		// The records of what they sent from a mailbox nobody owns stay
@@ -135,15 +172,42 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 		return DeletedUser{}, fromClosure(err, "deleting the user failed")
 	}
 	s.accessChanged()
+	s.reconcile(removed.Stopped...)
+	s.reconcile(read...)
+	s.forgetMoves(removed.Stopped)
 	s.compact(ctx)
 	s.log.Info("user deleted", "user", user.ID, "accounts", accounts,
 		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites, "teams", removed.Teams,
-		"identities", removed.Identities)
+		"identities", removed.Identities, "team_syncs_stopped", len(removed.Stopped))
 	return DeletedUser{
 		ID: user.ID, Email: user.Email, AccountsRemoved: accounts,
 		SessionsDeleted: removed.Sessions, KeysDeleted: removed.Keys, InvitesDeleted: removed.Invites,
-		TeamsDeleted: removed.Teams,
+		TeamsDeleted: removed.Teams, TeamSyncsStopped: removed.Stopped,
 	}, nil
+}
+
+// forgetMoves drops what the index remembers of moves on accounts whose index
+// a committed transaction deleted.
+func (s *Service) forgetMoves(ids []string) {
+	if s.store != nil && len(ids) > 0 {
+		s.store.ForgetMoves(ids)
+	}
+}
+
+// readBy lists the mailboxes a person reads, before they are disabled or
+// deleted: a team mailbox they were the last to read (a forced closure)
+// stops syncing, and the engine hears of it at once rather than at its next
+// periodic check. A failure only delays that.
+func (s *Service) readBy(ctx context.Context, userID string) []string {
+	if s.workspaces == nil {
+		return nil
+	}
+	ids, err := s.workspaces.ReadBy(ctx, userID)
+	if err != nil {
+		s.log.Warn("listing what a person reads failed; the engine notices on its own", "err", err)
+		return nil
+	}
+	return ids
 }
 
 func (s *Service) deleteInvitesOnly(ctx context.Context, email string) (DeletedUser, error) {
@@ -221,16 +285,21 @@ func fromClosure(err error, what string) error {
 	switch {
 	case errors.As(err, &blocked):
 		// The ids, so whoever is closing the account can see to each first:
-		// make another member an owner, take a link over, or insist.
+		// make another member an owner, give another member read, or insist.
 		var parts []string
 		if len(blocked.LastOwnerOf) > 0 {
 			parts = append(parts, "the last active owner of the teams "+strings.Join(blocked.LastOwnerOf, ", "))
 		}
-		if len(blocked.Linked) > 0 {
-			parts = append(parts, "the linker of team mailboxes others read, "+strings.Join(blocked.Linked, ", "))
+		if len(blocked.LastReaderOf) > 0 {
+			parts = append(parts, "the last person who can read the team mailboxes "+strings.Join(blocked.LastReaderOf, ", "))
+		}
+		if len(blocked.BoundTo) > 0 {
+			parts = append(parts, "the person under whose own consent the team mailboxes "+strings.Join(blocked.BoundTo, ", ")+
+				" still sync since the upgrade, which closing them stops, deleting their index for everyone who reads them")
 		}
 		return E(CodeConflict, "that person is "+strings.Join(parts, ", and ")+
-			"; make another member an owner or take the links over first, or pass force to do it anyway", err)
+			"; make another member an owner, give another member read, or have an owner or an admin of the team "+
+			"turn the mailbox's sync on for the team, first, or pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people "+
 			"from the console. Pass force to do it anyway", err)

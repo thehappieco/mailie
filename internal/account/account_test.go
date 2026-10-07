@@ -44,7 +44,7 @@ func seed(t *testing.T, repo *account.Repository, email string, kind provider.Ki
 		ID: "acc_" + strings.ReplaceAll(email, "@", "_"), Email: email, Provider: kind,
 		AuthKind: "oauth2", IMAPHost: "imap.example.com", IMAPPort: 993,
 		SMTPHost: "smtp.example.com", SMTPPort: 587, SMTPTLS: "starttls", LoginUser: email,
-	})
+	}, "")
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestAnAddressIsLinkedOnceInAWorkspace(t *testing.T) {
 		ID: "acc_other", Email: "Person@Example.com", Provider: provider.KindGmail,
 		AuthKind: "oauth2", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 587,
 		SMTPTLS: "starttls", LoginUser: "person@example.com",
-	})
+	}, "")
 	if !errors.Is(err, account.ErrDuplicate) {
 		t.Fatalf("want ErrDuplicate for an address differing only in case, got %v", err)
 	}

@@ -198,10 +198,10 @@ func TestAMoveWhoseCallerLeftWhileItWasOnTheWireIsRecorded(t *testing.T) {
 	const id = "acc_00000000000000d1"
 	host, port := splitHostPort(t, srv.Addr)
 	if _, err := m.repo.Create(t.Context(), account.Account{
-		ID: id, Email: srv.User, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ana.UserID,
+		ID: id, Email: srv.User, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: port, SMTPTLS: "implicit", LoginUser: srv.User,
 		State: account.StateActive,
-	}); err != nil {
+	}, ana.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.svc.GrantSyncConsent(t.Context(), ana, service.DefaultSyncConsentVersion); err != nil {

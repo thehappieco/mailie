@@ -64,9 +64,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/account` — accounts, their encrypted credentials, OAuth flows and the registry of
   token sources.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
-  per-mailbox grants (`read`, `act`, `send`, `manage`), the protections each write keeps (last
-  owner, linker, last manager) and the workspace `Source` (local; the platform's is a stub). See
-  `docs/workspaces.md`.
+  per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
+  and members only as a stored flag), the protections each write keeps (last owner, last reader)
+  and the workspace `Source` (local; the platform's is a stub). See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
@@ -189,12 +189,17 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **An external identity never takes over a person.** Accounts are never linked by matching
   addresses: a first sign-in through an extension only creates a new person, and an address that
   already has one here is `conflict`, with nothing created or linked.
-- **Access to a mailbox is decided in `internal/service`.** A person sees one as an active member
-  of its workspace holding a grant on it, and each use needs its flag; an instance key reaches only
-  the operator workspace's. Another workspace's mailbox, or one the caller holds nothing on, is
-  `not_found`, never `forbidden`; listing filters in SQL with the same rule as fetching one. No role
-  reads mail by being one: owners and admins grant, and `read`, `act` and `send` pass only from a
-  holder. The linker's consent syncs the mailbox (`accounts.owner_user_id` means "linked by").
+- **Access to a mailbox is decided in `internal/service`.** Every mailbox belongs to its workspace
+  (`accounts.owner_user_id` is the person of a personal workspace's mailbox, NULL for a team's and
+  the operator's; who linked one is attribution only, `linked_by`). A person sees one as an active
+  member of its workspace holding a grant on it, or as its owner or admin, who manage every
+  mailbox of the workspace by their role — its card, re-authorizing, who holds what — and each use
+  needs its flag; an instance key reaches only the operator workspace's. Another workspace's
+  mailbox, or one the caller neither holds anything on nor manages, is `not_found`, never
+  `forbidden`; listing filters in SQL with the same rule as fetching one. No role reads, acts or
+  sends: `read` passes only from an owner or an admin who reads the mailbox now, `act` and `send`
+  from any owner or admin (`act` to a reader), stored `manage` to members only. A team mailbox
+  someone reads always keeps a reader (keys and roles never count).
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -205,10 +210,20 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   dialers, unless `MAIL_ACCOUNT_ALLOW_PRIVATE`. A password account logs in once before it is saved.
 - **The console never shows the server's `message`**: it translates the `code`. The `state_reason`
   of a failed consent is a fixed English text (`account.Reason*`), never the provider's.
-- **Consent.** Nothing of a person's messages is stored before they consent to sync, and
-  withdrawing deletes their index in the same transaction. Actions and sending have their own
-  consents, checked again right before the mail server is touched. The revisions come from
-  `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts (`web/src/open/versions.ts`).
+- **Consent.** Nothing of a mailbox's messages is stored before its consent to sync: a personal
+  mailbox's person's; a team mailbox's workspace's, which an owner or an admin gives on the team's
+  behalf at the current sync text and any of them withdraws (on the mailbox: `sync_enabled_at`,
+  `sync_enabled_by`, `sync_consent_version`); it also needs a reader. Withdrawing deletes the index
+  in the same transaction: a person's withdrawal only their personal mailboxes', a team's for every
+  reader. A team consent migration 0011 copied from its linker (`sync_enabled_via = 'migration'`)
+  stays bound to them until confirmed: their withdrawal, disable or deletion stops it and deletes
+  its index (closing them is refused without force while someone else reads it). A team mailbox
+  nobody can read is never switched on. Closing a person without force is refused for the last
+  reader of a team that outlives them (any other member, whatever their status), the same test as
+  whether the team goes with them. Actions and sending have their own consents, the actor's own,
+  checked again right before the mail server is touched. The revisions come from
+  `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts
+  (`web/src/open/versions.ts`).
 - **Errors.** Sentinels `errors.New("pkg: ...")`, always `errors.Is`/`errors.As`. The API answers
   `{code, message}` with seven fixed codes and never says which credential failed.
 - **Backup: the host only encrypts and uploads.** It generates data keys with the context exactly

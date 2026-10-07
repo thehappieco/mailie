@@ -19,9 +19,11 @@ import (
 // Workspaces, their members, and who holds what on their mailboxes, for the
 // operator (docs/workspaces.md, "Command line"). Every command is a client of
 // the daemon with MAIL_ADMIN_KEY, an unrestricted instance admin key, and the
-// daemon decides what the operator may do: it administers every team, and
-// holds no flag on anyone's mailbox, so it grants manage and nothing else —
-// read, act and send pass from a member who holds them, in the console.
+// daemon decides what the operator may do: it administers every team's
+// people, and holds no flag on anyone's mailbox, so it grants manage to
+// members and nothing else, and revokes — read passes from an owner or an
+// admin who reads the mailbox, and act and send from an owner or an admin, in
+// the console.
 //
 // People are named by address, as everywhere on the command line; the routes
 // take ids, which these look up in the workspace's member list.
@@ -167,8 +169,8 @@ func memberList(ctx context.Context, cfg config.Config, args []string) error {
 		if m.LastOwner {
 			notes = append(notes, "last owner")
 		}
-		if m.Links > 0 {
-			notes = append(notes, "linked "+plural(m.Links, "mailbox"))
+		if len(m.LastReaderOf) > 0 {
+			notes = append(notes, "last reader of "+strings.Join(m.LastReaderOf, ", "))
 		}
 		if m.PersonDisabled {
 			notes = append(notes, "disabled on this server")
@@ -259,21 +261,37 @@ func accessList(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	//nolint:errcheck // checked by Flush
-	fmt.Fprintln(w, "ACCOUNT\tEMAIL\tSTATE\tLINKED BY\tGRANTS")
+	fmt.Fprintln(w, "ACCOUNT\tEMAIL\tSTATE\tSYNC\tLINKED BY\tGRANTS")
 	for _, mb := range directory {
 		grants := make([]string, 0, len(mb.Grants))
 		for _, g := range mb.Grants {
 			grants = append(grants, name(g.UserID)+" "+flagList(g))
 		}
-		linkedBy := "-"
-		if mb.LinkedBy != "" {
-			linkedBy = name(mb.LinkedBy)
+		if mb.NoReader {
+			grants = append(grants, "nobody can read it")
 		}
 		//nolint:errcheck // checked by Flush
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", mb.AccountID, mb.Email, mb.State, linkedBy,
-			orDash(strings.Join(grants, ", ")))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", mb.AccountID, mb.Email, mb.State, syncNote(mb.Sync),
+			name(mb.LinkedBy), orDash(strings.Join(grants, ", ")))
 	}
 	return w.Flush()
+}
+
+// syncNote is a mailbox's own consent to sync, as access list shows it.
+func syncNote(c *service.MailboxConsent) string {
+	switch {
+	case c == nil:
+		return "its person's"
+	case c.Migrated && c.Enabled:
+		return "on, bound to " + orDash(c.EnabledBy)
+	case c.Migrated:
+		return "off, index kept for " + orDash(c.EnabledBy)
+	case c.Enabled && c.Version != "" && !c.Current:
+		return "on (" + c.Version + ")"
+	case c.Enabled:
+		return "on"
+	}
+	return "off"
 }
 
 // flagList is a grant's flags as the command line names them.
@@ -294,8 +312,8 @@ func accessGrant(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("access grant", flag.ContinueOnError)
 	accountID := fs.String("account", "", "the mailbox's account id")
 	email := fs.String("email", "", "the member's address"+emailFlagUsage)
-	manage := fs.Bool("manage", false, "grant manage: re-authorizing and removing the mailbox, and who has access to it "+
-		"(required: the operator grants nothing else)")
+	manage := fs.Bool("manage", false, "grant manage to a member: the mailbox's card and re-authorizing it "+
+		"(required: the operator grants nothing else, and owners and admins manage by their role)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -303,8 +321,9 @@ func accessGrant(ctx context.Context, cfg config.Config, args []string) error {
 		return errors.New("access grant: --account is required")
 	}
 	if !*manage {
-		return errors.New("access grant: the operator grants manage only, so --manage is required; " +
-			"read, act and send pass from a member who holds them, in the console")
+		return errors.New("access grant: the operator grants manage only, to members, so --manage is required; " +
+			"read passes from an owner or an admin who reads the mailbox, and act and send from an owner or an admin, " +
+			"in the console")
 	}
 	mb, workspaceID, err := mailboxAccess(ctx, cfg, *accountID)
 	if err != nil {

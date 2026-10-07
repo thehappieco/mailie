@@ -564,7 +564,7 @@ func TestRemovingAPendingAccountClosesItsListener(t *testing.T) {
 	} else {
 		_ = conn.Close()
 	}
-	if err := f.svc.RemoveAccount(t.Context(), admin(), loop.Account.ID); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), admin(), loop.Account.ID, service.RemoveAccountRequest{Confirm: loop.Account.ID}); err != nil {
 		t.Fatal(err)
 	}
 	if conn, err := net.Dial("tcp", redirect.Host); err == nil {
@@ -577,7 +577,7 @@ func TestRemovingAPendingAccountClosesItsListener(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "the device flow to start polling", func() bool { return idp.pollCount() > 0 })
-	if err := f.svc.RemoveAccount(t.Context(), admin(), device.Account.ID); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), admin(), device.Account.ID, service.RemoveAccountRequest{Confirm: device.Account.ID}); err != nil {
 		t.Fatal(err)
 	}
 	after := idp.pollCount()
@@ -777,7 +777,7 @@ func TestAPrivateMailHostIsRefusedUnlessAllowed(t *testing.T) {
 		ID: "acc_rebound", Email: "person@example.com", Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "localhost", IMAPPort: port, SMTPHost: "localhost", SMTPPort: port, SMTPTLS: "starttls",
 		LoginUser: srv.User, State: account.StateActive,
-	})
+	}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -101,11 +101,11 @@ func TestTheOperatorAdministersTeamsFromTheCommandLineAndGrantsOnlyManage(t *tes
 	}
 	const shared = "acc_00000000000000aa"
 	if _, err := account.NewRepository(db, nil).Create(ctx, account.Account{
-		ID: shared, WorkspaceID: team, OwnerUserID: ana.ID, Email: "support@mail.example", Provider: provider.KindIMAP,
+		ID: shared, WorkspaceID: team, Email: "support@mail.example", Provider: provider.KindIMAP,
 		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: "support@mail.example",
 		State: account.StateActive,
-	}); err != nil {
+	}, ana.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ws.SetGrant(ctx, shared, bea.ID, workspace.Flags{Read: true}, ana.ID, nil); err != nil {

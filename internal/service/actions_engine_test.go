@@ -60,10 +60,10 @@ func newEnginedBoxWith(t *testing.T, o providertest.FakeOptions, setup func(*pro
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	const id = "acc_00000000000000f1"
 	if _, err := f.repo.Create(t.Context(), account.Account{
-		ID: id, Email: "ana@mail.example", Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ana.UserID,
+		ID: id, Email: "ana@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
 		LoginUser: "ana@mail.example", State: account.StateActive,
-	}); err != nil {
+	}, ana.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.GrantSyncConsent(t.Context(), ana, service.DefaultSyncConsentVersion); err != nil {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { configureEdition } from '../src/edition'
+import { configureEdition, edition } from '../src/edition'
 import { openEdition } from '../src/open/edition'
 import { draftRequest, emptyDraft, guessHosts, isICloudAddress, portForSecurity, signsInWithPassword } from '../src/ui/accountDraft'
 import { describe as describeFailure, describeFolders } from '../src/ui/errors'
@@ -191,12 +191,32 @@ describe('the reasons the console explains itself', () => {
 })
 
 describe('failure text', () => {
+  it('says the team’s rules of the new model in the console’s words: the last reader, the mailbox removal’s confirmation, the team’s sync', () => {
+    // The last reader of a mailbox is kept, wherever the change came from.
+    for (const op of ['change-member', 'remove-member'] as const) expect(describeFailure({ op, code: 'conflict' }), op).toContain('a mailbox someone reads keeps someone who can read it')
+    expect(describeFailure({ op: 'change-access', code: 'conflict' })).toBe('This is the only person who can read this mailbox: give someone else Read on it first.')
+    expect(describeFailure({ op: 'leave-team', code: 'conflict' })).toContain('the only person who can read one of its mailboxes')
+    expect(describeFailure({ op: 'leave-team', code: 'not_authorized' })).toBe('Only an owner leaves a team, while another owner remains.')
+    // A removal whose id the server did not find repeated removed nothing.
+    expect(describeFailure({ op: 'remove-account', code: 'bad_request' })).toContain('The server removed nothing')
+    expect(describeFailure({ op: 'remove-account', code: 'not_authorized' })).toBe('Only the owners and admins of a team remove its mailboxes.')
+    // Members see none of the team's people or directory.
+    expect(describeFailure({ op: 'load-members', code: 'not_authorized' })).toBe('Only the owners and admins of the team see its members.')
+    expect(describeFailure({ op: 'load-access', code: 'not_authorized' })).toBe('Only the owners and admins of the team see who has access to its mailboxes.')
+    expect(describeFailure({ op: 'team-sync-on', code: 'not_authorized' })).toBe('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
+    expect(describeFailure({ op: 'team-sync-off', code: 'not_authorized' })).toBe('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
+    // Turned on to a text the server no longer asks about: the edition says the text changed.
+    expect(describeFailure({ op: 'team-sync-on', code: 'bad_request' })).toBe(edition().sync.changedWhileOpen())
+    expect(describeFailure({ op: 'team-sync-on', code: 'conflict' })).toBe('Nobody in the team can read this mailbox, so its sync cannot be turned on. Remove it, and connect it again, to use it.')
+    expect(describeFailure({ op: 'team-sync-off', code: 'unavailable' })).toContain('doing it twice is safe')
+  })
+
   it('depends on what was being done, not only on the code', () => {
     expect(describeFailure({ op: 'password', code: 'not_authorized' })).toBe('The current password is incorrect.')
     expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toContain('invitation')
     expect(describeFailure({ op: 'profile', code: 'not_authorized' })).toBe('Your account is not allowed to do this.')
     // A grant without read: the mailbox is seen, its folders are not.
-    expect(describeFailure({ op: 'folders', code: 'not_authorized' })).toBe('You do not have read access to this mailbox. It comes only from someone who has it and can change who has access.')
+    expect(describeFailure({ op: 'folders', code: 'not_authorized' })).toBe('You do not have read access to this mailbox. It comes only from an owner or an admin of the team who reads it.')
     locale.value = 'pt'
     expect(describeFailure({ op: 'sign-in', code: 'unauthorized' })).toBe('O email ou a senha estão incorretos.')
   })

@@ -25,11 +25,12 @@ type Member struct {
 	// LastOwner is the only active owner of a team, who cannot be demoted,
 	// disabled or removed (ErrLastOwner).
 	LastOwner bool
-	// Links counts the mailboxes this member linked in the workspace, each
-	// of which keeps them there (ErrLinker).
-	Links     int
-	JoinedAt  time.Time
-	UpdatedAt time.Time
+	// LastReaderOf are the team mailboxes this member is the only reader of:
+	// their read cannot be revoked, nor their membership disabled or removed,
+	// until someone else reads them (ErrLastReader).
+	LastReaderOf []string
+	JoinedAt     time.Time
+	UpdatedAt    time.Time
 }
 
 // Active reports whether the membership counts: active, of a person active
@@ -37,8 +38,7 @@ type Member struct {
 func (m Member) Active() bool { return m.Status == StatusActive && !m.PersonDisabled }
 
 const memberColumns = `m.workspace_id, m.user_id, u.email, u.name, m.role, m.status, u.status <> 'active',
-	m.created_at, m.updated_at,
-	(SELECT count(*) FROM accounts a WHERE a.workspace_id = m.workspace_id AND a.owner_user_id = m.user_id)`
+	m.created_at, m.updated_at`
 
 func scanMember(row rowScanner) (Member, error) {
 	var (
@@ -46,7 +46,7 @@ func scanMember(row rowScanner) (Member, error) {
 		created, updated int64
 	)
 	err := row.Scan(&m.WorkspaceID, &m.UserID, &m.Email, &m.Name, &m.Role, &m.Status, &m.PersonDisabled,
-		&created, &updated, &m.Links)
+		&created, &updated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Member{}, ErrNotMember
@@ -83,6 +83,9 @@ func memberOn(ctx context.Context, q querier, workspaceID, userID string) (Membe
 		}
 		m.LastOwner = others == 0
 	}
+	if m.LastReaderOf, err = lastReaderOf(ctx, q, userID, workspaceID, nil, false); err != nil {
+		return Member{}, err
+	}
 	return m, nil
 }
 
@@ -118,8 +121,13 @@ func (r *Repository) Members(ctx context.Context, workspaceID string) ([]Member,
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("workspace: list members: %w", err)
 	}
+	last, err := lastReadersIn(ctx, r.store.Reader(), workspaceID)
+	if err != nil {
+		return nil, err
+	}
 	for i := range out {
 		out[i].LastOwner = owners == 1 && out[i].Role == RoleOwner && out[i].Active()
+		out[i].LastReaderOf = last[out[i].UserID]
 	}
 	return out, nil
 }
@@ -179,14 +187,18 @@ type MemberChange struct {
 
 // SetMember changes a member's role or status in a team.
 //
-// Disabling a membership deletes the person's grants in the workspace in the
-// same transaction, drops those mailboxes from the restrictions of the
+// Any real change expires the invites the person created in the team that
+// are still waiting: they were made under a role or a standing the person no
+// longer has. Making them an owner or an admin takes a stored manage away,
+// which the role gives (the schema's trigger); taking that role away ends the
+// consent attempts they started on the team's mailboxes, which they manage no
+// longer. Disabling a membership deletes the person's grants in the workspace
+// in the same transaction, drops those mailboxes from the restrictions of the
 // person's keys, ends the consent attempts they started on them and deletes
 // the team's invites still waiting for their address (leaveTx); enabling it
-// again restores the membership only. Refused:
-// leaving the team without an active owner (ErrLastOwner), and disabling the
-// person a mailbox there syncs under (ErrLinker) or its last holder of manage
-// (ErrLastManager).
+// again restores the membership only. Refused: leaving the team without an
+// active owner (ErrLastOwner), and disabling the last reader of one of its
+// mailboxes (ErrLastReader).
 func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, change MemberChange, check Check) (Member, error) {
 	if change.Role != nil {
 		if _, err := ParseRole(string(*change.Role)); err != nil {
@@ -230,9 +242,25 @@ func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, 
 			return ErrLastOwner
 		}
 		if status == StatusDisabled && m.Status == StatusActive {
+			if err := requireNotLastReaderInTx(ctx, tx, workspaceID, userID); err != nil {
+				return err
+			}
 			if err := leaveTx(ctx, tx, workspaceID, userID); err != nil {
 				return err
 			}
+		}
+		if role == RoleMember && m.Role != RoleMember {
+			// They managed the team's mailboxes by their role, and manage
+			// none of them now: they hold no stored manage, which the role
+			// took away when they got it.
+			if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
+				WHERE owner_user_id = ? AND account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`,
+				userID, workspaceID); err != nil {
+				return fmt.Errorf("workspace: end the consent attempts of mailboxes no longer managed: %w", err)
+			}
+		}
+		if err := expireInvitesByTx(ctx, tx, workspaceID, userID, now); err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE workspace_members SET role = ?, status = ?, updated_at = ? WHERE workspace_id = ? AND user_id = ?`,
@@ -250,12 +278,13 @@ func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, 
 
 // RemoveMember removes a person from a team. Their grants there go with the
 // membership, those mailboxes leave the restrictions of their keys, the
-// consent attempts they started on them end, and the team's invites still
-// waiting for their address are deleted, in the same transaction, so a
-// leftover invite cannot bring them back. Refused as SetMember refuses disabling: the last
-// active owner, the person a mailbox there syncs under, the last holder of
-// manage on a linked mailbox.
+// consent attempts they started on them end, the team's invites still
+// waiting for their address are deleted, so a leftover invite cannot bring
+// them back, and the invites they created there expire, in the same
+// transaction. Refused for the last active owner (ErrLastOwner) and the last
+// reader of one of the team's mailboxes (ErrLastReader).
 func (r *Repository) RemoveMember(ctx context.Context, workspaceID, userID string, check Check) error {
+	now := r.now().Unix()
 	return r.store.Write(ctx, func(tx *sql.Tx) error {
 		w, err := GetTx(ctx, tx, workspaceID)
 		if err != nil {
@@ -274,7 +303,13 @@ func (r *Repository) RemoveMember(ctx context.Context, workspaceID, userID strin
 		if m.LastOwner {
 			return ErrLastOwner
 		}
+		if err := requireNotLastReaderInTx(ctx, tx, workspaceID, userID); err != nil {
+			return err
+		}
 		if err := leaveTx(ctx, tx, workspaceID, userID); err != nil {
+			return err
+		}
+		if err := expireInvitesByTx(ctx, tx, workspaceID, userID, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx,
@@ -285,30 +320,25 @@ func (r *Repository) RemoveMember(ctx context.Context, workspaceID, userID strin
 	})
 }
 
+// expireInvitesByTx expires the invites a person created in a team that are
+// still waiting, when their role or their place there changes: each was made
+// under a standing they may no longer have. The record stays, and the hourly
+// sweep deletes it once it has been expired long enough.
+func expireInvitesByTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string, now int64) error {
+	if _, err := tx.ExecContext(ctx, `UPDATE invites SET expires_at = ?1
+		WHERE workspace_id = ?2 AND created_by = ?3 AND used_at = 0 AND expires_at > ?1`,
+		now, workspaceID, userID); err != nil {
+		return fmt.Errorf("workspace: expire the invites the person created: %w", err)
+	}
+	return nil
+}
+
 // leaveTx is what a member losing their place in a workspace takes with it:
-// refused while a mailbox there syncs under them or would be left without a
-// holder of manage, and otherwise their grants there, those mailboxes in
-// their keys' restrictions, the consent attempts they started on them, and
-// the team's invites still waiting for their address.
+// their grants there, those mailboxes in their keys' restrictions, the
+// consent attempts they started on them, and the team's invites still
+// waiting for their address. The last-reader rule is the caller's to have
+// checked.
 func leaveTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error {
-	var links int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE workspace_id = ? AND owner_user_id = ?`,
-		workspaceID, userID).Scan(&links); err != nil {
-		return fmt.Errorf("workspace: count links: %w", err)
-	}
-	if links > 0 {
-		return ErrLinker
-	}
-	var orphaned int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_access g JOIN accounts a ON a.id = g.account_id
-		WHERE g.workspace_id = ? AND g.user_id = ? AND g.manage = 1 AND a.owner_user_id IS NOT NULL
-		  AND NOT EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = g.account_id AND o.user_id <> g.user_id AND o.manage = 1)`,
-		workspaceID, userID).Scan(&orphaned); err != nil {
-		return fmt.Errorf("workspace: count managers: %w", err)
-	}
-	if orphaned > 0 {
-		return ErrLastManager
-	}
 	readable, err := listIDs(ctx, tx, `SELECT account_id FROM mailbox_access WHERE workspace_id = ? AND user_id = ? AND read = 1`,
 		workspaceID, userID)
 	if err != nil {

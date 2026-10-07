@@ -12,10 +12,13 @@ import (
 
 // Access to a mailbox (docs/workspaces.md).
 //
-// Seeing a mailbox takes two things: active membership in its workspace and
-// a grant on it. Any grant shows its card — the account, its sync — and each
-// flag opens one use: read its index, act on its messages, send from it,
-// manage it (re-authorise, remove, change who has access). An instance key
+// Every mailbox belongs to its workspace. A person sees one as an active
+// member of that workspace who holds a grant on it or, as an owner or an
+// admin, manages it by their role: either shows its card — the account, its
+// sync, never what it holds. Each flag of a grant opens one use: read its
+// index, act on its messages, send from it; manage is the card and
+// re-authorizing it, which owners and admins hold by their role and members
+// only as a stored flag. No role reads, acts or sends. An instance key
 // reaches the operator workspace's mailboxes, and its scope is what limits it
 // there.
 
@@ -27,7 +30,7 @@ var (
 	needRead = workspace.Flags{Read: true}
 	// needSend is sending from the mailbox.
 	needSend = workspace.Flags{Send: true}
-	// needManage is re-authorising and removing the mailbox.
+	// needManage is re-authorising the mailbox.
 	needManage = workspace.Flags{Manage: true}
 )
 
@@ -57,10 +60,11 @@ func intersect(a, b workspace.Flags) workspace.Flags {
 	return workspace.Flags{Read: a.Read && b.Read, Act: a.Act && b.Act, Send: a.Send && b.Send, Manage: a.Manage && b.Manage}
 }
 
-// grantsOf reads what the caller holds on each mailbox named: a person's
-// grants, counting only those of an active member, and every flag on each
-// mailbox for an instance key, which sees only the operator's. A mailbox the
-// caller holds nothing on is absent.
+// grantsOf reads what the caller may do with each mailbox named: a person's
+// grant, counting only an active member's, with manage from it or from their
+// role, owner or admin; and every flag on each mailbox for an instance key,
+// which sees only the operator's. A mailbox the caller neither holds a grant
+// on nor manages by their role is absent.
 func (s *Service) grantsOf(ctx context.Context, p Principal, accountIDs ...string) (map[string]workspace.Flags, error) {
 	if p.IsInstance() {
 		out := make(map[string]workspace.Flags, len(accountIDs))
@@ -109,13 +113,13 @@ func errMissingFlag(need workspace.Flags) error {
 // Errors of a grant without the flag an operation needs.
 var (
 	errNoRead = E(CodeNotAuthorized,
-		"you do not have read access to this mailbox; whoever manages it in its workspace can grant it", nil)
+		"you do not have read access to this mailbox; an owner or an admin of its workspace who reads it can grant it", nil)
 	errNoAct = E(CodeNotAuthorized,
-		"you may not change this mailbox's messages; whoever manages it in its workspace can grant it", nil)
+		"you may not change this mailbox's messages; an owner or an admin of its workspace can grant it", nil)
 	errNoSendFlag = E(CodeNotAuthorized,
-		"you may not send from this mailbox; whoever manages it in its workspace can grant it", nil)
+		"you may not send from this mailbox; an owner or an admin of its workspace can grant it", nil)
 	errNoManage = E(CodeNotAuthorized,
-		"you do not manage this mailbox; whoever manages it in its workspace can grant it", nil)
+		"you do not manage this mailbox; its workspace's owners and admins do", nil)
 )
 
 // accessChanged records that read access may have changed for somebody. It
@@ -190,16 +194,13 @@ func fromWorkspace(err error, what string) error {
 		return E(CodeConflict, "that person is already a member of the workspace", err)
 	case errors.Is(err, workspace.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner of the team; make another member an owner first", err)
-	case errors.Is(err, workspace.ErrLinker):
-		return E(CodeConflict, "that person linked a mailbox still linked in the workspace; "+
-			"remove it or have another member take the link over first", err)
-	case errors.Is(err, workspace.ErrLastManager):
-		return E(CodeConflict, "that is the last person who manages a mailbox linked in the workspace; "+
-			"give another member manage on it first", err)
+	case errors.Is(err, workspace.ErrLastReader):
+		return E(CodeConflict, "that is the last person who can read a mailbox of the workspace; "+
+			"give another member read on it first, or remove the mailbox", err)
 	case errors.Is(err, workspace.ErrHoldsMailboxes):
 		return E(CodeConflict, "the workspace still holds mailboxes", err)
-	case errors.Is(err, workspace.ErrNeedsFullGrant):
-		return E(CodeConflict, "taking over a link needs read, act, send and manage on the mailbox", err)
+	case errors.Is(err, workspace.ErrManageByRole):
+		return E(CodeBadRequest, "owners and admins manage every team mailbox by their role; manage is granted to members only", err)
 	case errors.Is(err, workspace.ErrManagedElsewhere):
 		return E(CodeConflict, "workspaces are managed in the account console", err)
 	case errors.Is(err, workspace.ErrPersonal):

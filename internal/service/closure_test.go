@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -242,7 +243,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	}
 	teamBox, err := f.repo.Create(t.Context(), account.Account{ID: "acc_00000000000000aa", Email: "team@mail.example",
 		Provider: "imap", AuthKind: "password", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465,
-		SMTPTLS: "implicit", LoginUser: "team", OwnerUserID: bob.UserID, WorkspaceID: support.ID})
+		SMTPTLS: "implicit", LoginUser: "team", WorkspaceID: support.ID}, bob.UserID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +252,31 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	}
 	if _, err := workspaces.SetGrant(t.Context(), teamBox.ID, dan.UserID, workspace.Flags{Manage: true}, ana.UserID, nil); err != nil {
 		t.Fatal(err)
+	}
+	// Every way her name is kept on what she did for the team: a mailbox
+	// she linked into it and the team's consent to sync it she gave, which
+	// stay the team's; and a mailbox whose consent the upgrade copied from
+	// hers, still bound to her, which stops with its index.
+	linked, err := f.repo.Create(t.Context(), account.Account{ID: "acc_00000000000000ab", Email: "orders@mail.example",
+		Provider: "imap", AuthKind: "password", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "orders", WorkspaceID: support.ID}, ana.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.SetMailboxSync(t.Context(), linked.ID, true, ana.UserID, service.DefaultSyncConsentVersion, nil); err != nil {
+		t.Fatal(err)
+	}
+	bound, err := f.repo.Create(t.Context(), account.Account{ID: "acc_00000000000000ac", Email: "billing@mail.example",
+		Provider: "imap", AuthKind: "password", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "billing", WorkspaceID: support.ID, State: account.StateActive}, bob.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	migrated(t, f, bound.ID, ana.UserID)
+	for _, id := range []string{linked.ID, bound.ID} {
+		if _, err := workspaces.SetGrant(t.Context(), id, bob.UserID, workspace.Flags{Read: true}, ana.UserID, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	anaAlone, err := workspaces.CreateTeam(t.Context(), "Ana alone", ana.UserID, nil)
 	if err != nil {
@@ -264,6 +290,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	anaEvent := f.seedMailbox(t, anaHome, "zebra quarterly")
 	f.seedMailbox(t, anaWork, "zebra annual")
 	bobEvent := f.seedMailbox(t, bobs, "giraffe weekly")
+	f.seedMailbox(t, bound.ID, "okapi monthly")
 
 	anaKey, _ := f.issue(t, ana.UserID, anaHome)
 	// Instance keys restricted to people's mailboxes, as a schema-7 server
@@ -310,6 +337,10 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			VALUES (?, ?, ?, 'member', ?, ?, ?, ?, ?)`, "inv_00000000000000"+inv.hash,
 			[]byte(strings.Repeat(inv.hash, 32)[:32]), inv.email, inv.createdBy, now, now+3600, inv.usedAt, inv.usedBy)
 	}
+	// And one she sent into the team, still waiting.
+	f.exec(t, `INSERT INTO invites(id, code_hash, email, role, created_by, created_at, expires_at, workspace_id, workspace_role)
+		VALUES ('inv_0000000000000004', ?, 'gil@example.com', 'member', ?, ?, ?, ?, 'member')`,
+		[]byte(strings.Repeat("04", 16)), ana.UserID, now, now+3600, support.ID)
 
 	// The identities ana and bob sign in with through a provider, and the
 	// keys pinned for each; and a key pinned for an identity no sign-in ever
@@ -342,16 +373,24 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		}
 	}
 
-	deleted, err := f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "Ana@Example.com"})
+	// Bob reads the mailbox still bound to her consent: deleting her
+	// deletes its index, which the operator is told, and asked to insist
+	// on. Erasure is never blocked for good: with force, it goes ahead.
+	_, err = f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "Ana@Example.com"})
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), bound.ID) {
+		t.Fatalf("deleting her without force: %v, want a conflict naming %s", err, bound.ID)
+	}
+	deleted, err := f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "Ana@Example.com", Force: true})
 	if err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
 	want := service.DeletedUser{
 		ID: ana.UserID, Email: "ana@example.com",
 		AccountsRemoved: 2, SessionsDeleted: 1, KeysDeleted: 1, InvitesDeleted: 2,
-		TeamsDeleted: 1, // "Ana alone", whose only member she was
+		TeamsDeleted:     1, // "Ana alone", whose only member she was
+		TeamSyncsStopped: []string{bound.ID},
 	}
-	if deleted != want {
+	if !reflect.DeepEqual(deleted, want) {
 		t.Errorf("deleted = %+v, want %+v", deleted, want)
 	}
 
@@ -374,22 +413,28 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	if n := f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'zebra'`); n != 0 {
 		t.Errorf("the full-text index still finds %d of her messages", n)
 	}
+	if n := f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'okapi'`); n != 0 {
+		t.Errorf("the index of the mailbox bound to her consent still finds %d messages", n)
+	}
 
 	// Everything that was not hers is still there.
 	for what, n := range map[string]int{
-		"bob":                              f.count(t, `SELECT count(*) FROM users WHERE id = ?`, bob.UserID),
-		"bob's session":                    f.count(t, `SELECT count(*) FROM sessions WHERE user_id = ?`, bob.UserID),
-		"bob's mailbox":                    f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, bobs),
-		"the shared mailbox":               f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared),
-		"bob's credentials":                f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, bobs),
-		"bob's message":                    f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'giraffe'`),
-		"bob's event":                      f.count(t, `SELECT count(*) FROM events WHERE seq = ?`, bobEvent),
-		"carol's invite":                   f.count(t, `SELECT count(*) FROM invites WHERE email = 'carol@example.com' AND created_by = ''`),
-		"the mixed hook":                   f.count(t, `SELECT count(*) FROM webhooks WHERE id = 'whk_mixed' AND accounts_json = ?`, `["`+bobs+`"]`),
-		"the hook for all":                 f.count(t, `SELECT count(*) FROM webhook_deliveries WHERE webhook_id = 'whk_every' AND event_seq = ?`, bobEvent),
-		"bob's team":                       f.count(t, `SELECT count(*) FROM workspaces WHERE id = ?`, support.ID),
-		"the team mailbox":                 f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, teamBox.ID),
-		"the grant she gave dan, unsigned": f.count(t, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND manage AND granted_by = ''`, teamBox.ID, dan.UserID),
+		"bob":                               f.count(t, `SELECT count(*) FROM users WHERE id = ?`, bob.UserID),
+		"bob's session":                     f.count(t, `SELECT count(*) FROM sessions WHERE user_id = ?`, bob.UserID),
+		"bob's mailbox":                     f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, bobs),
+		"the shared mailbox":                f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared),
+		"bob's credentials":                 f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, bobs),
+		"bob's message":                     f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'giraffe'`),
+		"bob's event":                       f.count(t, `SELECT count(*) FROM events WHERE seq = ?`, bobEvent),
+		"carol's invite, expired":           f.count(t, `SELECT count(*) FROM invites WHERE email = 'carol@example.com' AND created_by = '' AND expires_at <= unixepoch()`),
+		"Gil's invite, expired":             f.count(t, `SELECT count(*) FROM invites WHERE email = 'gil@example.com' AND created_by = '' AND expires_at <= unixepoch()`),
+		"the mailbox she linked":            f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND linked_by = '' AND sync_enabled_at <> 0 AND sync_enabled_by = '' AND sync_consent_version = ?`, linked.ID, service.DefaultSyncConsentVersion),
+		"the mailbox bound to her, stopped": f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_at = 0 AND sync_enabled_by = '' AND sync_enabled_via = ''`, bound.ID),
+		"the mixed hook":                    f.count(t, `SELECT count(*) FROM webhooks WHERE id = 'whk_mixed' AND accounts_json = ?`, `["`+bobs+`"]`),
+		"the hook for all":                  f.count(t, `SELECT count(*) FROM webhook_deliveries WHERE webhook_id = 'whk_every' AND event_seq = ?`, bobEvent),
+		"bob's team":                        f.count(t, `SELECT count(*) FROM workspaces WHERE id = ?`, support.ID),
+		"the team mailbox":                  f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, teamBox.ID),
+		"the grant she gave dan, unsigned":  f.count(t, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND manage AND granted_by = ''`, teamBox.ID, dan.UserID),
 		"her send from the shared mailbox": f.count(t,
 			`SELECT count(*) FROM sends WHERE account_id = ? AND idempotency_key = 'k-ana' AND user_id = '' AND created_by = ''`, shared),
 		"its notice, unsigned": f.count(t, `SELECT count(*) FROM events WHERE type = 'send.finished' AND account_id = ?
@@ -673,7 +718,7 @@ func TestRemovingTheOnlyMailboxAKeyWasLimitedToRevokesTheKey(t *testing.T) {
 	_, onlyA := f.issue(t, "", a)
 	_, both := f.issue(t, "", a, b)
 
-	if err := f.svc.RemoveAccount(t.Context(), admin(), a); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), admin(), a, service.RemoveAccountRequest{Confirm: a}); err != nil {
 		t.Fatal(err)
 	}
 	if p, err := f.svc.Authenticate(t.Context(), onlyA, nil); service.CodeOf(err) != service.CodeUnauthorized {
@@ -702,7 +747,7 @@ func TestARemovedMailboxLeavesNeitherItsSettingsNorItsCredentialsOnDisk(t *testi
 		t.Fatal(err)
 	}
 
-	if err := f.svc.RemoveAccount(t.Context(), ana, gone); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), ana, gone, service.RemoveAccountRequest{Confirm: gone}); err != nil {
 		t.Fatal(err)
 	}
 	if found := f.onDisk(t, gone, "leaving.soon@mail.example", string(sealed)); len(found) > 0 {

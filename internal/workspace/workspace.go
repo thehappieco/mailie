@@ -1,20 +1,21 @@
 // Package workspace keeps who belongs where: the workspaces mailboxes belong
 // to, the people who are members of them, and the grants that let a member
-// reach a mailbox (docs/workspaces.md).
+// use a mailbox (docs/workspaces.md).
 //
-// Seeing a mailbox takes two things: active membership in its workspace and
-// a grant on it. A grant has four flags, read, act, send and manage, and the
-// person who links a mailbox gets all four. Owners and admins of a team
-// administer people and grants, and get no automatic read.
+// Every mailbox belongs to its workspace. Using one takes active membership
+// in its workspace and a grant on it: read, act and send each open one use.
+// Owners and admins of a workspace manage every mailbox in it by their role —
+// its card, re-authorizing it, who holds what on it — and read none of them
+// by being one; manage is stored only for members, for whom it means the
+// card and re-authorizing.
 //
 // This package holds the data and the rules the data must never break, the
-// protections: a team keeps an active owner, the person a mailbox syncs under
-// stays while it is linked, a linked mailbox keeps a holder of manage, and
-// nobody else ever joins a personal workspace or the operator's. Each is
-// checked inside the transaction that would break it. Who may ask for a
-// change is not decided here: that is authorization, and lives in
-// internal/service, which hands every write a Check to run first in the same
-// transaction, so the caller's authority is re-read where it is used.
+// protections: a team keeps an active owner, a team mailbox someone can read
+// keeps a reader, and nobody else ever joins a personal workspace or the
+// operator's. Each is checked inside the transaction that would break it. Who
+// may ask for a change is not decided here: that is authorization, and lives
+// in internal/service, which hands every write a Check to run first in the
+// same transaction, so the caller's authority is re-read where it is used.
 package workspace
 
 import (
@@ -145,11 +146,14 @@ var (
 	// ErrLastOwner is a change that would leave a team without an active
 	// owner.
 	ErrLastOwner = errors.New("workspace: that is the last active owner of the team")
-	// ErrLinker is a change to the person a mailbox syncs under while it is
-	// linked: removing or disabling them, or changing their grant on it.
-	ErrLinker = errors.New("workspace: that person linked a mailbox still linked here")
-	// ErrLastManager is a linked mailbox left with nobody holding manage.
-	ErrLastManager = errors.New("workspace: that is the last holder of manage on a linked mailbox")
+	// ErrLastReader is a change that would leave a team mailbox someone can
+	// read with nobody who can: revoking the read of its last reader,
+	// disabling or removing their membership, or closing their account.
+	// Keys never count as readers, and neither does a role.
+	ErrLastReader = errors.New("workspace: that is the last person who can read a mailbox of the workspace")
+	// ErrManageByRole is manage stored for an owner or an admin, who manage
+	// every mailbox of their workspace by their role.
+	ErrManageByRole = errors.New("workspace: owners and admins manage every mailbox of their workspace by their role")
 	// ErrInvalidName is a team name that is empty, too long or carries
 	// control characters.
 	ErrInvalidName = errors.New("workspace: a team's name is 1 to 80 characters with no control characters")
@@ -168,9 +172,6 @@ var (
 	// ErrHoldsMailboxes is a workspace deleted while a mailbox is still in
 	// it: the mailboxes go first, in the same transaction.
 	ErrHoldsMailboxes = errors.New("workspace: the workspace still holds mailboxes")
-	// ErrNeedsFullGrant is a take-over by someone who does not hold every
-	// flag on the mailbox.
-	ErrNeedsFullGrant = errors.New("workspace: taking over a link needs read, act, send and manage on it")
 )
 
 // Check is run first inside a write's transaction: the service's re-check of

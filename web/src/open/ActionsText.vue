@@ -1,16 +1,18 @@
 <script setup lang="ts">
 // What allowing actions means on this server, in plain words: who can ask
-// for a change, which changes, where they are made and how far they can be
-// undone, what they mean on Gmail, what the server never does, and how to
-// stop it. The same text wherever the question is asked, because it is what
-// the person agrees to: revision ACTIONS_TEXT_VERSION (versions.ts), and a
-// new text comes with a new value there.
+// for a change (someone allowed to act on the mailbox, under their own
+// agreement: a team's mailboxes are not the person's), which changes, where
+// they are made and how far they can be undone, what they mean on Gmail,
+// what the server never does, and how to stop it. The same text wherever the
+// question is asked, because it is what the person agrees to: revision
+// ACTIONS_TEXT_VERSION (versions.ts), and a new text comes with a new value
+// there.
 import { t } from '../ui/i18n'
 </script>
 
 <template>
   <div class="consent-text">
-    <p class="consent-lead">{{ t('This server changes your mailboxes only when it is asked to: by you, or by a tool you gave an API key that can act.') }}</p>
+    <p class="consent-lead">{{ t('This server changes a mailbox only when someone allowed to act on it asks: you, under this agreement, on the mailboxes where you may act, or a tool with an API key you created that can act.') }}</p>
     <p>{{ t('It can make these changes, and no others:') }}</p>
     <ul>
       <li>{{ t('marking messages as read or unread') }}</li>

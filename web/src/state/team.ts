@@ -1,27 +1,31 @@
-// The people of the team the console shows, who holds what on its mailboxes,
-// and its pending invitations (docs/workspaces.md): read when a screen needs
-// them, and changed through the server, which decides every change in the
+// The people of the team the console shows, who holds what on its mailboxes
+// and each one's agreement to sync, and its pending invitations
+// (docs/workspaces.md): read when a screen of the team's owners and admins
+// needs them (a member is shown none of it, and the server refuses it to
+// them), and changed through the server, which decides every change in the
 // transaction that makes it. A personal workspace has none of this: its
 // person is its only member.
 //
-// The server works out each member's protections (last_owner, links) across
-// the whole team, so after any change of people, and whenever the team's
-// mailboxes in the person's own list come or go (one linked, removed, its
-// access given or taken), what was read is read again whole rather than
-// patched. The caller's own role is taken from their row as it is listed,
-// and a refusal for want of a role reads their workspaces again: what the
-// console offers follows the role they have now.
+// The server works out each member's protections (last_owner,
+// last_reader_of) and each mailbox's readers across the whole team, so after
+// any change of people or access, and whenever the team's mailboxes in the
+// person's own list come or go (one linked, removed), what was read is read
+// again whole rather than patched. The caller's own role is taken from their
+// row as it is listed, and a refusal for want of a role reads their
+// workspaces again: what the console offers follows the role they have now.
 //
 // Everything resets when the person changes and when the console shows
 // another workspace; a slow answer for one never lands in another's, nor an
 // older answer over a newer one.
 
 import { reactive, watch } from 'vue'
+import { setMailboxSync } from '../api/sync'
 import * as api from '../api/workspaces'
 import { ApiError } from '../api/http'
 import type { GrantFlags, MailboxAccess, Member, MemberChange, TeamInvite, WorkspaceRole } from '../api/types'
+import { edition } from '../edition'
 import { grantChange } from '../ui/access'
-import { accounts, loadAccounts, refreshAccount, upsert } from './accounts'
+import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount } from './accounts'
 import { failure, type Failure, type Operation } from './failure'
 import { authorized, identity, session } from './session'
 import { adoptOwnPlace, loadWorkspaces, workspaces } from './workspaces'
@@ -32,7 +36,7 @@ interface TeamState {
   /** The workspace these were read for. */
   workspace: string
   members: Listing<Member>
-  /** Who holds what on each mailbox the person may administer there. */
+  /** Who holds what on each mailbox of the team, and its agreement to sync. */
   directory: Listing<MailboxAccess>
   invites: Listing<TeamInvite>
 }
@@ -122,9 +126,9 @@ export function loadInvites(): Promise<void> {
 
 /**
  * Reads again what was read of the team shown: its people, whose protections
- * (who links what, who is the last owner) the server works out across the
- * team, and who holds what on its mailboxes. What was never read is left for
- * whoever asks.
+ * (the last owner, the last reader of a mailbox) the server works out across
+ * the team, and who holds what on its mailboxes. What was never read is left
+ * for whoever asks.
  */
 export function refreshTeam(): void {
   if (!teamID() || team.workspace !== teamID()) return
@@ -133,9 +137,9 @@ export function refreshTeam(): void {
 }
 
 // The team's mailboxes in the person's own list came or went: one linked
-// (its linker is protected now), removed (it leaves the directory, and its
-// linker's protection may go), or its access given or taken. Not the first
-// read of the list, nor another workspace's.
+// (whoever linked it reads it, and is its last reader), or removed (it
+// leaves the directory, and its last reader's protection goes). Not the
+// first read of the list, nor another workspace's.
 watch(() => accounts.loaded && team.workspace && accounts.workspace === team.workspace ? accounts.list.map(item => item.id).sort().join(' ') : null, (now, before) => {
   if (now !== null && before !== null && now !== before) refreshTeam()
 })
@@ -160,8 +164,9 @@ export function directoryEntry(accountID: string): MailboxAccess | undefined {
 /**
  * Sets what a person holds on a mailbox, from what they hold now to what the
  * caller ticked: a revoke when flags only go, the grant set exactly when one
- * comes. The directory is read again either way; and the caller's own card,
- * when the grant was theirs.
+ * comes. The directory is read again either way, and the members (whose last
+ * reader may have changed); and the caller's own card, when the grant was
+ * theirs.
  */
 export async function saveGrant(accountID: string, userID: string, before: GrantFlags, after: GrantFlags): Promise<Failure | null> {
   const change = grantChange(before, after)
@@ -173,11 +178,12 @@ export async function saveGrant(accountID: string, userID: string, before: Grant
   } catch (error) {
     const found = refused('change-access', error, ok)
     // Changed elsewhere meanwhile, or gone: what is shown is read again.
-    if (ok() && (found.code === 'conflict' || found.code === 'not_found')) void loadDirectory()
+    if (ok() && (found.code === 'conflict' || found.code === 'not_found')) { void loadDirectory(); void loadMembers() }
     return found
   }
   if (!ok()) return null
   // What the row shows next is what the server now holds.
+  void loadMembers()
   await Promise.all([loadDirectory(), userID === session.user?.id ? followOwnAccess(accountID) : undefined])
   return null
 }
@@ -189,30 +195,38 @@ async function followOwnAccess(accountID: string): Promise<void> {
 }
 
 /**
- * Makes the caller the person a mailbox is linked by: it syncs under their
- * consent from now on, and its index is kept. The person before keeps their
- * grant as an ordinary one.
+ * Turns a team mailbox's sync on or off for the team, as an owner or an
+ * admin of it: on, to the text this console showed (the edition's sync
+ * revision, never the one the server names), which also gives again an
+ * agreement to an earlier text, or one the upgrade carried over; off,
+ * deleting its index for everyone who reads it. The card takes the sync the
+ * answer says, folders read of the mailbox are read again when next wanted,
+ * and the directory, which records who gave the agreement, is read again.
  */
-export async function takeOverLink(accountID: string): Promise<Failure | null> {
+export async function switchTeamSync(accountID: string, on: boolean): Promise<Failure | null> {
   const ok = current()
+  const body = on ? { enabled: true, version: edition().sync.version } : { enabled: false }
   try {
-    const account = await authorized(token => api.takeOver(token, accountID))
+    const status = await authorized(token => setMailboxSync(token, accountID, body))
     if (!ok()) return null
-    upsert(account)
+    mergeSync(accountID, status)
+    forgetFolders(accountID)
   } catch (error) {
-    if (ok() && error instanceof ApiError && error.code === 'not_found') void loadDirectory()
-    return refused('take-over', error, ok)
+    const found = refused(on ? 'team-sync-on' : 'team-sync-off', error, ok)
+    if (ok() && found.code === 'not_found') void loadDirectory()
+    return found
   }
-  void loadDirectory()
-  void loadMembers()
+  await loadDirectory()
   return null
 }
 
 /**
  * Changes a member's role or status. Disabling takes their grants in the team
- * with it; enabling gives none back. The row changes at once, and the list is
- * read again: another member's protections may have changed with it (the
- * caller is the last owner once another owner is demoted).
+ * with it; enabling gives none back; any change ends the invitations they
+ * made there. The row changes at once, and the list is read again: another
+ * member's protections may have changed with it (the caller is the last
+ * owner once another owner is demoted, or the last reader of a mailbox once
+ * another reader is disabled).
  */
 export async function changeMember(userID: string, change: MemberChange): Promise<Failure | null> {
   const id = teamID()
@@ -224,7 +238,10 @@ export async function changeMember(userID: string, change: MemberChange): Promis
     const index = team.members.list.findIndex(item => item.user_id === userID)
     if (index >= 0) team.members.list.splice(index, 1, member)
     void loadMembers()
-    if (change.status === 'disabled' && team.directory.loaded) void loadDirectory()
+    // Disabling takes their grants; a promotion, the Manage they held, which the role gives now.
+    if (team.directory.loaded) void loadDirectory()
+    // Any change ended the invitations they made here: the pending list shows them no more.
+    if (team.invites.loaded) void loadInvites()
     // The caller's own role: what they may do here changed.
     if (userID === session.user?.id) void loadWorkspaces()
     return null
@@ -235,9 +252,9 @@ export async function changeMember(userID: string, change: MemberChange): Promis
 }
 
 /**
- * Removes a member: their grants in the team, and its invitations waiting for
- * them, go too. The list is read again, as the protections of those who stay
- * may have changed.
+ * Removes a member: their grants in the team, its invitations waiting for
+ * them and those they made go too. The list is read again, as the
+ * protections of those who stay may have changed.
  */
 export async function removeMember(userID: string): Promise<Failure | null> {
   const id = teamID()
@@ -259,7 +276,10 @@ export async function removeMember(userID: string): Promise<Failure | null> {
   return null
 }
 
-/** The caller leaves the team shown: the console then shows another of their workspaces. */
+/**
+ * The caller leaves the team shown, as an owner while another owner remains:
+ * the console then shows another of their workspaces.
+ */
 export async function leaveTeam(): Promise<Failure | null> {
   const id = teamID()
   const me = session.user?.id

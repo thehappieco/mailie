@@ -6,8 +6,8 @@
 import { segment } from './endpoint'
 import { ApiError, checked, request } from './http'
 import {
-  isAccount, isGrant, isMailboxAccessList, isMember, isMemberList, isTeamInvite, isTeamInviteList, isWorkspace, isWorkspaceList,
-  type Account, type Grant, type GrantFlags, type MailboxAccess, type Member, type MemberChange, type TeamInvite, type Workspace,
+  isGrant, isMailboxAccessList, isMember, isMemberList, isTeamInvite, isTeamInviteList, isWorkspace, isWorkspaceList,
+  type Grant, type GrantFlags, type MailboxAccess, type Member, type MemberChange, type TeamInvite, type Workspace,
   type WorkspaceRole,
 } from './types'
 
@@ -32,7 +32,7 @@ export async function changeMember(token: string, id: string, userID: string, ch
   return checked(await request(`/v1/workspaces/${segment(id)}/members/${segment(userID)}`, { token, method: 'PATCH', body: change }), isMember)
 }
 
-/** Removes a member, or, for the caller's own id, leaves the team. */
+/** Removes a member, or, for the caller's own id, leaves the team (an owner, while another owner remains). */
 export async function removeMember(token: string, id: string, userID: string): Promise<void> {
   await request<void>(`/v1/workspaces/${segment(id)}/members/${segment(userID)}`, { token, method: 'DELETE' })
 }
@@ -86,9 +86,4 @@ export async function setAccess(token: string, accountID: string, userID: string
 export async function revokeAccess(token: string, accountID: string, userID: string, flags: (keyof GrantFlags)[] = []): Promise<void> {
   const query = flags.length ? { flags: flags.join(',') } : undefined
   await request<void>(`/v1/accounts/${segment(accountID)}/access/${segment(userID)}`, { token, method: 'DELETE', query })
-}
-
-/** Makes the caller the person a mailbox is linked by, and syncs under. */
-export async function takeOver(token: string, accountID: string): Promise<Account> {
-  return checked(await request(`/v1/accounts/${segment(accountID)}/take-over`, { token, method: 'POST' }), isAccount)
 }

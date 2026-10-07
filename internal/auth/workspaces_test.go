@@ -127,14 +127,25 @@ func TestATeamInviteSignsUpANewPersonOnlyWhenTheOperatorOrAnInstanceOwnerMadeIt(
 		}
 	}
 
-	// An owner vouches only while they are one: switched off, the invites
-	// they made no longer sign anyone up.
+	// An owner vouches only while they are one, as the invite is redeemed:
+	// one no longer active signs nobody up. Disabling them expires their
+	// invites outright, so this is the row as a status changed behind the
+	// repository's back would leave it.
 	late, _ := teamInviteBy(t, users, ana.ID, "gil@example.org", team.ID, workspace.RoleMember)
-	if _, err := users.Disable(t.Context(), ana.ID, false); err != nil {
+	if _, err := db.Writer().ExecContext(t.Context(), `UPDATE users SET status = 'disabled' WHERE id = ?`, ana.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := signUpWith(late, "gil@example.org"); !errors.Is(err, auth.ErrInviteJoinsOnly) {
 		t.Errorf("a disabled owner's team invite signed a new person up: %v", err)
+	}
+	if _, err := db.Writer().ExecContext(t.Context(), `UPDATE users SET status = 'active' WHERE id = ?`, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.Disable(t.Context(), ana.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := signUpWith(late, "gil@example.org"); !errors.Is(err, auth.ErrInviteInvalid) {
+		t.Errorf("a team invite of someone disabled since: %v, want it expired", err)
 	}
 	if exists("gil@example.org") || exists("fay@example.org") {
 		t.Error("an account was created through an invite nobody could vouch for")
@@ -369,10 +380,10 @@ func TestTheBootstrapInviteIsAnOwnersOnlyWhileTheServerHasNone(t *testing.T) {
 func linkMailbox(t *testing.T, db *store.Store, id, workspaceID, userID, email string) {
 	t.Helper()
 	if _, err := account.NewRepository(db, nil).Create(t.Context(), account.Account{
-		ID: id, WorkspaceID: workspaceID, OwnerUserID: userID, Email: email, Provider: provider.KindIMAP,
+		ID: id, WorkspaceID: workspaceID, Email: email, Provider: provider.KindIMAP,
 		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example",
 		SMTPPort: 465, SMTPTLS: "implicit", LoginUser: email,
-	}); err != nil {
+	}, userID); err != nil {
 		t.Fatalf("link %s: %v", email, err)
 	}
 }

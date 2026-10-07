@@ -53,11 +53,22 @@ func newSupportTeam(t *testing.T, f *fixture) supportTeam {
 func (tm supportTeam) link(t *testing.T, f *fixture, id, email string) {
 	t.Helper()
 	if _, err := f.repo.Create(t.Context(), account.Account{
-		ID: id, WorkspaceID: tm.id, OwnerUserID: tm.ana.UserID, Email: email, Provider: provider.KindIMAP,
+		ID: id, WorkspaceID: tm.id, Email: email, Provider: provider.KindIMAP,
 		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example",
 		SMTPPort: 465, SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
-	}); err != nil {
+	}, tm.ana.UserID); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// syncOn gives the team's consent to sync one of its mailboxes, as Ana, its
+// owner, to the current text.
+func (tm supportTeam) syncOn(t *testing.T, f *fixture, accountID string) {
+	t.Helper()
+	on := true
+	if _, err := f.svc.SetMailboxSync(t.Context(), tm.ana, accountID,
+		service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync}); err != nil {
+		t.Fatalf("turning the team's sync on: %v", err)
 	}
 }
 
@@ -76,9 +87,7 @@ func TestStorageCountsOnlyTheMailboxesTheCallerMayRead(t *testing.T) {
 	tm := newSupportTeam(t, m.fixture)
 	const shared = "acc_00000000000000aa"
 	tm.link(t, m.fixture, shared, "support@mail.example")
-	if _, err := m.svc.GrantSyncConsent(t.Context(), tm.ana, m.consent().Sync); err != nil {
-		t.Fatal(err)
-	}
+	tm.syncOn(t, m.fixture, shared)
 	box := providertest.NewFakeMailbox(providertest.FakeOptions{Caps: providertest.GmailCaps()})
 	box.Deliver("INBOX", providertest.FakeMessage{
 		MessageID: "support-1", Subject: "Refund", From: "client@example.org", To: []string{"support@mail.example"},
@@ -258,10 +267,10 @@ func TestASendFinishedReachesOnlyItsSender(t *testing.T) {
 	}
 	const cidOwn = "acc_00000000000000cc"
 	if _, err := f.repo.Create(ctx, account.Account{
-		ID: cidOwn, OwnerUserID: cid.UserID, Email: "cid@mail.example", Provider: provider.KindIMAP,
+		ID: cidOwn, Email: "cid@mail.example", Provider: provider.KindIMAP,
 		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example",
 		SMTPPort: 465, SMTPTLS: "implicit", LoginUser: "cid@mail.example", State: account.StateActive,
-	}); err != nil {
+	}, cid.UserID); err != nil {
 		t.Fatal(err)
 	}
 

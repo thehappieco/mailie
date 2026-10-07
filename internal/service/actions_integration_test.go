@@ -86,10 +86,10 @@ func TestActionsOnDovecotChangeTheServerAndTheIndexFollowsWithoutNewMail(t *test
 	const id = "acc_00000000000000e9"
 	host, port := splitHostPort(t, addr)
 	if _, err := f.repo.Create(t.Context(), account.Account{
-		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ana.UserID,
+		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: 31025, SMTPTLS: "starttls", LoginUser: user,
 		State: account.StateActive,
-	}); err != nil {
+	}, ana.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.GrantSyncConsent(t.Context(), ana, service.DefaultSyncConsentVersion); err != nil {
@@ -241,10 +241,10 @@ func TestMovingSeveralMessagesOnDovecotLeavesEachRowOnItsOwnMessage(t *testing.T
 	const id = "acc_00000000000000ea"
 	host, port := splitHostPort(t, addr)
 	if _, err := m.repo.Create(t.Context(), account.Account{
-		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ana.UserID,
+		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: 31025, SMTPTLS: "starttls", LoginUser: user,
 		State: account.StateActive,
-	}); err != nil {
+	}, ana.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := m.svc.GrantSyncConsent(t.Context(), ana, service.DefaultSyncConsentVersion); err != nil {

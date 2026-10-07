@@ -3,7 +3,7 @@
 
 import { segment } from './endpoint'
 import { checked, request } from './http'
-import { isAccountSync, isSyncConsent, type AccountSync, type SyncConsent } from './types'
+import { isAccountSync, isSyncConsent, type AccountSync, type MailboxSyncRequest, type SyncConsent } from './types'
 
 /**
  * Withdrawing deletes everything indexed for the person's mailboxes and then
@@ -27,6 +27,16 @@ export async function withdrawSyncConsent(token: string): Promise<SyncConsent> {
 
 export async function getSyncStatus(token: string, id: string, signal?: AbortSignal): Promise<AccountSync> {
   return checked(await request(`/v1/accounts/${segment(id)}/sync`, { token, signal }), isAccountSync)
+}
+
+/**
+ * Turns a team mailbox's sync on or off for the team, as one of its owners
+ * or admins: on, to the revision of the sync text they were shown; off,
+ * deleting its index for everyone who reads it, which the route allows the
+ * same time as a person's withdrawal for.
+ */
+export async function setMailboxSync(token: string, id: string, body: MailboxSyncRequest): Promise<AccountSync> {
+  return checked(await request(`/v1/accounts/${segment(id)}/sync`, { token, method: 'PUT', body, timeoutMS: WITHDRAW_TIMEOUT_MS }), isAccountSync)
 }
 
 /** Asks for a pass soon. The answer (202) is the status as it stands, not the pass's outcome. */

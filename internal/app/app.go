@@ -216,6 +216,22 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 			"schema ran on it: never roll a binary back alone, restore the backup taken before the upgrade",
 			"people", made)
 	}
+	kept, unread, err := db.TeamSyncNotices(ctx)
+	if err != nil {
+		return err
+	}
+	if len(kept) > 0 {
+		// Migration 0011 copied no consent from a linker who was disabled:
+		// these stay as they were, stopped with their index.
+		logger.Warn("team mailboxes are stopped with their index kept, under the consent of a person who is "+
+			"disabled; an owner or an admin of each team turns its sync on again, or off, or removes it",
+			"accounts", kept)
+	}
+	if len(unread) > 0 {
+		logger.Warn("team mailboxes nobody can read sync nothing, and nobody can be given read on them; "+
+			"their owners and admins remove them (and link them again), or turn their sync off to delete "+
+			"what is still indexed", "accounts", unread)
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,

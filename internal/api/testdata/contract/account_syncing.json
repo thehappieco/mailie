@@ -13,7 +13,6 @@
   "created_at": 1790000000,
   "email": "ana@mail.example",
   "id": "acc_0000000000000002",
-  "linked_by": "usr_0000000000000001",
   "provider": "imap",
   "save_sent_copy": true,
   "send": {

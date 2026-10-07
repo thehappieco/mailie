@@ -14,6 +14,7 @@ import (
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // pass is one sync connection's run: its folder schedule and what it knows
@@ -510,11 +511,11 @@ func (p *pass) flagSweepInterval(f store.Folder) time.Duration {
 }
 
 // initialDays is how far back a folder's initial sync reaches, in days; zero
-// or less is everything. A mailbox a person owns gets the 90 days the privacy
-// policy they consented to promises, whatever the account row holds: the
-// column is the operator's, for mailboxes nobody owns.
+// or less is everything. A mailbox of a personal workspace or of a team gets
+// the 90 days the text its consent was given to promises, whatever the
+// account row holds: the column is the operator's, for operator mailboxes.
 func (p *pass) initialDays() int {
-	if p.acct.OwnerUserID != "" {
+	if p.acct.WorkspaceID != workspace.OperatorID {
 		return account.PersonInitialDays
 	}
 	return p.acct.InitialDays

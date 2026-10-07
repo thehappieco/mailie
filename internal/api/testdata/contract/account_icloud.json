@@ -14,7 +14,6 @@
   "display_name": "Ana (iCloud)",
   "email": "ana@icloud.com",
   "id": "acc_0000000000000003",
-  "linked_by": "usr_0000000000000001",
   "provider": "icloud",
   "save_sent_copy": true,
   "send": {

@@ -23,6 +23,7 @@ import (
 	"github.com/thehappieco/mailie/internal/netguard"
 	"github.com/thehappieco/mailie/internal/provider"
 	imapprovider "github.com/thehappieco/mailie/internal/provider/imap"
+	"github.com/thehappieco/mailie/internal/store"
 )
 
 // flowTTL is how long a consent flow stays open. Long enough to find a
@@ -349,13 +350,23 @@ type AddRequest struct {
 	LoginUser string
 	// Flow is how consent will be collected.
 	Flow FlowKind
-	// OwnerUserID is the person connecting the account; empty for an
-	// instance key. The consent flow is bound to them too.
-	OwnerUserID string
+	// LinkerID is the person connecting the account, who gets read, act and
+	// send on it and must be active when it is stored; empty for an instance
+	// key. The consent flow is theirs: only they finish it. It is never the
+	// mailbox's person unless the mailbox goes into their personal
+	// workspace: a team's mailbox names no person.
+	LinkerID string
+	// LinkedBy is who links it, for attribution: the caller ("usr_…",
+	// "key:<prefix>", "cli"); empty is LinkerID.
+	LinkedBy string
 	// WorkspaceID is the workspace the account goes into; empty is the
 	// person's personal workspace, or the operator workspace for an instance
 	// key. Who may link where is the service's to decide.
 	WorkspaceID string
+	// SyncConsent is the workspace's consent to sync a team mailbox, given
+	// with the link and recorded in its transaction; zero links it with sync
+	// off. Only for a team.
+	SyncConsent store.MailboxConsent
 	// Check runs first in the transaction that creates the account, after
 	// the check that the person is still active: where the service re-reads
 	// that the caller may still link into the workspace. nil checks nothing
@@ -402,8 +413,9 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		DisplayName:  req.DisplayName,
 		Provider:     kind,
 		LoginUser:    orDefault(req.LoginUser, strings.TrimSpace(req.Email)),
-		OwnerUserID:  req.OwnerUserID,
+		LinkedBy:     req.LinkedBy,
 		WorkspaceID:  req.WorkspaceID,
+		SyncConsent:  req.SyncConsent,
 		InitialDays:  req.InitialDays,
 		SaveSentCopy: profile.SaveSentDefault,
 	}
@@ -432,7 +444,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 	// A duplicate would be refused by the insert anyway; asking first saves
 	// dialing somebody's mail server to find that out. Only within the
 	// workspace it goes into: elsewhere the same address is another mailbox.
-	ws, err := r.repo.WorkspaceFor(ctx, a)
+	ws, err := r.repo.WorkspaceFor(ctx, a.WorkspaceID, req.LinkerID)
 	if err != nil {
 		return Account{}, nil, err
 	}
@@ -455,7 +467,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 
 	// The login check above can take seconds; the person may have been
 	// switched off meanwhile.
-	created, err := r.repo.create(ctx, a, both(r.ownerStillActive(ctx, a.OwnerUserID), req.Check))
+	created, err := r.repo.create(ctx, a, req.LinkerID, both(r.ownerStillActive(ctx, req.LinkerID), req.Check))
 	if err != nil {
 		return Account{}, nil, err
 	}
@@ -471,7 +483,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		return created, nil, nil
 	}
 
-	flow, err := r.StartAuth(ctx, created.ID, req.Flow, req.OwnerUserID)
+	flow, err := r.StartAuth(ctx, created.ID, req.Flow, req.LinkerID)
 	if err != nil {
 		// Leave the account in pending_auth rather than deleting it: the
 		// person can retry consent without retyping everything, and an
@@ -1335,7 +1347,14 @@ func (r *Registry) credentials(ctx context.Context, a Account) (provider.Credent
 // consent attempt still waiting: a listener left open after its account is
 // gone would still take a redirect and say something about it.
 func (r *Registry) Remove(ctx context.Context, accountID string) error {
-	if err := r.repo.Delete(ctx, accountID); err != nil {
+	return r.RemoveChecked(ctx, accountID, nil)
+}
+
+// RemoveChecked is Remove with a check run first in the transaction that
+// deletes the account: where the service re-reads that the caller may still
+// remove it. nil checks nothing.
+func (r *Registry) RemoveChecked(ctx context.Context, accountID string, check func(*sql.Tx) error) error {
+	if err := r.repo.deleteChecked(ctx, accountID, check); err != nil {
 		return err
 	}
 	r.stopWaiting(accountID)
@@ -1343,15 +1362,16 @@ func (r *Registry) Remove(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// RemoveOwner deletes a person's mailboxes — every account they linked, in
-// every workspace, with everything Remove deletes for one — and drops every
-// consent attempt they started anywhere, in one transaction that also then
-// completes: the caller deletes the person there, so either all of it happens
-// or none does. before runs first in that transaction, while the mailboxes
-// are still there to be asked about; nil checks nothing. Once it has
-// committed, the registry lets go of those accounts as Remove does: their
-// token sources and cached mailboxes, and any listener or device poll still
-// waiting on their behalf. It reports how many accounts it removed.
+// RemoveOwner deletes the mailboxes that go with a person — those of their
+// personal workspace, and those of every team whose only member they are,
+// with everything Remove deletes for one — and drops every consent attempt
+// they started anywhere, in one transaction that also then completes: the
+// caller deletes the person there, so either all of it happens or none does.
+// A team mailbox of a team others are in stays: it is the team's. before runs
+// first in that transaction; nil checks nothing. Once it has committed, the
+// registry lets go of those accounts as Remove does: their token sources and
+// cached mailboxes, and any listener or device poll still waiting on their
+// behalf. It reports how many accounts it removed.
 func (r *Registry) RemoveOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) (int, error) {
 	removed, attempts, err := r.repo.deleteOwner(ctx, userID, before, also)
 	if err != nil {

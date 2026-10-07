@@ -93,7 +93,6 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("GET /v1/workspaces/{id}/access", h.authenticated(auth.ScopeRead, opts(), h.accessDirectory))
 	mux.Handle("PUT /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setAccess))
 	mux.Handle("DELETE /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeAccess))
-	mux.Handle("POST /v1/accounts/{id}/take-over", h.authenticated(auth.ScopeAdmin, opts(), h.takeOver))
 
 	mux.Handle("GET /v1/providers", h.authenticated(auth.ScopeRead, opts(), h.providers))
 	mux.Handle("GET /v1/accounts", h.authenticated(auth.ScopeRead, opts(), h.listAccounts))
@@ -101,6 +100,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// Adding a password account logs in to its server first, which is given
 	// thirty seconds of its own.
 	mux.Handle("POST /v1/accounts", h.authenticated(auth.ScopeAdmin, opts().withTimeout(45*time.Second), h.addAccount))
+	// Removing a mailbox repeats its id in ?confirm=, or nothing is removed.
 	mux.Handle("DELETE /v1/accounts/{id}", h.authenticated(auth.ScopeAdmin, opts(), h.removeAccount))
 	mux.Handle("POST /v1/accounts/{id}/oauth/start", h.authenticated(auth.ScopeAdmin, opts(), h.startOAuth))
 	// The exchange behind a callback runs detached for up to forty seconds, so
@@ -173,10 +173,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("GET /v1/me/mcp", h.authenticated(auth.ScopeRead, opts(), h.mcpAccess))
 	mux.Handle("GET /v1/accounts/{id}/sync", h.authenticated(auth.ScopeRead, opts(), h.syncStatus))
 	mux.Handle("POST /v1/accounts/{id}/sync", h.authenticated(auth.ScopeWrite, opts(), h.triggerSync))
-	// The operator's switch for a mailbox nobody owns. Switching off
-	// deletes its index, as withdrawing consent does.
+	// A mailbox's own consent to sync: a team mailbox's, which its owners
+	// and admins give or withdraw on the team's behalf, and an operator
+	// mailbox's switch. Switching off deletes its index, as withdrawing
+	// consent does.
 	mux.Handle("PUT /v1/accounts/{id}/sync",
-		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setInstanceSync))
+		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setMailboxSync))
 
 	// The event stream has no route timeout: it lasts as long as the client
 	// stays. The long poll's is the longest wait it accepts, plus room to
@@ -254,11 +256,13 @@ func (h *Handler) addAccount(q *request) {
 }
 
 func (h *Handler) removeAccount(q *request) {
-	if _, err := q.query(); err != nil {
+	params, err := q.query("confirm")
+	if err != nil {
 		q.fail(err)
 		return
 	}
-	if err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id")); err != nil {
+	if err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id"),
+		service.RemoveAccountRequest{Confirm: params["confirm"]}); err != nil {
 		q.fail(err)
 		return
 	}

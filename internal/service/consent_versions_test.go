@@ -215,64 +215,90 @@ func TestAKeyKeepsWorkingUnderTheTermsItWasCreatedWith(t *testing.T) {
 	}
 }
 
-func TestATeamMailboxComesToSyncOnlyUnderAConsentToTheCurrentSyncText(t *testing.T) {
-	// A team mailbox syncs at once under the consent of whoever links it, or
-	// takes its link over. A consent given to an earlier text of sync, which
-	// may not say who reads a team mailbox's index, keeps covering what it
-	// already covered; it does not bring a team mailbox under it.
+func TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange(t *testing.T) {
+	// A team mailbox syncs under its workspace's consent, which an owner or
+	// an admin gives on the team's behalf: with the link, or later, and
+	// either way to the text the server describes sync with now. A consent
+	// given to an earlier text keeps the mailbox syncing, as a person's
+	// does, and the console asks again.
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
 	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
-	dan := tm.join(t, f, "dan@example.com", workspace.RoleAdmin)
 	ctx := t.Context()
-	const shared = "acc_00000000000000aa"
-	tm.link(t, f, shared, "support@mail.example")
-	if _, err := f.svc.SetAccess(ctx, tm.ana, shared, carol.UserID, grantRequest(true, true, true, true)); err != nil {
-		t.Fatal(err)
-	}
-	for _, p := range []service.Principal{tm.ana, carol} {
-		if _, err := f.svc.GrantSyncConsent(ctx, p, service.DefaultSyncConsentVersion); err != nil {
-			t.Fatal(err)
-		}
+	on := func(version string) service.MailboxSyncRequest {
+		yes := true
+		return service.MailboxSyncRequest{Enabled: &yes, Version: version}
 	}
 
-	// The daemon restarts with another revision of the sync text.
-	f.opts.consent = config.ConsentVersions{Sync: "sync-2"}
-	f.svc, f.registry = f.build(t, f.opts.registry)
-
-	_, err := f.svc.TakeOver(ctx, carol, shared)
-	wantCode(t, "Carol taking the link over under the earlier text", err, service.CodeConflict)
-	if msg := service.MessageOf(err); !strings.Contains(msg, "current sync text") {
-		t.Errorf("the take-over refusal says %q", msg)
-	}
 	billing := f.passwordAccount(t, "billing@mail.example")
 	billing.WorkspaceID = tm.id
-	_, err = f.svc.AddAccount(ctx, tm.ana, billing)
-	wantCode(t, "Ana linking into the team under the earlier text", err, service.CodeConflict)
-	if msg := service.MessageOf(err); !strings.Contains(msg, "earlier text") {
-		t.Errorf("the link refusal says %q", msg)
+	billing.SyncConsentVersion = "2026-09-open-sync-1"
+	_, err := f.svc.AddAccount(ctx, tm.ana, billing)
+	wantCode(t, "linking into the team with an earlier text", err, service.CodeBadRequest)
+	billing.SyncConsentVersion = service.DefaultSyncConsentVersion
+	linked, err := f.svc.AddAccount(ctx, tm.ana, billing)
+	if err != nil {
+		t.Fatalf("linking into the team with the current text: %v", err)
 	}
-	// Her personal workspace is what the earlier text covered.
-	if _, err := f.svc.AddAccount(ctx, tm.ana, f.passwordAccount(t, "ana@mail.example")); err != nil {
-		t.Fatalf("Ana linking into her personal workspace: %v", err)
+	if !linked.Account.Sync.Enabled {
+		t.Errorf("a team mailbox linked with the team's consent: sync %+v", linked.Account.Sync)
 	}
-	// Someone who never agreed links into the team: nothing syncs until they
-	// agree, and they can agree only to the current text.
+	// A personal mailbox syncs under its person's own consent: a link
+	// into one gives none of a team's.
+	personal := f.passwordAccount(t, "ana@mail.example")
+	personal.SyncConsentVersion = service.DefaultSyncConsentVersion
+	_, err = f.svc.AddAccount(ctx, tm.ana, personal)
+	wantCode(t, "a personal link naming a sync text", err, service.CodeBadRequest)
+
+	// Linked without it, sync is off until an owner or an admin turns it on
+	// at the current text.
 	orders := f.passwordAccount(t, "orders@mail.example")
 	orders.WorkspaceID = tm.id
-	if _, err := f.svc.AddAccount(ctx, dan, orders); err != nil {
-		t.Fatalf("Dan, who never agreed, linking into the team: %v", err)
+	plain, err := f.svc.AddAccount(ctx, carol, orders)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Account.Sync.Enabled {
+		t.Error("a team mailbox linked without the team's consent syncs")
+	}
+	_, err = f.svc.SetMailboxSync(ctx, carol, plain.Account.ID, on("2026-09-open-sync-1"))
+	wantCode(t, "turning it on with an earlier text", err, service.CodeBadRequest)
+	if st, err := f.svc.SetMailboxSync(ctx, carol, plain.Account.ID, on(service.DefaultSyncConsentVersion)); err != nil || !st.Enabled {
+		t.Fatalf("turning it on with the current text = %+v, %v", st, err)
 	}
 
-	for _, p := range []service.Principal{tm.ana, carol} {
-		if _, err := f.svc.GrantSyncConsent(ctx, p, "sync-2"); err != nil {
-			t.Fatal(err)
+	// The daemon restarts with another revision of the sync text: both
+	// keep syncing, and their owners and admins see the revision is not
+	// the current one.
+	f.opts.consent = config.ConsentVersions{Sync: "sync-2"}
+	f.svc, f.registry = f.build(t, f.opts.registry)
+	for _, id := range []string{linked.Account.ID, plain.Account.ID} {
+		if shown, err := f.svc.GetAccount(ctx, tm.ana, id); err != nil || !shown.Sync.Enabled {
+			t.Errorf("%s after the text changed: %+v, %v", id, shown.Sync, err)
 		}
 	}
-	if _, err := f.svc.AddAccount(ctx, tm.ana, billing); err != nil {
-		t.Fatalf("Ana linking into the team under the current text: %v", err)
+	dir, err := f.svc.AccessDirectory(ctx, tm.ana, tm.id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if taken, err := f.svc.TakeOver(ctx, carol, shared); err != nil || taken.LinkedBy != carol.UserID {
-		t.Fatalf("Carol taking the link over under the current text: %+v, %v", taken.LinkedBy, err)
+	for _, mb := range dir {
+		if mb.Sync == nil || !mb.Sync.Enabled || mb.Sync.Current || mb.Sync.Version != service.DefaultSyncConsentVersion {
+			t.Errorf("%s's consent in the directory: %+v", mb.AccountID, mb.Sync)
+		}
+	}
+	// Agreeing again on the team's behalf takes only the current text.
+	_, err = f.svc.SetMailboxSync(ctx, tm.ana, linked.Account.ID, on(service.DefaultSyncConsentVersion))
+	wantNotCurrent(t, "team sync", err, "sync-2")
+	if _, err := f.svc.SetMailboxSync(ctx, tm.ana, linked.Account.ID, on("sync-2")); err != nil {
+		t.Fatalf("agreeing again to the current text: %v", err)
+	}
+	dir, err = f.svc.AccessDirectory(ctx, tm.ana, tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mb := range dir {
+		if mb.AccountID == linked.Account.ID && (mb.Sync.Version != "sync-2" || !mb.Sync.Current || mb.Sync.EnabledBy != tm.ana.UserID) {
+			t.Errorf("the consent agreed again: %+v", mb.Sync)
+		}
 	}
 }

@@ -1096,6 +1096,58 @@ func TestASubscriptionToAnInboxTheKeyCanNoLongerReadIsDropped(t *testing.T) {
 	}
 }
 
+func TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey(t *testing.T) {
+	// Carol is an admin of the team, and manages its mailbox by her role:
+	// her key lists its card, and reaches nothing it holds.
+	h := newHarness(t)
+	ana := h.person("ana@example.com", auth.RoleMember)
+	carol := h.person("carol@example.com", auth.RoleMember)
+	team, ws := h.team(ana)
+	h.join(ws, team, carol, workspace.RoleAdmin)
+	const shared = "acc_00000000000000aa"
+	box := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
+	id := h.deliver(shared, box, letter("Refund", "Client <c@example.org>", "Order 4471", "r.pdf", "%PDF"))
+	cs := h.connect(h.key(carol, "read"), "", nil)
+
+	accounts := ok[struct {
+		Accounts []service.Account `json:"accounts"`
+	}](t, cs, "list_accounts", nil)
+	if len(accounts.Accounts) != 1 || accounts.Accounts[0].ID != shared || accounts.Accounts[0].Access.Read {
+		t.Errorf("list_accounts = %+v, want the card, without read", accounts.Accounts)
+	}
+	// The text most clients hand the model says so too, rather than
+	// listing the mailbox as one to search.
+	if listed := text(call(t, cs, "list_accounts", nil)); !strings.Contains(listed, shared) ||
+		!strings.Contains(listed, "no read access") || strings.Contains(listed, "can archive") {
+		t.Errorf("list_accounts says %q, want the card marked without read access", listed)
+	}
+	if listed := text(call(t, h.connect(h.key(ana, "read"), "", nil), "list_accounts", nil)); !strings.Contains(listed, shared) ||
+		strings.Contains(listed, "no read access") {
+		t.Errorf("list_accounts for Ana, who reads it, says %q", listed)
+	}
+	if page := ok[service.MessagePage](t, cs, "search_messages", nil); len(page.Messages) != 0 {
+		t.Errorf("search found %+v", page.Messages)
+	}
+	refused(t, cs, "list_folders", map[string]any{"account": shared}, service.CodeNotAuthorized)
+	refused(t, cs, "search_messages", map[string]any{"account": shared}, service.CodeNotAuthorized)
+	refused(t, cs, "get_message", map[string]any{"id": id}, service.CodeNotFound)
+	refused(t, cs, "wait_for_new_mail", map[string]any{"account": shared, "timeout_seconds": 1}, service.CodeNotAuthorized)
+	var v any
+	if err := readResource(t, cs, "mail://"+shared+"/folder/inbox", &v); err == nil {
+		t.Errorf("read the team's inbox: %v", v)
+	}
+	waited := make(chan waitAnswer, 1)
+	go func() { waited <- ok[waitAnswer](t, cs, "wait_for_new_mail", map[string]any{"timeout_seconds": 2}) }()
+	time.Sleep(300 * time.Millisecond)
+	h.announce(shared, id, "Refund")
+	if got := <-waited; len(got.Messages) != 0 {
+		t.Errorf("the wait handed over %+v", got.Messages)
+	}
+	if n := box.CallCount(providertest.MethodFetchPart); n != 0 {
+		t.Errorf("refused reads fetched %d parts", n)
+	}
+}
+
 func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
 	// Bea belongs to the team Ana linked a mailbox into, and holds nothing on
 	// it: through her key, tools, resources and the wait never reach it.

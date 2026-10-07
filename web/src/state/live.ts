@@ -267,8 +267,8 @@ function isAccessChange(value: unknown): value is AccessChange {
 
 /**
  * Reads the list again, storage if it was read, and what was read of the team
- * shown (a mailbox removed leaves its directory, and its linker's protection
- * may go), once however many access changes arrive together.
+ * shown (a mailbox removed leaves its directory, and its last reader's
+ * protection may go), once however many access changes arrive together.
  */
 function scheduleAccess(): void {
   if (accessTimer) return

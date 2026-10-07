@@ -3,17 +3,20 @@
 // folders (from the index once sync has listed them, else asked of the mail
 // server live), who can use it, in a team, and removing it. What the person
 // may do here follows their grant: folders and Sync now need read,
-// authorizing again and removing need manage. Removal is typed, never a
-// confirm(): the person writes the address, which also makes them read it.
+// authorizing again needs manage. In a team, its owners and admins manage
+// every mailbox by their role: they see who can use it and change that,
+// give or withdraw the team's agreement to sync it, and remove it; a member
+// sees their own card. Removal is typed, never a confirm(): the person
+// writes the address, which also makes them read it, and the server is
+// sent the mailbox's id to confirm.
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
 import { accounts, closeDetail, loadFolders, removeAccount } from '../state/accounts'
-import { session } from '../state/session'
 import { consent, reviewConsent, syncNow, syncRequests } from '../state/sync'
-import { personName } from '../state/team'
+import { directoryEntry, personName } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
-import { accessOf, grantSummary, workspaceName } from '../ui/access'
+import { accessOf, actorName, administers, grantSummary, workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
 import { describe, describeFolders } from '../ui/errors'
 import { count, since, stamp } from '../ui/format'
@@ -25,6 +28,7 @@ import AppIcon from './AppIcon.vue'
 import LiveRegion from './LiveRegion.vue'
 import StatusChip from './StatusChip.vue'
 import SyncStatus from './SyncStatus.vue'
+import TeamMailboxSync from './TeamMailboxSync.vue'
 
 // returnFocus: where focus goes on close when the control that opened the sheet is gone (its card, once removed).
 const props = defineProps<{ account: Account; returnFocus?: () => HTMLElement | null }>()
@@ -43,15 +47,18 @@ let backdropPressed = false
 const view = computed(() => accounts.folders[props.account.id])
 const indexed = computed(() => fromIndex(view.value?.list ?? []))
 const sync = computed(() => props.account.sync)
-/** Syncing: active, and the person it is linked by turned sync on. */
+/** Syncing: active, and its agreement to sync stands (its person's, or its team's with someone to read it). */
 const syncing = computed(() => props.account.state === 'active' && sync.value.enabled)
 const access = computed(() => accessOf(props.account))
 const workspace = computed(currentWorkspace)
 const inTeam = computed(() => workspace.value?.kind === 'team')
 const teamName = computed(() => workspaceName(workspace.value))
-/** It syncs under the person's own consent: they linked it (an older server does not say, and every mailbox was its owner's). */
-const linkedByMe = computed(() => !props.account.linked_by || props.account.linked_by === session.user?.id)
-const linker = computed(() => linkedByMe.value ? t('You') : personName(props.account.linked_by) || t('Another member'))
+/** An owner or an admin of the team shown: they manage every mailbox of it by their role. */
+const admin = computed(() => inTeam.value && administers(workspace.value))
+/** Who connected it, for the record: the access directory says, to the team's owners and admins. */
+const linker = computed(() => admin.value ? actorName(directoryEntry(props.account.id)?.linked_by, personName) : '')
+/** A team's mailboxes are removed by its owners and admins; a person's own, by its person. */
+const removable = computed(() => inTeam.value ? admin.value : access.value.manage)
 const request = computed(() => syncRequests[props.account.id])
 const armed = computed(() => typed.value.trim().toLowerCase() === props.account.email.toLowerCase())
 const folders = computed(() => sortFolders(view.value?.list ?? []))
@@ -129,7 +136,7 @@ function authorize() {
             <div><dt>{{ t('Provider') }}</dt><dd>{{ providerName(account.provider) }}</dd></div>
             <div><dt>{{ t('Sign-in method') }}</dt><dd>{{ authKindLabel(account.auth_kind) }}</dd></div>
             <div><dt>{{ t('Connected on') }}</dt><dd>{{ stamp(account.created_at) }}</dd></div>
-            <div v-if="inTeam && account.linked_by"><dt>{{ t('Linked by') }}</dt><dd>{{ linker }}</dd></div>
+            <div v-if="linker"><dt>{{ t('Linked by') }}</dt><dd>{{ linker }}</dd></div>
             <div v-if="account.access"><dt>{{ t('Your access') }}</dt><dd>{{ grantSummary(account.access) }}</dd></div>
             <div v-if="account.provider === 'imap' || account.provider === 'icloud'"><dt>{{ t('Copy of sent mail') }}</dt><dd>{{ account.save_sent_copy ? t('Saved in the Sent folder') : t('Not saved by Mailie') }}</dd></div>
           </dl>
@@ -157,20 +164,22 @@ function authorize() {
             <p v-else-if="request?.requested" class="hint">{{ t('Sync requested. The counts update as it runs.') }}</p>
             <p v-if="access.read" class="hint">{{ edition().copy.indexHint() }}</p>
           </template>
+          <!-- A team's mailbox syncs under the team's agreement: its owners and admins say where it stands below. -->
+          <template v-else-if="!sync.enabled && inTeam">
+            <p v-if="!admin" class="dim">{{ t('Sync is off for this mailbox. The owners and admins of {team} turn it on, for the team.', { team: teamName }) }}</p>
+          </template>
           <template v-else-if="!sync.enabled">
-            <!-- Someone else linked it: it syncs under their consent, which nobody else gives. -->
-            <p v-if="!linkedByMe" class="dim">{{ t('Sync is off for this mailbox. It syncs under the agreement of {name}, who linked it, and they have not turned sync on.', { name: linker }) }}</p>
-            <template v-else>
-              <p class="dim">{{ t('Sync is off. Nothing from this mailbox is stored.') }}</p>
-              <button v-if="consent.loaded && !consent.consented" class="ghost small" type="button" @click="turnOn">{{ t('Turn on sync…') }}</button>
-            </template>
+            <p class="dim">{{ t('Sync is off. Nothing from this mailbox is stored.') }}</p>
+            <button v-if="consent.loaded && !consent.consented" class="ghost small" type="button" @click="turnOn">{{ t('Turn on sync…') }}</button>
           </template>
           <p v-else class="dim">{{ t('Sync is on for this mailbox, and resumes once the account works again.') }}</p>
+          <TeamMailboxSync v-if="admin" :account="account" />
         </section>
 
         <section v-if="!access.read" class="sheet-section">
           <h3>{{ t('Folders') }}</h3>
-          <p class="dim">{{ t('You do not have read access to this mailbox, so its folders and messages are not shown to you. It comes only from someone who has it and can change who has access.') }}</p>
+          <p v-if="admin" class="dim">{{ t('You manage this mailbox as an owner or an admin of {team}, but do not read it, so its folders and messages are not shown to you. Read comes only from an owner or an admin who reads it.', { team: teamName }) }}</p>
+          <p v-else class="dim">{{ t('You do not have read access to this mailbox, so its folders and messages are not shown to you. It comes only from an owner or an admin of the team who reads it.') }}</p>
         </section>
         <section v-else class="sheet-section">
           <div class="section-head">
@@ -195,15 +204,15 @@ function authorize() {
           <p v-if="view?.loaded && indexed" class="hint folder-note">{{ t('From Mailie’s index: the counts are what Mailie has indexed, not what the mail server holds.') }}</p>
         </section>
 
-        <section v-if="inTeam" class="sheet-section">
+        <section v-if="admin" class="sheet-section">
           <h3>{{ t('Access') }}</h3>
-          <AccessPanel :account-id="account.id" :email="account.email" :account="account" />
+          <AccessPanel :account-id="account.id" :email="account.email" />
         </section>
 
-        <section v-if="access.manage" class="sheet-section danger-zone">
+        <section v-if="removable" class="sheet-section danger-zone">
           <h3>{{ t('Remove account') }}</h3>
           <p>{{ t('Removes this mailbox from Mailie and deletes the saved sign-in and everything else Mailie keeps for it. Nothing is deleted at the provider.') }}</p>
-          <p v-if="inTeam">{{ t('Everyone in {team} who has access to it loses it.', { team: teamName }) }}</p>
+          <p v-if="inTeam">{{ t('Everyone in {team} who has access to it loses it, and its index is deleted for all of them.', { team: teamName }) }}</p>
           <p v-if="accounts.removeFailure" class="alert" role="alert">{{ describe(accounts.removeFailure) }}</p>
           <button v-if="!confirming" class="danger" type="button" @click="confirming = true"><AppIcon name="trash" :size="17" />{{ t('Remove account…') }}</button>
           <div v-else class="field">

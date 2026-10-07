@@ -105,10 +105,10 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// the handler is what presents it as icloud.
 	icloud, err := account.NewRepository(h.store, nil).Create(t.Context(), account.Account{
 		ID: "acc_00000000000000c1", Email: "ana@icloud.com", DisplayName: "Ana (iCloud)",
-		Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ana.ID,
+		Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.me.com", IMAPPort: 993, SMTPHost: "smtp.mail.me.com", SMTPPort: 587, SMTPTLS: "starttls",
 		LoginUser: "ana@icloud.com", SaveSentCopy: true, State: account.StateActive,
-	})
+	}, ana.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,12 +317,18 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("team_invites", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/invites", token, "")
 	capture("member", http.StatusOK, http.MethodPatch, "/v1/workspaces/"+teamID+"/members/"+carol.ID, token,
 		`{"role":"member"}`)
-	capture("members", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/members", token, "")
+	// Two mailboxes ana links into the team: one with the team's consent to
+	// sync it, given with the link, which bea reads too; one without, which
+	// ana alone reads, so the listings mark her its last reader.
 	shared := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
-		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID))
+		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+
+			fmt.Sprintf(`,"workspace_id":%q,"sync_consent_version":%q}`, teamID, service.DefaultSyncConsentVersion))
 	sharedID, _ := shared["account"].(map[string]any)["id"].(string)
+	capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
+		strings.TrimSuffix(h.passwordAccount(t, "billing@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID))
 	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
 		`{"read":true,"act":false,"send":true,"manage":false}`)
+	capture("members", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/members", token, "")
 	capture("access", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
 
 	// A person who signs in only through an identity provider, as an
@@ -475,7 +481,8 @@ func (n *normalizer) normalizeString(key, v string, inFlow bool) string {
 		if inFlow {
 			return "fixed-oauth-state"
 		}
-	case "id", "account_id", "account_ids", "workspace_id", "linked_by", "user_id", "granted_by", "created_by":
+	case "id", "account_id", "account_ids", "workspace_id", "linked_by", "user_id", "granted_by", "created_by",
+		"enabled_by", "last_reader_of":
 		return n.id(v)
 	case "message_id":
 		// The Message-ID a send generates: a random UUID at the sender's

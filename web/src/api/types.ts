@@ -64,16 +64,16 @@ export interface Account {
   send?: AccountSend
   /** The workspace the mailbox belongs to. Absent from a daemon older than workspaces. */
   workspace_id?: string
-  /** The person who linked it, under whose consent to sync it syncs; absent for the operator's mailboxes. */
-  linked_by?: string
   /**
    * What the caller may do with the mailbox: their grant, as far as their
-   * credential reaches. Absent from a daemon older than workspaces; the
-   * server decides either way.
+   * credential reaches, and manage, which an owner or an admin of a team
+   * holds on every mailbox of it by their role (seeing its card without
+   * reading it). Absent from a daemon older than workspaces; the server
+   * decides either way.
    */
   access?: AccountAccess
 }
-/** A caller's grant on a mailbox: read its index, act on its messages, send from it, manage it. */
+/** What a caller may do with a mailbox: read its index, act on its messages, send from it, manage it. */
 export interface AccountAccess { read: boolean; act: boolean; send: boolean; manage: boolean }
 /**
  * available false: the mailbox cannot send now, for a short reason (such as
@@ -106,7 +106,11 @@ export type ArchiveReason = 'all_mail_hidden'
  */
 export type SyncState = 'off' | 'initial' | 'live' | 'backoff' | 'stopped'
 export interface AccountSync {
-  /** The owner agreed to sync (or, for a mailbox nobody owns, the operator switched it on). */
+  /**
+   * Sync is allowed: for a personal mailbox, its person agreed to it; for a
+   * team's, the team's agreement stands and someone can read it; for the
+   * operator's, the operator switched it on.
+   */
   enabled: boolean
   running: boolean
   state: SyncState | (string & {})
@@ -252,6 +256,12 @@ export interface AddAccountRequest {
   provider: ProviderID
   /** The workspace to link it into: a team the caller owns or administers. Left out, the caller's personal workspace. */
   workspace_id?: string
+  /**
+   * Into a team only: the revision of the sync text the owner or admin was
+   * shown, which gives the team's agreement to sync it with the link. Left
+   * out, the mailbox is linked with sync off.
+   */
+  sync_consent_version?: string
   password?: string
   imap_host?: string
   imap_port?: number
@@ -273,7 +283,7 @@ export type WorkspaceKind = 'personal' | 'team' | 'operator'
  * (local), or mirrored from elsewhere and never changed here (platform).
  */
 export type WorkspaceSource = 'local' | 'platform'
-/** A person's role in a workspace: owners and admins administer people and grants, and get no read by it. */
+/** A person's role in a workspace: owners and admins administer people and grants, and manage every mailbox, and read none by it. */
 export type WorkspaceRole = 'owner' | 'admin' | 'member'
 /** A membership that is disabled is listed and reaches nothing. */
 export type MemberStatus = 'active' | 'disabled'
@@ -296,9 +306,10 @@ export interface Workspace {
   created_at: number
 }
 /**
- * A membership of a workspace. last_owner and links mark the protections in
- * advance: the last active owner is never demoted, disabled or removed, and
- * a person who linked mailboxes there stays while any of them is linked.
+ * A membership of a workspace. last_owner and last_reader_of mark the
+ * protections in advance: the last active owner is never demoted, disabled
+ * or removed, and the last person who can read a mailbox of the team keeps
+ * Read, and is neither disabled nor removed, while it is so.
  */
 export interface Member {
   user_id: string
@@ -309,7 +320,8 @@ export interface Member {
   /** Switched off on the server: the membership counts for nothing until they are back. */
   person_disabled?: boolean
   last_owner: boolean
-  links: number
+  /** The team's mailboxes this person alone can read. Absent from a daemon older than the rule. */
+  last_reader_of?: string[]
   joined_at: number
 }
 /** What one person holds on one mailbox. act never comes without read. */
@@ -325,9 +337,32 @@ export interface Grant {
   updated_at: number
 }
 /**
+ * A mailbox's own agreement to sync, as its workspace's owners and admins
+ * see it: a team mailbox's is the team's, given by one of them on its behalf;
+ * an operator mailbox's is the operator's switch. enabled_by is who gave it
+ * ("usr_…", "key:<prefix>" or "cli"; absent once that person is deleted) and
+ * version the revision of the sync text it was given to, which current says
+ * is the one the server asks about now. migrated: an agreement the upgrade
+ * carried over from the person who linked the mailbox, still tied to them
+ * until an owner or an admin gives it again for the team (with enabled false,
+ * a mailbox kept stopped, with its index, because that person was disabled).
+ */
+export interface MailboxConsent {
+  enabled: boolean
+  enabled_at?: number
+  enabled_by?: string
+  version?: string
+  migrated?: boolean
+  current: boolean
+}
+/**
  * One mailbox of a workspace and who holds what on it: the access directory,
- * addresses and grants, never what the mailbox holds. linked_by is the person
- * it syncs under, whose grant nobody changes while it is linked.
+ * addresses and grants, never what the mailbox holds. linked_by says who
+ * connected it, for the record only. readers counts the active members who
+ * can read it (keys and roles never count), and no_reader marks a team
+ * mailbox nobody can read: it syncs nothing, and only removing it gives
+ * anyone Read on it again. sync is its own agreement to sync; absent for a
+ * personal mailbox, which syncs under its person's.
  */
 export interface MailboxAccess {
   account_id: string
@@ -335,8 +370,14 @@ export interface MailboxAccess {
   provider: ProviderID | (string & {})
   state: AccountState | (string & {})
   linked_by?: string
+  sync?: MailboxConsent
+  /** Absent from a daemon older than the last-reader rule. */
+  readers?: number
+  no_reader?: boolean
   grants: Grant[]
 }
+/** The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on to the sync text revision shown. */
+export interface MailboxSyncRequest { enabled: boolean; version?: string }
 /**
  * An invitation into a team, as its owners and admins see it. url, the link
  * to send, is in the answer that creates it and nowhere else.
@@ -403,7 +444,7 @@ export function isMe(v: unknown, strict = false): v is Me {
 }
 
 export function isAccount(v: unknown, strict = false): v is Account {
-  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'linked_by', 'access'], strict)
+  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'access'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
     && oneOf(providerIDs)(v.provider) && oneOf(authKinds)(v.auth_kind) && oneOf(accountStates)(v.state)
     && optional(v.state_reason, text) && optional(v.sync_tier, x => text(x, 64)) && flag(v.save_sent_copy)
@@ -414,7 +455,6 @@ export function isAccount(v: unknown, strict = false): v is Account {
     && optional(v.send, x => isAccountSend(x, strict))
     && (strict ? filled(v.workspace_id, 64) && isAccountAccess(v.access, strict)
       : optional(v.workspace_id, x => filled(x, 64)) && optional(v.access, x => isAccountAccess(x)))
-    && optional(v.linked_by, x => filled(x, 64))
 }
 
 export function isAccountAccess(v: unknown, strict = false): v is AccountAccess {
@@ -586,10 +626,15 @@ export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {
   return Array.isArray(v) && v.every(item => isWorkspace(item, strict))
 }
 
+/** Mailbox ids, each one a path may carry. */
+const pathIDs = (v: unknown): v is string[] => Array.isArray(v) && v.every(pathID)
+
 export function isMember(v: unknown, strict = false): v is Member {
-  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'links', 'joined_at'], strict)
+  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'last_reader_of', 'joined_at'], strict)
     && pathID(v.user_id) && filled(v.email, 320) && text(v.name, 1024) && word(workspaceRoles, strict)(v.role)
-    && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && flag(v.last_owner) && counter(v.links)
+    && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && flag(v.last_owner)
+    // The daemon that writes the fixtures always says, [] for none; an older one may not.
+    && (strict ? pathIDs(v.last_reader_of) : optional(v.last_reader_of, pathIDs))
     && seconds(v.joined_at)
 }
 
@@ -605,10 +650,26 @@ export function isGrant(v: unknown, strict = false): v is Grant {
     && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send || v.manage)))
 }
 
+/** Who did something, as the server records it: a person's id, a key's ("key:<prefix>"), or "cli". */
+const actor = (v: unknown): v is string => filled(v, 128) && !/\s/.test(v)
+
+export function isMailboxConsent(v: unknown, strict = false): v is MailboxConsent {
+  return record(v) && known(v, ['enabled', 'enabled_at', 'enabled_by', 'version', 'migrated', 'current'], strict)
+    && flag(v.enabled) && optional(v.enabled_at, seconds) && optional(v.enabled_by, actor) && optional(v.version, x => filled(x, 128))
+    && optional(v.migrated, flag) && flag(v.current)
+    // Current names a revision; an agreement that stands says when it was given.
+    && (!strict || ((!v.current || v.version !== undefined) && (!v.enabled || v.enabled_at !== undefined)))
+}
+
 export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess {
-  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'grants'], strict)
+  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'grants'], strict)
     && pathID(v.account_id) && filled(v.email, 320) && word(providerIDs, strict)(v.provider) && word(accountStates, strict)(v.state)
-    && optional(v.linked_by, pathID) && Array.isArray(v.grants) && v.grants.every(grant => isGrant(grant, strict) && grant.account_id === v.account_id)
+    && optional(v.linked_by, actor) && optional(v.sync, x => isMailboxConsent(x, strict))
+    // The daemon that writes the fixtures always says; an older one may not.
+    && (strict ? counter(v.readers) && flag(v.no_reader) : optional(v.readers, counter) && optional(v.no_reader, flag))
+    // Nobody can read a mailbox only when it has no reader.
+    && (!strict || !v.no_reader || v.readers === 0)
+    && Array.isArray(v.grants) && v.grants.every(grant => isGrant(grant, strict) && grant.account_id === v.account_id)
 }
 
 export function isMailboxAccessList(v: unknown, strict = false): v is MailboxAccess[] {

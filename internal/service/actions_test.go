@@ -48,22 +48,34 @@ func (m *mailFixture) ownedBoxIn(t *testing.T, owner service.Principal, workspac
 	}
 	id := fmt.Sprintf("acc_%016x", len(m.boxes)+100)
 	a := account.Account{
-		ID: id, WorkspaceID: workspaceID, Email: email, Provider: kind, AuthKind: "password", OwnerUserID: owner.UserID,
+		ID: id, WorkspaceID: workspaceID, Email: email, Provider: kind, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
 	}
 	if kind == provider.KindGmail {
 		a.AuthKind, a.IMAPHost, a.SMTPHost = "oauth2", "imap.gmail.com", "smtp.gmail.com"
 	}
-	if _, err := m.repo.Create(t.Context(), a); err != nil {
+	created, err := m.repo.Create(t.Context(), a, owner.UserID)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if owner.UserID == "" {
-		if _, err := m.svc.EnableInstanceAccountSync(t.Context(), admin(), id, true); err != nil {
+	switch {
+	case owner.UserID == "":
+		if _, err := m.svc.SetMailboxSync(t.Context(), admin(), id, switchSync(true)); err != nil {
 			t.Fatal(err)
 		}
-	} else if _, err := m.svc.GrantSyncConsent(t.Context(), owner, m.consent().Sync); err != nil {
-		t.Fatal(err)
+	case created.OwnerUserID == "":
+		// A team's mailbox syncs under the team's consent, which its
+		// linker, an owner or an admin, gives.
+		on := true
+		if _, err := m.svc.SetMailboxSync(t.Context(), owner, id,
+			service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync}); err != nil {
+			t.Fatal(err)
+		}
+	default:
+		if _, err := m.svc.GrantSyncConsent(t.Context(), owner, m.consent().Sync); err != nil {
+			t.Fatal(err)
+		}
 	}
 	box := providertest.NewFakeMailbox(o)
 	m.mu.Lock()

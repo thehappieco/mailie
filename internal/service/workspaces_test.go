@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/url"
 	"slices"
 	"strings"
@@ -60,9 +61,72 @@ func indexed(t *testing.T, f *fixture, accountID string) int {
 	return f.count(t, `SELECT count(*) FROM messages WHERE account_id = ?`, accountID)
 }
 
-func TestAnAdminCannotGrantReadTheyDoNotHold(t *testing.T) {
+func TestOnlyAnOwnerOrAdminWhoReadsPassesRead(t *testing.T) {
 	// Owners and admins administer who holds what, and read nobody's mail
-	// by being one: access to mail passes only from someone who has it.
+	// by being one: read passes only from one of them who reads the mailbox
+	// now. A member who reads it does not pass it on.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
+	dan := tm.join(t, f, "dan@example.com", workspace.RoleMember)
+	const shared = "acc_00000000000000aa"
+	tm.link(t, f, shared, "support@mail.example")
+	set := func(p service.Principal, userID string, req service.GrantRequest) error {
+		t.Helper()
+		_, err := f.svc.SetAccess(t.Context(), p, shared, userID, req)
+		return err
+	}
+
+	wantCode(t, "Carol, reading nothing, granting herself read", set(carol, carol.UserID, grantRequest(true, false, false, false)),
+		service.CodeNotAuthorized)
+	wantCode(t, "Carol granting Bea read", set(carol, tm.bea.UserID, grantRequest(true, false, false, false)),
+		service.CodeNotAuthorized)
+	_, err := f.svc.ListFolders(t.Context(), carol, shared)
+	wantCode(t, "Carol listing folders by her role", err, service.CodeNotAuthorized)
+
+	// Ana linked it and reads it: she passes read on, to Carol and to Bea,
+	// and Carol, reading it now, passes it on too.
+	if err := set(tm.ana, tm.bea.UserID, grantRequest(true, false, false, false)); err != nil {
+		t.Fatalf("Ana granting Bea read: %v", err)
+	}
+	if err := set(tm.ana, carol.UserID, grantRequest(true, false, false, false)); err != nil {
+		t.Fatalf("Ana granting Carol read: %v", err)
+	}
+	if err := set(carol, dan.UserID, grantRequest(true, false, false, false)); err != nil {
+		t.Fatalf("Carol passing on read she holds: %v", err)
+	}
+	if g := held(t, f, carol, tm.id, shared, dan.UserID); !g.Read || g.GrantedBy != carol.UserID {
+		t.Errorf("Dan holds %+v", g)
+	}
+	// Bea reads it and is a member: she passes nothing on.
+	wantCode(t, "Bea, a member who reads it, granting read", set(tm.bea, tm.bea.UserID, grantRequest(true, true, false, false)),
+		service.CodeNotAuthorized)
+
+	// The operator holds nothing on anyone's mailbox: it grants manage to a
+	// member, keeping what is held, and nothing else.
+	eve := tm.join(t, f, "eve@example.com", workspace.RoleMember)
+	wantCode(t, "the operator granting read", set(admin(), eve.UserID, grantRequest(true, false, false, true)),
+		service.CodeNotAuthorized)
+	if err := set(admin(), dan.UserID, grantRequest(true, false, false, true)); err != nil {
+		t.Errorf("the operator granting Dan manage: %v", err)
+	}
+
+	// Nobody outside the team, and no member holding nothing, can tell the
+	// mailbox exists; a grant goes only to an active member of its
+	// workspace.
+	wantCode(t, "Eve, a member holding nothing", set(eve, eve.UserID, grantRequest(false, false, true, false)),
+		service.CodeNotFound)
+	bob := f.person(t, "bob@example.com", auth.RoleMember)
+	wantCode(t, "Bob, outside the team", set(bob, tm.bea.UserID, grantRequest(false, false, true, false)),
+		service.CodeNotFound)
+	wantCode(t, "a grant to Bob", set(tm.ana, bob.UserID, grantRequest(true, false, false, false)), service.CodeNotFound)
+}
+
+func TestAnAdminTurnsOnSendForAnyoneAndActForAReader(t *testing.T) {
+	// Act and send are an owner's or an admin's to give, whatever they hold
+	// themselves: act to someone who reads after the change, send to any
+	// active member, themselves included. Manage is stored for members
+	// only; owners and admins hold it by their role.
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
 	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
@@ -74,94 +138,179 @@ func TestAnAdminCannotGrantReadTheyDoNotHold(t *testing.T) {
 		return err
 	}
 
-	wantCode(t, "Carol granting herself read", set(carol, carol.UserID, grantRequest(true, false, false, false)),
-		service.CodeNotAuthorized)
-	wantCode(t, "Carol granting Bea read", set(carol, tm.bea.UserID, grantRequest(true, false, false, false)),
-		service.CodeNotAuthorized)
-	wantCode(t, "Carol granting Bea send", set(carol, tm.bea.UserID, grantRequest(false, false, true, false)),
-		service.CodeNotAuthorized)
-	// Manage is administration, which she may hand out — to herself as
-	// well — and it opens no mail.
-	if err := set(carol, tm.bea.UserID, grantRequest(false, false, false, true)); err != nil {
-		t.Fatalf("Carol granting Bea manage: %v", err)
+	if err := set(carol, tm.bea.UserID, grantRequest(false, false, true, false)); err != nil {
+		t.Errorf("Carol, holding nothing, giving Bea send: %v", err)
 	}
-	if err := set(carol, carol.UserID, grantRequest(false, false, false, true)); err != nil {
-		t.Fatalf("Carol granting herself manage: %v", err)
+	if err := set(carol, carol.UserID, grantRequest(false, false, true, false)); err != nil {
+		t.Errorf("Carol giving herself send: %v", err)
 	}
-	wantCode(t, "Carol, a manager now, granting herself read", set(carol, carol.UserID, grantRequest(true, false, false, true)),
-		service.CodeNotAuthorized)
-	_, err := f.svc.ListFolders(t.Context(), carol, shared)
-	wantCode(t, "Carol listing folders with manage alone", err, service.CodeNotAuthorized)
-
-	// Ana linked it and holds every flag: she passes read on, and Carol,
-	// holding act then, passes act on too.
-	if err := set(tm.ana, carol.UserID, grantRequest(true, true, false, true)); err != nil {
-		t.Fatalf("Ana granting Carol read and act: %v", err)
+	wantCode(t, "Carol giving Bea act without read", set(carol, tm.bea.UserID, grantRequest(false, true, true, false)),
+		service.CodeBadRequest)
+	if err := set(tm.ana, tm.bea.UserID, grantRequest(true, false, true, false)); err != nil {
+		t.Fatal(err)
 	}
-	if err := set(carol, tm.bea.UserID, grantRequest(true, true, false, true)); err != nil {
-		t.Fatalf("Carol passing on read and act she holds: %v", err)
+	if err := set(carol, tm.bea.UserID, grantRequest(true, true, true, false)); err != nil {
+		t.Errorf("Carol giving Bea, who reads, act: %v", err)
 	}
-	wantCode(t, "Carol passing on send she does not hold", set(carol, tm.bea.UserID, grantRequest(true, true, true, true)),
-		service.CodeNotAuthorized)
-	// Taking a flag away needs nothing held.
-	if err := set(carol, tm.bea.UserID, grantRequest(true, false, false, true)); err != nil {
-		t.Fatalf("Carol taking act away: %v", err)
+	if err := set(carol, tm.bea.UserID, grantRequest(true, true, true, true)); err != nil {
+		t.Errorf("Carol giving Bea, a member, manage: %v", err)
 	}
-	if g := held(t, f, carol, tm.id, shared, tm.bea.UserID); !g.Read || g.Act || g.Send || !g.Manage || g.GrantedBy != carol.UserID {
+	wantCode(t, "Carol giving herself manage", set(carol, carol.UserID, grantRequest(false, false, true, true)),
+		service.CodeBadRequest)
+	wantCode(t, "the operator giving Carol manage", set(admin(), carol.UserID, grantRequest(false, false, true, true)),
+		service.CodeBadRequest)
+	if g := held(t, f, tm.ana, tm.id, shared, tm.bea.UserID); !g.Read || !g.Act || !g.Send || !g.Manage || g.GrantedBy != carol.UserID {
 		t.Errorf("Bea holds %+v", g)
 	}
-
-	// The operator holds nothing on anyone's mailbox: it grants manage,
-	// keeping what is held, and nothing else.
-	wantCode(t, "the operator granting send", set(admin(), tm.bea.UserID, grantRequest(true, false, true, true)),
-		service.CodeNotAuthorized)
-	if err := set(admin(), carol.UserID, grantRequest(true, true, false, true)); err != nil {
-		t.Errorf("the operator keeping what Carol holds: %v", err)
+	// Taking a flag away needs nothing held; an owner or an admin drops
+	// their own flags, and a member never.
+	if err := set(carol, tm.bea.UserID, grantRequest(true, false, true, true)); err != nil {
+		t.Errorf("Carol taking act away: %v", err)
 	}
-
-	// A member who manages nothing changes nothing, and Bob, who is not in
-	// the team, cannot tell the mailbox exists.
-	dan := tm.join(t, f, "dan@example.com", workspace.RoleMember)
-	wantCode(t, "Dan, a member holding nothing", set(dan, dan.UserID, grantRequest(false, false, false, true)),
-		service.CodeNotFound)
-	bob := f.person(t, "bob@example.com", auth.RoleMember)
-	wantCode(t, "Bob, outside the team", set(bob, tm.bea.UserID, grantRequest(false, false, false, true)),
-		service.CodeNotFound)
-	// A grant goes only to an active member of the mailbox's workspace.
-	wantCode(t, "a grant to Bob", set(tm.ana, bob.UserID, grantRequest(true, false, false, false)), service.CodeNotFound)
+	if err := f.svc.RevokeAccess(t.Context(), carol, shared, carol.UserID, workspace.Flags{Send: true}); err != nil {
+		t.Errorf("Carol dropping her own send: %v", err)
+	}
+	wantCode(t, "Bea dropping her own send", f.svc.RevokeAccess(t.Context(), tm.bea, shared, tm.bea.UserID,
+		workspace.Flags{Send: true}), service.CodeNotAuthorized)
 }
 
-func TestOwnersAndAdminsSeeTheAccessDirectoryButReadNoMailUntilGranted(t *testing.T) {
+func TestAnOwnerOrAdminManagesEveryTeamMailboxAndReadsNone(t *testing.T) {
+	// By their role an owner or an admin sees each team mailbox's card —
+	// its address, state and sync counters — re-authorizes it and decides
+	// who holds what on it; none of what it holds, on any path.
 	m := newMailFixture(t)
 	tm := newSupportTeam(t, m.fixture)
 	carol := tm.join(t, m.fixture, "carol@example.com", workspace.RoleAdmin)
 	dan := tm.join(t, m.fixture, "dan@example.com", workspace.RoleOwner)
 	shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
+	box.CreateFolder("Refunds")
 	box.Deliver("INBOX", message("a", "Refund for order 4471"))
 	m.index(t, shared, box)
+	ctx := t.Context()
+	msg := m.messageID(t, shared, "INBOX", 1)
 
 	for name, p := range map[string]service.Principal{"Carol, an admin": carol, "Dan, an owner": dan} {
-		if got := ids(t, m.fixture, p); slices.Contains(got, shared) {
-			t.Errorf("%s lists the team's mailbox: %v", name, got)
+		if got := ids(t, m.fixture, p); !slices.Contains(got, shared) {
+			t.Errorf("%s does not list the team's mailbox: %v", name, got)
 		}
-		_, err := m.svc.GetAccount(t.Context(), p, shared)
-		wantCode(t, name+" reading the mailbox's card", err, service.CodeNotFound)
-		_, err = m.svc.SearchMessages(t.Context(), p, service.SearchRequest{AccountID: shared})
-		wantCode(t, name+" searching it", err, service.CodeNotFound)
-		if page, err := m.svc.SearchMessages(t.Context(), p, service.SearchRequest{Query: "refund"}); err != nil || len(page.Messages) != 0 {
+		card, err := m.svc.GetAccount(ctx, p, shared)
+		if err != nil {
+			t.Fatalf("%s reading the card: %v", name, err)
+		}
+		if card.Access != (service.AccountAccess{Manage: true}) || card.Email != "support@mail.example" {
+			t.Errorf("%s's card: access %+v, email %q", name, card.Access, card.Email)
+		}
+		if raw, err := json.Marshal(card); err != nil || strings.Contains(string(raw), "Refund") ||
+			strings.Contains(string(raw), "INBOX") || strings.Contains(string(raw), "example.org") {
+			t.Errorf("%s's card carries something of the mailbox's contents: %s", name, raw)
+		}
+		if st, err := m.svc.SyncStatus(ctx, p, shared); err != nil || !st.Enabled {
+			t.Errorf("%s's view of its sync: %+v, %v", name, st, err)
+		}
+		_, err = m.svc.ListFolders(ctx, p, shared)
+		wantCode(t, name+" listing its folders", err, service.CodeNotAuthorized)
+		_, err = m.svc.SearchMessages(ctx, p, service.SearchRequest{AccountID: shared})
+		wantCode(t, name+" searching it", err, service.CodeNotAuthorized)
+		if page, err := m.svc.SearchMessages(ctx, p, service.SearchRequest{Query: "refund"}); err != nil ||
+			len(page.Messages) != 0 || page.NextCursor != "" {
 			t.Errorf("%s finds %d messages (%v)", name, len(page.Messages), err)
 		}
-		if st, err := m.svc.Storage(t.Context(), p, tm.id); err != nil || len(st.Mailboxes) != 0 {
+		_, err = m.svc.GetMessage(ctx, p, service.GetMessageRequest{ID: msg})
+		wantCode(t, name+" reading a message", err, service.CodeNotFound)
+		if st, err := m.svc.Storage(ctx, p, tm.id); err != nil || len(st.Mailboxes) != 0 || st.Total.Messages != 0 {
 			t.Errorf("%s is told what the index holds: %+v (%v)", name, st, err)
 		}
-		dir, err := m.svc.AccessDirectory(t.Context(), p, tm.id)
-		if err != nil || len(dir) != 1 || dir[0].AccountID != shared || dir[0].LinkedBy != tm.ana.UserID {
+		wantCode(t, name+" following its new mail", m.svc.MayFollow(ctx, p, shared), service.CodeNotAuthorized)
+		_, err = m.svc.WaitForNewMail(ctx, p, 0, time.Second, service.EventFilter{AccountIDs: []string{shared}})
+		wantCode(t, name+" waiting on it", err, service.CodeNotAuthorized)
+		res, err := m.svc.WaitForNewMail(ctx, p, 0, time.Second, service.EventFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, ev := range res.Events {
+			if ev.AccountID == shared {
+				t.Errorf("%s's long poll carries %+v", name, ev)
+			}
+		}
+		stream, err := m.svc.Subscribe(ctx, p, 0, service.EventFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.publish(t, newMail(t, shared, "inbox", "Refund for order 4472"))
+		select {
+		case ev := <-stream.Events():
+			t.Errorf("%s's stream carries %+v", name, ev)
+		case <-time.After(300 * time.Millisecond):
+		}
+		stream.Close()
+		_, err = m.svc.Subscribe(ctx, p, 0, service.EventFilter{AccountIDs: []string{shared}})
+		wantCode(t, name+" streaming it", err, service.CodeNotAuthorized)
+		dir, err := m.svc.AccessDirectory(ctx, p, tm.id)
+		if err != nil || len(dir) != 1 || dir[0].AccountID != shared || dir[0].LinkedBy != tm.ana.UserID ||
+			dir[0].Readers != 1 || dir[0].Sync == nil || !dir[0].Sync.Enabled {
 			t.Errorf("%s's access directory: %+v (%v)", name, dir, err)
 		}
 	}
-	// A member sees in the directory only what they manage.
-	if dir, err := m.svc.AccessDirectory(t.Context(), tm.bea, tm.id); err != nil || len(dir) != 0 {
-		t.Errorf("Bea, managing nothing, sees %+v (%v)", dir, err)
+	// A member holding nothing sees none of it.
+	if got := ids(t, m.fixture, tm.bea); slices.Contains(got, shared) {
+		t.Errorf("Bea lists %v", got)
+	}
+}
+
+func TestOnlyOwnersAndAdminsSeeMembersAndTheDirectory(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
+	const shared = "acc_00000000000000aa"
+	tm.link(t, f, shared, "support@mail.example")
+	tm.grant(t, shared, workspace.Flags{Read: true, Manage: true})
+	ctx := t.Context()
+
+	for name, p := range map[string]service.Principal{"Ana, the owner": tm.ana, "Carol, an admin": carol, "the operator": admin()} {
+		if members, err := f.svc.ListMembers(ctx, p, tm.id); err != nil || len(members) != 3 {
+			t.Errorf("%s lists %d members (%v)", name, len(members), err)
+		}
+		if dir, err := f.svc.AccessDirectory(ctx, p, tm.id); err != nil || len(dir) != 1 {
+			t.Errorf("%s's directory: %+v (%v)", name, dir, err)
+		}
+	}
+	// Bea reads and manages the mailbox, as a member: its card, and no
+	// list of the team's people or of who holds what.
+	_, err := f.svc.ListMembers(ctx, tm.bea, tm.id)
+	wantCode(t, "Bea listing members", err, service.CodeNotAuthorized)
+	_, err = f.svc.AccessDirectory(ctx, tm.bea, tm.id)
+	wantCode(t, "Bea reading the directory", err, service.CodeNotAuthorized)
+	if card, err := f.svc.GetAccount(ctx, tm.bea, shared); err != nil || !card.Access.Manage || !card.Access.Read {
+		t.Errorf("Bea's card: %+v (%v)", card.Access, err)
+	}
+	// Her manage is the card and re-authorizing: not removing it, nor
+	// changing who holds what.
+	wantCode(t, "Bea removing it", f.svc.RemoveAccount(ctx, tm.bea, shared, service.RemoveAccountRequest{Confirm: shared}),
+		service.CodeNotAuthorized)
+	_, err = f.svc.SetAccess(ctx, tm.bea, shared, carol.UserID, grantRequest(false, false, true, false))
+	wantCode(t, "Bea granting", err, service.CodeNotAuthorized)
+}
+
+func TestAMemberOrAdminCannotLeave(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
+	dan := tm.join(t, f, "dan@example.com", workspace.RoleOwner)
+	ctx := t.Context()
+	wantCode(t, "Bea, a member, leaving", f.svc.RemoveMember(ctx, tm.bea, tm.id, tm.bea.UserID), service.CodeNotAuthorized)
+	wantCode(t, "Carol, an admin, leaving", f.svc.RemoveMember(ctx, carol, tm.id, carol.UserID), service.CodeNotAuthorized)
+	// An owner leaves while another owner remains, and is removed by
+	// another owner.
+	if err := f.svc.RemoveMember(ctx, dan, tm.id, dan.UserID); err != nil {
+		t.Errorf("Dan, an owner, leaving: %v", err)
+	}
+	wantCode(t, "Ana, the last owner, leaving", f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.ana.UserID), service.CodeConflict)
+	// An admin removes members, and an owner anyone.
+	if err := f.svc.RemoveMember(ctx, carol, tm.id, tm.bea.UserID); err != nil {
+		t.Errorf("Carol removing Bea: %v", err)
+	}
+	if err := f.svc.RemoveMember(ctx, tm.ana, tm.id, carol.UserID); err != nil {
+		t.Errorf("Ana removing Carol: %v", err)
 	}
 }
 
@@ -182,9 +331,8 @@ func TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden(t *testing.T) {
 			"TriggerSync": func() error { return f.svc.TriggerSync(ctx, p, shared) },
 			"StartOAuth":  func() error { _, err := f.svc.StartOAuth(ctx, p, shared, ""); return err },
 			"RemoveAccount": func() error {
-				return f.svc.RemoveAccount(ctx, p, shared)
+				return f.svc.RemoveAccount(ctx, p, shared, service.RemoveAccountRequest{Confirm: shared})
 			},
-			"TakeOver": func() error { _, err := f.svc.TakeOver(ctx, p, shared); return err },
 			"SetAccess": func() error {
 				_, err := f.svc.SetAccess(ctx, p, shared, p.UserID, grantRequest(false, false, false, true))
 				return err
@@ -244,81 +392,84 @@ func TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden(t *testing.T) {
 	wantCode(t, "Bea listing folders with send alone", err, service.CodeNotAuthorized)
 	_, err = f.svc.StartOAuth(ctx, tm.bea, shared, "")
 	wantCode(t, "Bea re-authorising without manage", err, service.CodeNotAuthorized)
-	wantCode(t, "Bea removing it without manage", f.svc.RemoveAccount(ctx, tm.bea, shared), service.CodeNotAuthorized)
+	wantCode(t, "Bea removing it, a member", f.svc.RemoveAccount(ctx, tm.bea, shared, service.RemoveAccountRequest{Confirm: shared}),
+		service.CodeNotAuthorized)
 }
 
-func TestATakeOverKeepsTheIndexAndMovesTheConsent(t *testing.T) {
+func TestATeamMailboxSyncsUnderItsWorkspacesConsent(t *testing.T) {
+	// No person's consent covers a team mailbox: not its linker's, not its
+	// readers'. An owner or an admin gives the team's, on its behalf, and
+	// it syncs while someone reads it.
+	m := newMailFixture(t)
+	tm := newSupportTeam(t, m.fixture)
+	carol := tm.join(t, m.fixture, "carol@example.com", workspace.RoleAdmin)
+	ctx := t.Context()
+	for _, p := range []service.Principal{tm.ana, tm.bea, carol} {
+		if _, err := m.svc.GrantSyncConsent(ctx, p, m.consent().Sync); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := m.passwordAccount(t, "support@mail.example")
+	req.WorkspaceID = tm.id
+	linked, err := m.svc.AddAccount(ctx, tm.ana, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared := linked.Account.ID
+	if m.eligible(t, shared) || linked.Account.Sync.Enabled {
+		t.Fatal("a team mailbox syncs under its linker's own consent")
+	}
+	on := true
+	_, err = m.svc.SetMailboxSync(ctx, tm.bea, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
+	wantCode(t, "Bea, a member holding nothing, turning it on", err, service.CodeNotFound)
+	tm.grant(t, shared, workspace.Flags{Read: true})
+	_, err = m.svc.SetMailboxSync(ctx, tm.bea, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
+	wantCode(t, "Bea, a member who reads it, turning it on", err, service.CodeNotAuthorized)
+	_, err = m.svc.SetMailboxSync(ctx, keyOf(carol, auth.ScopeAdmin), shared,
+		service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
+	wantCode(t, "a key of Carol's turning it on", err, service.CodeNotAuthorized)
+	st, err := m.svc.SetMailboxSync(ctx, carol, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
+	if err != nil || !st.Enabled || !m.eligible(t, shared) {
+		t.Fatalf("Carol, an admin, turning it on for the team: %+v, %v", st, err)
+	}
+	// A personal mailbox's is its person's, never switched for them.
+	own := m.mailbox(t, tm.ana, "ana@mail.example")
+	_, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
+	wantCode(t, "Ana switching her personal mailbox's sync", err, service.CodeBadRequest)
+}
+
+func TestSwitchingATeamMailboxsSyncOffDeletesItsIndexForEveryone(t *testing.T) {
 	m := newMailFixture(t)
 	tm := newSupportTeam(t, m.fixture)
 	carol := tm.join(t, m.fixture, "carol@example.com", workspace.RoleAdmin)
 	shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
 	box.Deliver("INBOX", message("a", "Refund for order 4471"))
-	box.Deliver("INBOX", message("b", "Where is my parcel?"))
 	m.index(t, shared, box)
-	before := indexed(t, m.fixture, shared)
+	tm.grant(t, shared, workspace.Flags{Read: true})
 	ctx := t.Context()
-
-	// Ana linked it, so she stays while it is linked.
-	wantCode(t, "removing Ana, its linker",
-		m.svc.RemoveMember(ctx, tm.ana, tm.id, tm.ana.UserID), service.CodeConflict)
-
-	// Bea, a member, may not link here, so she may not take a link over.
-	if _, err := m.svc.SetAccess(ctx, tm.ana, shared, tm.bea.UserID, grantRequest(true, true, true, true)); err != nil {
+	if indexed(t, m.fixture, shared) == 0 {
+		t.Fatal("nothing indexed to begin with")
+	}
+	// Carol reads nothing of it, and turns it off for everyone who does.
+	off := false
+	if _, err := m.svc.SetMailboxSync(ctx, carol, shared, service.MailboxSyncRequest{Enabled: &off}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.svc.GrantSyncConsent(ctx, tm.bea, m.consent().Sync); err != nil {
-		t.Fatal(err)
+	if n := indexed(t, m.fixture, shared); n != 0 || m.eligible(t, shared) {
+		t.Errorf("after the team's sync went off: %d messages indexed, eligible %v", n, m.eligible(t, shared))
 	}
-	_, err := m.svc.TakeOver(ctx, tm.bea, shared)
-	wantCode(t, "Bea, a member, taking over", err, service.CodeConflict)
-
-	// Carol, an admin, needs every flag, and her own consent to sync.
-	_, err = m.svc.TakeOver(ctx, carol, shared)
-	wantCode(t, "Carol holding nothing", err, service.CodeNotFound)
-	if _, err := m.svc.SetAccess(ctx, tm.ana, shared, carol.UserID, grantRequest(true, true, false, true)); err != nil {
-		t.Fatal(err)
+	for _, p := range []service.Principal{tm.ana, tm.bea} {
+		if page, err := m.svc.SearchMessages(ctx, p, service.SearchRequest{AccountID: shared}); err != nil || len(page.Messages) != 0 {
+			t.Errorf("a reader's search after the team's sync went off: %d (%v)", len(page.Messages), err)
+		}
 	}
-	_, err = m.svc.TakeOver(ctx, carol, shared)
-	wantCode(t, "Carol without send", err, service.CodeConflict)
-	if _, err := m.svc.SetAccess(ctx, tm.ana, shared, carol.UserID, grantRequest(true, true, true, true)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = m.svc.TakeOver(ctx, carol, shared)
-	wantCode(t, "Carol before agreeing to sync", err, service.CodeConflict)
-	if _, err := m.svc.GrantSyncConsent(ctx, carol, m.consent().Sync); err != nil {
-		t.Fatal(err)
-	}
-	taken, err := m.svc.TakeOver(ctx, carol, shared)
-	if err != nil {
-		t.Fatalf("TakeOver: %v", err)
-	}
-	if taken.LinkedBy != carol.UserID || !taken.Access.Read || !taken.Sync.Enabled {
-		t.Errorf("after the take-over the account is %+v", taken)
-	}
-	if n := indexed(t, m.fixture, shared); n != before || n == 0 {
-		t.Errorf("the index holds %d messages, %d before", n, before)
-	}
-
-	// Ana is an ordinary member of it now: she may leave once another owner
-	// is there, and her withdrawal no longer touches the team's index.
-	if _, err := m.svc.SetMember(ctx, tm.ana, tm.id, carol.UserID, service.MemberRequest{Role: ptr("owner")}); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.svc.RemoveMember(ctx, tm.ana, tm.id, tm.ana.UserID); err != nil {
-		t.Fatalf("Ana leaving after the take-over: %v", err)
-	}
-	if _, err := m.svc.WithdrawSyncConsent(ctx, tm.ana); err != nil {
-		t.Fatal(err)
-	}
-	if n := indexed(t, m.fixture, shared); n != before {
-		t.Errorf("Ana's withdrawal deleted the team's index: %d messages, %d before", n, before)
-	}
-	if ok, err := m.db.SyncEligible(ctx, shared); err != nil || !ok {
-		t.Errorf("the mailbox no longer syncs under Carol's consent: %v %v", ok, err)
+	dir, err := m.svc.AccessDirectory(ctx, tm.ana, tm.id)
+	if err != nil || len(dir) != 1 || dir[0].Sync == nil || dir[0].Sync.Enabled || dir[0].Sync.EnabledBy != "" {
+		t.Errorf("the directory after the team's sync went off: %+v (%v)", dir, err)
 	}
 }
 
-func TestWithdrawingSyncDeletesTheIndexOfEveryMailboxThePersonLinked(t *testing.T) {
+func TestWithdrawingAPersonsSyncNeverTouchesATeamMailbox(t *testing.T) {
 	m := newMailFixture(t)
 	tm := newSupportTeam(t, m.fixture)
 	opts := providertest.FakeOptions{Caps: providertest.GmailCaps()}
@@ -332,20 +483,24 @@ func TestWithdrawingSyncDeletesTheIndexOfEveryMailboxThePersonLinked(t *testing.
 	}
 	tm.grant(t, shared, workspace.Flags{Read: true})
 
+	// Ana linked the team's mailbox and gave the team's consent; withdrawing
+	// her own deletes her personal index, and the team's stays the team's.
 	if _, err := m.svc.WithdrawSyncConsent(t.Context(), tm.ana); err != nil {
 		t.Fatal(err)
 	}
-	// The team mailbox Bea reads synced under Ana's consent, which is gone.
-	for _, id := range []string{own, shared} {
-		if n := indexed(t, m.fixture, id); n != 0 {
-			t.Errorf("%s still holds %d indexed messages", id, n)
+	if n := indexed(t, m.fixture, own); n != 0 {
+		t.Errorf("her personal mailbox still holds %d indexed messages", n)
+	}
+	for _, id := range []string{shared, bobs} {
+		if n := indexed(t, m.fixture, id); n != 1 {
+			t.Errorf("%s lost its index: %d", id, n)
 		}
 	}
-	if n := indexed(t, m.fixture, bobs); n != 1 {
-		t.Errorf("Bob's mailbox lost its index: %d", n)
+	if !m.eligible(t, shared) {
+		t.Error("the team's mailbox stopped with her withdrawal")
 	}
 	page, err := m.svc.SearchMessages(t.Context(), tm.bea, service.SearchRequest{AccountID: shared})
-	if err != nil || len(page.Messages) != 0 {
+	if err != nil || len(page.Messages) != 1 {
 		t.Errorf("Bea's search of the team's mailbox: %d messages (%v)", len(page.Messages), err)
 	}
 }
@@ -361,7 +516,7 @@ func TestTheLastOwnerCannotLeaveOrBeDemotedThroughTheService(t *testing.T) {
 	wantCode(t, "Ana disabling herself", err, service.CodeConflict)
 	_, err = f.svc.SetMember(ctx, admin(), tm.id, tm.ana.UserID, service.MemberRequest{Role: ptr("member")})
 	wantCode(t, "the operator demoting her", err, service.CodeConflict)
-	members, err := f.svc.ListMembers(ctx, tm.bea, tm.id)
+	members, err := f.svc.ListMembers(ctx, tm.ana, tm.id)
 	if err != nil || len(members) != 2 || !members[0].LastOwner || members[0].UserID != tm.ana.UserID {
 		t.Fatalf("members = %+v (%v); the last owner is marked in advance", members, err)
 	}
@@ -422,16 +577,13 @@ func TestAnAdminCannotChangeAnotherAdmin(t *testing.T) {
 		t.Errorf("Ana revoking her invite: %v", err)
 	}
 
-	// A member administers nothing, and may leave.
+	// A member administers nothing.
 	_, err = f.svc.CreateTeamInvite(ctx, tm.bea, tm.id, service.TeamInviteRequest{Email: "gil@example.com"})
 	wantCode(t, "Bea inviting", err, service.CodeNotAuthorized)
 	_, err = f.svc.ListTeamInvites(ctx, tm.bea, tm.id)
 	wantCode(t, "Bea listing invites", err, service.CodeNotAuthorized)
 	_, err = f.svc.RenameWorkspace(ctx, tm.bea, tm.id, service.RenameWorkspaceRequest{Name: "Bea's"})
 	wantCode(t, "Bea renaming the team", err, service.CodeNotAuthorized)
-	if err := f.svc.RemoveMember(ctx, tm.bea, tm.id, tm.bea.UserID); err != nil {
-		t.Errorf("Bea leaving: %v", err)
-	}
 }
 
 // beaReadsTheTeamsMailbox is a mailbox Ana linked in the team, indexed with
@@ -907,13 +1059,12 @@ func TestAMemberCannotMintAnAccountThroughATeamInvite(t *testing.T) {
 }
 
 func TestClosingTheAccountOfSomeoneATeamDependsOnNeedsForce(t *testing.T) {
-	// Ana is the team's only owner, and its mailbox, which Bea reads,
-	// syncs under her consent.
+	// Ana is the team's only owner, and the only person who reads its
+	// mailbox: Bea is a member who holds nothing on it.
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
 	const shared = "acc_00000000000000aa"
 	tm.link(t, f, shared, "support@mail.example")
-	tm.grant(t, shared, workspace.Flags{Read: true})
 	f.person(t, "keeper@example.com", auth.RoleOwner) // so the server keeps an owner of its own
 	ctx := t.Context()
 	req := service.CloseUserRequest{Email: "ana@example.com"}
@@ -925,22 +1076,20 @@ func TestClosingTheAccountOfSomeoneATeamDependsOnNeedsForce(t *testing.T) {
 	}
 	_, err = f.svc.DeleteUser(ctx, admin(), req)
 	wantCode(t, "deleting her", err, service.CodeConflict)
-	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared); n != 1 {
-		t.Fatal("a refused deletion removed the team's mailbox")
-	}
 
-	// Insisting removes what synced under her consent, and leaves the team
-	// to its other members, without an owner until the operator names one.
+	// Insisting leaves the team to its other members, without an owner
+	// until the operator names one, and its mailbox to the team, with
+	// nobody who can read it.
 	req.Force = true
 	deleted, err := f.svc.DeleteUser(ctx, admin(), req)
 	if err != nil {
 		t.Fatalf("deleting her with force: %v", err)
 	}
-	if deleted.AccountsRemoved != 1 || deleted.TeamsDeleted != 0 {
+	if deleted.AccountsRemoved != 0 || deleted.TeamsDeleted != 0 {
 		t.Errorf("deleted = %+v", deleted)
 	}
-	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared); n != 0 {
-		t.Error("the mailbox that synced under her consent survived her")
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared); n != 1 {
+		t.Error("closing a person removed a team's mailbox")
 	}
 	members, err := f.svc.ListMembers(ctx, admin(), tm.id)
 	if err != nil || len(members) != 1 || members[0].UserID != tm.bea.UserID {

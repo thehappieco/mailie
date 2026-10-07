@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/thehappieco/mailie/internal/auth"
@@ -79,5 +80,63 @@ func TestClosingAnAccountOverRESTIsForTheOperatorOrAnInstanceOwnerSignedIn(t *te
 	}
 	if resp := h.do(t, http.MethodPost, "/v1/users/delete", admin, body); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("deleting again: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestDisablingOrDeletingTheLastReaderOverRESTNeedsForce(t *testing.T) {
+	h := newHarness(t, false)
+	tm := newSupportTeam(t, h)
+	authtest.NewUser(t, h.store, "keeper@example.com", auth.RoleOwner)
+	admin := h.key(t, auth.ScopeAdmin)
+	// Ana owns the team and is the only one who reads its mailbox; make
+	// another owner, so that only the mailbox stands in the way.
+	if resp := h.do(t, http.MethodPatch, "/v1/workspaces/"+tm.id+"/members/"+tm.beaID, tm.ana, `{"role":"owner"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("making Bea an owner: %d", resp.StatusCode)
+	}
+	for _, path := range []string{"/v1/users/disable", "/v1/users/delete"} {
+		resp := h.do(t, http.MethodPost, path, admin, `{"email":"ana@example.com"}`)
+		code, message := decodeError(t, resp)
+		if resp.StatusCode != http.StatusConflict || code != "conflict" || !strings.Contains(message, tm.shared) {
+			t.Errorf("%s of the last reader: %d %s %q", path, resp.StatusCode, code, message)
+		}
+	}
+	// Once Bea reads it too, Ana goes; the team's mailbox stays the team's.
+	if resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
+		`{"read":true,"act":false,"send":false,"manage":false}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("granting Bea read: %d", resp.StatusCode)
+	}
+	if resp := h.do(t, http.MethodPost, "/v1/users/delete", admin, `{"email":"ana@example.com"}`); resp.StatusCode != http.StatusOK {
+		code, message := decodeError(t, resp)
+		t.Fatalf("deleting Ana once Bea reads it: %d %s %s", resp.StatusCode, code, message)
+	}
+	if resp := h.do(t, http.MethodGet, "/v1/accounts/"+tm.shared, tm.bea, ""); resp.StatusCode != http.StatusOK {
+		t.Errorf("the team's mailbox after its linker was deleted: %d", resp.StatusCode)
+	}
+}
+
+func TestClosingTheLastReaderOfATeamThatOutlivesThemOverRESTNeedsForce(t *testing.T) {
+	// Bea, the team's other member, has her membership disabled: the team
+	// outlives Ana all the same, and nobody could read its mailbox again.
+	h := newHarness(t, false)
+	tm := newSupportTeam(t, h)
+	authtest.NewUser(t, h.store, "keeper@example.com", auth.RoleOwner)
+	admin := h.key(t, auth.ScopeAdmin)
+	if resp := h.do(t, http.MethodPatch, "/v1/workspaces/"+tm.id+"/members/"+tm.beaID, tm.ana, `{"status":"disabled"}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("disabling Bea's membership: %d", resp.StatusCode)
+	}
+	for _, path := range []string{"/v1/users/disable", "/v1/users/delete"} {
+		resp := h.do(t, http.MethodPost, path, admin, `{"email":"ana@example.com"}`)
+		code, message := decodeError(t, resp)
+		if resp.StatusCode != http.StatusConflict || code != "conflict" || !strings.Contains(message, tm.shared) {
+			t.Errorf("%s of the last reader of a team that outlives her: %d %s %q", path, resp.StatusCode, code, message)
+		}
+	}
+	if resp := h.do(t, http.MethodPost, "/v1/users/delete", admin, `{"email":"ana@example.com","force":true}`); resp.StatusCode != http.StatusOK {
+		code, message := decodeError(t, resp)
+		t.Fatalf("deleting Ana with force: %d %s %s", resp.StatusCode, code, message)
+	}
+	var n int
+	if err := h.store.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM accounts WHERE id = ?`, tm.shared).Scan(&n); err != nil || n != 1 {
+		t.Errorf("the team's mailbox went with Ana: %d, %v", n, err)
 	}
 }

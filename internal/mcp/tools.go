@@ -111,7 +111,8 @@ func toolDefinitions() map[string]*sdk.Tool {
 		Name:  "list_accounts",
 		Title: "List mailboxes",
 		Description: "Lists the mailboxes this key can reach: id, address, provider, state, whether sync is on " +
-			"(only a synced mailbox can be searched) and which actions it offers (archive, trash). " +
+			"(only a synced mailbox can be searched), which actions it offers (archive, trash) and access, what " +
+			"this key may do with it (a mailbox listed without read cannot be searched or read). " +
 			"Other tools take the id as account.",
 		InputSchema: object(nil),
 		Annotations: readAnnotations(false),

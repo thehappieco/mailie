@@ -4,7 +4,7 @@
 // the transaction that would make the change, and refuses whatever these get
 // wrong. Pure functions of what the server listed, so each rule is a test.
 
-import type { Account, GrantFlags, Member, Workspace, WorkspaceRole } from '../api/types'
+import type { Account, GrantFlags, MailboxConsent, Member, Workspace, WorkspaceRole } from '../api/types'
 import { t } from './i18n'
 
 export const flagNames = ['read', 'act', 'send', 'manage'] as const
@@ -50,7 +50,7 @@ export function flagHint(flag: FlagName): string {
     case 'read': return t('Search and read its messages, and see its folders and what it takes up.')
     case 'act': return t('Mark, star, archive and move its messages, once they allow actions themselves. Needs Read.')
     case 'send': return t('Send from it, under their own name, once they allow sending themselves.')
-    case 'manage': return t('Authorize it again, remove it, and choose who has access to it.')
+    case 'manage': return t('See it and authorize it again, without reading it. Owners and admins of the team have it by their role.')
   }
 }
 
@@ -122,8 +122,13 @@ export function seesInvitations(role: string | undefined): boolean {
   return inviteRoles(role).length > 0
 }
 
-/** What protects a member from losing their place: the team's last active owner, or a person a mailbox there is linked by. */
-export type MemberProtection = '' | 'last-owner' | 'linker'
+/** The team's mailboxes this member alone can read, as the server works them out. */
+export function lastReaderOf(member: Pick<Member, 'last_reader_of'>): string[] {
+  return member.last_reader_of ?? []
+}
+
+/** What protects a member from losing their place: the team's last active owner, or the last person who can read one of its mailboxes. */
+export type MemberProtection = '' | 'last-owner' | 'last-reader'
 
 export interface MemberPermissions {
   /** The roles the caller may give this member, theirs included; one means there is nothing to choose. */
@@ -132,7 +137,7 @@ export interface MemberPermissions {
   canEnable: boolean
   /** Removing someone else. */
   canRemove: boolean
-  /** The caller removing themselves. */
+  /** The caller removing themselves: an owner, while another owner remains. */
   canLeave: boolean
   /** Why disabling, removing or leaving is refused for this member, whoever asks. */
   protection: MemberProtection
@@ -140,17 +145,18 @@ export interface MemberPermissions {
 
 /**
  * What the caller may change about a member of a team: an owner anyone's
- * role and status, and removes anyone; an admin disables, enables and
- * removes members only, and makes nobody an admin or an owner; a member only
- * leaves. Whoever asks, the last active owner is neither demoted, disabled
- * nor removed, and nobody linked mailboxes still linked there is disabled or
- * removed.
+ * role and status, removes anyone, and leaves while another owner remains;
+ * an admin disables, enables and removes members only, and makes nobody an
+ * admin or an owner; a member nothing, not even leaving. Whoever asks, the
+ * last active owner is neither demoted, disabled nor removed, and the last
+ * person who can read one of the team's mailboxes is neither disabled nor
+ * removed (a new role takes no read away).
  */
 export function memberPermissions(callerID: string, callerRole: string | undefined, member: Member): MemberPermissions {
   const self = member.user_id === callerID
   const owner = callerRole === 'owner'
   const admin = callerRole === 'admin'
-  const protection: MemberProtection = member.last_owner ? 'last-owner' : member.links > 0 ? 'linker' : ''
+  const protection: MemberProtection = member.last_owner ? 'last-owner' : lastReaderOf(member).length ? 'last-reader' : ''
   const roles: WorkspaceRole[] = owner && !member.last_owner ? ['owner', 'admin', 'member'] : [member.role as WorkspaceRole]
   const changesStatus = !self && (owner || (admin && member.role === 'member'))
   return {
@@ -158,7 +164,7 @@ export function memberPermissions(callerID: string, callerRole: string | undefin
     canDisable: changesStatus && member.status === 'active' && !protection,
     canEnable: changesStatus && member.status === 'disabled',
     canRemove: changesStatus && !protection,
-    canLeave: self && !protection,
+    canLeave: self && owner && !protection,
     protection,
   }
 }
@@ -168,21 +174,27 @@ export function activeMember(member: Pick<Member, 'status' | 'person_disabled'>)
   return member.status === 'active' && !member.person_disabled
 }
 
-/** Why nothing of a person's grant changes from here: they linked the mailbox, or they are not an active member. */
-export type GrantLock = '' | 'linker' | 'inactive'
+/** An owner or an admin, who manages every mailbox of the team by that role. */
+export function managesByRole(role: string | undefined): boolean {
+  return role === 'owner' || role === 'admin'
+}
+
+/** Why nothing of a person's grant changes from here: they are not an active member, and hold nothing. */
+export type GrantLock = '' | 'inactive'
 
 export interface GrantPermissions {
   lock: GrantLock
-  /** Each flag the caller may turn on, where it is off. */
+  /** Each flag the caller may turn on, where it is off. Act also needs Read there after the change. */
   canAdd: Record<FlagName, boolean>
   /** Each flag the caller may turn off, where it is on. */
   canRemove: Record<FlagName, boolean>
-  /** The person is the only one who manages the mailbox: manage stays theirs. */
-  lastManager: boolean
+  /** The person is the only one who can read the mailbox: Read stays theirs. */
+  lastReader: boolean
+  /** An owner or an admin, who manages it by their role: Manage is never theirs to be given or taken. */
+  byRole: boolean
 }
 
 export interface GrantContext {
-  callerID: string
   /** The caller owns or administers the mailbox's workspace. */
   administers: boolean
   /** What the caller holds on the mailbox. */
@@ -190,40 +202,33 @@ export interface GrantContext {
   /** The person the row is for, and what they hold on the mailbox. */
   member: Member
   held: GrantFlags
-  /** The person the mailbox is linked by, whose grant nobody changes while it is. */
-  linkedBy?: string
-  /** How many people hold manage on the mailbox. */
-  managers: number
+  /** The person is the only one who can read the mailbox. */
+  lastReader: boolean
 }
 
 /**
- * What the caller may change of one person's grant on a mailbox
- * (docs/workspaces.md, "Who may change a grant"): an owner or an admin of the
- * workspace, or someone who manages the mailbox, may change anyone's; read,
- * act and send are passed on only by someone who holds them, so owners and
- * admins give no read they do not have, not even to themselves; manage, by an
- * owner, an admin or a manager. Anyone may drop their own flags. The person a
- * mailbox is linked by keeps all four while it is, and a mailbox keeps
- * someone who manages it.
+ * What the caller may change of one person's grant on a team mailbox
+ * (docs/workspaces.md, "Grant rules"): only an owner or an admin of the
+ * team, for anyone in it, themselves included. Read passes only from one
+ * who reads the mailbox now, so no role gives it; Act goes only to someone
+ * who reads it after the change, and Send to anyone, without holding them;
+ * Manage is given to members only, as owners and admins have it by their
+ * role. Any flag may be taken away, but the last reader's Read. A member
+ * changes nothing, not even their own.
  */
 export function grantPermissions(context: GrantContext): GrantPermissions {
-  const { callerID, mine, member, held } = context
-  const none = { read: false, act: false, send: false, manage: false }
-  const lastManager = held.manage && context.managers <= 1
-  if (context.linkedBy && member.user_id === context.linkedBy) return { lock: 'linker', canAdd: none, canRemove: none, lastManager }
-  const manages = context.administers || mine.manage
-  const self = member.user_id === callerID
+  const { administers: admin, mine, member, held } = context
   const active = activeMember(member)
+  const byRole = managesByRole(member.role)
   const canAdd = {
-    read: manages && active && mine.read,
-    act: manages && active && mine.act,
-    send: manages && active && mine.send,
-    manage: manages && active,
+    read: admin && active && mine.read,
+    act: admin && active,
+    send: admin && active,
+    manage: admin && active && !byRole,
   }
-  const takesAway = manages || self
-  const canRemove = { read: takesAway, act: takesAway, send: takesAway, manage: takesAway && !lastManager }
+  const canRemove = { read: admin && !context.lastReader, act: admin, send: admin, manage: admin }
   const lock: GrantLock = !active && !holdsAny(held) ? 'inactive' : ''
-  return { lock, canAdd, canRemove, lastManager }
+  return { lock, canAdd, canRemove, lastReader: context.lastReader, byRole }
 }
 
 /** How a grant goes from one set of flags to another: the request that does it, or none. */
@@ -254,35 +259,29 @@ export function toggleFlag(flags: GrantFlags, flag: FlagName, on: boolean): Gran
   return next
 }
 
-/** Where taking a link over stands for the caller. */
-export type TakeOverStanding = 'linker' | 'available' | 'needs-flags' | 'needs-role' | 'needs-sync' | 'needs-current-sync'
-
-/** Where the caller stands on sync: agreed, and to the text the server describes it with now. */
-export interface SyncStanding { consented: boolean; current: boolean }
-
 /**
- * Whether the caller may take a mailbox's link over (POST …/take-over): they
- * hold all four flags on it, may link into its workspace (an owner or an admin
- * of a team), and have agreed to sync, which it would then sync under, in the
- * text the server describes sync with now: an earlier one may not say who
- * reads a team mailbox's index.
+ * Who did something, as the server records it, in words: a person by the
+ * name the team lists them by, a key, or the command line. '' when the
+ * record names nobody, as it does once that person was deleted.
  */
-export function takeOverStanding(input: { callerID: string; linkedBy?: string; mine: GrantFlags; workspace: Workspace | undefined; sync: SyncStanding }): TakeOverStanding {
-  if (!input.linkedBy || input.linkedBy === input.callerID) return 'linker'
-  if (!holdsAll(input.mine)) return 'needs-flags'
-  if (!canLinkInto(input.workspace)) return 'needs-role'
-  if (!input.sync.consented) return 'needs-sync'
-  if (!input.sync.current) return 'needs-current-sync'
-  return 'available'
+export function actorName(actor: string | undefined, personName: (id: string) => string): string {
+  if (!actor) return ''
+  if (actor === 'cli') return t('the command line')
+  if (actor.startsWith('key:')) return t('an API key')
+  return personName(actor) || t('someone no longer in the team')
 }
 
 /**
- * Whether linking a mailbox into this workspace waits for the caller to agree
- * to the current text of sync: a team mailbox syncs under the agreement of
- * whoever links it, at once when they agreed before, and an earlier text may
- * not say who reads a team mailbox's index. Agreeing to none is no reason to
- * wait: nothing syncs until they agree, and that is to the current text.
+ * Where a team mailbox's own agreement to sync stands, as its owners and
+ * admins see it (MailboxAccess.sync): on, to the current text or an earlier
+ * one; on under the agreement the upgrade carried over from whoever linked
+ * it, still tied to them (migrated); stopped with its index kept, because
+ * that person was disabled (kept); or off.
  */
-export function linkWaitsForSync(workspace: Workspace | undefined, sync: SyncStanding): boolean {
-  return workspace?.kind === 'team' && sync.consented && !sync.current
+export type TeamSyncStanding = 'on' | 'on-earlier' | 'migrated' | 'kept' | 'off'
+
+export function teamSyncStanding(consent: MailboxConsent | undefined): TeamSyncStanding {
+  if (!consent) return 'off'
+  if (consent.enabled) return consent.migrated ? 'migrated' : consent.current ? 'on' : 'on-earlier'
+  return consent.migrated ? 'kept' : 'off'
 }

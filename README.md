@@ -196,20 +196,26 @@ sync and for actions). There is no mail to read or write in it: a tool does that
 - Sessions are bearer tokens, never cookies, valid for 14 days.
 - People are invited (`mailserver user invite --email X [--role owner|member]`), never sign up on
   their own. Each person has a personal workspace for their own mailboxes, and may belong to
-  **teams**, whose mailboxes are shared through per-mailbox grants (`read`, `act`, `send`,
-  `manage`); a team's owners and admins administer people and grants, and read nothing by being
-  one. A mailbox you hold no grant on does not exist for you. The instance `owner` invites people
-  to the server and closes their accounts, and sees no mailbox by being one; the mailboxes the
-  command line creates belong to the operator workspace, which only instance keys reach. See
-  [`docs/workspaces.md`](docs/workspaces.md).
+  **teams**, whose mailboxes are the team's and are shared through per-mailbox grants (`read`,
+  `act`, `send`); a team's owners and admins manage every mailbox of the team by their role, decide
+  who holds what, and read nothing by being one. A mailbox you neither hold a grant on nor manage
+  does not exist for you. The instance `owner` invites people to the server and closes their
+  accounts, and sees no mailbox by being one; the mailboxes the command line creates belong to the
+  operator workspace, which only instance keys reach. See [`docs/workspaces.md`](docs/workspaces.md).
 - Nothing from a person's mailboxes is stored until they turn sync on in the console, and turning
-  it off deletes their index. Actions on their messages are a second, separate permission.
+  it off deletes their index; a team's mailbox syncs once an owner or an admin turns it on for the
+  team, and turning it off deletes its index for everyone. Actions on messages are a second,
+  separate permission.
 - `mailserver user disable --email X` ends a person's sessions and revokes their keys;
-  `mailserver user delete --email X` deletes them with the mailboxes they linked, credentials,
-  index, sessions, keys and personal workspace.
+  `mailserver user delete --email X` deletes them with the mailboxes of their personal workspace,
+  credentials, index, sessions, keys and personal workspace, and every team they were the only
+  member of; the mailboxes of a team others are in stay the team's. Either refuses, without
+  `--force`, someone their teams depend on: a team's last owner, the last person who can read one
+  of its mailboxes, or the linker whose own consent a team mailbox someone else reads still syncs
+  under since the upgrade.
 - Teams from the command line, as the operator: `mailserver workspace list|create|rename`,
   `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
-  `manage` only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
+  `manage` to members only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
   for a team invite.
 - A forgotten password is reset by the operator with the daemon stopped:
   `mailserver user password --bootstrap --email X` asks for the new one twice (or reads one line

@@ -13,17 +13,27 @@ import (
 // The privacy policy promises that nothing about a person's messages is
 // stored until they agree to it in the console, and that turning sync off
 // deletes what was. The rule the engine reads is in eligibility.go; this file
-// is how a person, or the operator for a mailbox nobody owns, changes the
-// answer, and the deletion that goes with saying no.
+// is how the answer changes, and the deletion that goes with saying no:
+//
+//   - a person's own consent covers the mailboxes of their personal
+//     workspace;
+//   - a team mailbox has its workspace's consent, which an owner or an admin
+//     gives or withdraws on the team's behalf, and the operator switches an
+//     operator mailbox on or off: both are recorded on the mailbox
+//     (SetMailboxSync).
+//
+// A team mailbox whose consent migration 0011 copied from the person who
+// linked it stays bound to that person until the team confirms it: their
+// withdrawal, or their being disabled or deleted, stops it (StopBoundTx).
 
 // ErrNoSuchUser is a consent read or written for a person who does not exist
 // or is disabled.
 var ErrNoSuchUser = errors.New("store: no such active user")
 
-// ErrNotInstanceAccount is sync switched on or off by the operator for an
-// account that does not exist or that a person owns: only its owner decides
-// for that one, by consenting.
-var ErrNotInstanceAccount = errors.New("store: no such account without an owner")
+// ErrNoMailboxConsent is sync switched on or off on a mailbox's own consent
+// for an account that does not exist or that is a person's: a personal
+// mailbox syncs under its person's consent, which only they give.
+var ErrNoMailboxConsent = errors.New("store: no such mailbox with a consent of its own")
 
 // SyncConsent is a person's standing answer: when they agreed and to which
 // revision of the policy. A zero At is no consent, never given or withdrawn.
@@ -47,28 +57,9 @@ func (s *Store) SyncConsentOf(ctx context.Context, userID string) (SyncConsent, 
 	return c, nil
 }
 
-// SyncConsentTx reads, inside the caller's transaction, a person's consent to
-// sync and the revision it was given to; a person who is not active has none.
-// A consent is the half of the eligibility rule a mailbox they link syncs
-// under (syncPermitted). Taking a link over and linking into a team ask it
-// where the link is made or changes hands, so a team mailbox never comes to
-// sync under a consent whose text did not cover it.
-func SyncConsentTx(ctx context.Context, tx *sql.Tx, userID string) (SyncConsent, error) {
-	var c SyncConsent
-	err := tx.QueryRowContext(ctx,
-		`SELECT sync_consent_at, sync_consent_version FROM users WHERE id = ? AND status = 'active'`, userID,
-	).Scan(&c.At, &c.Version)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return SyncConsent{}, nil
-	case err != nil:
-		return SyncConsent{}, fmt.Errorf("store: read sync consent: %w", err)
-	}
-	return c, nil
-}
-
 // GrantSyncConsent records that a person agreed to version of the policy and
-// returns the accounts they own, which may now start syncing.
+// returns the mailboxes of their personal workspace, which may now start
+// syncing.
 //
 // Agreeing again to the same version keeps the first date: it is when the
 // person said yes, not when a console last asked.
@@ -103,8 +94,10 @@ func (s *Store) GrantSyncConsent(ctx context.Context, userID, version string) (S
 }
 
 // WithdrawSyncConsent takes a person's consent back and deletes everything
-// indexed for every account they own, in one transaction, and returns those
-// accounts.
+// indexed for the mailboxes of their personal workspace, in one transaction,
+// together with the team mailboxes whose consent is still bound to theirs
+// (StopBoundTx), and returns every mailbox it stopped. A team mailbox under
+// its workspace's own consent is not theirs to stop: it is the team's.
 //
 // The engine re-checks eligibility inside every transaction that writes to
 // the index (RequireSyncEligibleTx), and the database has one writer, so a
@@ -114,7 +107,7 @@ func (s *Store) GrantSyncConsent(ctx context.Context, userID, version string) (S
 // the transaction, as the deletion of a person does.
 func (s *Store) WithdrawSyncConsent(ctx context.Context, userID string) ([]string, error) {
 	now := s.now().Unix()
-	var owned []string
+	var stopped []string
 	err := s.Write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
 			`UPDATE users SET sync_consent_at = 0, sync_consent_version = '', updated_at = ? WHERE id = ?`, now, userID)
@@ -126,17 +119,50 @@ func (s *Store) WithdrawSyncConsent(ctx context.Context, userID string) ([]strin
 		} else if n == 0 {
 			return ErrNoSuchUser
 		}
-		if owned, err = ownedAccountsTx(ctx, tx, userID); err != nil {
+		owned, err := ownedAccountsTx(ctx, tx, userID)
+		if err != nil {
 			return err
 		}
-		return ForgetIndexTx(ctx, tx, owned)
+		if err := ForgetIndexTx(ctx, tx, owned); err != nil {
+			return err
+		}
+		bound, err := StopBoundTx(ctx, tx, userID, now)
+		if err != nil {
+			return err
+		}
+		stopped = append(owned, bound...)
+		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
-	s.moves.forget(owned)
-	return owned, nil
+	s.moves.forget(stopped)
+	return stopped, nil
 }
+
+// StopBoundTx stops, inside the caller's transaction, the team mailboxes
+// whose consent is still the one migration 0011 copied from userID's own:
+// their sync goes off and everything indexed for them is deleted, as the text
+// that person agreed to promised when they turn sync off, are disabled or are
+// deleted. It returns them. Callers compact and scrub once the transaction
+// has committed (and ForgetMoves).
+func StopBoundTx(ctx context.Context, tx *sql.Tx, userID string, now int64) ([]string, error) {
+	ids, err := queryIDs(ctx, tx, `UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '',
+		  sync_consent_version = '', sync_enabled_via = '', updated_at = ?
+		WHERE sync_enabled_via = 'migration' AND sync_enabled_by = ? RETURNING id`, now, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: stop the team mailboxes bound to a person: %w", err)
+	}
+	if err := ForgetIndexTx(ctx, tx, ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// ForgetMoves drops what the index remembers in memory of moves on these
+// accounts, once a transaction that deleted their index (ForgetIndexTx,
+// StopBoundTx) has committed.
+func (s *Store) ForgetMoves(accountIDs []string) { s.moves.forget(accountIDs) }
 
 // ActionsConsent is a person's standing answer to Mailie changing their
 // mailboxes: when they allowed it and to which revision of the policy. A zero
@@ -291,55 +317,86 @@ func (s *Store) WithdrawSendConsent(ctx context.Context, userID string) error {
 	})
 }
 
-// SetInstanceSync switches sync on or off for an account nobody owns, and
-// records who switched it on and when. Switching it off deletes what was
-// indexed for it, in the same transaction, as withdrawing consent does for a
-// person's mailboxes. It reports whether anything changed.
-func (s *Store) SetInstanceSync(ctx context.Context, accountID string, on bool, by string) (bool, error) {
+// MailboxConsent is a mailbox's own consent to sync: a team mailbox's, given
+// by an owner or an admin on its workspace's behalf, or an operator
+// mailbox's switch. A zero At is off.
+type MailboxConsent struct {
+	At int64
+	// By is who gave it: "usr_…", "key:<prefix>" or "cli"; empty once that
+	// person is deleted.
+	By string
+	// Version is the sync text's revision it was given to; empty for an
+	// operator mailbox.
+	Version string
+	// Migrated is a consent migration 0011 copied from its linker's own (By),
+	// still bound to that person until an owner or an admin confirms it.
+	Migrated bool
+}
+
+// SetMailboxSync switches sync on or off for a mailbox that names no person —
+// a team's, under its workspace's consent, or the operator's — and records
+// who switched it on, when and to which revision. check runs first in the
+// transaction (nil checks nothing): where the caller's authority is re-read.
+//
+// Switching on a mailbox that is already on records the new consent when its
+// revision changes or it is a migrated one being confirmed, which detaches it
+// from the person it was bound to; otherwise nothing changes. Switching off
+// deletes what was indexed for it, in the same transaction, as withdrawing
+// consent does for a person's mailboxes, a migrated consent's kept index
+// included. It reports whether anything changed.
+func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, by, version string, check func(*sql.Tx) error) (bool, error) {
 	now := s.now().Unix()
 	changed := false
 	err := s.Write(ctx, func(tx *sql.Tx) error {
-		var enabledAt int64
+		var c MailboxConsent
 		err := tx.QueryRowContext(ctx,
-			`SELECT sync_enabled_at FROM accounts WHERE id = ? AND owner_user_id IS NULL`, accountID,
-		).Scan(&enabledAt)
+			`SELECT sync_enabled_at, sync_consent_version, sync_enabled_via = 'migration' FROM accounts
+			  WHERE id = ? AND owner_user_id IS NULL`, accountID,
+		).Scan(&c.At, &c.Version, &c.Migrated)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
-			return ErrNotInstanceAccount
+			return ErrNoMailboxConsent
 		case err != nil:
-			return fmt.Errorf("store: read instance sync: %w", err)
+			return fmt.Errorf("store: read the mailbox's sync: %w", err)
 		}
-		if on == (enabledAt != 0) {
-			return nil
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
 		}
-		changed = true
 		if on {
-			_, err = tx.ExecContext(ctx,
-				`UPDATE accounts SET sync_enabled_at = ?, sync_enabled_by = ?, updated_at = ? WHERE id = ?`,
-				now, by, now, accountID)
-			if err != nil {
+			if c.At != 0 && c.Version == version && !c.Migrated {
+				return nil
+			}
+			changed = true
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE accounts SET sync_enabled_at = ?, sync_enabled_by = ?, sync_consent_version = ?,
+				   sync_enabled_via = '', updated_at = ? WHERE id = ?`,
+				now, by, version, now, accountID); err != nil {
 				return fmt.Errorf("store: switch sync on: %w", err)
 			}
 			return nil
 		}
-		_, err = tx.ExecContext(ctx,
-			`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '', updated_at = ? WHERE id = ?`, now, accountID)
-		if err != nil {
+		changed = c.At != 0 || c.Migrated
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '', sync_consent_version = '',
+			   sync_enabled_via = '', updated_at = ? WHERE id = ?`, now, accountID); err != nil {
 			return fmt.Errorf("store: switch sync off: %w", err)
 		}
 		return ForgetIndexTx(ctx, tx, []string{accountID})
 	})
-	if err == nil && changed && !on {
+	if err == nil && !on {
 		s.moves.forget([]string{accountID})
 	}
 	return changed, err
 }
 
 // SyncPermitted reports, for each account named, whether sync is allowed for
-// it: its owner is active and consented, or, when nobody owns it, the
-// operator switched it on. Whether the account is also active — the rest of
-// the engine's rule — is the caller's to read from the account itself. An
-// account that does not exist is absent from the map.
+// it: a personal mailbox's person is active and consented; a team mailbox
+// has its workspace's consent and a reader; an operator mailbox was switched
+// on. Whether the account is also active — the rest of the engine's rule —
+// is the caller's to read from the account itself. An account that does not
+// exist is absent from the map.
 func (s *Store) SyncPermitted(ctx context.Context, accountIDs []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(accountIDs))
 	if len(accountIDs) == 0 {
@@ -429,10 +486,22 @@ func (s *Store) CompactFullText(ctx context.Context) error {
 	})
 }
 
+// ownedAccountsTx lists the mailboxes of a person's personal workspace: the
+// ones that name them (owner_user_id), which their own consent covers.
 func ownedAccountsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE owner_user_id = ? ORDER BY id`, userID)
+	ids, err := queryIDs(ctx, tx, `SELECT id FROM accounts WHERE owner_user_id = ? ORDER BY id`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("store: list owned accounts: %w", err)
+	}
+	return ids, nil
+}
+
+// queryIDs runs a statement returning one text column and reads every value,
+// closing its cursor before it returns.
+func queryIDs(ctx context.Context, tx *sql.Tx, query string, args ...any) ([]string, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
 	}
 	//nolint:errcheck // read to the end below; a close failure changes nothing
 	defer func() { _ = rows.Close() }()
@@ -440,12 +509,12 @@ func ownedAccountsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, 
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: list owned accounts: %w", err)
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list owned accounts: %w", err)
+		return nil, err
 	}
 	return ids, nil
 }

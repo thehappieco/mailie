@@ -635,11 +635,11 @@ func TestMigrationEightKeepsEveryRowAndGivesEachPersonTheirMailboxes(t *testing.
 }
 
 func TestMigrationEightRefusesWhatTheNewSchemaForbids(t *testing.T) {
+	// The schema as 0008 left it; 0011 replaces its rule on owner_user_id
+	// (TestMigrationElevenRefusesWhatItsSchemaForbids).
 	s := openAtVersion(t, 7)
 	seedSelfHosted(t, s)
-	if err := s.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	migrateTo(t, s, 8)
 	personal := func(user string) string {
 		var id string
 		if err := s.Writer().QueryRow(`SELECT id FROM workspaces WHERE person_id = ?`, user).Scan(&id); err != nil {

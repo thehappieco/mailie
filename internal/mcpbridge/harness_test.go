@@ -154,10 +154,10 @@ func (m *mailie) mailbox(id, email string) *providertest.FakeMailbox {
 		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
-	}); err != nil {
+	}, ""); err != nil {
 		m.t.Fatal(err)
 	}
-	if _, err := m.store.SetInstanceSync(m.t.Context(), id, true, "cli"); err != nil {
+	if _, err := m.store.SetMailboxSync(m.t.Context(), id, true, "cli", "", nil); err != nil {
 		m.t.Fatal(err)
 	}
 	box := providertest.NewFakeMailbox(providertest.FakeOptions{Caps: providertest.GmailCaps()})

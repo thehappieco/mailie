@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -9,18 +10,31 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Consent to sync.
 //
 // The privacy policy says Mailie keeps nothing about a person's messages
 // until they agree to it in the console, and that turning sync off deletes
-// what it kept. Consent is the person's, given once for every mailbox they
-// link, in whichever workspace: a mailbox syncs under the consent of whoever
-// linked it, and withdrawing deletes the index of every one of them, team
-// mailboxes others read included. A mailbox nobody linked — the operator
-// workspace's, added with an instance key from the command line — has no
-// person to ask, and syncs only once the operator switches it on.
+// what it kept. Whose agreement it is depends on whose mailbox it is:
+//
+//   - a mailbox of a person's personal workspace syncs under that person's
+//     consent, given once for all of them; withdrawing it deletes their
+//     index, and touches no team's mailbox;
+//   - a team mailbox syncs under its workspace's consent, which an owner or
+//     an admin of the team gives on the team's behalf, to the current sync
+//     text, when linking it or later, and any of them withdraws, deleting
+//     its index for everyone who reads it (SetMailboxSync); a consent given
+//     to an earlier text keeps it syncing, as a person's does;
+//   - an operator mailbox, added with an instance key from the command line,
+//     has no person to ask, and syncs only once the operator switches it on.
+//
+// A team mailbox whose consent the upgrade to this release copied from the
+// person who linked it stays bound to that person until an owner or an admin
+// confirms it at the current text: their withdrawal, or their being disabled
+// or deleted, stops it and deletes its index, as the text they agreed to
+// promised (store.StopBoundTx).
 
 // DefaultSyncConsentVersion is the revision of the text describing sync that
 // a person agrees to when the deployment configures no other
@@ -93,10 +107,12 @@ func (s *Service) GrantSyncConsent(ctx context.Context, p Principal, version str
 	return s.presentConsent(c), nil
 }
 
-// WithdrawSyncConsent takes the signed-in person's consent back: their
-// mailboxes stop syncing and everything indexed for them is deleted — the
-// messages' metadata, their folders and the events about them — from the
-// database files as well as its tables.
+// WithdrawSyncConsent takes the signed-in person's consent back: the
+// mailboxes of their personal workspace stop syncing and everything indexed
+// for them is deleted — the messages' metadata, their folders and the events
+// about them — from the database files as well as its tables. So does a team
+// mailbox whose consent is still bound to theirs; any other team mailbox is
+// the team's, and carries on.
 //
 // The withdrawal and the deletion are one transaction, and the engine
 // re-checks consent inside each of its own, so nothing it was in the middle
@@ -303,56 +319,128 @@ func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
 	return out
 }
 
-// InstanceSyncRequest switches sync on or off for a mailbox of the operator
-// workspace.
-// Enabled is required: switching off deletes the index, which no request
-// should do by leaving a field out.
-type InstanceSyncRequest struct {
-	Enabled *bool `json:"enabled"`
+// MailboxSyncRequest switches sync on or off for a mailbox on its own
+// consent: a team mailbox's, or an operator mailbox's. Enabled is required:
+// switching off deletes the index, which no request should do by leaving a
+// field out. Version, to switch a team mailbox's on, must be the current
+// revision of the sync text, which the owner or admin was shown; an operator
+// mailbox takes none.
+type MailboxSyncRequest struct {
+	Enabled *bool  `json:"enabled"`
+	Version string `json:"version,omitempty"`
 }
 
-// EnableInstanceAccountSync switches sync on or off for a mailbox of the
-// operator workspace, recording who switched it on and when. Switching it off
-// deletes what was indexed for it.
+// SetMailboxSync switches sync on or off for a mailbox on its own consent,
+// recording who switched it on, when and to which revision. Switching it off
+// deletes what was indexed for it, for everyone who read it.
 //
-// Only an unrestricted instance admin key: the operator's decision, like
-// closing someone's account. A person's mailbox is not_found to it, as every
-// mailbox outside the operator workspace is — its linker decides, by
-// consenting in the console, and nobody may decide for them.
-func (s *Service) EnableInstanceAccountSync(ctx context.Context, p Principal, accountID string, on bool) (AccountSync, error) {
+//   - A team mailbox: an owner or an admin of the team signed in, giving or
+//     withdrawing the team's consent; on, to the current sync text, and only
+//     while someone can read it. Turning on a mailbox whose consent the
+//     upgrade copied from its linker confirms it, which detaches it from that
+//     person.
+//   - An operator mailbox: an unrestricted instance admin key, the
+//     operator's decision, like closing someone's account.
+//   - A personal mailbox has none: its person decides, by consenting in the
+//     console, and nobody may decide for them.
+//
+// Whoever does not see the mailbox is told it does not exist.
+func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID string, req MailboxSyncRequest) (AccountSync, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AccountSync{}, err
 	}
-	if !p.IsInstance() || len(p.AccountIDs) > 0 {
-		return AccountSync{}, E(CodeNotAuthorized,
-			"switching sync for an instance account needs an unrestricted instance admin key", nil)
+	if req.Enabled == nil {
+		return AccountSync{}, E(CodeBadRequest, "enabled is required: true or false", nil)
 	}
+	on := *req.Enabled
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
 	if err != nil {
 		return AccountSync{}, err
 	}
-	if a.OwnerUserID != "" {
-		// Unreachable while visibility holds (an instance key sees only the
-		// operator's mailboxes, which nobody linked): a person's mailbox is
-		// not_found above. Kept as a second wall, the same answer.
-		return AccountSync{}, E(CodeNotFound, "no such account", nil)
-	}
-	changed, err := s.store.SetInstanceSync(ctx, a.ID, on, p.Actor())
+	var check func(*sql.Tx) error
 	switch {
-	case errors.Is(err, store.ErrNotInstanceAccount):
+	case a.WorkspaceID == workspace.OperatorID:
+		if !isOperator(p) {
+			return AccountSync{}, E(CodeNotAuthorized,
+				"switching sync for an operator mailbox needs an unrestricted instance admin key", nil)
+		}
+		if req.Version != "" {
+			return AccountSync{}, E(CodeBadRequest, "an operator mailbox is switched on by the operator, with no text to agree to; leave version out", nil)
+		}
+	case a.OwnerUserID != "":
+		return AccountSync{}, E(CodeBadRequest,
+			"a personal mailbox syncs under its person's own consent, which they turn on or off themselves", nil)
+	default:
+		if err := requireSession(p); err != nil {
+			return AccountSync{}, err
+		}
+		if on && req.Version != s.consent.Sync {
+			return AccountSync{}, errNotCurrentText(s.consent.Sync)
+		}
+		if !on {
+			req.Version = ""
+		}
+		check = func(tx *sql.Tx) error {
+			me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+			switch {
+			case err != nil:
+				return errNoAccount
+			case !adminOf(me):
+				return errTeamSync
+			case !on:
+				return nil
+			}
+			// What it would store nobody could read, and nobody can be
+			// given read on it: it can only be removed, or turned off.
+			// Refused too for a consent migration 0011 bound to its
+			// linker, which stays bound, so that deleting them still
+			// deletes the index they alone read.
+			readable, err := workspace.HasReaderTx(ctx, tx, a.ID)
+			switch {
+			case err != nil:
+				return E(CodeInternal, "switching sync failed", err)
+			case !readable:
+				return errNoReaderSync
+			}
+			return nil
+		}
+		if err := s.precheck(ctx, check); err != nil {
+			return AccountSync{}, err
+		}
+	}
+	changed, err := s.store.SetMailboxSync(ctx, a.ID, on, p.Actor(), req.Version, check)
+	var se *Error
+	switch {
+	case errors.As(err, &se):
+		return AccountSync{}, err
+	case errors.Is(err, store.ErrNoMailboxConsent):
 		return AccountSync{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
 		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
 	}
 	if changed {
-		s.log.Info("instance account sync switched", "account", a.ID, "on", on, "by", p.Actor())
+		s.log.Info("mailbox sync switched", "account", a.ID, "workspace", a.WorkspaceID, "on", on,
+			"by", p.Actor(), "version", req.Version)
 		s.reconcile(a.ID)
 		if !on {
 			s.compact(ctx)
 		}
 	}
-	return s.syncOf(ctx, a.ID, on)
+	enabled, err := s.syncEnabled(ctx, a)
+	if err != nil {
+		return AccountSync{}, err
+	}
+	return s.syncOf(ctx, a.ID, enabled)
 }
+
+var (
+	errTeamSync = E(CodeNotAuthorized,
+		"only an owner or an admin of the team turns its mailboxes' sync on or off, on the team's behalf", nil)
+	errNoReaderSync = E(CodeConflict,
+		"nobody in the team can read this mailbox, and read passes only from someone who reads it, so its sync "+
+			"cannot be turned on; remove the mailbox and link it again, or turn its sync off to delete what is "+
+			"still indexed", nil)
+)
 
 // requirePerson guards what answers for a person: a session, or a key issued
 // to act as one.

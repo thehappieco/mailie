@@ -19,13 +19,20 @@ type Flags struct {
 	Act bool
 	// Send is sending from the mailbox.
 	Send bool
-	// Manage is re-authorizing and removing the mailbox, and seeing and
-	// changing who has access to it.
+	// Manage is the mailbox's card and re-authorizing it. Owners and admins
+	// hold it on every mailbox of their workspace by their role, and also
+	// remove it and change who holds what on it; it is stored only for
+	// members. It never opens the index.
 	Manage bool
 }
 
-// AllFlags is every flag: what the person who links a mailbox holds on it.
+// AllFlags is every flag.
 func AllFlags() Flags { return Flags{Read: true, Act: true, Send: true, Manage: true} }
+
+// LinkFlags is what the person who links a mailbox holds on it: read, act
+// and send. They manage it by their role: only an owner or an admin links
+// one into a team, and a person owns their personal workspace.
+func LinkFlags() Flags { return Flags{Read: true, Act: true, Send: true} }
 
 // Any reports whether any flag is set.
 func (f Flags) Any() bool { return f.Read || f.Act || f.Send || f.Manage }
@@ -115,10 +122,10 @@ const activeGrant = `EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u
 	WHERE m.workspace_id = g.workspace_id AND m.user_id = g.user_id AND m.status = 'active' AND u.status = 'active')`
 
 // ManagesTx is nil when userID manages a mailbox right now, inside the
-// caller's transaction: they hold manage on it as an active member of its
-// workspace, active on the instance. An empty userID is the operator, who
-// manages the operator workspace's mailboxes and no other. Otherwise
-// ErrNoGrant, or ErrNoMailbox for a mailbox nobody knows.
+// caller's transaction: as an active owner or admin of its workspace, active
+// on the instance, or holding manage on it as an active member. An empty
+// userID is the operator, who manages the operator workspace's mailboxes and
+// no other. Otherwise ErrNoGrant, or ErrNoMailbox for a mailbox nobody knows.
 //
 // It is what a consent attempt is held to when it stores its grant: whoever
 // started it must still be someone who may (account.Registry.CheckFlowsWith).
@@ -133,21 +140,27 @@ func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error 
 		}
 		return ErrNoGrant
 	}
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_access g
-		WHERE g.account_id = ? AND g.user_id = ? AND g.manage = 1 AND `+activeGrant, accountID, userID).Scan(&n); err != nil {
-		return fmt.Errorf("workspace: read the grant: %w", err)
+	held, err := accessOn(ctx, tx, userID, []string{accountID})
+	if err != nil {
+		return err
 	}
-	if n == 0 {
+	if !held[accountID].Manage {
 		return ErrNoGrant
 	}
 	return nil
 }
 
-// Access reads what a person holds on each mailbox named, counting only
-// grants whose holder is an active member: the caller's own "access" on each
-// mailbox they see. A mailbox they hold nothing on is absent.
+// Access reads what a person may do with each mailbox named, as an active
+// member of its workspace active on the instance: read, act and send from
+// their grant, and manage from their grant or from their role, owner or
+// admin, which manages every mailbox of the workspace. A mailbox they neither
+// hold a grant on nor manage by their role is absent: the caller's own
+// "access" on each mailbox they see.
 func (r *Repository) Access(ctx context.Context, userID string, accountIDs []string) (map[string]Flags, error) {
+	return accessOn(ctx, r.store.Reader(), userID, accountIDs)
+}
+
+func accessOn(ctx context.Context, q querier, userID string, accountIDs []string) (map[string]Flags, error) {
 	out := make(map[string]Flags, len(accountIDs))
 	if len(accountIDs) == 0 || userID == "" {
 		return out, nil
@@ -156,9 +169,14 @@ func (r *Repository) Access(ctx context.Context, userID string, accountIDs []str
 	if err != nil {
 		return nil, fmt.Errorf("workspace: encode ids: %w", err)
 	}
-	rows, err := r.store.Reader().QueryContext(ctx, `SELECT g.account_id, g.read, g.act, g.send, g.manage
-		  FROM mailbox_access g
-		 WHERE g.user_id = ? AND g.account_id IN (SELECT value FROM json_each(?)) AND `+activeGrant,
+	rows, err := q.QueryContext(ctx, `SELECT a.id, coalesce(g.read, 0), coalesce(g.act, 0), coalesce(g.send, 0),
+		       coalesce(g.manage, 0) OR m.role IN ('owner', 'admin')
+		  FROM accounts a
+		  JOIN workspace_members m ON m.workspace_id = a.workspace_id AND m.user_id = ?1 AND m.status = 'active'
+		  JOIN users u ON u.id = m.user_id AND u.status = 'active'
+		  LEFT JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = m.user_id
+		 WHERE a.id IN (SELECT value FROM json_each(?2))
+		   AND (g.account_id IS NOT NULL OR m.role IN ('owner', 'admin'))`,
 		userID, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("workspace: read access: %w", err)
@@ -183,15 +201,15 @@ func (r *Repository) Access(ctx context.Context, userID string, accountIDs []str
 
 // mailbox is what a grant change needs to know of the mailbox.
 type mailbox struct {
-	id, workspaceID, linkedBy string
-	kind                      Kind
+	id, workspaceID string
+	kind            Kind
 }
 
 func mailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, error) {
 	var mb mailbox
-	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, coalesce(a.owner_user_id, ''), w.kind
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind
 		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ?`, accountID).
-		Scan(&mb.id, &mb.workspaceID, &mb.linkedBy, &mb.kind)
+		Scan(&mb.id, &mb.workspaceID, &mb.kind)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return mailbox{}, ErrNoMailbox
@@ -202,31 +220,29 @@ func mailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, erro
 }
 
 // grantable refuses a grant change on a personal or the operator workspace's
-// mailbox, and one to the person the mailbox syncs under.
-func (mb mailbox) grantable(userID string) error {
+// mailbox: a personal mailbox is its person's, with a grant that never
+// changes, and the operator workspace has no members.
+func (mb mailbox) grantable() error {
 	switch mb.kind {
 	case KindPersonal:
 		return ErrPersonal
 	case KindOperator:
 		return ErrOperator
 	}
-	if userID == mb.linkedBy {
-		return ErrLinker
-	}
 	return nil
 }
 
 // SetGrant sets exactly the flags a person holds on a mailbox, creating the
 // grant or replacing it. The person must be an active member of the
-// mailbox's workspace (ErrNotMember); flags must hold something (ErrNoFlags)
-// and act only with read (ErrActWithoutRead). Refused on a personal or the
-// operator workspace's mailbox, on the grant of the person it syncs under,
-// and when the mailbox would be left without a holder of manage.
+// mailbox's workspace (ErrNotMember); flags must hold something (ErrNoFlags),
+// act only with read (ErrActWithoutRead), and manage only for a member: an
+// owner or an admin manages by their role (ErrManageByRole). Refused on a
+// personal or the operator workspace's mailbox, and when it would take read
+// from the last person who can read it (ErrLastReader).
 //
-// Who may grant what (only a holder passes read, act and send on) is the
-// Check's to decide. Losing read takes the mailbox out of the restrictions
-// of the person's keys, and losing manage ends the consent attempts they
-// started on it, in the same transaction.
+// Who may grant what is the Check's to decide. Losing read takes the mailbox
+// out of the restrictions of the person's keys, and losing manage ends the
+// consent attempts they started on it, in the same transaction.
 func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, flags Flags, grantedBy string, check Check) (Grant, error) {
 	if err := flags.check(); err != nil {
 		return Grant{}, err
@@ -238,7 +254,7 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 		if err != nil {
 			return err
 		}
-		if err := mb.grantable(userID); err != nil {
+		if err := mb.grantable(); err != nil {
 			return err
 		}
 		if err := runCheck(tx, check); err != nil {
@@ -251,9 +267,17 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 		if err != nil {
 			return err
 		}
+		if flags.Manage && m.Role != RoleMember {
+			return ErrManageByRole
+		}
 		before, err := GrantTx(ctx, tx, accountID, userID)
 		if err != nil && !errors.Is(err, ErrNoGrant) {
 			return err
+		}
+		if before.Read && !flags.Read {
+			if err := requireAnotherReaderTx(ctx, tx, userID, []string{accountID}); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
 			  granted_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -272,9 +296,6 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 				return err
 			}
 		}
-		if err := requireManagerTx(ctx, tx, mb); err != nil {
-			return err
-		}
 		out, err = GrantTx(ctx, tx, accountID, userID)
 		return err
 	})
@@ -288,10 +309,11 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 // every one. Dropping read drops act too. A grant left with no flag is
 // deleted. It returns what is left, the zero Grant when nothing is.
 //
-// Refused as SetGrant is on the mailboxes and the grant it protects; a
-// mailbox would be left without a holder of manage. Losing read takes the
-// mailbox out of the restrictions of the person's keys, and losing manage
-// ends the consent attempts they started on it.
+// Refused as SetGrant is on personal and operator mailboxes, and when it
+// would take read from the last person who can read the mailbox
+// (ErrLastReader). Losing read takes the mailbox out of the restrictions of
+// the person's keys, and losing manage, which only a member stores, ends the
+// consent attempts they started on it.
 func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop Flags, check Check) (Grant, error) {
 	if !drop.Any() {
 		drop = AllFlags()
@@ -303,7 +325,7 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 		if err != nil {
 			return err
 		}
-		if err := mb.grantable(userID); err != nil {
+		if err := mb.grantable(); err != nil {
 			return err
 		}
 		if err := runCheck(tx, check); err != nil {
@@ -317,6 +339,11 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 		if left == before.Flags {
 			out = before
 			return nil
+		}
+		if before.Read && !left.Read {
+			if err := requireAnotherReaderTx(ctx, tx, userID, []string{accountID}); err != nil {
+				return err
+			}
 		}
 		if left.Any() {
 			_, err = tx.ExecContext(ctx, `UPDATE mailbox_access SET read = ?, act = ?, send = ?, manage = ?, updated_at = ?
@@ -337,9 +364,6 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 				return err
 			}
 		}
-		if err := requireManagerTx(ctx, tx, mb); err != nil {
-			return err
-		}
 		if left.Any() {
 			out, err = GrantTx(ctx, tx, accountID, userID)
 		}
@@ -351,28 +375,11 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 	return out, nil
 }
 
-// requireManagerTx refuses a linked mailbox left with nobody holding manage.
-// While the linker rule holds the linker always does; this is its own check
-// all the same.
-func requireManagerTx(ctx context.Context, tx *sql.Tx, mb mailbox) error {
-	if mb.linkedBy == "" {
-		return nil
-	}
-	var n int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND manage = 1`,
-		mb.id).Scan(&n); err != nil {
-		return fmt.Errorf("workspace: count managers: %w", err)
-	}
-	if n == 0 {
-		return ErrLastManager
-	}
-	return nil
-}
-
-// GrantLinkerTx gives the person who links a mailbox every flag on it, inside
-// the transaction that creates it. They must be an active member of its
-// workspace; who may link where is the caller's to have decided.
-func GrantLinkerTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID string, now time.Time) error {
+// GrantLinkTx gives the person who links a mailbox read, act and send on it,
+// inside the transaction that creates it (LinkFlags): they manage it by their
+// role. They must be an active member of its workspace; who may link where is
+// the caller's to have decided.
+func GrantLinkTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID string, now time.Time) error {
 	m, err := MemberTx(ctx, tx, workspaceID, userID)
 	if err != nil {
 		return err
@@ -382,69 +389,20 @@ func GrantLinkerTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, user
 	}
 	at := now.UTC().Unix()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
-		  granted_by, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 1, 1, ?, ?, ?)`,
+		  granted_by, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 1, 0, ?, ?, ?)`,
 		accountID, workspaceID, userID, userID, at, at); err != nil {
 		return fmt.Errorf("workspace: grant the linker: %w", err)
 	}
 	return nil
 }
 
-// TakeOver makes userID the person a mailbox is linked by, whose consent to
-// sync it then syncs under, and returns who it was linked by before. The
-// taker must be an active member holding every flag on it
-// (ErrNeedsFullGrant); whether they may link there and have agreed to sync is
-// the Check's. The previous linker keeps their grant, as an ordinary one. The
-// index is kept. Taking over one's own link changes nothing.
-func (r *Repository) TakeOver(ctx context.Context, accountID, userID string, check Check) (string, error) {
-	now := r.now().Unix()
-	var previous string
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
-		mb, err := mailboxTx(ctx, tx, accountID)
-		if err != nil {
-			return err
-		}
-		if mb.kind == KindOperator {
-			return ErrOperator
-		}
-		if err := runCheck(tx, check); err != nil {
-			return err
-		}
-		m, err := MemberTx(ctx, tx, mb.workspaceID, userID)
-		if errors.Is(err, ErrNotMember) || (err == nil && !m.Active()) {
-			return ErrNotMember
-		}
-		if err != nil {
-			return err
-		}
-		g, err := GrantTx(ctx, tx, accountID, userID)
-		if errors.Is(err, ErrNoGrant) || (err == nil && !g.All()) {
-			return ErrNeedsFullGrant
-		}
-		if err != nil {
-			return err
-		}
-		previous = mb.linkedBy
-		if previous == userID {
-			return nil
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET owner_user_id = ?, updated_at = ? WHERE id = ?`,
-			userID, now, accountID); err != nil {
-			return fmt.Errorf("workspace: take over: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return "", err
-	}
-	return previous, nil
-}
-
-func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID, managedBy string) ([]MailboxAccess, error) {
-	rows, err := r.store.Reader().QueryContext(ctx, `SELECT a.id, a.email, a.provider, a.state, coalesce(a.owner_user_id, '')
-		  FROM accounts a
-		 WHERE a.workspace_id = ?1
-		   AND (?2 = '' OR EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = a.id AND g.user_id = ?2 AND g.manage = 1))
-		 ORDER BY a.created_at, a.id`, workspaceID, managedBy)
+func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
+	rows, err := r.store.Reader().QueryContext(ctx, `SELECT a.id, a.email, a.provider, a.state, a.linked_by, w.kind,
+		       a.sync_enabled_at, a.sync_enabled_by, a.sync_consent_version, a.sync_enabled_via = 'migration',
+		       (SELECT count(*) FROM mailbox_access g WHERE g.account_id = a.id AND g.read = 1 AND `+activeGrant+`)
+		  FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
+		 WHERE a.workspace_id = ?
+		 ORDER BY a.created_at, a.rowid`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: list the directory: %w", err)
 	}
@@ -452,10 +410,17 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID, manage
 	defer func() { _ = rows.Close() }()
 	var out []MailboxAccess
 	for rows.Next() {
-		var mb MailboxAccess
-		if err := rows.Scan(&mb.AccountID, &mb.Email, &mb.Provider, &mb.State, &mb.LinkedBy); err != nil {
+		var (
+			mb   MailboxAccess
+			kind Kind
+			at   int64
+		)
+		if err := rows.Scan(&mb.AccountID, &mb.Email, &mb.Provider, &mb.State, &mb.LinkedBy, &kind,
+			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers); err != nil {
 			return nil, fmt.Errorf("workspace: list the directory: %w", err)
 		}
+		mb.Sync.At = unix(at)
+		mb.NoReader = kind == KindTeam && mb.Readers == 0
 		out = append(out, mb)
 	}
 	if err := rows.Err(); err != nil {
@@ -471,20 +436,50 @@ type MailboxAccess struct {
 	Email     string
 	Provider  string
 	State     string
-	// LinkedBy is the person the mailbox syncs under; empty in the operator
-	// workspace.
+	// LinkedBy is who linked the mailbox, for attribution only: "usr_…",
+	// "key:<prefix>" or "cli"; empty once that person is deleted, or for a
+	// mailbox of the operator linked before anybody recorded it.
 	LinkedBy string
+	// Sync is the mailbox's own consent to sync: a team mailbox's
+	// workspace's, or an operator mailbox's switch. Zero for a personal
+	// mailbox, which syncs under its person's.
+	Sync Consent
+	// Readers counts who can read it: active members, active on the
+	// instance, holding read.
+	Readers int
+	// NoReader is a team mailbox nobody can read: it syncs nothing until
+	// someone can, and only an owner or an admin who removes it and links it
+	// again gets read on it again.
+	NoReader bool
 	Grants   []Grant
 }
 
-// Directory lists a workspace's mailboxes and their grants, oldest first,
-// each mailbox's grants by when they were made and then by address.
-// With managedBy, only the mailboxes that person holds manage on.
-func (r *Repository) Directory(ctx context.Context, workspaceID, managedBy string) ([]MailboxAccess, error) {
+// Consent is a mailbox's own consent to sync, as the directory shows it. A
+// zero At is off.
+type Consent struct {
+	At time.Time
+	// By is who gave it: "usr_…", "key:<prefix>" or "cli"; empty once that
+	// person is deleted.
+	By string
+	// Version is the revision of the sync text it was given to; empty for an
+	// operator mailbox.
+	Version string
+	// Migrated is a consent migration 0011 copied from the person who linked
+	// the mailbox (By), still bound to them: their withdrawal, or their being
+	// disabled or deleted, stops it, until an owner or an admin confirms the
+	// team's consent at the current revision.
+	Migrated bool
+}
+
+// Directory lists a workspace's mailboxes and the grants on each, oldest
+// first (as linked, within a second), each mailbox's grants by when they were
+// made and then by address:
+// what its owners and admins and the operator see.
+func (r *Repository) Directory(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
 	if _, err := r.Get(ctx, workspaceID); err != nil {
 		return nil, err
 	}
-	out, err := r.directoryMailboxes(ctx, workspaceID, managedBy)
+	out, err := r.directoryMailboxes(ctx, workspaceID)
 	if err != nil {
 		return nil, err
 	}

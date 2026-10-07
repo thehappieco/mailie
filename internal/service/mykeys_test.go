@@ -272,7 +272,7 @@ func TestARevokedKeyWhoseMailboxWasRemovedIsNotListedAsReachingEveryMailbox(t *t
 		t.Errorf("created keys say restricted %t, %t, %t; want true, true, false",
 			only.Restricted, both.Restricted, every.Restricted)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), ana, work); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), ana, work, service.RemoveAccountRequest{Confirm: work}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -57,7 +57,7 @@ same consent. No authorization rule lives in `internal/mcp`.
 
 | Tool | What it does | Annotations |
 |---|---|---|
-| `list_accounts` | the mailboxes the key reaches: id, address, provider, state, sync, which actions are available | read |
+| `list_accounts` | the mailboxes the key reaches: id, address, provider, state, sync, what the key may do with each (`access`; a team mailbox its owner or admin manages without reading is listed, marked without read access), which actions are available | read |
 | `list_folders{account}` | folders with id, role and counts; for a mailbox not synced yet, asked of the mail server | read, open world |
 | `search_messages{account?, folder?, q?, from?, since?, until?, unseen?, flagged?, has_attachments?, limit 1–100 (20), cursor?}` | searches the index, newest first; `q` matches subject, sender and recipients, never the body | read |
 | `get_message{id, format: text\|html\|both (text), max_bytes (65536, at most 5 MiB)}` | the message, fetched from the mail server now; not marked as read, nothing stored | read, open world |

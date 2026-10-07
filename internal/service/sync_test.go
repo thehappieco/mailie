@@ -197,21 +197,24 @@ func TestAMailboxNobodyOwnsSyncsOnlyWhenAnInstanceAdminSwitchesItOn(t *testing.T
 	// not a reader's, and not an owner of the instance, who does not even
 	// see the operator workspace's mailboxes.
 	restricted := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, AccountIDs: []string{shared}}
-	for name, p := range map[string]service.Principal{"owner": owner, "restricted key": restricted, "reader": reader()} {
-		if _, err := f.svc.EnableInstanceAccountSync(t.Context(), p, shared, true); service.CodeOf(err) != service.CodeNotAuthorized {
+	for name, p := range map[string]service.Principal{"restricted key": restricted, "reader": reader()} {
+		if _, err := f.svc.SetMailboxSync(t.Context(), p, shared, switchSync(true)); service.CodeOf(err) != service.CodeNotAuthorized {
 			t.Errorf("%s switched sync on: %v", name, err)
 		}
 	}
+	if _, err := f.svc.SetMailboxSync(t.Context(), owner, shared, switchSync(true)); service.CodeOf(err) != service.CodeNotFound {
+		t.Errorf("an owner of the instance switched sync on: %v", err)
+	}
 	// Nor may the operator decide for a person, whose mailbox it does not
 	// reach.
-	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), mine, true); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.SetMailboxSync(t.Context(), admin(), mine, switchSync(true)); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("the operator switched sync on for a person's mailbox: %v", err)
 	}
 	if f.eligible(t, mine) {
 		t.Fatal("a person's mailbox became eligible without their consent")
 	}
 
-	status, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), shared, true)
+	status, err := f.svc.SetMailboxSync(t.Context(), admin(), shared, switchSync(true))
 	if err != nil {
 		t.Fatalf("EnableInstanceAccountSync: %v", err)
 	}
@@ -232,7 +235,7 @@ func TestAMailboxNobodyOwnsSyncsOnlyWhenAnInstanceAdminSwitchesItOn(t *testing.T
 	}
 
 	f.seedIndex(t, shared, "Walrus")
-	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), shared, false); err != nil {
+	if _, err := f.svc.SetMailboxSync(t.Context(), admin(), shared, switchSync(false)); err != nil {
 		t.Fatal(err)
 	}
 	if f.eligible(t, shared) {

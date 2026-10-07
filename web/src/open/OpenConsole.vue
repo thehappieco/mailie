@@ -8,10 +8,10 @@
 //
 // Members is here only while the workspace shown is one whose people are
 // changed here: the personal workspace, where teams are made, or a team made
-// on this server. Teams mirrored from elsewhere are changed there. Its line
-// names the invitations only to whoever sees them: a team's owners and
-// admins. API keys and the account are the person's own, the same in every
-// workspace: the header names no workspace on them.
+// on this server, for its owners and admins (a member of a team sees no
+// Members, and its mailboxes say who manages them). Teams mirrored from
+// elsewhere are changed there. API keys and the account are the person's
+// own, the same in every workspace: the header names no workspace on them.
 import { computed } from 'vue'
 import AccountsPanel from '../components/AccountsPanel.vue'
 import ConsoleShell, { type ConsoleSection } from '../components/ConsoleShell.vue'
@@ -19,29 +19,30 @@ import KeysPanel from '../components/KeysPanel.vue'
 import StoragePanel from '../components/StoragePanel.vue'
 import { accounts } from '../state/accounts'
 import { currentWorkspace, workspaces } from '../state/workspaces'
-import { changeableTeam, seesInvitations, teamsCreatedHere, workspaceName } from '../ui/access'
+import { administers, changeableTeam, teamsCreatedHere, workspaceName } from '../ui/access'
 import { t } from '../ui/i18n'
 import OpenAccount from './OpenAccount.vue'
 import OpenMembers from './OpenMembers.vue'
 
 const shown = computed(currentWorkspace)
-const members = computed(() => workspaces.supported && (changeableTeam(shown.value) || (shown.value?.kind === 'personal' && teamsCreatedHere(workspaces.list))))
+const members = computed(() => workspaces.supported
+  && ((changeableTeam(shown.value) && administers(shown.value)) || (shown.value?.kind === 'personal' && teamsCreatedHere(workspaces.list))))
 
 const sections = computed<ConsoleSection[]>(() => [
   {
     id: 'mailboxes', label: t('Mailboxes'), icon: 'mail', component: AccountsPanel,
-    description: shown.value?.kind === 'team'
-      ? t('The mailboxes of {team} you have access to: check that this server can sign in to each one and follow their sync. Access to a mailbox’s mail is given only by someone who has it.', { team: workspaceName(shown.value) })
-      : t('Connect the mailboxes this server reaches for you, check that it can sign in to each one, and follow their sync.'),
+    description: shown.value?.kind !== 'team'
+      ? t('Connect the mailboxes this server reaches for you, check that it can sign in to each one, and follow their sync.')
+      : administers(shown.value)
+        ? t('Every mailbox of {team}: you manage them by your role, and read those you are given Read on. Check that this server can sign in to each one, follow their sync, and choose who can use them.', { team: workspaceName(shown.value) })
+        : t('The mailboxes of {team} you have access to: check that this server can sign in to each one and follow their sync.', { team: workspaceName(shown.value) }),
     count: accounts.loaded ? accounts.list.length : undefined,
   },
   ...(members.value ? [{
     id: 'members', label: t('Members'), icon: 'users' as const, component: OpenMembers,
     description: shown.value?.kind !== 'team'
       ? t('Teams let people on this server share mailboxes: each person uses only the mailboxes they are given access to.')
-      : seesInvitations(shown.value.role)
-        ? t('Who is in {team}, their roles, and the invitations to join it.', { team: workspaceName(shown.value) })
-        : t('Who is in {team} and their roles.', { team: workspaceName(shown.value) }),
+      : t('Who is in {team}, their roles, and the invitations to join it.', { team: workspaceName(shown.value) }),
   }] : []),
   {
     id: 'keys', label: t('API keys & MCP'), icon: 'key', component: KeysPanel, scope: 'person',

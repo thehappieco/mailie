@@ -17,6 +17,7 @@ import (
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Actions on messages: marking them read or unread, starring them,
@@ -425,8 +426,9 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 // it. It is asked when an action is accepted (actionTargets), and again
 // before each command that changes the mailbox (stillMayAct).
 func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) error {
-	if p.IsInstance() || a.OwnerUserID == "" {
-		if p.IsInstance() && a.OwnerUserID == "" {
+	operator := a.WorkspaceID == workspace.OperatorID
+	if p.IsInstance() || operator {
+		if p.IsInstance() && operator {
 			return nil
 		}
 		// Unreachable while visibility holds: an instance key sees only

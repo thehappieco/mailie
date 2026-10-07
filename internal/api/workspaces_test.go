@@ -67,8 +67,8 @@ func TestTheWorkspaceParameterNarrowsTheListingsToAWorkspaceTheCallerBelongsTo(t
 }
 
 // supportTeam is Ana's team over REST: she created it with her session, Bea
-// is a member who holds nothing yet, and Ana linked a mailbox into it,
-// indexed with one message.
+// is a member who holds nothing yet, and Ana linked a mailbox into it with
+// the team's consent to sync it, indexed with one message.
 type supportTeam struct {
 	ana, bea     string // session tokens
 	anaID, beaID string
@@ -105,7 +105,8 @@ func newSupportTeam(t *testing.T, h *harness) supportTeam {
 		t.Fatal(err)
 	}
 	added := h.do(t, http.MethodPost, "/v1/accounts", tm.ana,
-		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+`,"workspace_id":"`+tm.id+`"}`)
+		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+
+			`,"workspace_id":"`+tm.id+`","sync_consent_version":"`+service.DefaultSyncConsentVersion+`"}`)
 	if added.StatusCode != http.StatusCreated {
 		code, msg := decodeError(t, added)
 		t.Fatalf("linking into the team: %d %s %s", added.StatusCode, code, msg)
@@ -230,6 +231,81 @@ func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
 	}
 	if listed, searched, stored := sees(); !listed || !searched || !stored {
 		t.Errorf("with read Bea lists it %v, finds its mail %v, sees its storage %v", listed, searched, stored)
+	}
+}
+
+func TestAnOwnerOrAdminSeesATeamMailboxsCardAndReadsNoneOfItOverREST(t *testing.T) {
+	// Over REST, the long poll, the event stream and storage; MCP has the
+	// same test in its package.
+	h := newHarnessWith(t, func(h *api.Handler) { h.EventPing = 30 * time.Millisecond }, serviceOptions{})
+	tm := newSupportTeam(t, h)
+	carol := h.person(t, "carol@example.com", auth.RoleMember)
+	carolUser, err := h.users.GetByEmail(t.Context(), "carol@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Write(t.Context(), func(tx *sql.Tx) error {
+		return workspace.NewRepository(h.store, nil).AddMemberTx(t.Context(), tx, tm.id, carolUser.ID, workspace.RoleAdmin, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		path string
+		want int
+	}{
+		{"/v1/accounts/" + tm.shared, http.StatusOK},
+		{"/v1/accounts/" + tm.shared + "/sync", http.StatusOK},
+		{"/v1/accounts/" + tm.shared + "/folders", http.StatusForbidden},
+		{"/v1/messages?account=" + tm.shared, http.StatusForbidden},
+		{fmt.Sprintf("/v1/messages/%d", tm.message), http.StatusNotFound},
+		{fmt.Sprintf("/v1/messages/%d/raw", tm.message), http.StatusNotFound},
+		{"/v1/events/wait?timeout=1&account=" + tm.shared, http.StatusForbidden},
+		{"/v1/events?account=" + tm.shared, http.StatusForbidden},
+	} {
+		resp := h.do(t, http.MethodGet, c.path, carol, "")
+		if resp.StatusCode != c.want {
+			t.Errorf("Carol, an admin, on %s: %d, want %d", c.path, resp.StatusCode, c.want)
+		}
+		if c.want == http.StatusOK {
+			var body map[string]any
+			decodeInto(t, resp, &body)
+			raw, _ := json.Marshal(body)
+			if strings.Contains(string(raw), "Refund") || strings.Contains(string(raw), "INBOX") ||
+				strings.Contains(string(raw), "client@example.org") {
+				t.Errorf("%s carries something the mailbox holds: %s", c.path, raw)
+			}
+		}
+	}
+	var page struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	decodeInto(t, h.do(t, http.MethodGet, "/v1/messages?q=refund", carol, ""), &page)
+	var storage struct {
+		Mailboxes []json.RawMessage `json:"mailboxes"`
+		Total     struct {
+			Messages int `json:"messages"`
+		} `json:"total"`
+	}
+	decodeInto(t, h.do(t, http.MethodGet, "/v1/me/storage", carol, ""), &storage)
+	if len(page.Messages) != 0 || len(storage.Mailboxes) != 0 || storage.Total.Messages != 0 {
+		t.Errorf("Carol finds %d messages, and storage of %d mailboxes", len(page.Messages), len(storage.Mailboxes))
+	}
+	var waited struct {
+		Events []struct {
+			AccountID string `json:"account_id"`
+		} `json:"events"`
+	}
+	hers := h.mailbox(t, carol, "carol@mail.example")
+	stream := h.openStream(t, "/v1/events", carol, "")
+	h.publish(t, mailEvent(t, tm.shared, "Refund again"), mailEvent(t, hers, "Carol's own"))
+	decodeInto(t, h.do(t, http.MethodGet, "/v1/events/wait?timeout=1&since=0", carol, ""), &waited)
+	for _, ev := range waited.Events {
+		if ev.AccountID == tm.shared {
+			t.Errorf("Carol's long poll carries an event of the team's mailbox")
+		}
+	}
+	if f, ok := stream.next(t); !ok || f.event != "message.new" || subjectOf(t, f) != "Carol's own" {
+		t.Errorf("Carol's stream carries %+v first, want her own mailbox's event", f)
 	}
 }
 
@@ -428,10 +504,13 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodPost, "/v1/auth/invites/accept", carol, accept, http.StatusOK)
 
 	// Access: every flag is required, a flag list is checked, and a
-	// person's key administers nothing.
+	// person's key administers nothing. Bea is an admin now, who manages by
+	// her role: manage is stored for members only.
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, `{"read":true}`, http.StatusBadRequest)
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
-		`{"read":true,"act":true,"send":true,"manage":true}`, http.StatusOK)
+		`{"read":true,"act":true,"send":true,"manage":true}`, http.StatusBadRequest)
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
+		`{"read":true,"act":true,"send":true,"manage":false}`, http.StatusOK)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send,shout", tm.ana, "",
 		http.StatusBadRequest)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send", tm.ana, "",
@@ -445,20 +524,52 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodGet, "/v1/workspaces", beaKey, "", http.StatusOK)
 	status(http.MethodGet, "/v1/workspaces/"+tm.id+"/members", beaKey, "", http.StatusForbidden)
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, beaKey,
-		`{"read":true,"act":false,"send":false,"manage":true}`, http.StatusForbidden)
+		`{"read":true,"act":false,"send":false,"manage":false}`, http.StatusForbidden)
 
-	// Bea, an admin holding every flag but send, cannot take the link over
-	// until she holds send and agreed to sync.
-	status(http.MethodPost, "/v1/accounts/"+tm.shared+"/take-over", tm.bea, "", http.StatusConflict)
-	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
-		`{"read":true,"act":true,"send":true,"manage":true}`, http.StatusOK)
-	status(http.MethodPost, "/v1/me/sync-consent", tm.bea, `{"version":"`+service.DefaultSyncConsentVersion+`"}`, http.StatusOK)
-	var taken struct {
-		LinkedBy string `json:"linked_by"`
+	// The team's consent to sync its mailbox: an owner or an admin signed
+	// in, on, to the current text; off, for everyone.
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/sync", tm.bea, `{"enabled":true,"version":"an-old-text"}`,
+		http.StatusBadRequest)
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/sync", tm.bea, `{"version":"`+service.DefaultSyncConsentVersion+`"}`,
+		http.StatusBadRequest)
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/sync", beaKey, `{"enabled":false}`, http.StatusForbidden)
+	var sync struct {
+		Enabled bool `json:"enabled"`
 	}
-	decodeInto(t, status(http.MethodPost, "/v1/accounts/"+tm.shared+"/take-over", tm.bea, "", http.StatusOK), &taken)
-	if taken.LinkedBy != tm.beaID {
-		t.Errorf("linked_by = %q after the take-over", taken.LinkedBy)
+	decodeInto(t, status(http.MethodPut, "/v1/accounts/"+tm.shared+"/sync", tm.bea, `{"enabled":false}`, http.StatusOK), &sync)
+	if sync.Enabled {
+		t.Error("the team's sync is on after Bea turned it off")
 	}
-	status(http.MethodDelete, "/v1/workspaces/"+tm.id+"/members/"+tm.anaID, tm.ana, "", http.StatusConflict) // the last owner
+	decodeInto(t, status(http.MethodPut, "/v1/accounts/"+tm.shared+"/sync", tm.ana,
+		`{"enabled":true,"version":"`+service.DefaultSyncConsentVersion+`"}`, http.StatusOK), &sync)
+	if !sync.Enabled {
+		t.Error("the team's sync is off after Ana turned it on")
+	}
+	var directory []struct {
+		AccountID string `json:"account_id"`
+		LinkedBy  string `json:"linked_by"`
+		Readers   int    `json:"readers"`
+		NoReader  bool   `json:"no_reader"`
+		Sync      struct {
+			Enabled   bool   `json:"enabled"`
+			EnabledBy string `json:"enabled_by"`
+			Version   string `json:"version"`
+			Current   bool   `json:"current"`
+		} `json:"sync"`
+	}
+	decodeInto(t, status(http.MethodGet, "/v1/workspaces/"+tm.id+"/access", tm.bea, "", http.StatusOK), &directory)
+	if len(directory) != 1 || directory[0].LinkedBy != tm.anaID || directory[0].Readers != 2 || directory[0].NoReader ||
+		!directory[0].Sync.Enabled || directory[0].Sync.EnabledBy != tm.anaID || !directory[0].Sync.Current {
+		t.Errorf("the directory: %+v", directory)
+	}
+
+	// Removing a mailbox repeats its id, or nothing goes; take-over is no
+	// route any more.
+	status(http.MethodDelete, "/v1/accounts/"+tm.shared, tm.ana, "", http.StatusBadRequest)
+	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.own, tm.ana, "", http.StatusBadRequest)
+	status(http.MethodPost, "/v1/accounts/"+tm.shared+"/take-over", tm.ana, "", http.StatusNotFound)
+	status(http.MethodDelete, "/v1/workspaces/"+tm.id+"/members/"+tm.anaID, tm.ana, "", http.StatusConflict)  // the last owner
+	status(http.MethodDelete, "/v1/workspaces/"+tm.id+"/members/"+tm.beaID, tm.bea, "", http.StatusForbidden) // an admin leaving
+	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.shared, tm.bea, "", http.StatusNoContent)
+	status(http.MethodGet, "/v1/accounts/"+tm.shared, tm.ana, "", http.StatusNotFound)
 }

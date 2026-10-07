@@ -1,22 +1,22 @@
 // Workspaces and teams as a person presses them, on a page (test/dom.ts):
 // choosing the workspace reads its mailboxes; connecting a mailbox into a
-// team shows that team first; a grant is ticked and saved with the request
-// that gives exactly that; taking a link over asks first; the team's people
-// change only after a question, and a refusal is said in the console's words;
-// an invitation's link is shown once, copied on request and forgotten; an
-// invitation opened signed in joins the team; turning sync off names the team
-// mailboxes whose index goes with it, before it may be confirmed; a mailbox
-// connected from a team shown goes into it, once the person agreed to the
-// current text of sync; a change of people reads them again, and the
-// person's own role follows what the server says now; the header names the
-// workspace shown on its sections only, never on the person's own; a member
-// of a team is offered no connecting there, and their personal workspace
-// instead; and the Members line names invitations only to whoever sees them.
+// team shows that team first, with the sync text and a box that gives the
+// team's agreement with the link; a team mailbox's sync is switched by its
+// owners and admins, on after the text and off once its address is typed; a
+// grant is ticked and saved with the request that gives exactly that; the
+// team's people change only after a question, and a refusal is said in the
+// console's words; an invitation's link is shown once, copied on request and
+// forgotten; an invitation opened signed in joins the team; turning one's own
+// sync off says it reaches the personal workspace's mailboxes; a change of
+// people reads them again, and the person's own role follows what the server
+// says now; the header names the workspace shown on its sections only, never
+// on the person's own; a member of a team is offered no connecting there, and
+// their personal workspace instead, and is shown none of the team's people.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { check, click, fill, find, fire, flush, keydown, page, submit, words } from './dom'
 import { mount, type Mounted } from './mount'
-import type { Account, MailboxAccess, Member, Workspace } from '../src/api/types'
+import type { MailboxAccess, Member, Workspace } from '../src/api/types'
 import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import AddAccountDialog from '../src/components/AddAccountDialog.vue'
@@ -44,8 +44,8 @@ const full = { read: true, act: true, send: true, manage: true }
 const none = { read: false, act: false, send: false, manage: false }
 const personal: Workspace = { id: PERSONAL, kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }
 const support = (role: string): Workspace => ({ id: TEAM, kind: 'team', source: 'local', name: 'Support', role, status: 'active', created_at: 1_790_000_000 })
-const member = (userID: string, fields: Partial<Member> = {}): Member => ({ user_id: userID, email: `${userID}@example.test`, name: '', role: 'member', status: 'active', last_owner: false, links: 0, joined_at: 1_790_000_000, ...fields })
-const shared = account({ id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, linked_by: BEA, access: full, sync: syncing() })
+const member = (userID: string, fields: Partial<Member> = {}): Member => ({ user_id: userID, email: `${userID}@example.test`, name: '', role: 'member', status: 'active', last_owner: false, last_reader_of: [], joined_at: 1_790_000_000, ...fields })
+const shared = account({ id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access: { ...full, manage: true }, sync: syncing() })
 
 interface Seen { path: string; method: string; query: Record<string, string>; body: unknown }
 let seen: Seen[] = []
@@ -104,7 +104,7 @@ describe('the console’s frame in a team', () => {
     await signedIn(role, ({ path, method }) => {
       if (path === '/v1/accounts' && method === 'GET') return json([shared])
       if (path === '/v1/providers') return json([])
-      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role }), member(BEA, { name: 'Bea Lima', links: 1 })])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role }), member(BEA, { name: 'Bea Lima' })])
       if (path === `/v1/workspaces/${TEAM}/invites`) return json([])
       if (path === `/v1/workspaces/${TEAM}/access`) return json([])
       if (path === '/v1/events') return failure('not_authorized', 403)
@@ -134,11 +134,13 @@ describe('the console’s frame in a team', () => {
     expect(crumb()).toBe('Console / Account')
   })
 
-  it('names the invitations in the Members line only for whoever sees them: an owner or an admin, not a member', async () => {
+  it('offers Members to a team’s owners and admins only, and tells a member who manages its people, never asking for them', async () => {
     await consoleIn('member')
-    await open('Members')
-    expect(intro()).toBe('Who is in Support and their roles.')
-    expect(words()).not.toContain('Pending invitations')
+    expect(page.querySelectorAll('.console-sidebar .console-nav-item').map(item => words(item))).not.toContain('Members')
+    expect(words()).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+    // A member is shown none of the team's people or directory, and the server is not asked for them.
+    expect(sent('GET', `/v1/workspaces/${TEAM}/members`)).toEqual([])
+    expect(sent('GET', `/v1/workspaces/${TEAM}/access`)).toEqual([])
     mounted?.unmount()
     mounted = null
     await signOut()
@@ -189,9 +191,10 @@ describe('connecting a mailbox into a team', () => {
     await signedIn('admin', ({ path, method, body }) => {
       if (path === '/v1/accounts' && method === 'GET') return json([])
       if (path === '/v1/providers') return json([{ id: 'imap', oauth: false, password: true, flows: [] }])
+      if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: false, current_version: SYNC_TEXT_VERSION })
       if (path === '/v1/accounts' && method === 'POST') {
         posted.push(body)
-        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, linked_by: ana.id, access: full }) }, 201)
+        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access: { ...full, manage: true } }) }, 201)
       }
       return failure('not_found', 404)
     })
@@ -204,13 +207,18 @@ describe('connecting a mailbox into a team', () => {
     const places = page.querySelectorAll('dialog .place-choice input[name=workspace]')
     expect(places.map(input => input.getAttribute('value'))).toEqual([PERSONAL, TEAM])
     expect(find('dialog .place-choice input[name=workspace]')!.checked).toBe(true)
-    expect(words(find('dialog .place-choice')!)).toContain('Its owners and admins see that it is there. Only you can use it until you give other members access.')
+    expect(words(find('dialog .place-choice')!)).toContain('It belongs to the team, and its owners and admins manage it. Only you read it until you give other members access.')
+    // The personal workspace's mailboxes sync under the person's own agreement: no box for a team's.
+    expect(find('dialog .team-sync')).toBeNull()
     await check(places[1]!)
+    expect(find('dialog .team-sync')).not.toBeNull()
     await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
     await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
     await submit(find('dialog form'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toMatchObject({ email: 'vendas@example.test', provider: 'imap', workspace_id: TEAM })
+    // Left unticked: linked with sync off, and no agreement given for the team.
+    expect(posted[0]).toEqual(expect.objectContaining({ email: 'vendas@example.test', provider: 'imap', workspace_id: TEAM }))
+    expect(posted[0]).not.toHaveProperty('sync_consent_version')
     // The team was shown first: its list was read, and the new mailbox is in it.
     expect(workspaces.currentID).toBe(TEAM)
     expect(sent('GET', '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL, TEAM])
@@ -225,11 +233,11 @@ describe('connecting a mailbox from a team shown', () => {
       if (path === '/v1/accounts' && method === 'GET') return json([])
       if (path === '/v1/providers') return json([{ id: 'imap', oauth: false, password: true, flows: [] }])
       if (path === '/v1/me/sync-consent' && method === 'GET') return json(consent)
-      if (path === '/v1/me/sync-consent' && method === 'POST') return json({ consented: true, consented_at: 1_790_000_100, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION })
       if (path === '/v1/accounts' && method === 'POST') {
         posted.push(body)
         const into = (body as { workspace_id?: string }).workspace_id ?? PERSONAL
-        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: into, linked_by: ana.id, access: full }) }, 201)
+        const syncs = !!(body as { sync_consent_version?: string }).sync_consent_version
+        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: into, access: full, ...(syncs ? { sync: syncing() } : {}) }) }, 201)
       }
       return failure('not_found', 404)
     })
@@ -239,15 +247,18 @@ describe('connecting a mailbox from a team shown', () => {
     await click(find('dialog .provider-option', 'Other provider (IMAP)'))
   }
   const placeOf = (id: string) => find(`dialog .place-choice input[name=workspace][value=${id}]`)!
-  const connectButton = () => find('dialog form button[type=submit]')!
+  const fillPassword = async () => {
+    await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
+    await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
+  }
+  const current = { consented: false, current_version: SYNC_TEXT_VERSION }
 
   it('connects into the team shown, as its empty list says, unless the person picks another', async () => {
     const posted: unknown[] = []
     await connecting({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION }, posted)
     expect(placeOf(TEAM).checked).toBe(true)
     expect(placeOf(PERSONAL).checked).toBe(false)
-    await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
-    await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
+    await fillPassword()
     await submit(find('dialog form'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
     expect(posted[0]).toMatchObject({ workspace_id: TEAM })
@@ -257,64 +268,160 @@ describe('connecting a mailbox from a team shown', () => {
     await vi.waitFor(() => expect(accounts.list.map(item => item.id)).toEqual(['acc_new']))
   })
 
-  it('asks someone who agreed to an earlier text of sync to agree to the current one before linking into a team, and only then', async () => {
+  it('shows the sync text into a team, and gives the team’s agreement with the link only when ticked, to the revision shown', async () => {
     const posted: unknown[] = []
-    await connecting({ consented: true, consented_at: 1_780_000_000, version: '2026-01-older', current_version: SYNC_TEXT_VERSION }, posted)
-    expect(words(find('dialog .sync-renewal')!)).toContain('A mailbox you connect to Support syncs under your agreement to mail sync, which was to an earlier text. Agree to the current text first.')
-    expect(connectButton().disabled).toBe(true)
-    // Their personal workspace is what that text covered.
+    // Ana never agreed for herself: the team's agreement is not hers, and is asked for here all the same.
+    await connecting(current, posted)
+    const box = find('dialog .team-sync')!
+    expect(words(box)).toContain('Mail sync for Support')
+    expect(words(box)).toContain('Who can read the index')
+    expect(words(box)).toContain('A team’s mailbox syncs under the team’s agreement')
+    const agree = find('dialog input[name=team-sync]')!
+    expect(agree.checked).toBe(false)
+    expect(words(box)).toContain('Turn on sync for Support')
+    await check(agree)
+    await fillPassword()
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).toMatchObject({ workspace_id: TEAM, sync_consent_version: SYNC_TEXT_VERSION })
+    // The person's own agreement was neither asked for nor given.
+    expect(sent('POST', '/v1/me/sync-consent')).toEqual([])
+  })
+
+  it('forgets a ticked agreement when another team or the personal workspace is chosen, and sends none there', async () => {
+    const posted: unknown[] = []
+    await connecting(current, posted)
+    await check(find('dialog input[name=team-sync]')!)
     await check(placeOf(PERSONAL))
-    expect(find('dialog .sync-renewal')).toBeNull()
-    expect(connectButton().disabled).toBe(false)
+    expect(find('dialog .team-sync')).toBeNull()
     await check(placeOf(TEAM))
-    await click(find('dialog .sync-renewal button', 'Read the current text…'))
-    // The text itself, then the agreement to its revision.
-    expect(words(page.querySelectorAll('dialog').at(-1)!)).toContain('Who can read the index')
-    await click(find('dialog button.primary', 'I agree'))
-    expect(sent('POST', '/v1/me/sync-consent').map(request => request.body)).toEqual([{ version: SYNC_TEXT_VERSION }])
-    await vi.waitFor(() => expect(find('dialog .sync-renewal')).toBeNull())
-    expect(connectButton().disabled).toBe(false)
-    expect(posted).toEqual([])
+    expect(find('dialog input[name=team-sync]')!.checked).toBe(false)
+    await check(placeOf(PERSONAL))
+    await fillPassword()
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).not.toHaveProperty('sync_consent_version')
+    expect(posted[0]).not.toHaveProperty('workspace_id', TEAM)
+  })
+
+  it('offers a reload in place of the box when the server asks about another text than this page shows, and links with sync off', async () => {
+    const posted: unknown[] = []
+    await connecting({ consented: false, current_version: '2027-01-open-sync-4' }, posted)
+    const box = find('dialog .team-sync')!
+    expect(find('dialog input[name=team-sync]')).toBeNull()
+    expect(find('dialog .team-sync button', 'Reload page')).not.toBeNull()
+    expect(words(box)).not.toContain('Who can read the index')
+    await fillPassword()
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(posted).toHaveLength(1))
+    expect(posted[0]).not.toHaveProperty('sync_consent_version')
   })
 })
 
-describe('the team’s other mailboxes', () => {
-  it('closes the access dialog of one when the console shows another workspace', async () => {
-    const hidden: MailboxAccess = { account_id: 'acc_hidden', email: 'diretoria@example.test', provider: 'gmail', state: 'active', linked_by: BEA, grants: [{ account_id: 'acc_hidden', user_id: BEA, ...full, updated_at: 1 }] }
-    await signedIn('admin', ({ path, method }) => {
-      if (path === '/v1/accounts' && method === 'GET') return json([])
-      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: 'admin' }), member(BEA, { name: 'Bea Lima', links: 1 })])
-      if (path === `/v1/workspaces/${TEAM}/access`) return json([hidden])
+describe('a team mailbox’s sync', () => {
+  const managed = account({ id: 'acc_managed', email: 'diretoria@example.test', state: 'active', workspace_id: TEAM, access: { ...none, manage: true } })
+  let record: MailboxAccess['sync']
+  /** Ana, with the role given in Support, is shown its mailbox's sheet; the directory holds record. */
+  async function sheetAs(role: string, initial: MailboxAccess['sync'], readers = 2) {
+    record = initial
+    await signedIn(role, ({ path, method, body }) => {
+      if (path === '/v1/accounts' && method === 'GET') return json([{ ...managed, sync: record?.enabled ? syncing() : managed.sync }])
+      if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: false, current_version: SYNC_TEXT_VERSION })
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role }), member(BEA, { name: 'Bea Lima' })])
+      if (path === `/v1/workspaces/${TEAM}/access`) {
+        return json([{ account_id: managed.id, email: managed.email, provider: 'gmail', state: 'active', linked_by: BEA, readers, no_reader: readers === 0, sync: record, grants: [{ account_id: managed.id, user_id: BEA, read: true, act: false, send: false, manage: false, updated_at: 1 }] }])
+      }
+      if (path === `/v1/accounts/${managed.id}/sync` && method === 'PUT') {
+        const asked = body as { enabled: boolean; version?: string }
+        record = asked.enabled ? { enabled: true, enabled_at: 1_790_000_500, enabled_by: ana.id, version: asked.version, current: asked.version === SYNC_TEXT_VERSION } : { enabled: false, current: false }
+        return json(asked.enabled ? syncing() : { enabled: false, running: false, state: 'off', folders_synced: 0, folders_total: 0, messages: 0, initial_progress: 0 })
+      }
       return failure('not_found', 404)
     })
     await loadAccounts()
+    accounts.detailID = managed.id
     mounted = mount(AccountsPanel)
-    await vi.waitFor(() => expect(find('.other-card')).not.toBeNull())
-    await click(find('.other-card button', 'Access…'))
-    expect(words(find('dialog')!)).toContain('Access to diretoria@example.test')
-    selectWorkspace(PERSONAL)
+    await vi.waitFor(() => expect(find('dialog.sheet-backdrop')).not.toBeNull())
+    await vi.waitFor(() => expect(find('.team-sync button[role=switch], .team-sync .session-actions')).not.toBeNull())
     await flush()
-    expect(find('dialog')).toBeNull()
+  }
+  const off: MailboxAccess['sync'] = { enabled: false, current: false }
+  const lastDialog = () => page.querySelectorAll('dialog').at(-1)!
+
+  it('turns it on for the team after showing the sync text, with the revision shown', async () => {
+    await sheetAs('admin', off)
+    expect(words(find('.team-sync')!)).toContain('Sync is off. Nothing from this mailbox is stored.')
+    await click(find('.team-sync button[role=switch]'))
+    expect(words(lastDialog())).toContain('You agree to this text on behalf of Support: diretoria@example.test then syncs under the team’s agreement, for everyone in the team who reads it.')
+    expect(words(lastDialog())).toContain('Who can read the index')
+    await click(find('dialog button.primary', 'Turn on sync for Support'))
+    expect(sent('PUT', `/v1/accounts/${managed.id}/sync`).map(request => request.body)).toEqual([{ enabled: true, version: SYNC_TEXT_VERSION }])
+    // The record is read again: who turned it on, and when.
+    await vi.waitFor(() => expect(words(find('.team-sync')!)).toContain('turned on by Ana Souza'))
+    expect(accounts.list.find(item => item.id === managed.id)?.sync.enabled).toBe(true)
+  })
+
+  it('turns it off only once the address is typed, saying how many read the index it deletes, and Cancel sends nothing', async () => {
+    await sheetAs('owner', { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true })
+    expect(words(find('.team-sync')!)).toContain('turned on by Bea Lima')
+    await click(find('.team-sync button[role=switch]'))
+    expect(words(lastDialog())).toContain('The index is deleted for everyone in Support who reads it: 2 now.')
+    const confirm = find('dialog button.danger', 'Turn off and delete')!
+    expect(confirm.disabled).toBe(true)
+    await click(find('dialog button', 'Cancel'))
+    expect(sent('PUT', `/v1/accounts/${managed.id}/sync`)).toEqual([])
+    await click(find('.team-sync button[role=switch]'))
+    await fill(find('dialog input[name=team-sync-confirm]'), 'Diretoria@Example.test')
+    expect(find('dialog button.danger', 'Turn off and delete')!.disabled).toBe(false)
+    await submit(find('dialog form.team-sync-confirm'))
+    expect(sent('PUT', `/v1/accounts/${managed.id}/sync`).map(request => request.body)).toEqual([{ enabled: false }])
+    await vi.waitFor(() => expect(words(find('.team-sync')!)).toContain('Sync is off. Nothing from this mailbox is stored.'))
+  })
+
+  it('offers confirming for the team an agreement the upgrade carried over from whoever linked the mailbox', async () => {
+    await sheetAs('admin', { enabled: true, enabled_at: 1_780_000_000, enabled_by: BEA, version: '2026-10-open-sync-2', migrated: true, current: false })
+    expect(words(find('.team-sync')!)).toContain('It is still tied to them')
+    expect(find('.team-sync button[role=switch]')).toBeNull()
+    await click(find('.team-sync button', 'Confirm for Support…'))
+    await click(find('dialog button.primary', 'Turn on sync for Support'))
+    expect(sent('PUT', `/v1/accounts/${managed.id}/sync`).map(request => request.body)).toEqual([{ enabled: true, version: SYNC_TEXT_VERSION }])
+    await vi.waitFor(() => expect(words(find('.team-sync')!)).not.toContain('It is still tied to them'))
+    expect(find('.team-sync button[role=switch]')).not.toBeNull()
+  })
+
+  it('says a refused switch in the console’s words, never the server’s', async () => {
+    await sheetAs('admin', off)
+    serve(request => request.path === `/v1/accounts/${managed.id}/sync` ? failure('not_authorized', 403) : request.path === '/v1/workspaces' ? json([personal, support('admin')]) : failure('not_found', 404))
+    await click(find('.team-sync button[role=switch]'))
+    await click(find('dialog button.primary', 'Turn on sync for Support'))
+    await vi.waitFor(() => expect(find('dialog .alert')).not.toBeNull())
+    expect(words(find('dialog .alert')!)).toBe('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
+    expect(words()).not.toContain('hunter2')
   })
 })
 
 describe('who can use a mailbox', () => {
-  const directory = (): MailboxAccess[] => [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, grants: grants.map(([userID, flags]) => ({ account_id: shared.id, user_id: userID, ...flags, updated_at: 1 })) }]
+  const directory = (): MailboxAccess[] => {
+    const listed = grants.map(([userID, flags]) => ({ account_id: shared.id, user_id: userID, ...flags, updated_at: 1 }))
+    const readers = listed.filter(grant => grant.read).length
+    return [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, readers, no_reader: readers === 0, sync: { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true }, grants: listed }]
+  }
   let grants: [string, typeof full][] = []
+  const reader = { read: true, act: true, send: true, manage: false }
 
-  /** Ana administers Support and holds every flag on a mailbox Bea linked; Carol holds nothing yet. */
+  /** Ana administers Support and reads a mailbox Bea reads too; Carol holds nothing yet. */
   async function panel(route: Route = () => failure('not_found', 404)) {
-    grants = [[BEA, full], [ana.id, full]]
+    grants = [[BEA, reader], [ana.id, reader]]
     await signedIn('admin', request => {
       const { path, method } = request
-      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: 'admin' }), member(BEA, { name: 'Bea Lima', links: 1 }), member(CAROL, { name: 'Carol Dias' })])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: 'admin' }), member(BEA, { name: 'Bea Lima' }), member(CAROL, { name: 'Carol Dias' })])
       if (path === `/v1/workspaces/${TEAM}/access`) return json(directory())
       if (path === '/v1/accounts' && method === 'GET') return json([shared])
       return route(request)
     })
     await loadAccounts()
     await Promise.all([loadMembers(), loadDirectory()])
-    mounted = mount(AccessPanel, { accountId: shared.id, email: shared.email, account: shared })
+    mounted = mount(AccessPanel, { accountId: shared.id, email: shared.email })
     await flush()
   }
   const box = (userID: string, flag: string) => find(`input[name="${userID}-${flag}"]`)!
@@ -336,10 +443,11 @@ describe('who can use a mailbox', () => {
     expect(sent('PUT', `/v1/accounts/${shared.id}/access/${CAROL}`).map(request => request.body)).toEqual([{ read: true, act: true, send: false, manage: false }])
     await vi.waitFor(() => expect(box(CAROL, 'act').checked).toBe(true))
     expect(find(`li[data-user="${CAROL}"] button`, 'Save access')).toBeNull()
+    // The members are read again too: who is the last reader of what may have changed.
+    expect(sent('GET', `/v1/workspaces/${TEAM}/members`).length).toBeGreaterThan(1)
   })
 
   it('takes access away with a revoke naming only what goes, and Cancel sets back what was ticked', async () => {
-    grants = []
     await panel(({ path, method }) => {
       if (path === `/v1/accounts/${shared.id}/access/${CAROL}` && method === 'DELETE') {
         grants = grants.map(([userID, flags]) => [userID, userID === CAROL ? { ...flags, send: false } : flags])
@@ -359,45 +467,67 @@ describe('who can use a mailbox', () => {
     expect(revokes.map(request => request.query)).toEqual([{ flags: 'send' }])
   })
 
+  it('lets an admin drop her own flags, and keeps Read with the last person who can read the mailbox', async () => {
+    await panel(({ path, method }) => {
+      if (path === `/v1/accounts/${shared.id}/access/${ana.id}` && method === 'DELETE') {
+        grants = grants.filter(([userID]) => userID !== ana.id)
+        return new Response(null, { status: 204 })
+      }
+      if (path === `/v1/accounts/${shared.id}` && method === 'GET') return json({ ...shared, access: { ...none, manage: true } })
+      return failure('not_found', 404)
+    })
+    // Two read it: either may lose Read.
+    expect(box(BEA, 'read').disabled).toBe(false)
+    expect(box(ana.id, 'read').disabled).toBe(false)
+    await check(box(ana.id, 'read'), false)
+    await check(box(ana.id, 'send'), false)
+    await click(find(`li[data-user="${ana.id}"] button`, 'Save access'))
+    // Every flag she held goes: a revoke naming none takes them all.
+    expect(sent('DELETE', `/v1/accounts/${shared.id}/access/${ana.id}`).map(request => request.query)).toEqual([{}])
+    // Bea is the only one left who reads it, and Ana gives no Read she does not hold.
+    await vi.waitFor(() => expect(box(BEA, 'read').disabled).toBe(true))
+    expect(words(row(BEA))).toContain('The only person who can read this mailbox: give someone else Read before taking theirs.')
+    expect(box(CAROL, 'read').disabled).toBe(true)
+    expect(words()).toContain('You do not read this mailbox, so you cannot give Read on it, not even to yourself')
+  })
+
   it('says a refused change in the console’s words, never the server’s, and keeps what was ticked', async () => {
     await panel(() => failure('not_authorized', 403))
     await check(box(CAROL, 'manage'))
     await click(find(`li[data-user="${CAROL}"] button`, 'Save access'))
-    expect(words(find(`li[data-user="${CAROL}"] .alert`)!)).toBe('You can give only what you hold on this mailbox, and change who has access only as an owner or an admin of the team, or as someone who manages it.')
+    expect(words(find(`li[data-user="${CAROL}"] .alert`)!)).toBe('Only the owners and admins of the team change who has access, and they give Read only on a mailbox they read themselves.')
     expect(words()).not.toContain('hunter2')
     expect(box(CAROL, 'manage').checked).toBe(true)
   })
 
-  it('asks before taking a link over, says what it changes, and posts nothing on Cancel', async () => {
-    await panel(({ path, method }) => path === `/v1/accounts/${shared.id}/take-over` && method === 'POST'
-      ? json({ ...shared, linked_by: ana.id }) : failure('not_found', 404))
-    seen = []
-    await click(find('.take-over button', 'Take over the link…'))
-    const dialog = words(find('dialog')!)
-    expect(dialog).toContain('suporte@example.test syncs under your agreement to sync from now on, instead of Bea Lima’s. Its index is kept.')
-    expect(dialog).toContain('If you turn sync off, its index is deleted, for everyone in Support who reads it.')
-    expect(dialog).toContain('Bea Lima keeps their access as an ordinary member: it can then be changed, and they can leave the team.')
-    await click(find('dialog button', 'Cancel'))
-    expect(sent('POST', `/v1/accounts/${shared.id}/take-over`)).toEqual([])
-    await click(find('.take-over button', 'Take over the link…'))
-    await click(find('dialog button.primary', 'Take over the link'))
-    expect(sent('POST', `/v1/accounts/${shared.id}/take-over`)).toHaveLength(1)
-    expect(find('dialog')).toBeNull()
-    expect(accounts.list.find(item => item.id === shared.id)?.linked_by).toBe(ana.id)
+  it('says the last reader’s refusal in the console’s words when the server finds one the page did not know of', async () => {
+    await panel(({ path, method }) => path === `/v1/accounts/${shared.id}/access/${BEA}` && method === 'DELETE' ? failure('conflict', 409) : failure('not_found', 404))
+    await check(box(BEA, 'read'), false)
+    await click(find(`li[data-user="${BEA}"] button`, 'Save access'))
+    expect(words(find(`li[data-user="${BEA}"] .alert`)!)).toBe('This is the only person who can read this mailbox: give someone else Read on it first.')
+  })
+
+  it('offers no take-over and names no linker', async () => {
+    await panel()
+    expect(words()).not.toMatch(/take over|taking over|linked by|syncs under the agreement of/i)
+    // Bea's access is the team's to change, as anyone's is.
+    for (const flag of ['read', 'act', 'send']) expect(box(BEA, flag).disabled, flag).toBe(false)
   })
 })
 
 describe('the people of a team', () => {
   let members: Member[] = []
-  /** Ana owns Support; Bea linked a mailbox there; Carol is a member. */
+  const directory: MailboxAccess[] = [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', readers: 1, no_reader: false, sync: { enabled: false, current: false }, grants: [{ account_id: shared.id, user_id: BEA, read: true, act: false, send: false, manage: false, updated_at: 1 }] }]
+  /** Ana has the role given in Support; Bea alone reads one of its mailboxes; Carol is a member. */
   async function membersOf(role: string, route: Route = () => failure('not_found', 404), list?: () => Workspace[], others?: Member[]) {
-    members = [member(ana.id, { email: ana.email, name: ana.name, role, last_owner: role === 'owner' && !others }), member(BEA, { name: 'Bea Lima', links: 1 }), member(CAROL, { name: 'Carol Dias' })]
+    members = [member(ana.id, { email: ana.email, name: ana.name, role, last_owner: role === 'owner' && !others }), member(BEA, { name: 'Bea Lima', last_reader_of: [shared.id] }), member(CAROL, { name: 'Carol Dias' })]
     if (others) members.push(...others)
     else if (role !== 'owner') members.push(member('usr_00000000000000d4', { name: 'Dora', role: 'owner', last_owner: true }))
     await signedIn(role, request => {
       const { path, method } = request
       if (path === `/v1/workspaces/${TEAM}/members` && method === 'GET') return json(members)
       if (path === `/v1/workspaces/${TEAM}/invites` && method === 'GET') return json([])
+      if (path === `/v1/workspaces/${TEAM}/access` && method === 'GET') return json(directory)
       return route(request)
     }, list)
     mounted = mount(OpenMembers)
@@ -429,24 +559,32 @@ describe('the people of a team', () => {
     expect(words(row(CAROL))).toContain('The team’s protections refuse this')
   })
 
-  it('asks before disabling or removing someone, and Cancel changes nothing', async () => {
+  it('asks before disabling or removing someone, saying their invitations stop working, and Cancel changes nothing', async () => {
     await membersOf('owner', ({ path, method }) => {
       if (path !== `/v1/workspaces/${TEAM}/members/${CAROL}` || method !== 'DELETE') return failure('not_found', 404)
       members = members.filter(item => item.user_id !== CAROL)
       return new Response(null, { status: 204 })
     })
     await click(find(`li[data-user="${CAROL}"] button`, 'Disable…'))
-    expect(words(find('dialog')!)).toContain('Carol Dias stays listed in Support but loses their access to every mailbox of it now. Enabling them again gives none of it back.')
+    expect(words(find('dialog')!)).toContain('Carol Dias stays listed in Support but loses their access to every mailbox of it now, and the invitations they made for it stop working. Enabling them again gives none of it back.')
     await click(find('dialog button', 'Cancel'))
     await click(find(`li[data-user="${CAROL}"] button`, 'Remove…'))
-    expect(words(find('dialog')!)).toContain('Carol Dias leaves Support: their access to its mailboxes goes, and invitations to it still waiting for them are deleted.')
+    expect(words(find('dialog')!)).toContain('Carol Dias leaves Support: their access to its mailboxes goes, invitations to it still waiting for them are deleted, and those they made stop working.')
     expect(seen.filter(request => request.method === 'PATCH' || request.method === 'DELETE')).toEqual([])
     await click(find('dialog button.danger', 'Remove'))
     expect(sent('DELETE', `/v1/workspaces/${TEAM}/members/${CAROL}`)).toHaveLength(1)
     expect(find(`li[data-user="${CAROL}"]`)).toBeNull()
     expect(words(find('.success')!)).toBe('Carol Dias was removed from Support.')
-    // The person a mailbox there is linked by is offered neither.
+    // The only person who reads a mailbox of the team is offered neither, and the mailbox is named.
     expect(words(row(BEA))).not.toMatch(/Remove…|Disable…/)
+    expect(words(row(BEA))).toContain('The only person who can read suporte@example.test: give someone else Read before disabling or removing them.')
+  })
+
+  it('says the last reader’s refusal in the console’s words when the server finds one the page did not know of', async () => {
+    await membersOf('owner', ({ path, method }) => path === `/v1/workspaces/${TEAM}/members/${CAROL}` && method === 'PATCH' ? failure('conflict', 409) : failure('not_found', 404))
+    await click(find(`li[data-user="${CAROL}"] button`, 'Disable…'))
+    await click(find('dialog button.danger', 'Disable'))
+    expect(words(find('dialog .alert')!)).toBe('The team’s protections refuse this: it keeps an active owner, and a mailbox someone reads keeps someone who can read it. Make another member an owner, or give someone else Read, first.')
   })
 
   it('shows an invitation’s link once, keeps it through Escape, copies it on request, and forgets it when closed', async () => {
@@ -492,10 +630,11 @@ describe('the people of a team', () => {
     expect(words(row(ana.id))).toContain('You are the team’s only owner')
   })
 
-  it('reads the person’s workspaces again on Refresh, and offers what their role there allows now', async () => {
+  it('reads the person’s workspaces again on Refresh, and shows a member none of the team’s people', async () => {
     let role = 'admin'
     await membersOf('admin', () => failure('not_found', 404), () => [personal, support(role)])
     expect(find('.team-actions button', 'Invite someone')).not.toBeNull()
+    expect(find(`li[data-user="${ana.id}"] button`, 'Leave the team…')).toBeNull()
     // Another owner made Ana a member.
     role = 'member'
     members = members.map(item => item.user_id === ana.id ? { ...item, role: 'member' } : item)
@@ -504,18 +643,18 @@ describe('the people of a team', () => {
     await vi.waitFor(() => expect(sent('GET', '/v1/workspaces')).toHaveLength(before + 1))
     await vi.waitFor(() => expect(find('.team-actions button', 'Invite someone')).toBeNull())
     expect(find('.team-actions button', 'Rename…')).toBeNull()
-    expect(words(find('.team-card')!)).toContain('Your role: Member')
+    expect(find('li[data-user]')).toBeNull()
+    expect(words()).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
   })
 
-  it('lets a member leave, after saying what goes, and shows them another of their workspaces', async () => {
-    let list = [personal, support('member')]
-    await membersOf('member', ({ path, method }) => {
+  it('lets an owner leave while another owner remains, after saying what goes, and shows them another of their workspaces', async () => {
+    let list = [personal, support('owner')]
+    await membersOf('owner', ({ path, method }) => {
       if (path === `/v1/workspaces/${TEAM}/members/${ana.id}` && method === 'DELETE') { list = [personal]; return new Response(null, { status: 204 }) }
       return failure('not_found', 404)
-    }, () => list)
-    expect(words(row(CAROL))).not.toMatch(/Remove…|Disable…/)
+    }, () => list, [member('usr_00000000000000d4', { name: 'Dora', role: 'owner' })])
     await click(find(`li[data-user="${ana.id}"] button`, 'Leave the team…'))
-    expect(words(find('dialog')!)).toContain('Your access to the mailboxes of Support goes now. To come back you need a new invitation.')
+    expect(words(find('dialog')!)).toContain('Your access to the mailboxes of Support goes now, and the invitations you made for it stop working. To come back you need a new invitation.')
     await click(find('dialog button.danger', 'Leave the team'))
     expect(sent('DELETE', `/v1/workspaces/${TEAM}/members/${ana.id}`)).toHaveLength(1)
     await vi.waitFor(() => expect(workspaces.currentID).toBe(PERSONAL))
@@ -557,47 +696,37 @@ describe('an invitation opened signed in', () => {
 })
 
 describe('turning sync off', () => {
-  it('waits to offer it until the team mailboxes it reaches are named', async () => {
-    let answer!: (response: Response) => void
+  /** Ana, in Support with the role given, or in her personal workspace alone, opens the dialog that turns her sync off. */
+  async function dialogFor(list: () => Workspace[]) {
     await signedIn('admin', ({ path, method }) => {
       if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION })
-      if (path === '/v1/accounts' && method === 'GET') return new Promise<Response>(resolve => { answer = resolve })
+      if (path === '/v1/me/sync-consent' && method === 'DELETE') return new Response(null, { status: 204 })
       return failure('not_found', 404)
-    })
+    }, list)
     await loadConsent()
     mounted = mount(SyncPermission)
     await flush()
     await click(find('button[role=switch]'))
-    expect(words(find('dialog')!)).toContain('Checking which team mailboxes this reaches…')
-    expect(find('dialog button.danger', 'Turn off and delete')!.disabled).toBe(true)
-    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
-    answer(json([{ ...shared, linked_by: ana.id }]))
-    await vi.waitFor(() => expect(find('dialog .team-warning')).not.toBeNull())
+  }
+
+  it('says it deletes the index of the personal workspace’s mailboxes, and that a team’s keep syncing under the team’s agreement', async () => {
+    await dialogFor(() => [personal, support('admin')])
+    const dialog = words(find('dialog')!)
+    expect(dialog).toContain('Mailie stops syncing the mailboxes of your personal workspace and deletes everything it indexed for them')
+    expect(dialog).toContain('Your teams’ mailboxes sync under each team’s agreement and keep syncing.')
+    // The exception the upgrade left: an agreement carried over from the person who linked the mailbox, until the team gives its own.
+    expect(dialog).toContain('a team mailbox you connected before this server was updated')
+    // Nothing to name first: it is offered at once, and no mailbox list is read for it.
     expect(find('dialog button.danger', 'Turn off and delete')!.disabled).toBe(false)
-    expect(sent('DELETE', '/v1/me/sync-consent')).toEqual([])
+    expect(seen.filter(request => request.path === '/v1/accounts')).toEqual([])
+    await click(find('dialog button.danger', 'Turn off and delete'))
+    expect(sent('DELETE', '/v1/me/sync-consent')).toHaveLength(1)
   })
 
-  it('names the team mailboxes the person linked, whose index goes for everyone who reads them', async () => {
-    const own: Account = account({ id: 'acc_own', email: 'ana@gmail.example', state: 'active', workspace_id: PERSONAL, linked_by: ana.id, access: full })
-    const linked: Account = { ...shared, linked_by: ana.id }
-    const other: Account = account({ id: 'acc_other', email: 'vendas@example.test', state: 'active', workspace_id: TEAM, linked_by: BEA, access: full })
-    await signedIn('admin', ({ path, method }) => {
-      if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION })
-      if (path === '/v1/accounts' && method === 'GET') return json([own, linked, other])
-      return failure('not_found', 404)
-    })
-    await loadConsent()
-    mounted = mount(SyncPermission)
-    await flush()
-    await click(find('button[role=switch]'))
-    await vi.waitFor(() => expect(find('dialog .team-warning')).not.toBeNull())
-    const warning = words(find('dialog .team-warning')!)
-    expect(warning).toContain('suporte@example.test in Support')
-    expect(warning).toContain('This team mailbox was linked by you, so it syncs under your agreement.')
-    expect(warning).not.toContain('vendas@example.test')
-    expect(warning).not.toContain('ana@gmail.example')
-    expect(warning).toContain('To keep a team’s index, have an owner or an admin of the team take the link over first.')
-    // Every workspace's mailboxes, read whole: what turning sync off reaches is the person's, not one workspace's.
-    expect(sent('GET', '/v1/accounts').some(request => !request.query.workspace)).toBe(true)
+  it('says nothing of teams to a person in none', async () => {
+    await dialogFor(() => [personal])
+    const dialog = words(find('dialog')!)
+    expect(dialog).toContain('Mailie stops syncing all your mailboxes and deletes everything it indexed for them')
+    expect(dialog).not.toMatch(/team/i)
   })
 })

@@ -208,7 +208,7 @@ describe('an add the server half made', () => {
     expect(store.connect.phase).toBe('waiting')
     store.cancelConnect()
     await vi.advanceTimersByTimeAsync(0)
-    expect(deletes(fetch)).toEqual([expect.stringMatching(/\/v1\/accounts\/acc_0000000000000001$/)])
+    expect(deletes(fetch)).toEqual([expect.stringMatching(/\/v1\/accounts\/acc_0000000000000001\?confirm=acc_0000000000000001$/)])
   })
 
   it('shows an address that was already there, but never takes it over', async () => {
@@ -239,7 +239,7 @@ describe('abandoning a connection', () => {
     store.cancelConnect()
     await vi.advanceTimersByTimeAsync(0)
     const deletes = fetch.mock.calls.filter(([, init]) => init?.method === 'DELETE').map(([url]) => String(url))
-    expect(deletes).toEqual([expect.stringMatching(/\/v1\/accounts\/acc_0000000000000001$/)])
+    expect(deletes).toEqual([expect.stringMatching(/\/v1\/accounts\/acc_0000000000000001\?confirm=acc_0000000000000001$/)])
     expect(store.accounts.list).toEqual([])
     await vi.advanceTimersByTimeAsync(30_000)
     expect(polls(fetch)).toBe(0)

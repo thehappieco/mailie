@@ -103,11 +103,11 @@ func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
 		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: 31025, SMTPTLS: "starttls", LoginUser: user,
 		State: account.StateActive,
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatal(err)
 	}
 	operator := service.Principal{KeyPrefix: "aaaaaaaa", Scope: auth.ScopeAdmin}
-	if _, err := svc.EnableInstanceAccountSync(t.Context(), operator, id, true); err != nil {
+	if _, err := svc.SetMailboxSync(t.Context(), operator, id, switchSync(true)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
@@ -178,6 +178,11 @@ func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
 	if l := logs.String(); strings.Contains(l, "Revenue") || strings.Contains(l, "Thursday") || strings.Contains(l, "quarterly") {
 		t.Errorf("the log carries content or search text:\n%s", l)
 	}
+}
+
+// switchSync is a request to switch an operator mailbox's sync on or off.
+func switchSync(on bool) service.MailboxSyncRequest {
+	return service.MailboxSyncRequest{Enabled: &on}
 }
 
 func appendMessage(t *testing.T, s provider.Session, msg providertest.FakeMessage) {

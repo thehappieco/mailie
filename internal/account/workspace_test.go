@@ -42,8 +42,8 @@ func (f *visibilityFixture) link(id, workspaceID, linker, email string) account.
 	a, err := f.repo.Create(f.t.Context(), account.Account{
 		ID: id, Email: email, Provider: provider.KindGmail, AuthKind: "oauth2",
 		IMAPHost: "imap.example.com", IMAPPort: 993, SMTPHost: "smtp.example.com", SMTPPort: 465, SMTPTLS: "implicit",
-		LoginUser: email, OwnerUserID: linker, WorkspaceID: workspaceID,
-	})
+		LoginUser: email, WorkspaceID: workspaceID,
+	}, linker)
 	if err != nil {
 		f.t.Fatalf("link %s: %v", id, err)
 	}
@@ -111,30 +111,52 @@ func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
 	f.hidden(shared.ID, account.Visibility{UserID: bea.ID})
 }
 
-func TestOwnersAndAdminsGetNoAutomaticRead(t *testing.T) {
+func TestOwnersAndAdminsSeeEveryTeamMailboxsCardAndReadNone(t *testing.T) {
 	f := newVisibility(t)
-	ana, bea, cid := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org")
+	ana, bea, cid, dan := f.person("ana@example.org"), f.person("bea@example.org"), f.person("cid@example.org"),
+		f.person("dan@example.org")
 	team, err := f.ws.CreateTeam(t.Context(), "Support", ana.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for user, r := range map[string]workspace.Role{bea.ID: workspace.RoleAdmin, cid.ID: workspace.RoleMember} {
+	for user, r := range map[string]workspace.Role{bea.ID: workspace.RoleAdmin, cid.ID: workspace.RoleMember, dan.ID: workspace.RoleMember} {
 		if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 			return f.ws.AddMemberTx(t.Context(), tx, team.ID, user, r, f.db.Now())
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	cids := f.link("acc_cids", team.ID, cid.ID, "cid-team@example.org")
+	box := f.link("acc_box", team.ID, cid.ID, "cid-team@example.org")
+	// The owner and the admin manage it by their role: its card, and
+	// manage; never read, act or send.
 	for _, who := range []auth.User{ana, bea} {
-		f.hidden(cids.ID, account.Visibility{UserID: who.ID})
+		if got := f.sees(account.Visibility{UserID: who.ID}); !slices.Equal(got, []string{box.ID}) {
+			t.Errorf("%s sees %v, want the team mailbox's card", who.Email, got)
+		}
+		if got := f.sees(account.Visibility{UserID: who.ID, Need: workspace.Flags{Manage: true}}); !slices.Equal(got, []string{box.ID}) {
+			t.Errorf("%s manages %v", who.Email, got)
+		}
+		for _, need := range []workspace.Flags{{Read: true}, {Act: true}, {Send: true}, {Read: true, Manage: true}} {
+			f.hidden(box.ID, account.Visibility{UserID: who.ID, Need: need})
+		}
 	}
-	// Nor does the instance's owner role: it is no workspace role.
+	// A member holding nothing sees nothing; the instance's owner role is
+	// no workspace role.
+	f.hidden(box.ID, account.Visibility{UserID: dan.ID})
 	boss := authtest.NewUser(t, f.db, "boss@example.org", auth.RoleOwner)
-	f.hidden(cids.ID, account.Visibility{UserID: boss.ID})
-	if got := f.sees(account.Visibility{UserID: cid.ID}); !slices.Equal(got, []string{cids.ID}) {
-		t.Errorf("the linker sees %v", got)
+	f.hidden(box.ID, account.Visibility{UserID: boss.ID})
+	// The member who linked it reads it, and manages it only with manage
+	// stored for them.
+	if got := f.sees(account.Visibility{UserID: cid.ID, Need: workspace.Flags{Read: true}}); !slices.Equal(got, []string{box.ID}) {
+		t.Errorf("the linker reads %v", got)
 	}
+	f.hidden(box.ID, account.Visibility{UserID: cid.ID, Need: workspace.Flags{Manage: true}})
+	// An admin disabled in the team sees nothing by the role any more.
+	if _, err := f.db.Writer().ExecContext(t.Context(),
+		`UPDATE workspace_members SET status = 'disabled' WHERE workspace_id = ? AND user_id = ?`, team.ID, bea.ID); err != nil {
+		t.Fatal(err)
+	}
+	f.hidden(box.ID, account.Visibility{UserID: bea.ID})
 }
 
 func TestTheOperatorWorkspaceIsWhatUnownedReaches(t *testing.T) {
@@ -181,7 +203,7 @@ func TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes(t *testing.T) {
 	add := func(owner, workspaceID string) (account.Account, error) {
 		a, _, err := registry.Add(t.Context(), account.AddRequest{
 			Email: address, Provider: provider.KindIMAP, ICloud: true, Password: password,
-			OwnerUserID: owner, WorkspaceID: workspaceID,
+			LinkerID: owner, WorkspaceID: workspaceID,
 		})
 		return a, err
 	}

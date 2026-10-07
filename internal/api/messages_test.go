@@ -60,14 +60,14 @@ func (e *lendingEngine) Interactive(ctx context.Context, id string, fn func(cont
 func (h *harness) fakeMailbox(t *testing.T, e *lendingEngine, id, ownerID, email string) *providertest.FakeMailbox {
 	t.Helper()
 	if _, err := account.NewRepository(h.store, nil).Create(t.Context(), account.Account{
-		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password", OwnerUserID: ownerID,
+		ID: id, Email: email, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
 		SMTPTLS: "implicit", LoginUser: email, State: account.StateActive,
-	}); err != nil {
+	}, ownerID); err != nil {
 		t.Fatal(err)
 	}
 	if ownerID == "" {
-		if _, err := h.store.SetInstanceSync(t.Context(), id, true, "cli"); err != nil {
+		if _, err := h.store.SetMailboxSync(t.Context(), id, true, "cli", "", nil); err != nil {
 			t.Fatal(err)
 		}
 	}

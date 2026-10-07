@@ -23,7 +23,7 @@ export interface Operations {
   'load-workspaces': true; 'create-team': true; 'rename-team': true; 'accept-invite': true
   'load-members': true; 'change-member': true; 'remove-member': true; 'leave-team': true
   'load-invites': true; 'create-invite': true; 'revoke-invite': true
-  'load-access': true; 'change-access': true; 'take-over': true
+  'load-access': true; 'change-access': true; 'team-sync-on': true; 'team-sync-off': true
 }
 export type Operation = keyof Operations
 

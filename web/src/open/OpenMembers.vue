@@ -1,32 +1,42 @@
 <script setup lang="ts">
 // The open console's Members section: on a self-hosted server, people make
-// their own teams (the local workspace source). In a team shown: its people
-// and their roles, changing a role, disabling, removing or leaving, renaming
-// it, and invitations, made and revoked by its owners and admins. In the
-// personal workspace: creating a team, and the teams the person is in.
+// their own teams (the local workspace source). In a team shown, for its
+// owners and admins, the only people who see it: its people and their roles,
+// changing a role, disabling or removing someone, an owner leaving while
+// another owner remains, renaming it, and invitations. A member of the team
+// is shown none of it (the console offers them no Members section; the
+// server refuses them the list). In the personal workspace: creating a team,
+// and the teams the person is in.
 //
 // What a person's role allows is offered, and what the team's protections
 // refuse is said beside it beforehand (ui/access.ts memberPermissions): the
-// last active owner keeps the team, and a person mailboxes there are linked by
-// stays while they are. The server decides every change, in the transaction
-// that makes it, and says no to whatever this gets wrong.
+// last active owner keeps the team, and the last person who can read one of
+// its mailboxes stays while they are. The server decides every change, in
+// the transaction that makes it, and says no to whatever this gets wrong.
 import { computed, onMounted, ref, useId, watch } from 'vue'
 import type { Member, TeamInvite, WorkspaceRole } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import ConsoleDialog from '../components/ConsoleDialog.vue'
+import { accounts } from '../state/accounts'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
-import { changeMember, leaveTeam, loadInvites, loadMembers, removeMember, revokeInvite, team } from '../state/team'
+import { changeMember, directoryEntry, leaveTeam, loadDirectory, loadInvites, loadMembers, removeMember, revokeInvite, team } from '../state/team'
 import { createTeam, currentWorkspace, loadWorkspaces, renameTeam, selectWorkspace, workspaces } from '../state/workspaces'
-import { administers, changeableTeam, memberPermissions, seesInvitations, teamsCreatedHere, workspaceName, workspaceRoleLabel, type MemberPermissions } from '../ui/access'
+import {
+  administers, changeableTeam, lastReaderOf, memberPermissions, seesInvitations, teamsCreatedHere, workspaceName, workspaceRoleLabel,
+  type MemberPermissions,
+} from '../ui/access'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
-import { dayStamp } from '../ui/format'
+import { count, dayStamp } from '../ui/format'
 import { t } from '../ui/i18n'
 import TeamInviteDialog from './TeamInviteDialog.vue'
 
 const shown = computed(currentWorkspace)
-const inTeam = computed(() => changeableTeam(shown.value))
+/** A team made here, shown to one of its owners or admins: what this section administers. */
+const inTeam = computed(() => changeableTeam(shown.value) && administers(shown.value))
+/** A team made here, shown to a member of it: nothing here is theirs to see. */
+const memberOnly = computed(() => changeableTeam(shown.value) && !administers(shown.value))
 const teamName = computed(() => workspaceName(shown.value))
 const myRole = computed(() => shown.value?.role)
 const admin = computed(() => administers(shown.value))
@@ -46,15 +56,19 @@ const rules = (member: Member): MemberPermissions => memberPermissions(me.value,
 const done = ref('')
 function say(words: string) { done.value = words; announce(words) }
 
-// Reading: the members always, the invitations for owners and admins.
+// Reading, for owners and admins: the members, the invitations, and the
+// directory that names the mailboxes someone is the last reader of.
 function read() {
   if (!inTeam.value) return
   void loadMembers()
+  void loadDirectory()
   if (invites.value) void loadInvites()
 }
 onMounted(() => {
-  if (inTeam.value && !team.members.loaded && !team.members.loading) void loadMembers()
-  if (inTeam.value && invites.value && !team.invites.loaded && !team.invites.loading) void loadInvites()
+  if (!inTeam.value) return
+  if (!team.members.loaded && !team.members.loading) void loadMembers()
+  if (!team.directory.loaded && !team.directory.loading) void loadDirectory()
+  if (invites.value && !team.invites.loaded && !team.invites.loading) void loadInvites()
 })
 watch(() => [workspaces.currentID, myRole.value], () => { done.value = ''; read() })
 /** Refresh reads the person's workspaces too: their own role may have changed, or they joined a team elsewhere. */
@@ -111,9 +125,9 @@ const confirmText = computed(() => {
   if (!target) return ''
   const name = target.member.name || target.member.email
   switch (target.kind) {
-    case 'disable': return t('{name} stays listed in {team} but loses their access to every mailbox of it now. Enabling them again gives none of it back.', { name, team: teamName.value })
-    case 'remove': return t('{name} leaves {team}: their access to its mailboxes goes, and invitations to it still waiting for them are deleted. To come back they need a new invitation.', { name, team: teamName.value })
-    case 'leave': return t('Your access to the mailboxes of {team} goes now. To come back you need a new invitation.', { team: teamName.value })
+    case 'disable': return t('{name} stays listed in {team} but loses their access to every mailbox of it now, and the invitations they made for it stop working. Enabling them again gives none of it back.', { name, team: teamName.value })
+    case 'remove': return t('{name} leaves {team}: their access to its mailboxes goes, invitations to it still waiting for them are deleted, and those they made stop working. To come back they need a new invitation.', { name, team: teamName.value })
+    case 'leave': return t('Your access to the mailboxes of {team} goes now, and the invitations you made for it stop working. To come back you need a new invitation.', { team: teamName.value })
   }
   return ''
 })
@@ -133,6 +147,13 @@ async function confirm() {
   else if (target.kind === 'remove') say(t('{name} was removed from {team}.', { name, team: teamName.value }))
 }
 
+/** The addresses of the team's mailboxes a member alone can read, as far as this page knows them. */
+function onlyReads(member: Member): string {
+  return lastReaderOf(member)
+    .map(id => accounts.list.find(item => item.id === id)?.email ?? directoryEntry(id)?.email ?? '')
+    .filter(Boolean).join(', ')
+}
+
 /** Why a member's place cannot be disabled or removed, said beside them. */
 function protectionText(member: Member, permissions: MemberPermissions): string {
   const self = member.user_id === me.value
@@ -140,9 +161,10 @@ function protectionText(member: Member, permissions: MemberPermissions): string 
     return self ? t('You are the team’s only owner: make another member an owner before you leave or step down.')
       : t('The team’s only owner: another member must be made an owner first.')
   }
-  if (permissions.protection === 'linker') {
-    return self ? t('Mailboxes here are linked by you ({count}): you stay in the team until they are removed or another member takes their links over.', { count: member.links })
-      : t('Mailboxes here are linked by them ({count}): they stay in the team until those are removed or another member takes their links over.', { count: member.links })
+  if (permissions.protection === 'last-reader') {
+    const mailboxes = onlyReads(member) || t('{count} of its mailboxes', { count: count(lastReaderOf(member).length) })
+    return self ? t('You are the only person who can read {mailboxes}: give someone else Read before you leave.', { mailboxes })
+      : t('The only person who can read {mailboxes}: give someone else Read before disabling or removing them.', { mailboxes })
   }
   return ''
 }
@@ -228,7 +250,7 @@ const headingTarget = () => heading.value
             <span class="badges">
               <span v-if="member.user_id === me" class="pill">{{ t('You') }}</span>
               <span v-if="member.last_owner" class="pill">{{ t('Only owner') }}</span>
-              <span v-if="member.links" class="pill">{{ t('Linked mailboxes: {count}', { count: member.links }) }}</span>
+              <span v-if="lastReaderOf(member).length" class="pill">{{ t('Only reader: {count}', { count: count(lastReaderOf(member).length) }) }}</span>
               <span v-if="member.status === 'disabled'" class="pill bad">{{ t('Disabled') }}</span>
               <span v-if="member.person_disabled" class="pill bad">{{ t('Disabled on this server') }}</span>
             </span>
@@ -265,9 +287,11 @@ const headingTarget = () => heading.value
         <p v-if="myRole === 'admin'" class="hint">{{ t('As an admin, you see and make invitations for members only.') }}</p>
       </template>
 
-      <p class="hint">{{ t('Being in the team gives nobody access to its mailboxes: access is given mailbox by mailbox, from each one’s card in Mailboxes, and access to its mail only by someone who has it. Owners and admins see every mailbox of the team, and who has access to it, but read none by being so.') }}</p>
+      <p class="hint">{{ t('Being in the team gives nobody access to its mailboxes: owners and admins give it mailbox by mailbox, from each one’s card in Mailboxes, and give Read only on a mailbox they read themselves. They manage every mailbox of the team by their role, and read none by it. Changing someone’s role or status, or removing them, ends the invitations they made.') }}</p>
       <div v-if="creatable" class="team-more"><button class="ghost small" type="button" aria-haspopup="dialog" @click="openNaming('create')"><AppIcon name="plus" :size="16" />{{ t('Create another team…') }}</button></div>
     </template>
+
+    <p v-else-if="memberOnly" class="note">{{ t('The people of {team}, and who can use each of its mailboxes, are managed by its owners and admins.', { team: teamName }) }}</p>
 
     <template v-else>
       <section class="team-card personal">

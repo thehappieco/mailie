@@ -15,6 +15,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/netguard"
 	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -27,9 +28,6 @@ type Account struct {
 	// WorkspaceID is the workspace the mailbox belongs to, which never
 	// changes: a person's personal workspace, a team, or the operator's.
 	WorkspaceID string `json:"workspace_id"`
-	// LinkedBy is the person who linked the mailbox, under whose consent to
-	// sync it syncs. Absent for a mailbox of the operator workspace.
-	LinkedBy    string `json:"linked_by,omitempty"`
 	Email       string `json:"email"`
 	DisplayName string `json:"display_name,omitempty"`
 	Provider    string `json:"provider"`
@@ -101,6 +99,14 @@ type AddAccountRequest struct {
 	// workspace, or the operator workspace for an instance key. A team takes
 	// a mailbox from its owners and admins.
 	WorkspaceID string `json:"workspace_id,omitempty"`
+	// SyncConsentVersion, for a team mailbox, gives the team's consent to
+	// sync it with the link, on the team's behalf: it must name the current
+	// revision of the sync text (the console shows that text beside the
+	// switch). Left out, the mailbox is linked with sync off, until an owner
+	// or an admin turns it on (PUT /v1/accounts/{id}/sync). A personal
+	// mailbox syncs under its person's own consent, and an operator mailbox
+	// is switched on by the operator: neither takes it.
+	SyncConsentVersion string `json:"sync_consent_version,omitempty"`
 }
 
 // AuthFlow is what a caller needs to finish consent.
@@ -214,11 +220,13 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 
 // AddAccount links a mailbox and starts consent where needed.
 //
-// It is linked by whoever adds it — the signed-in person, under whose consent
-// to sync it then syncs, who gets every flag on it — or by nobody for an
-// instance key. It goes into the workspace the request names, or the
-// person's personal workspace, or the operator workspace for an instance key
-// (linkInto says who may link where).
+// It goes into the workspace the request names, or the person's personal
+// workspace, or the operator workspace for an instance key (linkInto says who
+// may link where). The person who links it gets read, act and send on it and
+// manages it by their role; the consent flow is theirs. A personal mailbox
+// syncs under its person's own consent; a team mailbox under its workspace's,
+// which the link gives when it names the current sync text, and otherwise an
+// owner or an admin gives later.
 func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountRequest) (AddAccountResult, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AddAccountResult{}, err
@@ -233,15 +241,21 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 	if err != nil {
 		return AddAccountResult{}, err
 	}
-	if add.WorkspaceID, add.Check, err = s.linkInto(ctx, p, strings.TrimSpace(req.WorkspaceID)); err != nil {
+	link, err := s.linkInto(ctx, p, strings.TrimSpace(req.WorkspaceID), req.SyncConsentVersion)
+	if err != nil {
 		return AddAccountResult{}, err
 	}
+	add.WorkspaceID, add.Check, add.SyncConsent = link.workspaceID, link.check, link.consent
 
 	created, flow, err := s.accounts.Add(ctx, add)
 	if created.ID != "" {
 		// The mailbox exists, and its linker reads it, whether or not its
 		// consent could be started.
 		s.accessChanged()
+		if created.SyncConsent.At != 0 {
+			s.log.Info("team mailbox linked with its workspace's consent to sync", "account", created.ID,
+				"workspace", created.WorkspaceID, "by", p.Actor(), "version", created.SyncConsent.Version)
+		}
 	}
 	if err != nil {
 		// The account row may exist in pending_auth even when consent could
@@ -279,7 +293,7 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 		IMAPHost: strings.TrimSpace(req.IMAPHost), IMAPPort: req.IMAPPort,
 		SMTPHost: strings.TrimSpace(req.SMTPHost), SMTPPort: req.SMTPPort, SMTPTLS: req.SMTPTLS,
 		LoginUser: req.LoginUser, InitialDays: req.InitialDays, SaveSentCopy: req.SaveSent,
-		OwnerUserID: p.UserID, ICloud: icloud,
+		LinkerID: p.UserID, LinkedBy: p.Actor(), ICloud: icloud,
 	}
 	if icloud {
 		// Set at all, it is for an iCloud+ custom domain: Apple refuses that
@@ -321,8 +335,8 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 		return account.AddRequest{}, E(CodeBadRequest, "a generic IMAP account needs imap_host and smtp_host", nil)
 	}
 	if p.UserID != "" && req.InitialDays != 0 && req.InitialDays != account.PersonInitialDays {
-		// What a person consented to is the last 90 days. Only the operator,
-		// for a mailbox nobody owns, may reach further back.
+		// What a person, or a team, consented to is the last 90 days. Only
+		// the operator, for an operator mailbox, may reach further back.
 		return account.AddRequest{}, Ef(CodeBadRequest, nil,
 			"a person's mailbox is synced back %d days; initial_days cannot be changed", account.PersonInitialDays)
 	}
@@ -476,53 +490,129 @@ func fromCompletion(err error) error {
 	}
 }
 
-// RemoveAccount forgets an account and everything indexed for it: whoever
-// manages it may.
-func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string) error {
-	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage); err != nil {
+// RemoveAccountRequest names the mailbox again, as a guard against removing
+// the wrong one: Confirm must repeat its id.
+type RemoveAccountRequest struct {
+	Confirm string
+}
+
+// RemoveAccount forgets an account and everything indexed for it. The
+// request repeats its id in Confirm, or nothing is removed. Who: an owner or
+// an admin of its team, for a team mailbox; its person, for a personal one;
+// an instance key with the admin scope, for an operator mailbox.
+func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req RemoveAccountRequest) error {
+	if req.Confirm != id {
+		return E(CodeBadRequest, "deleting a mailbox needs its id repeated in confirm; nothing was removed", nil)
+	}
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needCard)
+	if err != nil {
 		return err
 	}
-	err := s.accounts.Remove(ctx, id)
+	check := func(tx *sql.Tx) error { return mayRemoveTx(ctx, tx, p, a) }
+	if err := s.precheck(ctx, check); err != nil {
+		return err
+	}
+	err = s.accounts.RemoveChecked(ctx, id, check)
+	var se *Error
 	switch {
+	case errors.As(err, &se):
+		return err
 	case errors.Is(err, account.ErrNotFound):
 		return E(CodeNotFound, "no such account", err)
 	case err != nil:
 		return E(CodeInternal, "removing the account failed", err)
 	}
+	s.log.Info("mailbox removed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
 	s.accessChanged()
 	s.compact(ctx)
 	return nil
 }
 
-// linkInto decides where a new mailbox goes and who may put it there, and
-// returns the workspace for the registry (empty: its default) and the check
-// its transaction runs.
+// mayRemoveTx re-reads, inside the transaction that removes a mailbox, that
+// the caller may: an instance key for an operator mailbox (visibility let
+// only that reach it), the person of a personal one, an active owner or
+// admin of a team's.
+func mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) error {
+	switch {
+	case a.WorkspaceID == workspace.OperatorID:
+		if p.IsInstance() {
+			return nil
+		}
+		return errNoAccount
+	case p.IsInstance():
+		return errNoAccount
+	case a.OwnerUserID != "":
+		if a.OwnerUserID == p.UserID {
+			return nil
+		}
+		return errNoAccount
+	}
+	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+	if err != nil {
+		return errNoAccount
+	}
+	if !adminOf(me) {
+		return errRemoveTeamMailbox
+	}
+	return nil
+}
+
+var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner or an admin of the team removes its mailboxes", nil)
+
+// link is where a new mailbox goes, the check its transaction runs, and the
+// workspace's consent to sync it, when the link gives one.
+type link struct {
+	workspaceID string
+	check       func(*sql.Tx) error
+	consent     store.MailboxConsent
+}
+
+// linkInto decides where a new mailbox goes and who may put it there.
 //
 // A person links into their personal workspace, and into a team they are an
 // active owner or admin of: a link puts a mailbox's index in a space the
-// team shares, so a member asks one of them; and, into a team, with no
-// consent to sync or one to the current text (syncCoversTeamTx). An instance
-// key links into the operator workspace only. The role and the consent are
-// read again inside the transaction that creates the mailbox.
-func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID string) (string, func(*sql.Tx) error, error) {
+// team shares, so a member asks one of them. With syncVersion naming the
+// current revision of the sync text, a link into a team also gives the
+// team's consent to sync it, on the team's behalf; any other revision is
+// refused, and none links it with sync off. An instance key links into the
+// operator workspace only. The role is read again inside the transaction
+// that creates the mailbox.
+func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVersion string) (link, error) {
+	syncVersion = strings.TrimSpace(syncVersion)
 	if p.IsInstance() {
-		if workspaceID == "" || workspaceID == workspace.OperatorID {
-			return workspaceID, nil, nil
+		switch {
+		case workspaceID != "" && workspaceID != workspace.OperatorID:
+			return link{}, E(CodeNotAuthorized, "an instance key links mailboxes into the operator workspace only", nil)
+		case syncVersion != "":
+			return link{}, errSyncVersionNotTeam
 		}
-		return "", nil, E(CodeNotAuthorized, "an instance key links mailboxes into the operator workspace only", nil)
+		return link{workspaceID: workspaceID}, nil
 	}
 	if workspaceID == "" {
-		return "", nil, nil
+		if syncVersion != "" {
+			return link{}, errSyncVersionNotTeam
+		}
+		return link{}, nil
 	}
 	if s.workspaces == nil {
-		return "", nil, errNoWorkspace
+		return link{}, errNoWorkspace
 	}
 	w, err := s.workspaces.Get(ctx, workspaceID)
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
-		return "", nil, errNoWorkspace
+		return link{}, errNoWorkspace
 	case err != nil:
-		return "", nil, E(CodeInternal, "reading the workspace failed", err)
+		return link{}, E(CodeInternal, "reading the workspace failed", err)
+	}
+	var consent store.MailboxConsent
+	switch {
+	case syncVersion == "":
+	case w.Kind != workspace.KindTeam:
+		return link{}, errSyncVersionNotTeam
+	case syncVersion != s.consent.Sync:
+		return link{}, errNotCurrentText(s.consent.Sync)
+	default:
+		consent = store.MailboxConsent{At: s.now().Unix(), By: p.Actor(), Version: syncVersion}
 	}
 	check := func(tx *sql.Tx) error {
 		m, err := workspace.MemberTx(ctx, tx, w.ID, p.UserID)
@@ -533,30 +623,20 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID string)
 			return err
 		case !m.Active():
 			return errNoWorkspace
-		case w.Kind == workspace.KindTeam && m.Role != workspace.RoleOwner && m.Role != workspace.RoleAdmin:
+		case w.Kind == workspace.KindTeam && !adminOf(m):
 			return errLinkTeam
-		}
-		if w.Kind != workspace.KindTeam {
-			return nil
-		}
-		// A team mailbox syncs under its linker's consent from the moment it
-		// works: one given to an earlier text, which may not say who reads a
-		// team mailbox, is not enough. None at all is: nothing syncs until
-		// they agree, and they can agree only to the current text.
-		consented, current, err := s.syncCoversTeamTx(ctx, tx, p.UserID)
-		switch {
-		case err != nil:
-			return err
-		case consented && !current:
-			return errLinkTeamOutdated
 		}
 		return nil
 	}
 	if err := s.precheck(ctx, check); err != nil {
-		return "", nil, fromWorkspace(err, "reading the workspace failed")
+		return link{}, fromWorkspace(err, "reading the workspace failed")
 	}
-	return w.ID, check, nil
+	return link{workspaceID: w.ID, check: check, consent: consent}, nil
 }
+
+var errSyncVersionNotTeam = E(CodeBadRequest,
+	"sync_consent_version is a team's consent to sync a mailbox linked into it; a personal mailbox syncs under "+
+		"its person's own consent, and an operator mailbox is switched on by the operator", nil)
 
 var errLinkTeam = E(CodeNotAuthorized,
 	"only an owner or an admin of the team links mailboxes into it; ask one of them", nil)
@@ -834,7 +914,7 @@ func fromMailbox(err error) error {
 
 func presentAccount(a account.Account) Account {
 	out := Account{
-		ID: a.ID, WorkspaceID: a.WorkspaceID, LinkedBy: a.OwnerUserID, Email: a.Email, DisplayName: a.DisplayName,
+		ID: a.ID, WorkspaceID: a.WorkspaceID, Email: a.Email, DisplayName: a.DisplayName,
 		Provider: a.ProviderName(), AuthKind: a.AuthKind,
 		State: string(a.State), StateReason: a.StateReason,
 		SyncTier: a.SyncTierResolved, SaveSentCopy: a.SaveSentCopy,

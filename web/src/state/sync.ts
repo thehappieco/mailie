@@ -2,6 +2,8 @@
 //
 // Nothing from a person's mail is kept until they agree in the console, and
 // turning sync off deletes what was kept: the edition's sync text says so.
+// This is the person's own agreement, for the mailboxes of their personal
+// workspace; a team's mailbox syncs under the team's (state/team.ts).
 // The daemon enforces both; this store asks the person, shows their answer,
 // and after either change reloads the accounts so every card says what is now
 // true. "Not now" is remembered in memory only: the next visit asks again.
@@ -9,7 +11,6 @@
 import { reactive, watch } from 'vue'
 import * as api from '../api/sync'
 import type { SyncConsent } from '../api/types'
-import type { SyncStanding } from '../ui/access'
 import { announce } from '../ui/announce'
 import { edition } from '../edition'
 import { t } from '../ui/i18n'
@@ -93,16 +94,6 @@ export function syncOn(): boolean {
   return consent.loaded && consent.consented
 }
 
-/**
- * Where the person stands on sync, for what waits on it: taking a link over,
- * connecting a mailbox to a team (ui/access.ts). Not read yet, the server
- * decides.
- */
-export function syncStanding(): SyncStanding {
-  if (!consent.loaded) return { consented: true, current: true }
-  return { consented: consent.consented, current: consent.consented && consent.version === consent.currentVersion }
-}
-
 export async function loadConsent(): Promise<void> {
   const ok = current()
   consent.loading = true
@@ -162,8 +153,8 @@ export async function grantConsent(): Promise<boolean> {
 
 /**
  * withdrawConsent turns sync off: the server stops every worker of the
- * person's mailboxes and deletes what it indexed for them before answering.
- * Folder lists read from that index go with it.
+ * person's personal mailboxes and deletes what it indexed for them before
+ * answering. Folder lists read from that index go with it.
  */
 export async function withdrawConsent(): Promise<boolean> {
   if (consent.busy) return false

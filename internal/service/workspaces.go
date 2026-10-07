@@ -8,7 +8,6 @@ import (
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
-	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -16,13 +15,22 @@ import (
 // workspaces a caller belongs to, a team's members and invites, and who holds
 // what on each of its mailboxes.
 //
+// A team's owners and admins administer it, as Wappie's do: they see its
+// members and who holds what on each mailbox, invite, change and remove
+// members (an admin members only), grant and revoke, and manage every
+// mailbox of the team by their role, reading none. A member sees only the
+// mailboxes they hold a grant on, and neither the members nor the directory,
+// and does not leave by themselves: an owner or an admin removes them. An
+// owner leaves while another owner remains. The operator administers every
+// team's people, grants manage to members and revokes, and reads nothing.
+//
 // The rules about who may ask are all here. internal/workspace keeps the data
 // and the protections a change must never break — a team keeps an active
-// owner, the person a mailbox syncs under stays while it is linked, a linked
-// mailbox keeps a holder of manage — and runs, first inside each write's
-// transaction, the check this file hands it, which re-reads the caller's own
-// place in the workspace there. A person's key administers nothing: these
-// take a person signed in, or the operator's unrestricted instance admin key.
+// owner, a team mailbox someone reads keeps a reader — and runs, first inside
+// each write's transaction, the check this file hands it, which re-reads the
+// caller's own place in the workspace there. A person's key administers
+// nothing: these take a person signed in, or the operator's unrestricted
+// instance admin key.
 //
 // Not found rather than forbidden, as for mailboxes: a workspace the caller
 // is not an active member of does not exist for them, nor does a mailbox of
@@ -80,10 +88,12 @@ type Member struct {
 	// LastOwner is the team's only active owner, who cannot be demoted,
 	// disabled or removed until another member is an owner.
 	LastOwner bool `json:"last_owner"`
-	// Links counts the mailboxes they linked here, each of which keeps them
-	// in the team until it is removed or taken over.
-	Links    int   `json:"links"`
-	JoinedAt int64 `json:"joined_at"`
+	// LastReaderOf are the team mailboxes this member is the only reader
+	// of: their read is not revoked, nor their membership disabled or
+	// removed, nor their account closed without force, until someone else
+	// reads them.
+	LastReaderOf []string `json:"last_reader_of"`
+	JoinedAt     int64    `json:"joined_at"`
 }
 
 // MemberRequest changes a member's role, status or both; a field left out
@@ -126,10 +136,45 @@ type MailboxAccess struct {
 	Email     string `json:"email"`
 	Provider  string `json:"provider"`
 	State     string `json:"state"`
-	// LinkedBy is the person it syncs under, whose grant nobody changes
-	// while it is linked; absent in the operator workspace.
-	LinkedBy string  `json:"linked_by,omitempty"`
+	// LinkedBy is who linked it, for attribution only: "usr_…",
+	// "key:<prefix>" or "cli"; absent once that person is deleted.
+	LinkedBy string `json:"linked_by,omitempty"`
+	// Sync is the mailbox's own consent to sync: a team mailbox's, its
+	// workspace's; an operator mailbox's switch. Absent for a personal
+	// mailbox, which syncs under its person's own consent.
+	Sync *MailboxConsent `json:"sync,omitempty"`
+	// Readers counts who can read it: active members, active on the
+	// instance, holding read. Keys and roles never count.
+	Readers int `json:"readers"`
+	// NoReader is a team mailbox nobody can read: it syncs nothing more,
+	// and only removing it and linking it again gives anyone read on it.
+	NoReader bool    `json:"no_reader"`
 	Grants   []Grant `json:"grants"`
+}
+
+// MailboxConsent is a mailbox's own consent to sync, as its workspace's
+// owners and admins see it.
+type MailboxConsent struct {
+	// Enabled is whether it stands. Sync runs when it does, the mailbox is
+	// active and, for a team's, someone reads it.
+	Enabled bool `json:"enabled"`
+	// EnabledAt, EnabledBy and Version say when, by whom ("usr_…",
+	// "key:<prefix>", "cli"; absent once that person is deleted) and to
+	// which revision of the sync text it was given; no revision for an
+	// operator mailbox.
+	EnabledAt int64  `json:"enabled_at,omitempty"`
+	EnabledBy string `json:"enabled_by,omitempty"`
+	Version   string `json:"version,omitempty"`
+	// Migrated is a consent the upgrade to this release copied from the
+	// person who linked the mailbox (EnabledBy), still bound to them: their
+	// turning sync off, or their account being disabled or deleted, stops it
+	// and deletes its index, until an owner or an admin confirms it at the
+	// current revision (PUT /v1/accounts/{id}/sync). Also set, with Enabled
+	// false, on a mailbox kept stopped with its index because that person
+	// was disabled.
+	Migrated bool `json:"migrated,omitempty"`
+	// Current is whether Version is the revision this server asks for now.
+	Current bool `json:"current"`
 }
 
 // Grant is what one person holds on one mailbox.
@@ -139,7 +184,9 @@ type Grant struct {
 	Read      bool   `json:"read"`
 	Act       bool   `json:"act"`
 	Send      bool   `json:"send"`
-	Manage    bool   `json:"manage"`
+	// Manage is stored for members only: owners and admins manage every
+	// mailbox of their workspace by their role, which the members list says.
+	Manage bool `json:"manage"`
 	// GrantedBy is who set it last: "usr_…", "key:<prefix>" or "migration";
 	// absent once that person is deleted.
 	GrantedBy string `json:"granted_by,omitempty"`
@@ -167,37 +214,13 @@ var (
 	errNoInvite             = E(CodeNotFound, "no such pending invite", nil)
 	errNoAccount            = E(CodeNotFound, "no such account", nil)
 	errOperatorGrantsManage = E(CodeNotAuthorized,
-		"the operator grants manage only: read, act and send pass from a member who holds them", nil)
-	errTakeOverRole = E(CodeConflict,
-		"only an owner or an admin of the team may take a link over, as only they link mailboxes into it", nil)
-	errTakeOverConsent = E(CodeConflict,
-		"taking a link over needs your consent to sync first: the mailbox would sync under it", nil)
-	errTakeOverOutdated = E(CodeConflict,
-		"taking a link over needs your consent to the current sync text: the mailbox would sync under it, "+
-			"and an earlier text may not say who reads a team mailbox; agree to the current one first", nil)
-	errLinkTeamOutdated = E(CodeConflict,
-		"your consent to sync was given to an earlier text: a mailbox linked into a team syncs under it at once, "+
-			"and that text may not say who reads a team mailbox; agree to the current one first", nil)
+		"the operator grants manage only: read passes from an owner or an admin who reads the mailbox, "+
+			"and act and send from an owner or an admin", nil)
+	errNoLeave = E(CodeNotAuthorized,
+		"members and admins do not leave a team by themselves: an owner removes an admin, and an owner or an admin a member", nil)
+	errGrantReadNotHeld = E(CodeNotAuthorized,
+		"you can grant read on a mailbox only while you read it yourself", nil)
 )
-
-// syncCoversTeamTx reads, inside the caller's transaction, whether a person's
-// consent to sync may cover a team mailbox: given, and to the text the
-// server describes sync with now (MAIL_CONSENT_VERSION_SYNC). Eligibility
-// keeps a consent to an earlier text syncing what it already covered, but a
-// team mailbox that comes to sync under someone's consent, by a link or a
-// take-over, does so only under a text that says who reads its index.
-func (s *Service) syncCoversTeamTx(ctx context.Context, tx *sql.Tx, userID string) (consented, current bool, err error) {
-	c, err := store.SyncConsentTx(ctx, tx, userID)
-	if err != nil {
-		return false, false, err
-	}
-	return c.At != 0, c.At != 0 && c.Version == s.consent.Sync, nil
-}
-
-// errGrantNotHeld refuses passing on a flag the caller does not hold.
-func errGrantNotHeld(flag string) error {
-	return E(CodeNotAuthorized, "you can grant "+flag+" on a mailbox only while you hold it yourself", nil)
-}
 
 // administers admits who may administer workspaces: a person signed in, or
 // the operator.
@@ -376,15 +399,20 @@ func (s *Service) RenameWorkspace(ctx context.Context, p Principal, id string, r
 	return presentWorkspace(w, false), nil
 }
 
-// ListMembers lists a workspace's memberships, active or not, for any active
-// member of it and for the operator. The protections are marked in advance
-// (last_owner, links), so a client can explain before anyone tries.
+// ListMembers lists a workspace's memberships, active or not, for its
+// owners and admins and for the operator; a member is not_authorized. The
+// protections are marked in advance (last_owner, last_reader_of), so a client
+// can explain before anyone tries.
 func (s *Service) ListMembers(ctx context.Context, p Principal, id string) ([]Member, error) {
 	if err := administers(p); err != nil {
 		return nil, err
 	}
-	if _, _, err := s.workspaceOf(ctx, p, id); err != nil {
+	_, me, err := s.workspaceOf(ctx, p, id)
+	if err != nil {
 		return nil, err
+	}
+	if !isOperator(p) && !adminOf(me) {
+		return nil, errTeamAdmin
 	}
 	members, err := s.workspaces.Members(ctx, id)
 	if err != nil {
@@ -399,8 +427,10 @@ func (s *Service) ListMembers(ctx context.Context, p Principal, id string) ([]Me
 
 // SetMember changes a member's role or status in a team. An owner changes
 // anyone's, the operator too; an admin changes only members', and never to
-// admin or owner. Disabling a membership takes the person's grants in the
-// team with it, and enabling it again restores none.
+// admin or owner. Any change expires the invites the person made in the team
+// that are still waiting. Disabling a membership takes the person's grants
+// in the team with it, and enabling it again restores none; the last reader
+// of one of its mailboxes is not disabled.
 func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string, req MemberRequest) (Member, error) {
 	if err := administers(p); err != nil {
 		return Member{}, err
@@ -453,10 +483,12 @@ func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string,
 	return presentMember(m), nil
 }
 
-// RemoveMember removes a person from a team: an owner removes anyone, an
-// admin members only, a member only themselves (leaving), and the operator
-// anyone. Their grants in the team go with them, and so do the team's invites
-// still waiting for their address.
+// RemoveMember removes a person from a team: an owner removes anyone,
+// themselves included while another active owner remains; an admin members
+// only; the operator anyone. A member or an admin never removes themselves.
+// Their grants in the team go with them, the team's invites still waiting
+// for their address are deleted, and the invites they made there expire. The
+// last reader of one of the team's mailboxes is not removed.
 func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID string) error {
 	if err := administers(p); err != nil {
 		return err
@@ -470,10 +502,12 @@ func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID stri
 			return err
 		}
 		switch {
-		case isOperator(p), me.Role == workspace.RoleOwner, userID == p.UserID:
+		case isOperator(p), me.Role == workspace.RoleOwner:
 			return nil
+		case userID == p.UserID:
+			return errNoLeave
 		case me.Role != workspace.RoleAdmin:
-			return E(CodeNotAuthorized, "only an owner or an admin of the team removes members; a member may leave", nil)
+			return errTeamAdmin
 		}
 		target, err := workspace.MemberTx(ctx, tx, id, userID)
 		if err != nil {
@@ -620,10 +654,10 @@ func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInvit
 	return presentWorkspace(w, false), nil
 }
 
-// AccessDirectory lists a workspace's mailboxes and every grant on each: for
-// its owners and admins and the operator, every mailbox; for a member, the
-// ones they manage. Addresses and grants, never what a mailbox holds: seeing
-// the directory reads no mail.
+// AccessDirectory lists a workspace's mailboxes and every grant on each, with
+// who can read each one, its own consent to sync and who linked it: for its
+// owners and admins and the operator; a member is not_authorized. Addresses
+// and grants, never what a mailbox holds: seeing the directory reads no mail.
 func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) ([]MailboxAccess, error) {
 	if err := administers(p); err != nil {
 		return nil, err
@@ -632,11 +666,10 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 	if err != nil {
 		return nil, err
 	}
-	managedBy := ""
 	if !isOperator(p) && !adminOf(me) {
-		managedBy = p.UserID
+		return nil, errTeamAdmin
 	}
-	dir, err := s.workspaces.Directory(ctx, id, managedBy)
+	dir, err := s.workspaces.Directory(ctx, id)
 	if err != nil {
 		return nil, fromWorkspace(err, "listing who has access failed")
 	}
@@ -646,18 +679,21 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 	if err != nil {
 		return nil, E(CodeInternal, "listing the workspace's mailboxes failed", err)
 	}
-	providers := make(map[string]string, len(accounts))
+	byID := make(map[string]account.Account, len(accounts))
 	for _, a := range accounts {
-		providers[a.ID] = a.ProviderName()
+		byID[a.ID] = a
 	}
 	out := make([]MailboxAccess, 0, len(dir))
 	for _, mb := range dir {
 		shown := MailboxAccess{
 			AccountID: mb.AccountID, Email: mb.Email, Provider: mb.Provider, State: mb.State,
-			LinkedBy: mb.LinkedBy, Grants: make([]Grant, 0, len(mb.Grants)),
+			LinkedBy: mb.LinkedBy, Readers: mb.Readers, NoReader: mb.NoReader, Grants: make([]Grant, 0, len(mb.Grants)),
 		}
-		if name, ok := providers[mb.AccountID]; ok {
-			shown.Provider = name
+		if a, ok := byID[mb.AccountID]; ok {
+			shown.Provider = a.ProviderName()
+			if a.OwnerUserID == "" {
+				shown.Sync = s.presentMailboxConsent(mb.Sync)
+			}
 		}
 		for _, g := range mb.Grants {
 			shown.Grants = append(shown.Grants, presentGrant(g))
@@ -667,20 +703,33 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 	return out, nil
 }
 
+// presentMailboxConsent renders a mailbox's own consent to sync.
+func (s *Service) presentMailboxConsent(c workspace.Consent) *MailboxConsent {
+	out := &MailboxConsent{
+		Enabled: !c.At.IsZero(), EnabledBy: c.By, Version: c.Version, Migrated: c.Migrated,
+		Current: c.Version == s.consent.Sync,
+	}
+	if !c.At.IsZero() {
+		out.EnabledAt = c.At.Unix()
+	}
+	return out
+}
+
 // SetAccess sets exactly what a person holds on a mailbox (docs/workspaces.md,
 // "Who may change a grant"):
 //
-//   - who: an owner or an admin of the mailbox's workspace, a member who
-//     manages the mailbox, or the operator;
-//   - what: read, act and send pass only from someone who holds them on the
-//     mailbox — owners and admins get no automatic read, and cannot give it
-//     to themselves — and manage from an owner, an admin or a manager; the
-//     operator grants manage only;
-//   - to whom: an active member of the mailbox's workspace.
+//   - who: an owner or an admin of the mailbox's workspace, or the operator,
+//     which grants manage only;
+//   - what: read only from an owner or an admin who reads the mailbox
+//     themselves, now — no role reads, and none hands itself read; act and
+//     send from any owner or admin, without holding them, act to someone who
+//     reads after the change; manage to members only, whom owners and admins
+//     manage beside by their role;
+//   - to whom: an active member of the mailbox's workspace, the caller
+//     included.
 //
-// Taking flags away this way is a revoke, and needs nothing held. The
-// protections are the repository's: the linker's grant never changes, and a
-// linked mailbox keeps a manager.
+// Taking flags away this way is a revoke, and needs nothing held. The last
+// reader of a team mailbox keeps read (the repository's rule).
 func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID string, req GrantRequest) (Grant, error) {
 	if err := administers(p); err != nil {
 		return Grant{}, err
@@ -705,8 +754,9 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 }
 
 // RevokeAccess takes flags away from a person's grant on a mailbox; none
-// named takes every one. An owner or an admin of the workspace, a manager of
-// the mailbox, the operator, or the person dropping their own.
+// named takes every one. An owner or an admin of the workspace, their own
+// flags included, or the operator; a member never, not even their own. The
+// last reader of a team mailbox keeps read.
 func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags) error {
 	if err := administers(p); err != nil {
 		return err
@@ -716,17 +766,8 @@ func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, user
 		return err
 	}
 	_, err = s.workspaces.Revoke(ctx, a.ID, userID, drop, func(tx *sql.Tx) error {
-		if isOperator(p) {
-			return nil
-		}
-		me, err := callerTx(ctx, tx, p, a.WorkspaceID)
-		if err != nil {
-			return errNoAccount
-		}
-		if userID == p.UserID || adminOf(me) {
-			return nil
-		}
-		return requireManagerOfTx(ctx, tx, p, a.ID)
+		_, err := administratorTx(ctx, tx, p, a)
+		return err
 	})
 	if err != nil {
 		return fromWorkspace(err, "revoking the access failed")
@@ -757,59 +798,10 @@ func ParseFlags(list string) (workspace.Flags, error) {
 	return f, nil
 }
 
-// TakeOver makes the person signed in the one a mailbox is linked by, whose
-// consent to sync it then syncs under: the way a team keeps a mailbox when the
-// person who linked it leaves. They must hold every flag on it, be allowed to
-// link into its workspace — an owner or an admin of a team — and have agreed
-// to sync, to the current text; the index is kept, and the previous linker
-// keeps their grant as an ordinary one.
-func (s *Service) TakeOver(ctx context.Context, p Principal, accountID string) (Account, error) {
-	if err := requireSession(p); err != nil {
-		return Account{}, err
-	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
-	if err != nil {
-		return Account{}, err
-	}
-	previous, err := s.workspaces.TakeOver(ctx, a.ID, p.UserID, func(tx *sql.Tx) error {
-		w, err := workspace.GetTx(ctx, tx, a.WorkspaceID)
-		if err != nil {
-			return err
-		}
-		me, err := callerTx(ctx, tx, p, a.WorkspaceID)
-		if err != nil {
-			return errNoAccount
-		}
-		if w.Kind == workspace.KindTeam && !adminOf(me) {
-			return errTakeOverRole
-		}
-		consented, current, err := s.syncCoversTeamTx(ctx, tx, p.UserID)
-		switch {
-		case err != nil:
-			return err
-		case !consented:
-			return errTakeOverConsent
-		case !current:
-			return errTakeOverOutdated
-		}
-		return nil
-	})
-	if err != nil {
-		return Account{}, fromWorkspace(err, "taking the link over failed")
-	}
-	if previous != p.UserID {
-		s.log.Info("link taken over", "account", a.ID, "from", previous, "to", p.UserID)
-		s.accessChanged()
-		// It now syncs under another person's consent, which may differ.
-		s.reconcile(a.ID)
-	}
-	return s.GetAccount(ctx, p, a.ID)
-}
-
 // accessTarget reads a mailbox whose access the caller asks about. The
-// operator reaches any. A person must be an active member of its workspace
-// and either administer the workspace or hold a grant on the mailbox;
-// otherwise it does not exist for them.
+// operator reaches any. A person must be an owner or an admin of its
+// workspace; a member who holds a grant on it sees it and is not_authorized;
+// anyone else is told it does not exist.
 func (s *Service) accessTarget(ctx context.Context, p Principal, accountID string) (account.Account, error) {
 	a, err := s.accounts.Repo().Get(ctx, accountID)
 	switch {
@@ -821,12 +813,13 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 	if isOperator(p) {
 		return a, nil
 	}
-	if _, me, err := s.workspaceOf(ctx, p, a.WorkspaceID); err != nil {
-		if CodeOf(err) == CodeNotFound {
-			return account.Account{}, errNoAccount
-		}
+	_, me, err := s.workspaceOf(ctx, p, a.WorkspaceID)
+	switch {
+	case CodeOf(err) == CodeNotFound:
+		return account.Account{}, errNoAccount
+	case err != nil:
 		return account.Account{}, err
-	} else if adminOf(me) {
+	case adminOf(me):
 		return a, nil
 	}
 	held, err := s.grantsOf(ctx, p, a.ID)
@@ -836,12 +829,41 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 	if !held[a.ID].Any() {
 		return account.Account{}, errNoAccount
 	}
-	return a, nil
+	return account.Account{}, errTeamAdmin
+}
+
+// administratorTx re-reads, inside a write's transaction, that the caller
+// administers a mailbox's grants: the operator, or an active owner or admin
+// of its workspace, whose membership it returns. A member who holds a grant
+// on it is not_authorized; anyone else is told it does not exist.
+func administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) (workspace.Member, error) {
+	if isOperator(p) {
+		return workspace.Member{}, nil
+	}
+	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+	if err != nil {
+		return workspace.Member{}, errNoAccount
+	}
+	if adminOf(me) {
+		return me, nil
+	}
+	mine, err := workspace.GrantTx(ctx, tx, a.ID, p.UserID)
+	switch {
+	case errors.Is(err, workspace.ErrNoGrant):
+		return workspace.Member{}, errNoAccount
+	case err != nil:
+		return workspace.Member{}, err
+	}
+	if mine.Any() {
+		return workspace.Member{}, errTeamAdmin
+	}
+	return workspace.Member{}, errNoAccount
 }
 
 // mayGrantTx is the grant rule, re-read inside the transaction that sets the
-// grant: who may, and that every flag the grant adds passes from someone
-// holding it.
+// grant: who may, and that read the grant adds passes from someone reading
+// the mailbox now. Act needing read, manage only for a member and the
+// target's place in the workspace are the repository's to check.
 func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account, userID string, flags workspace.Flags) error {
 	before, err := workspace.GrantTx(ctx, tx, a.ID, userID)
 	if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
@@ -857,46 +879,22 @@ func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account,
 		}
 		return nil
 	}
-	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
-	if err != nil {
-		return errNoAccount
+	if _, err := administratorTx(ctx, tx, p, a); err != nil {
+		return err
 	}
+	if !added.Read {
+		return nil
+	}
+	// The caller is an active member, active on the instance (callerTx):
+	// what they hold counts.
 	mine, err := workspace.GrantTx(ctx, tx, a.ID, p.UserID)
 	if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
 		return err
 	}
-	if !adminOf(me) {
-		if err := requireManagerOfTx(ctx, tx, p, a.ID); err != nil {
-			return err
-		}
-	}
-	switch {
-	case added.Read && !mine.Read:
-		return errGrantNotHeld("read")
-	case added.Act && !mine.Act:
-		return errGrantNotHeld("act")
-	case added.Send && !mine.Send:
-		return errGrantNotHeld("send")
+	if !mine.Read {
+		return errGrantReadNotHeld
 	}
 	return nil
-}
-
-// requireManagerOfTx refuses a caller who does not manage a mailbox: one who
-// holds something else on it sees it and is not_authorized; one who holds
-// nothing does not see it.
-func requireManagerOfTx(ctx context.Context, tx *sql.Tx, p Principal, accountID string) error {
-	mine, err := workspace.GrantTx(ctx, tx, accountID, p.UserID)
-	switch {
-	case errors.Is(err, workspace.ErrNoGrant):
-		return errNoAccount
-	case err != nil:
-		return err
-	case mine.Manage:
-		return nil
-	case mine.Any():
-		return errNoManage
-	}
-	return errNoAccount
 }
 
 // fromTeamInvite maps a failure making, revoking or redeeming a team invite.
@@ -935,9 +933,13 @@ func presentWorkspace(w workspace.Workspace, counts bool) Workspace {
 }
 
 func presentMember(m workspace.Member) Member {
+	last := m.LastReaderOf
+	if last == nil {
+		last = []string{}
+	}
 	return Member{
 		UserID: m.UserID, Email: m.Email, Name: m.Name, Role: string(m.Role), Status: string(m.Status),
-		PersonDisabled: m.PersonDisabled, LastOwner: m.LastOwner, Links: m.Links, JoinedAt: m.JoinedAt.Unix(),
+		PersonDisabled: m.PersonDisabled, LastOwner: m.LastOwner, LastReaderOf: last, JoinedAt: m.JoinedAt.Unix(),
 	}
 }
 

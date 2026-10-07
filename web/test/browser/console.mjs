@@ -23,7 +23,7 @@ import { resolve } from 'node:path'
 import assert from 'node:assert/strict'
 import {
   APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED,
-  fakeDaemon as coreDaemon, focused, noHorizontalOverflow, now, spoken, until,
+  fakeDaemon as coreDaemon, focused, noHorizontalOverflow, now, sleep, spoken, until,
 } from './fakeDaemon.mjs'
 
 const playwright = await import(process.env.QA_PLAYWRIGHT_MODULE || 'playwright')
@@ -39,9 +39,9 @@ const browser = await playwright[engine].launch({
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 /** The revision of the open console's sync text, the daemon's default (src/open/versions.ts). */
-const SYNC_VERSION = '2026-10-open-sync-2'
+const SYNC_VERSION = '2026-10-open-sync-3'
 /** The one that describes actions on messages. */
-const ACTIONS_VERSION = '2026-10-open-actions'
+const ACTIONS_VERSION = '2026-10-open-actions-2'
 /** The text a person agrees to by creating an API key. */
 const KEY_TERMS_VERSION = '2026-10-open-api-keys'
 
@@ -110,7 +110,21 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
     })
     const daemon = fakeDaemon()
     const errors = []
-    await context.route('**/v1/**', route => daemon.handle(route))
+    // Requests being answered, the event stream aside, which stays open.
+    let answering = 0
+    await context.route('**/v1/**', async route => {
+      const streaming = new URL(route.request().url()).pathname === '/v1/events'
+      if (!streaming) answering++
+      try { await daemon.handle(route) } finally { if (!streaming) answering-- }
+    })
+    /** Waits until everything the page asked for is answered, and it asks nothing more for a moment. */
+    const settled = async () => {
+      for (;;) {
+        await until(() => answering === 0, 'the page to settle')
+        await sleep(300)
+        if (answering === 0) return
+      }
+    }
     // Provider pages. Google's goes nowhere (the loopback flow never returns
     // to the console); Microsoft's answers like a consent granted, straight
     // back to the console's return route.
@@ -385,10 +399,22 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       }
 
       // --- a revoked session sends the person to sign in ---------------------
+      // Once the reload's requests are answered: one still on its way would
+      // meet the revoked session first and end it before the click below.
+      await settled()
       daemon.sessions.clear()
-      await openSection('Mailboxes')
-      await page.getByRole('button', { name: 'Refresh' }).click()
-      await page.locator('form[name=mailie-login]').waitFor()
+      const login = page.locator('form[name=mailie-login]')
+      // The event stream reconnects by itself every few seconds, and may
+      // still meet it first: either way the person ends at sign-in, told why.
+      if (!(await login.isVisible())) {
+        try {
+          await openSection('Mailboxes')
+          await page.getByRole('button', { name: 'Refresh' }).click()
+        } catch (error) {
+          if (!(await login.isVisible())) throw error
+        }
+      }
+      await login.waitFor()
       await page.getByText('Your session ended. Sign in again.').waitFor()
       await shot('expired')
 
@@ -769,19 +795,19 @@ for (const { language, mobile, scheme } of only && only !== 'sync' ? [] : [
 
 const ACTIONS_TEXT = {
   'en-US': {
-    account: 'Account', switch: 'Actions on my messages', title: 'Allow actions on your messages?', allow: 'Allow actions', lead: 'This server changes your mailboxes only when it is asked to: by you, or by a tool you gave an API key that can act.',
+    account: 'Account', switch: 'Actions on my messages', title: 'Allow actions on your messages?', allow: 'Allow actions', lead: 'This server changes a mailbox only when someone allowed to act on it asks: you, under this agreement, on the mailboxes where you may act, or a tool with an API key you created that can act.',
     onDone: 'Actions are on. Mailie changes your mailbox only when you ask.', offTitle: 'Turn off actions?', off: 'Turn off actions', offDone: 'Actions are off. Mailie no longer changes anything in your mailboxes.',
     reviewAgree: 'Review and agree', agree: 'I agree', renewTitle: 'Actions on your messages: the terms changed', paused: 'Paused: this server’s text about actions changed since you allowed them on',
     keys: 'API keys & MCP', create: 'Create key', readAct: 'Read and act', openMenu: 'Open menu',
   },
   'pt-BR': {
-    account: 'Conta', switch: 'Ações nas minhas mensagens', title: 'Permitir ações nas suas mensagens?', allow: 'Permitir ações', lead: 'Este servidor muda suas caixas de email só quando alguém pede: você ou uma ferramenta a que você deu uma chave de API que pode agir.',
+    account: 'Conta', switch: 'Ações nas minhas mensagens', title: 'Permitir ações nas suas mensagens?', allow: 'Permitir ações', lead: 'Este servidor muda uma caixa de email só quando alguém com permissão para agir nela pede: você, sob este consentimento, nas caixas de email em que pode agir, ou uma ferramenta com uma chave de API que você criou e que pode agir.',
     onDone: 'As ações estão ligadas. O Mailie muda sua caixa de email só quando você pede.', offTitle: 'Desligar as ações?', off: 'Desligar as ações', offDone: 'As ações estão desligadas. O Mailie não muda mais nada nas suas caixas de email.',
     reviewAgree: 'Revisar e concordar', agree: 'Concordo', renewTitle: 'Ações nas suas mensagens: os termos mudaram', paused: 'Pausadas: o texto deste servidor sobre as ações mudou desde que você as permitiu',
     keys: 'Chaves de API e MCP', create: 'Criar chave', readAct: 'Leitura e ações', openMenu: 'Abrir menu',
   },
   'de-DE': {
-    account: 'Konto', switch: 'Aktionen für meine Nachrichten', title: 'Aktionen für Ihre Nachrichten erlauben?', allow: 'Aktionen erlauben', lead: 'Dieser Server ändert Ihre Postfächer nur, wenn er darum gebeten wird: von Ihnen oder von einem Tool, dem Sie einen API-Schlüssel gegeben haben, der handeln darf.',
+    account: 'Konto', switch: 'Aktionen für meine Nachrichten', title: 'Aktionen für Ihre Nachrichten erlauben?', allow: 'Aktionen erlauben', lead: 'Dieser Server ändert ein Postfach nur, wenn jemand darum bittet, der darin handeln darf: Sie, unter dieser Zustimmung, in den Postfächern, in denen Sie handeln dürfen, oder ein Tool mit einem von Ihnen erstellten API-Schlüssel, der handeln darf.',
     onDone: 'Aktionen sind eingeschaltet. Mailie ändert Ihr Postfach nur, wenn Sie es verlangen.', offTitle: 'Aktionen ausschalten?', off: 'Aktionen ausschalten', offDone: 'Aktionen sind ausgeschaltet. Mailie ändert nichts mehr in Ihren Postfächern.',
     reviewAgree: 'Prüfen und zustimmen', agree: 'Ich stimme zu', renewTitle: 'Aktionen für Ihre Nachrichten: Die Bedingungen haben sich geändert', paused: 'Pausiert: Der Text dieses Servers zu Aktionen hat sich geändert, seit Sie sie am',
     keys: 'API-Schlüssel und MCP', create: 'Schlüssel erstellen', readAct: 'Lesen und Aktionen', openMenu: 'Menü öffnen',

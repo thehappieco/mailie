@@ -1,6 +1,7 @@
-// /v1/accounts: the mailboxes the caller holds a grant on, in every workspace
-// or in the one named. Who sees what is decided by the server; this file only
-// asks.
+// /v1/accounts: the mailboxes the caller holds a grant on, and those of a
+// team they own or administer (by their role, without reading them), in every
+// workspace or in the one named. Who sees what is decided by the server; this
+// file only asks.
 
 import { segment } from './endpoint'
 import { checked, request } from './http'
@@ -47,8 +48,13 @@ export async function completeOAuth(token: string, redirectURL: string): Promise
   return checked(await request('/v1/accounts/oauth/callback', { token, body: { redirect_url: redirectURL }, timeoutMS: COMPLETE_OAUTH_TIMEOUT_MS }), isAccount)
 }
 
+/**
+ * Removes a mailbox with its index. The server removes nothing unless the
+ * id is repeated in ?confirm=: the console sends it once the person typed
+ * the mailbox's address.
+ */
 export async function removeAccount(token: string, id: string): Promise<void> {
-  await request<void>(`/v1/accounts/${segment(id)}`, { token, method: 'DELETE' })
+  await request<void>(`/v1/accounts/${segment(id)}`, { token, method: 'DELETE', query: { confirm: id } })
 }
 
 export async function listFolders(token: string, id: string, signal?: AbortSignal): Promise<Folder[]> {

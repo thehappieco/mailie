@@ -524,7 +524,7 @@ func TestSyncRoutesNeedTheRightScopeAndOnlyTheOperatorSwitchesAnInstanceMailbox(
 		token, body string
 		want        int
 	}{
-		"the owner role":   {owner, `{"enabled":true}`, http.StatusForbidden},
+		"the owner role":   {owner, `{"enabled":true}`, http.StatusNotFound},
 		"a read key":       {reader, `{"enabled":true}`, http.StatusForbidden},
 		"no enabled field": {instance, `{}`, http.StatusBadRequest},
 	} {

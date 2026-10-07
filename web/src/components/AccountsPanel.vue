@@ -1,20 +1,21 @@
 <script setup lang="ts">
 // The mailboxes of the workspace shown: each card says what the person may do
-// with it (their grant) and, in a team, who linked it. In a team they own or
-// administer, the mailboxes they hold nothing on are listed below, with who
-// has access to each: administering a team shows its mailboxes' addresses and
-// grants, never what they hold. Connecting a mailbox is offered only where the
+// with it. In a team they own or administer, every mailbox of it is listed:
+// they manage each one by their role, seeing its card (address, state, how
+// far its sync has got) and who has access to it, never what it holds unless
+// they are given Read; one nobody can read is marked. A member of a team sees
+// the mailboxes they hold a grant on, and a line saying who manages the
+// team's people and access. Connecting a mailbox is offered only where the
 // person may link one (docs/workspaces.md, "Mailboxes"): their personal
 // workspace, or a team they own or administer. In another team the button
 // would only ever connect to their personal workspace, so it is not there;
 // an empty list says where their own mailboxes go, and shows it on request.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { Account, MailboxAccess } from '../api/types'
+import type { Account } from '../api/types'
 import { edition } from '../edition'
 import { accounts, dismissNotice, loadAccounts, openDetail } from '../state/accounts'
-import { session } from '../state/session'
 import { consent, loadConsent, needsConsent } from '../state/sync'
-import { loadDirectory, loadMembers, personName, team } from '../state/team'
+import { directoryEntry, loadDirectory, loadMembers, team } from '../state/team'
 import { currentWorkspace, loadWorkspaces, selectWorkspace, workspaces } from '../state/workspaces'
 import { accessOf, administers, canLinkInto, grantSummary, workspaceName } from '../ui/access'
 import { describe } from '../ui/errors'
@@ -22,11 +23,9 @@ import { count, since } from '../ui/format'
 import { t } from '../ui/i18n'
 import { needsAuthorization, providerIcon, providerName, stateDetail, stateTone } from '../ui/labels'
 import { noticeText } from '../ui/notices'
-import AccessPanel from './AccessPanel.vue'
 import AccountSheet from './AccountSheet.vue'
 import AddAccountDialog from './AddAccountDialog.vue'
 import AppIcon from './AppIcon.vue'
-import ConsoleDialog from './ConsoleDialog.vue'
 import StatusChip from './StatusChip.vue'
 import SyncConsentCard from './SyncConsentCard.vue'
 import SyncStatus from './SyncStatus.vue'
@@ -42,22 +41,19 @@ const detail = computed(() => accounts.list.find(item => item.id === accounts.de
 const shown = computed(currentWorkspace)
 const inTeam = computed(() => shown.value?.kind === 'team')
 const teamName = computed(() => workspaceName(shown.value))
-const me = computed(() => session.user?.id ?? '')
-/** A mailbox the person linked: it syncs under their own consent. An older server does not say, and every mailbox was its owner's. */
-const linkedByMe = (account: Account) => !account.linked_by || account.linked_by === me.value
+/** An owner or an admin of the team shown, who manages every mailbox of it by that role. */
+const admin = computed(() => administers(shown.value))
 /**
- * Asked once there is a mailbox the person's consent would sync, and until
- * they answer (or say "not now"). A mailbox someone else linked syncs under
- * that person's consent, whatever this one says.
+ * Asked once there is a mailbox the person's agreement would sync: one of
+ * their personal workspace (or any, on a server without workspaces), and
+ * until they answer (or say "not now"). A team's mailboxes sync under the
+ * team's agreement, whatever this one says.
  */
-const askConsent = computed(() => accounts.loaded && accounts.list.some(linkedByMe) && needsConsent() && !consent.dismissed)
-/** Syncing: active, and the person it is linked by turned sync on. */
+const askConsent = computed(() => accounts.loaded && !inTeam.value && accounts.list.length > 0 && needsConsent() && !consent.dismissed)
+/** Syncing: active, and its agreement to sync stands. */
 const syncing = (account: Account) => account.state === 'active' && account.sync.enabled
-/** Who linked a team mailbox, as the card says it. */
-function linker(account: Account): string {
-  if (!account.linked_by) return ''
-  return account.linked_by === me.value ? t('You') : personName(account.linked_by) || t('Another member')
-}
+/** A team mailbox nobody can read: the directory its owners and admins read says so. */
+const nobodyReads = (account: Account) => admin.value && !!directoryEntry(account.id)?.no_reader
 const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: teamName.value }) : t('Your mailboxes'))
 /**
  * The person may link a mailbox into the workspace shown: the only place the
@@ -67,28 +63,12 @@ const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: t
 const linksHere = computed(() => !workspaces.supported || canLinkInto(shown.value))
 /** The person's personal workspace, where their own mailboxes are connected. */
 const personalID = computed(() => workspaces.list.find(item => item.kind === 'personal')?.id ?? '')
-/**
- * In a team the person owns or administers: its mailboxes they hold nothing
- * on, from the access directory, which names who holds what. Only once their
- * own list of the same team is in: before it arrives (or when it failed) a
- * mailbox they hold a grant on is not in it yet, and would read as one they
- * hold nothing on.
- */
-const others = computed<MailboxAccess[]>(() => {
-  if (!administers(shown.value) || !accounts.loaded || !team.directory.loaded || accounts.workspace !== team.workspace) return []
-  return team.directory.list.filter(entry => !entry.grants.some(grant => grant.user_id === me.value) && !accounts.list.some(account => account.id === entry.account_id))
-})
-/** The mailbox whose access is open, from the list below the cards. */
-const accessOpen = ref<MailboxAccess | null>(null)
-// That list is the workspace's, and an owner's or an admin's: another
-// workspace shown, or the role gone, takes the dialog with it.
-watch(() => workspaces.currentID, () => { accessOpen.value = null })
-watch(() => administers(shown.value), administering => { if (!administering) accessOpen.value = null })
 
+/** The team's people and directory, which only its owners and admins read: who can read each mailbox, and its sync. */
 function readTeam() {
-  if (!inTeam.value) return
+  if (!inTeam.value || !admin.value) return
   if (!team.members.loaded && !team.members.loading) void loadMembers()
-  if (administers(shown.value) && !team.directory.loaded && !team.directory.loading) void loadDirectory()
+  if (!team.directory.loaded && !team.directory.loading) void loadDirectory()
 }
 onMounted(readTeam)
 watch(() => workspaces.currentID, readTeam)
@@ -103,9 +83,9 @@ function refresh() {
   void loadWorkspaces()
   void loadAccounts()
   if (!consent.loading && !consent.busy) void loadConsent()
-  if (inTeam.value) {
+  if (inTeam.value && admin.value) {
     void loadMembers()
-    if (administers(shown.value)) void loadDirectory()
+    void loadDirectory()
   }
 }
 /** Each notice is a new element, so a failure's role="alert" is inserted with its text and read. */
@@ -138,6 +118,7 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
     </div>
 
     <SyncConsentCard v-if="askConsent" />
+    <p v-if="inTeam && !admin" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, and who can use each of its mailboxes, are managed by its owners and admins.', { team: teamName }) }}</span></p>
 
     <div class="console-overview">
       <article><span>{{ t('Email accounts') }}</span><strong>{{ accounts.loaded ? count(accounts.list.length) : '—' }}</strong><small>{{ t('added to Mailie') }}</small></article>
@@ -171,11 +152,12 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
           <div v-if="syncing(account)"><dt>{{ t('Messages indexed') }}</dt><dd>{{ count(account.sync.messages) }}</dd></div>
           <div v-if="syncing(account) && account.sync.last_synced_at"><dt>{{ t('Last sync') }}</dt><dd>{{ since(account.sync.last_synced_at) }}</dd></div>
           <div v-if="account.access" class="grant"><dt>{{ t('Your access') }}</dt><dd>{{ grantSummary(account.access) }}</dd></div>
-          <div v-if="inTeam && account.linked_by"><dt>{{ t('Linked by') }}</dt><dd>{{ linker(account) }}</dd></div>
         </dl>
         <SyncStatus v-if="syncing(account)" :account="account" />
         <p v-else class="account-note" :class="stateTone(account.state)"><AppIcon name="info" :size="15" />{{ stateDetail(account) }}</p>
-        <p v-if="!accessOf(account).read" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You can see this mailbox, but not read it. Read access comes only from someone who has it and can change who has access.') }}</p>
+        <p v-if="nobodyReads(account)" class="account-note bad"><AppIcon name="alert" :size="15" />{{ t('Nobody can read this mailbox any more, so it does not sync. Remove it, or remove it and connect it again.') }}</p>
+        <p v-else-if="!accessOf(account).read && admin" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You manage this mailbox by your role, but do not read it. Read comes only from an owner or an admin who reads it.') }}</p>
+        <p v-else-if="!accessOf(account).read" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You can see this mailbox, but not read it. Read comes only from an owner or an admin of the team who reads it.') }}</p>
         <div class="row-actions">
           <button class="ghost" type="button" @click="openDetail(account.id)">{{ t('Details') }}</button>
           <button v-if="needsAuthorization(account) && accessOf(account).manage" class="ghost authorize" type="button" @click="authorize(account)"><AppIcon name="shield" :size="16" />{{ t('Finish authorization') }}</button>
@@ -184,7 +166,7 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
       <div v-if="accounts.loaded && !accounts.list.length && linksHere" class="empty-card">
         <span class="empty-icon"><AppIcon name="mail" :size="30" /></span>
         <h3>{{ inTeam ? t('Connect the first mailbox of {team}', { team: teamName }) : t('Connect your first email account') }}</h3>
-        <p>{{ inTeam ? t('A mailbox you connect here belongs to {team}. Only you can use it until you give other members access.', { team: teamName }) : edition().copy.mailboxesIntro() }}</p>
+        <p>{{ inTeam ? t('A mailbox you connect here belongs to {team}: its owners and admins manage it, and only you read it until you give other members access.', { team: teamName }) : edition().copy.mailboxesIntro() }}</p>
         <button class="primary" type="button" @click="add"><AppIcon name="plus" :size="18" />{{ t('Connect an email account') }}</button>
       </div>
       <div v-else-if="accounts.loaded && !accounts.list.length" class="empty-card">
@@ -195,32 +177,8 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
       </div>
     </section>
 
-    <template v-if="others.length">
-      <div class="section-title">
-        <h2>{{ t('Other mailboxes of {team}', { team: teamName }) }}</h2>
-      </div>
-      <p class="dim others-intro">{{ t('You administer {team}, but hold no access to these. You can see who has access to each and change it; their messages stay with the people given access.', { team: teamName }) }}</p>
-      <section class="cards" :aria-label="t('Other mailboxes of {team}', { team: teamName })">
-        <article v-for="entry in others" :key="entry.account_id" class="account-card other-card">
-          <div class="head">
-            <span class="provider-tile"><AppIcon :name="providerIcon(entry.provider as Account['provider'])" :size="21" /></span>
-            <StatusChip v-if="entry.state !== 'active'" :state="entry.state as Account['state']" />
-          </div>
-          <div class="identity"><div class="name">{{ entry.email }}</div><div class="sub">{{ providerName(entry.provider as Account['provider']) }}</div></div>
-          <dl class="counts">
-            <div><dt>{{ t('Your access') }}</dt><dd>{{ t('No access') }}</dd></div>
-            <div v-if="entry.linked_by"><dt>{{ t('Linked by') }}</dt><dd>{{ personName(entry.linked_by) || t('Another member') }}</dd></div>
-          </dl>
-          <div class="row-actions"><button class="ghost" type="button" aria-haspopup="dialog" @click="accessOpen = entry">{{ t('Access…') }}</button></div>
-        </article>
-      </section>
-    </template>
-
     <AddAccountDialog v-if="dialog" :resume="dialog.resume" :return-focus="headingTarget" @close="dialog = null" />
     <AccountSheet v-if="detail" :account="detail" :return-focus="headingTarget" @authorize="authorize" />
-    <ConsoleDialog v-if="accessOpen" :title="t('Access to {email}', { email: accessOpen.email })" :subtitle="teamName" wide :return-focus="headingTarget" @close="accessOpen = null">
-      <AccessPanel :account-id="accessOpen.account_id" :email="accessOpen.email" />
-    </ConsoleDialog>
   </div>
 </template>
 
@@ -250,8 +208,8 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
 .row-actions { margin-top: auto; }
 .row-actions button { font-size: 12px; padding: 8px 12px; }
 .authorize { color: var(--console-accent); }
-.others-intro { margin: -8px 0 0; font-size: 13px; line-height: 1.55; }
-.other-card { background: var(--bg-panel); }
+.team-note { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 13px; line-height: 1.5; }
+.team-note .app-icon { flex: none; margin-top: 2px; }
 .empty-icon { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: var(--accent-dim); color: var(--accent); }
 .empty-card .primary, .empty-card .ghost { margin-top: 4px; }
 @media (max-width: 1020px) {

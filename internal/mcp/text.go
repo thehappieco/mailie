@@ -24,14 +24,20 @@ func accountsText(accounts []service.Account) string {
 		if a.Sync.Enabled {
 			sync = "sync on"
 		}
+		fmt.Fprintf(&b, "- %s: %s (%s), %s, %s", a.ID, a.Email, a.Provider, a.State, sync)
+		// A team mailbox an owner or an admin manages by their role is
+		// listed without read: what a model would otherwise try on it is
+		// refused, one tool call at a time.
+		if !a.Access.Read {
+			b.WriteString(", no read access (its messages cannot be searched or read)")
+		}
 		var actions []string
-		if a.Actions.Archive {
+		if a.Access.Act && a.Actions.Archive {
 			actions = append(actions, "archive")
 		}
-		if a.Actions.Trash {
+		if a.Access.Act && a.Actions.Trash {
 			actions = append(actions, "trash")
 		}
-		fmt.Fprintf(&b, "- %s: %s (%s), %s, %s", a.ID, a.Email, a.Provider, a.State, sync)
 		if len(actions) > 0 {
 			fmt.Fprintf(&b, ", can %s", strings.Join(actions, " and "))
 		}

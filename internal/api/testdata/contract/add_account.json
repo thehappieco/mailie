@@ -15,7 +15,6 @@
     "display_name": "Ana (Gmail)",
     "email": "ana@gmail.com",
     "id": "acc_0000000000000001",
-    "linked_by": "usr_0000000000000001",
     "provider": "gmail",
     "save_sent_copy": false,
     "send": {

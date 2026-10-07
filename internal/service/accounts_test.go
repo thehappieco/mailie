@@ -191,6 +191,12 @@ func reader() service.Principal {
 	return service.Principal{KeyPrefix: "bbbbbbbb", Scope: auth.ScopeRead}
 }
 
+// switchSync is a request to switch a mailbox's own sync on or off: an
+// operator mailbox's, which takes no text revision.
+func switchSync(on bool) service.MailboxSyncRequest {
+	return service.MailboxSyncRequest{Enabled: &on}
+}
+
 func TestAddingAGmailAccountStartsConsentAndFillsInTheServers(t *testing.T) {
 	// Nobody should have to know imap.gmail.com and its port to add an
 	// account.
@@ -276,7 +282,7 @@ func TestOnlyAnAdminKeyCanAddOrRemoveAnAccount(t *testing.T) {
 	if service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Fatalf("want not_authorized, got %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), reader(), "acc_1"); service.CodeOf(err) != service.CodeNotAuthorized {
+	if err := f.svc.RemoveAccount(t.Context(), reader(), "acc_1", service.RemoveAccountRequest{Confirm: "acc_1"}); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Fatalf("want not_authorized, got %v", err)
 	}
 }
@@ -441,7 +447,7 @@ func TestAnUnknownAccountIsNotFound(t *testing.T) {
 	if _, err := f.svc.GetAccount(t.Context(), admin(), "acc_nope"); service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), admin(), "acc_nope"); service.CodeOf(err) != service.CodeNotFound {
+	if err := f.svc.RemoveAccount(t.Context(), admin(), "acc_nope", service.RemoveAccountRequest{Confirm: "acc_nope"}); service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}
 }
@@ -452,7 +458,7 @@ func TestRemovingAnAccountForgetsIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), admin(), created.Account.ID); err != nil {
+	if err := f.svc.RemoveAccount(t.Context(), admin(), created.Account.ID, service.RemoveAccountRequest{Confirm: created.Account.ID}); err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
 	if _, err := f.svc.GetAccount(t.Context(), admin(), created.Account.ID); service.CodeOf(err) != service.CodeNotFound {

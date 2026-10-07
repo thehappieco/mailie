@@ -82,10 +82,10 @@ func TestReadingFromDovecotGoesThroughTheEnginesConnectionAndLeavesMailUnread(t 
 		ID: id, Email: user, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: 31025, SMTPTLS: "starttls", LoginUser: user,
 		State: account.StateActive,
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), id, true); err != nil {
+	if _, err := f.svc.SetMailboxSync(t.Context(), admin(), id, switchSync(true)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(30 * time.Second)

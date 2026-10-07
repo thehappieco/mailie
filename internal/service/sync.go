@@ -9,6 +9,7 @@ import (
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // SyncController is the sync engine as the service sees it.
@@ -91,9 +92,11 @@ var ErrSyncNotRunning = E(CodeConflict, "sync is not running for this account", 
 // AccountSync is an account's sync as a caller sees it: in every account's
 // JSON, and on its own from GET /v1/accounts/{id}/sync.
 type AccountSync struct {
-	// Enabled is whether the account may sync at all: its owner consented in
-	// the console, or, for an account nobody owns, the operator switched it
-	// on. Sync runs only for an enabled account that is also active.
+	// Enabled is whether the account may sync at all: for a personal
+	// mailbox, its person consented in the console; for a team mailbox, an
+	// owner or an admin gave the team's consent and someone can read it; for
+	// an operator mailbox, the operator switched it on. Sync runs only for an
+	// enabled account that is also active.
 	Enabled bool `json:"enabled"`
 	// Running is whether a worker holds the account now.
 	Running bool `json:"running"`
@@ -203,12 +206,16 @@ func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string
 // ErrSyncUnavailable is a daemon running without the sync engine.
 var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server", nil)
 
-// errSyncOff is an account that may not sync: for a person's mailbox, one
-// whose linker has not consented; for an operator mailbox, one the operator
-// has not switched on.
+// errSyncOff is an account that may not sync: for a personal mailbox, one
+// whose person has not consented; for a team mailbox, one its owners and
+// admins have not turned on; for an operator mailbox, one the operator has
+// not switched on.
 func errSyncOff(a account.Account) error {
-	if a.OwnerUserID == "" {
+	switch {
+	case a.WorkspaceID == workspace.OperatorID:
 		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", nil)
+	case a.OwnerUserID == "":
+		return E(CodeConflict, "sync is off for this team mailbox; an owner or an admin of the team has to turn it on", nil)
 	}
-	return E(CodeConflict, "sync is off: the person who linked it has not turned it on in the console", nil)
+	return E(CodeConflict, "sync is off: its person has not turned it on in the console", nil)
 }

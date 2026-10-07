@@ -18,8 +18,8 @@ const props = withDefaults(defineProps<{
   on: boolean
   /** The switch waits: the answer is not read yet, or a change is being made. */
   disabled: boolean
-  /** Paused: the two buttons' labels. */
-  paused?: { agree: string; off: string } | null
+  /** Paused: the buttons' labels; with no agree, only turning it off is offered. */
+  paused?: { agree?: string; off: string } | null
   busy?: boolean
   /** Why where it stands could not be read. */
   failure?: string
@@ -33,7 +33,7 @@ const labelID = `${props.name}-switch-label`
     <span class="summary-icon"><AppIcon :name="icon" :size="iconSize" /></span>
     <span class="summary-text"><strong :id="labelID">{{ label }}</strong><small>{{ summary }}</small></span>
     <div v-if="paused" class="session-actions">
-      <button class="primary small" type="button" aria-haspopup="dialog" :disabled="busy" @click="emit('agree')">{{ paused.agree }}</button>
+      <button v-if="paused.agree" class="primary small" type="button" aria-haspopup="dialog" :disabled="busy" @click="emit('agree')">{{ paused.agree }}</button>
       <button class="ghost small" type="button" aria-haspopup="dialog" :disabled="busy" @click="emit('off')">{{ paused.off }}</button>
     </div>
     <button v-else class="sync-switch" type="button" role="switch" :aria-checked="on" :aria-labelledby="labelID" aria-haspopup="dialog"

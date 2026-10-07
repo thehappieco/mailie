@@ -202,15 +202,19 @@ func printInvite(link, email, role string, expires time.Time) {
 
 // Closing a person's account, when they ask for it, is two steps, each run
 // through the daemon with an admin key, or with --bootstrap while the daemon
-// is stopped: `user disable --email ADDRESS` first, which ends every session
-// and revokes every key they hold at once, and then `user delete --email
-// ADDRESS`, which removes the mailboxes they linked with those mailboxes'
-// credentials and everything indexed for them, their sessions, their keys,
-// their invites and their personal workspace, in one transaction. Disabling
-// or deleting the last active owner needs --force: nobody would be left to
-// invite people from the console. So does someone their teams depend on —
-// a team's last active owner, or the person a team mailbox others read syncs
-// under — and the daemon's refusal names those teams and mailboxes.
+// is stopped: `user disable --email ADDRESS` first, which ends every session,
+// revokes every key they hold and expires the invites they made, at once; and
+// then `user delete --email ADDRESS`, which removes the mailboxes of their
+// personal workspace with those mailboxes' credentials and everything indexed
+// for them, their sessions, their keys, their invites, their personal
+// workspace and every team they were alone in, in one transaction. A team
+// mailbox of a team others are in is the team's, and stays. Disabling or
+// deleting the last active owner needs --force: nobody would be left to
+// invite people from the console. So does someone their teams depend on — a
+// team's last active owner, the last person who can read a team mailbox, or
+// the person whose own consent a team mailbox someone else reads still syncs
+// under since the upgrade — and the daemon's refusal names those teams and
+// mailboxes.
 
 func userDisable(ctx context.Context, cfg config.Config, args []string) error {
 	req, bootstrap, err := parseCloseFlags("disable", args)
@@ -232,7 +236,18 @@ func userDisable(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	fmt.Printf("disabled %s (%s): %s ended, %s revoked\n",
 		out.Email, out.ID, plural(out.SessionsEnded, "session"), plural(out.KeysRevoked, "API key"))
+	printStoppedTeamSyncs(out.TeamSyncsStopped)
 	return nil
+}
+
+// printStoppedTeamSyncs names the team mailboxes a closure stopped, whose
+// consent to sync was still the person's own: their index went with it, and
+// an owner or an admin of each team turns it on again.
+func printStoppedTeamSyncs(ids []string) {
+	if len(ids) > 0 {
+		fmt.Printf("stopped the sync of team mailboxes that synced under their consent, and deleted their index: %s\n",
+			strings.Join(ids, ", "))
+	}
 }
 
 func userDelete(ctx context.Context, cfg config.Config, args []string) error {
@@ -260,6 +275,7 @@ func userDelete(ctx context.Context, cfg config.Config, args []string) error {
 	fmt.Printf("deleted %s (%s): %s, %s, %s, %s, %s\n", out.Email, out.ID,
 		plural(out.AccountsRemoved, "mailbox"), plural(out.SessionsDeleted, "session"),
 		plural(out.KeysDeleted, "API key"), plural(out.InvitesDeleted, "invite"), plural(out.TeamsDeleted, "team"))
+	printStoppedTeamSyncs(out.TeamSyncsStopped)
 	return nil
 }
 
@@ -268,8 +284,10 @@ func parseCloseFlags(name string, args []string) (service.CloseUserRequest, bool
 	email := fs.String("email", "", "the address the person signs in with"+emailFlagUsage)
 	force := fs.Bool("force", false, "go ahead even if this is the last active owner, "+
 		"which leaves nobody to invite people from the console, or someone teams depend on: "+
-		"the last active owner of a team (give it another with `member role`), or the person "+
-		"a team mailbox others read syncs under (deleting them removes it)")
+		"the last active owner of a team (give it another with `member role`), the last person "+
+		"who can read a team mailbox (nobody can read it then, and its owners and admins remove it), "+
+		"or the person whose own consent a team mailbox still syncs under since the upgrade "+
+		"(its sync stops and its index is deleted until the team turns it on again)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, when no daemon is running")
 	if err := fs.Parse(args); err != nil {
 		return service.CloseUserRequest{}, false, err

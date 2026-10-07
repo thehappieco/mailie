@@ -3,7 +3,9 @@
     "email": "ana@example.com",
     "joined_at": 1790000000,
     "last_owner": true,
-    "links": 0,
+    "last_reader_of": [
+      "acc_0000000000000006"
+    ],
     "name": "Ana Lima",
     "role": "owner",
     "status": "active",
@@ -13,7 +15,7 @@
     "email": "bea@example.com",
     "joined_at": 1790000000,
     "last_owner": false,
-    "links": 0,
+    "last_reader_of": [],
     "name": "Bea Lima",
     "role": "member",
     "status": "active",
@@ -23,7 +25,7 @@
     "email": "carol@example.com",
     "joined_at": 1790000000,
     "last_owner": false,
-    "links": 0,
+    "last_reader_of": [],
     "name": "",
     "role": "member",
     "status": "active",

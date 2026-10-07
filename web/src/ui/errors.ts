@@ -99,10 +99,12 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')
-      if (code === 'not_authorized') return t('Only someone who manages this mailbox can remove it.')
+      if (code === 'not_authorized') return t('Only the owners and admins of a team remove its mailboxes.')
+      // The id the removal repeats did not match: nothing was removed.
+      if (code === 'bad_request') return t('The server removed nothing: the mailbox to remove was not confirmed. Close this and try again.')
       return undefined
     case 'folders':
-      if (code === 'not_authorized') return t('You do not have read access to this mailbox. It comes only from someone who has it and can change who has access.')
+      if (code === 'not_authorized') return t('You do not have read access to this mailbox. It comes only from an owner or an admin of the team who reads it.')
       if (code === 'conflict') return t('This account needs to be authorized again before its folders can be listed.')
       if (code === 'unavailable' || code === 'internal') return t('Could not list the folders. The mail server may be slow or unreachable.')
       return undefined
@@ -165,15 +167,17 @@ function specific(failure: Failure): string | undefined {
     case 'load-members':
       if (code === 'unavailable' || code === 'internal') return t('Could not load the members. Try again in a moment.')
       if (code === 'not_found') return t('You are no longer a member of this team.')
+      if (code === 'not_authorized') return t('Only the owners and admins of the team see its members.')
       return undefined
     case 'change-member':
     case 'remove-member':
-      if (code === 'conflict') return t('The team’s protections refuse this: it keeps an active owner, the people mailboxes there are linked by stay while they are, and every mailbox keeps someone who manages it.')
+      if (code === 'conflict') return t('The team’s protections refuse this: it keeps an active owner, and a mailbox someone reads keeps someone who can read it. Make another member an owner, or give someone else Read, first.')
       if (code === 'not_authorized') return t('Your role in the team does not allow this. Admins change and remove members only, and make nobody an admin or an owner.')
       if (code === 'not_found') return t('This person is no longer a member of the team.')
       return undefined
     case 'leave-team':
-      if (code === 'conflict') return t('You cannot leave yet: you are the team’s only owner, mailboxes there are linked by you, or you are the only one who manages one of them. Make another member an owner, have your links taken over, or give Manage to someone else first.')
+      if (code === 'conflict') return t('You cannot leave yet: you are the team’s only owner, or the only person who can read one of its mailboxes. Make another member an owner, or give someone else Read, first.')
+      if (code === 'not_authorized') return t('Only an owner leaves a team, while another owner remains.')
       return undefined
     case 'load-invites':
       if (code === 'unavailable' || code === 'internal') return t('Could not load the invitations. Try again in a moment.')
@@ -194,16 +198,27 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'load-access':
       if (code === 'unavailable' || code === 'internal') return t('Could not read who has access. Try again in a moment.')
+      if (code === 'not_authorized') return t('Only the owners and admins of the team see who has access to its mailboxes.')
       return undefined
     case 'change-access':
-      if (code === 'not_authorized') return t('You can give only what you hold on this mailbox, and change who has access only as an owner or an admin of the team, or as someone who manages it.')
-      if (code === 'conflict') return t('This mailbox’s protections refuse this: the person it is linked by keeps every access while it is, and it keeps someone who manages it.')
-      if (code === 'bad_request') return t('The server did not accept this access: act needs read, and only active members of the team can be given access.')
+      if (code === 'not_authorized') return t('Only the owners and admins of the team change who has access, and they give Read only on a mailbox they read themselves.')
+      if (code === 'conflict') return t('This is the only person who can read this mailbox: give someone else Read on it first.')
+      if (code === 'bad_request') return t('The server did not accept this access: Act needs Read, Manage is given to members only, and only active members of the team can be given access.')
       if (code === 'not_found') return t('This person, or this mailbox, is no longer in the team.')
       return undefined
-    case 'take-over':
-      if (code === 'conflict') return t('The link cannot be taken over now: it takes every access to the mailbox, being an owner or an admin of the team, and agreeing to the current text of mail sync.')
+    case 'team-sync-on':
+      // The console asked about an older text than the server's.
+      if (code === 'bad_request') return edition().sync.changedWhileOpen()
+      if (code === 'not_authorized') return t('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
       if (code === 'not_found') return t('This mailbox no longer exists.')
+      // Nobody reads it any more, nor can be given Read on it.
+      if (code === 'conflict') return t('Nobody in the team can read this mailbox, so its sync cannot be turned on. Remove it, and connect it again, to use it.')
+      return undefined
+    case 'team-sync-off':
+      if (code === 'not_authorized') return specific({ op: 'team-sync-on', code })
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      // Turning it off twice deletes whatever the first one missed.
+      if (code === 'unavailable' || code === 'internal') return t('Could not confirm that sync was turned off. Try again: doing it twice is safe.')
       return undefined
     default:
       return undefined

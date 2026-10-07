@@ -152,10 +152,10 @@ func TestAReadCancelledMidFetchLeavesTheEnginesConnectionForTheNextRead(t *testi
 		ID: id, Email: srv.User, Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: port, SMTPTLS: "implicit", LoginUser: srv.User,
 		State: account.StateActive,
-	}); err != nil {
+	}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.EnableInstanceAccountSync(t.Context(), admin(), id, true); err != nil {
+	if _, err := f.svc.SetMailboxSync(t.Context(), admin(), id, switchSync(true)); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(20 * time.Second)

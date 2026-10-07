@@ -12,18 +12,27 @@ import (
 // What a person's workspaces have to say when the person is disabled or
 // deleted on the instance.
 
-// Blocks are the teams a person cannot leave behind without force.
+// Blocks are what a person cannot leave behind without force.
 type Blocks struct {
 	// LastOwnerOf are the teams where they are the last active owner and
 	// other active members remain, who would be left without one.
 	LastOwnerOf []string
-	// Linked are team mailboxes they linked that another active member can
-	// read: the mailbox syncs under their consent, and goes with them.
-	Linked []string
+	// LastReaderOf are the team mailboxes they are the only reader of, in
+	// teams that outlive them (another member remains, whatever their
+	// status), which nobody could ever read again.
+	LastReaderOf []string
+	// BoundTo are the team mailboxes whose consent to sync migration 0011
+	// copied from theirs, and nobody has confirmed for the team since, that
+	// someone else reads: closing them stops each and deletes its index for
+	// that reader (store.StopBoundTx), until an owner or an admin of the
+	// team confirms its sync.
+	BoundTo []string
 }
 
 // Any reports whether anything blocks.
-func (b Blocks) Any() bool { return len(b.LastOwnerOf) > 0 || len(b.Linked) > 0 }
+func (b Blocks) Any() bool {
+	return len(b.LastOwnerOf) > 0 || len(b.LastReaderOf) > 0 || len(b.BoundTo) > 0
+}
 
 // BlocksTx reads, inside the caller's transaction, what disabling or deleting
 // a person would break in their teams. Personal workspaces block nothing.
@@ -54,41 +63,61 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 	if err != nil {
 		return Blocks{}, err
 	}
-	b.Linked, err = listIDs(ctx, tx, `SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		 WHERE w.kind = 'team' AND a.owner_user_id = ?1
-		   AND EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = a.id AND g.user_id <> ?1 AND g.read = 1
-		                 AND `+activeGrant+`)
-		 ORDER BY a.created_at, a.id`, userID)
+	b.LastReaderOf, err = lastReaderOf(ctx, tx, userID, "", nil, true)
+	if err != nil {
+		return Blocks{}, err
+	}
+	b.BoundTo, err = listIDs(ctx, tx, `SELECT a.id FROM accounts a
+		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
+		 WHERE a.sync_enabled_via = 'migration' AND a.sync_enabled_by = ?1
+		   AND EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = a.id AND o.user_id <> ?1 AND `+readerOf("o")+`)
+		 ORDER BY a.created_at, a.rowid`, userID)
 	if err != nil {
 		return Blocks{}, err
 	}
 	return b, nil
 }
 
-// DeletePersonTx removes what a person's workspaces keep of them, inside the
-// transaction that deletes the person, once the mailboxes they linked are
-// gone from it: every team whose only member they are, their personal
-// workspace (both with their memberships and the invites still waiting to
-// join them), and their name on the grants they gave others. Their
-// memberships of other teams, and their grants there, go with the person (ON
-// DELETE CASCADE). It returns the teams it deleted.
+// SoleMemberTeamsTx lists the teams whose only member, active or not, is
+// userID: the teams that go with them when they are deleted, mailboxes and
+// all.
+func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
+	return listIDs(ctx, tx, `SELECT w.id FROM workspaces w
+		 WHERE w.kind = 'team'
+		   AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?1)
+		   AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
+		 ORDER BY w.id`, userID)
+}
+
+// DeletePersonTx removes what workspaces keep of a person, inside the
+// transaction that deletes them, once the mailboxes that go with them are
+// gone from it — their personal workspace's, and those of every team whose
+// only member they are (account.Registry.RemoveOwner): those teams and their
+// personal workspace, with their memberships and the invites still waiting
+// to join them; and their name wherever it is kept as attribution: on the
+// grants they gave others, on the mailboxes they linked and on the team
+// consents to sync they gave, which stay, with their date and revision, the
+// workspace's. Their memberships of other teams, and their grants there, go
+// with the person (ON DELETE CASCADE). It returns the teams it deleted.
 //
 // A used invite to a deleted team is not theirs to take: it is the record of
 // how another person arrived, and stays, without its team (ON DELETE SET
 // NULL), until that person goes.
 //
 // A workspace that still holds a mailbox is not deleted: the mailbox names
-// it, and the foreign key refuses. The caller removes the person's mailboxes
-// first, in the same transaction.
+// it, and the foreign key refuses (ErrHoldsMailboxes).
 func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
-	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_access SET granted_by = '' WHERE granted_by = ?`, userID); err != nil {
-		return nil, fmt.Errorf("workspace: forget who granted: %w", err)
+	for _, step := range []struct{ what, query string }{
+		{"forget who granted", `UPDATE mailbox_access SET granted_by = '' WHERE granted_by = ?`},
+		{"forget who linked", `UPDATE accounts SET linked_by = '' WHERE linked_by = ?`},
+		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''
+		   WHERE sync_enabled_by = ?`},
+	} {
+		if _, err := tx.ExecContext(ctx, step.query, userID); err != nil {
+			return nil, fmt.Errorf("workspace: %s: %w", step.what, err)
+		}
 	}
-	teams, err := listIDs(ctx, tx, `SELECT w.id FROM workspaces w
-		 WHERE w.kind = 'team'
-		   AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?1)
-		   AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
-		 ORDER BY w.id`, userID)
+	teams, err := SoleMemberTeamsTx(ctx, tx, userID)
 	if err != nil {
 		return nil, err
 	}

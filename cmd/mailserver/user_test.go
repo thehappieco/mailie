@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -22,6 +24,7 @@ import (
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // localConfig is a daemon's configuration over a fresh data directory, with
@@ -71,8 +74,8 @@ func TestDeletingAPersonWithBootstrapRemovesThemAndTheirMailboxes(t *testing.T) 
 	if _, err := repo.Create(t.Context(), account.Account{
 		ID: "acc_00000000000000a1", Email: "ana@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
-		LoginUser: "ana", OwnerUserID: ana.ID, State: account.StateActive,
-	}); err != nil {
+		LoginUser: "ana", State: account.StateActive,
+	}, ana.ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := repo.SavePassword(t.Context(), "acc_00000000000000a1", "hunter2"); err != nil {
@@ -106,6 +109,97 @@ func TestDeletingAPersonWithBootstrapRemovesThemAndTheirMailboxes(t *testing.T) 
 	}
 	if err := userDelete(t.Context(), cfg, []string{"--email", "owner@example.com", "--bootstrap", "--force"}); err != nil {
 		t.Errorf("deleting the last owner with --force: %v", err)
+	}
+}
+
+func TestClosingTheLastReaderOfATeamMailboxWithBootstrapNeedsForce(t *testing.T) {
+	// The same rule as over REST, through the same method: Ana is the only
+	// one who reads the team's mailbox, Bea owns the team beside her.
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	ws := workspace.NewRepository(db, nil)
+	team, err := ws.CreateTeam(t.Context(), "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleOwner, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.NewRepository(db, nil).Create(t.Context(), account.Account{
+		ID: "acc_00000000000000a1", Email: "support@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
+		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
+		LoginUser: "support", WorkspaceID: team.ID, State: account.StateActive,
+	}, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []func(context.Context, config.Config, []string) error{userDisable, userDelete} {
+		err := run(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap"})
+		if err == nil || !strings.Contains(err.Error(), "acc_00000000000000a1") {
+			t.Errorf("closing the last reader without --force: %v", err)
+		}
+	}
+	if u, err := auth.NewUsers(db).Get(t.Context(), ana.ID); err != nil || u.Disabled {
+		t.Fatalf("a refused closure changed Ana: %+v, %v", u, err)
+	}
+	if err := userDelete(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap", "--force"}); err != nil {
+		t.Fatalf("deleting the last reader with --force: %v", err)
+	}
+	// The team's mailbox stays the team's, read by nobody now.
+	var n int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM accounts WHERE id = 'acc_00000000000000a1'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("the team's mailbox went with its last reader: %d, %v", n, err)
+	}
+}
+
+func TestClosingTheLastReaderOfATeamThatOutlivesThemWithBootstrapNeedsForce(t *testing.T) {
+	// Bea is the team's other member, her membership disabled: the team
+	// outlives Ana, and nobody could read its mailbox again.
+	cfg := localConfig(t)
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	ws := workspace.NewRepository(db, nil)
+	team, err := ws.CreateTeam(t.Context(), "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleMember, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Writer().ExecContext(t.Context(), `UPDATE workspace_members SET status = 'disabled'
+		WHERE workspace_id = ? AND user_id = ?`, team.ID, bea.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := account.NewRepository(db, nil).Create(t.Context(), account.Account{
+		ID: "acc_00000000000000a1", Email: "support@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
+		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
+		LoginUser: "support", WorkspaceID: team.ID, State: account.StateActive,
+	}, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, run := range []func(context.Context, config.Config, []string) error{userDisable, userDelete} {
+		err := run(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap"})
+		if err == nil || !strings.Contains(err.Error(), "acc_00000000000000a1") {
+			t.Errorf("closing the last reader of a team that outlives her without --force: %v", err)
+		}
+	}
+	if u, err := auth.NewUsers(db).Get(t.Context(), ana.ID); err != nil || u.Disabled {
+		t.Fatalf("a refused closure changed Ana: %+v, %v", u, err)
+	}
+	if err := userDelete(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap", "--force"}); err != nil {
+		t.Fatalf("deleting Ana with --force: %v", err)
+	}
+	var n int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM accounts WHERE id = 'acc_00000000000000a1'`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("the team's mailbox went with Ana: %d, %v", n, err)
 	}
 }
 

@@ -67,9 +67,9 @@ func TestSendingThroughMailpitFromDovecotFilesOneExactCopyInSent(t *testing.T) {
 	smtpHost, smtpPort := splitHostPort(t, smtpAddr)
 	if _, err := f.repo.Create(t.Context(), account.Account{
 		ID: id, Email: user, DisplayName: "Ana Lima", Provider: provider.KindIMAP, AuthKind: "password",
-		OwnerUserID: ana.UserID, IMAPHost: imapHost, IMAPPort: imapPort, SMTPHost: smtpHost, SMTPPort: smtpPort,
+		IMAPHost: imapHost, IMAPPort: imapPort, SMTPHost: smtpHost, SMTPPort: smtpPort,
 		SMTPTLS: "starttls", LoginUser: user, SaveSentCopy: true, State: account.StateActive,
-	}); err != nil {
+	}, ana.UserID); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.repo.SavePassword(t.Context(), id, password); err != nil {

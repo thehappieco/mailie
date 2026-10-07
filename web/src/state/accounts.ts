@@ -35,7 +35,7 @@ export const STREAM_POLL_INTERVAL_MS = 15_000
 export interface FolderView { loading: boolean; loaded: boolean; list: Folder[]; failure: Failure | null }
 
 export type Notice =
-  /** syncing: the person has turned sync on, so the new mailbox starts syncing at once. */
+  /** syncing: the new mailbox starts syncing at once, under its person's agreement or its team's. */
   | { kind: 'connected'; email: string; syncing: boolean }
   | { kind: 'removed'; email: string }
   | { kind: 'failed'; email: string; failure: Failure }
@@ -266,6 +266,15 @@ export function forgetLiveFolders(): void {
   for (const [id, view] of Object.entries(accounts.folders)) {
     if (!view.loading && !view.list.some(folder => folder.sync_state)) delete accounts.folders[id]
   }
+}
+
+/**
+ * One mailbox's sync was switched (a team's agreement given or withdrawn):
+ * what was read of its folders, from the index or live, is read again when
+ * next wanted. A list still being read is left to land.
+ */
+export function forgetFolders(id: string): void {
+  if (!accounts.folders[id]?.loading) delete accounts.folders[id]
 }
 
 /** A notice the sync store raises: consent given or withdrawn. */
@@ -513,13 +522,15 @@ const refusedBeforeStoring: string[] = ['bad_request', 'not_authorized', 'unauth
 /**
  * Connects a mailbox that signs in with Google or Microsoft: into a team the
  * person owns or administers when workspaceID names one, otherwise into their
- * personal workspace.
+ * personal workspace. Into a team, syncConsentVersion gives the team's
+ * agreement to sync it, to the revision of the text the person was shown.
  */
-export async function connectOAuthAccount(input: { provider: ProviderID; email: string; displayName?: string; workspaceID?: string }): Promise<void> {
+export async function connectOAuthAccount(input: { provider: ProviderID; email: string; displayName?: string; workspaceID?: string; syncConsentVersion?: string }): Promise<void> {
   const generation = begin({ provider: input.provider, email: input.email })
   const body: AddAccountRequest = { email: input.email, provider: input.provider }
   if (input.displayName) body.display_name = input.displayName
   if (input.workspaceID) body.workspace_id = input.workspaceID
+  if (input.workspaceID && input.syncConsentVersion) body.sync_consent_version = input.syncConsentVersion
   let result
   try {
     result = await authorized(token => api.addAccount(token, body))

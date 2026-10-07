@@ -181,8 +181,8 @@ func TestTheSyncEngineHearsAboutEveryAccountLifecycleChange(t *testing.T) {
 	b, err := repo.Create(ctx, account.Account{
 		ID: "acc_b", Email: "b@example.com", Provider: provider.KindGmail, AuthKind: "oauth2",
 		IMAPHost: "imap.example.com", IMAPPort: 993, SMTPHost: "smtp.example.com", SMTPPort: 587,
-		SMTPTLS: "starttls", LoginUser: "b@example.com", OwnerUserID: owner.ID,
-	})
+		SMTPTLS: "starttls", LoginUser: "b@example.com",
+	}, owner.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

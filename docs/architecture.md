@@ -17,7 +17,7 @@ sends it twice or leaks a credential.
 | `internal/store` | SQLite through `modernc.org/sqlite` (no cgo): a writer pool with `_txlock=immediate` and `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations tracked by `PRAGMA user_version` (a table is rebuilt only through the runner's rebuild procedure, below), FTS5. |
 | `internal/secrets` | A versioned AES-256-GCM envelope (`v1‖keyid‖nonce‖ct‖tag`) whose additional data binds the account and the field; rotation by key id. |
 | `internal/auth` | API keys `prefix.secret` hashed with Argon2id (PHC strings), scopes `read < write < send < admin`, restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id passwords, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as SHA-256, 14 days at most, never extended) and single-use invitations, to the instance or to a team; and the identities an identity provider names a person by (issuer and subject, linked only to the new person a first sign-in with a verified address creates: an address somebody here has already is a conflict, never a link), with the public keys pinned for each, never replaced and deleted only with their person. A person who signs in only that way has no password, and no password check accepts the empty hash. `authtest` mints cheap users and keys for tests. |
-| `internal/workspace` | Workspaces (a person's personal one, teams, the one operator workspace), their members and the per-mailbox grants (`read`, `act`, `send`, `manage`), with the protections that hold inside each write: a team keeps an active owner, a mailbox's linker stays while it is linked, a linked mailbox keeps a holder of `manage`. The `Source` (local, or the platform's) says where workspaces come from. Who may change what is the service's. See [`workspaces.md`](workspaces.md). |
+| `internal/workspace` | Workspaces (a person's personal one, teams, the one operator workspace), their members and the per-mailbox grants (`read`, `act`, `send`, and `manage`, which owners and admins hold by their role and members only as a stored flag), with the protections that hold inside each write: a team keeps an active owner, and a team mailbox someone reads keeps a reader. The `Source` (local, or the platform's) says where workspaces come from. Who may change what is the service's. See [`workspaces.md`](workspaces.md). |
 | `internal/ratelimit` | Token buckets per address (IPv6 per /64) and per key prefix. A failed authentication is reserved on the prefix and given back if the credential proves good; it is never charged to the whole address, which would lock out good credentials behind the same NAT. |
 | `internal/backup` | The snapshot (`VACUUM INTO` from a `mode=ro` connection), `integrity_check`, the `.mlbk` format (AES-256-GCM STREAM chunks under a KMS data key, the header as additional data) and restore. KMS and S3 sit behind small interfaces; `aws.go` is the only file that talks to the AWS SDK, and `backuptest` has the fakes. See [`backup.md`](backup.md). |
 | `internal/events` | The journal (`events`), written in the same transaction as the change it records, and the live fan-out bus. |
@@ -68,12 +68,15 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
   `internal/service`, where every authorization decision is made. `depguard` (`.golangci.yml`)
   stops a transport (`internal/api`, `internal/mcp`, `internal/webui`) from importing `store`,
   `sync`, `provider`, `account` or `workspace`. If a rule appears on both sides, it is in the wrong place.
-- **Access is decided in `internal/service`.** A person sees a mailbox when they are an active
-  member of its workspace and hold a grant on it (`read`, `act`, `send`, `manage`), and each use
-  needs its flag; an instance key reaches only the operator workspace's mailboxes. Another
-  workspace's mailbox, or one the caller holds nothing on, is `not_found`, never `forbidden`, and
+- **Access is decided in `internal/service`.** Every mailbox belongs to its workspace. A person
+  sees one as an active member of that workspace who holds a grant on it (`read`, `act`, `send`,
+  `manage`) or, as its owner or admin, manages it by their role, and each use needs its flag;
+  an instance key reaches only the operator workspace's mailboxes. Another workspace's mailbox, or
+  one the caller neither holds anything on nor manages, is `not_found`, never `forbidden`, and
   listing filters in SQL with the same rule as fetching one. No role — a team's owner or admin, or
-  the instance's `owner` — reads a mailbox by being one. See [`workspaces.md`](workspaces.md).
+  the instance's `owner` — reads, acts on or sends from a mailbox by being one: an owner or an
+  admin sees its card and decides who holds what, `read` passes only from one of them who reads
+  it, and `act` and `send` from any of them. See [`workspaces.md`](workspaces.md).
 - **A console session is a bearer token, never a cookie.** It travels only in `Authorization`;
   sessions and API keys are told apart by their shape (a key has a dot). Person routes
   (`/v1/auth/*`) refuse API keys. A session lasts what it was started for, 14 days or less for one
@@ -152,9 +155,16 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
 - **Secrets** are never stored in plain text, logged (the `obs` package redacts) or put in URLs.
   TLS is mandatory for IMAP and SMTP; `AllowInsecureAuth`, which allows a plain connection, is set
   only by tests.
-- **Consent.** Nothing of a person's messages is stored before they consent to sync, and
-  withdrawing deletes the index in the same transaction. Actions and sending each have their own
-  consent, checked again right before the server is touched.
+- **Consent.** Nothing of a mailbox's messages is stored before its consent to sync: a personal
+  mailbox's person's, a team mailbox's workspace's (given by an owner or an admin on the team's
+  behalf, recorded on the mailbox with who gave it, when and to which text). Withdrawing deletes
+  the index in the same transaction: a person's withdrawal deletes their personal mailboxes'
+  index, and a team's only where the team's consent is still the one migration 0011 copied from
+  theirs (bound to them until an owner or an admin confirms it); switching a team mailbox off
+  deletes it for everyone who reads it. A team mailbox nobody can read syncs nothing and is never
+  switched on again.
+  Actions and sending each have their own consent, the actor's own, checked again right before
+  the server is touched.
 - **Backups: the host only encrypts and uploads.** It generates data keys with the encryption
   context exactly `{service: mailie, env: MAIL_ENV, purpose: db-backup, ref: <object key>}`
   (`backup.EncryptionContext`) and creates new objects under `db/` (`If-None-Match: *`, SSE-S3,

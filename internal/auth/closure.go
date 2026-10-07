@@ -14,12 +14,16 @@ import (
 
 // Closing a person's account is two steps, as the privacy policy describes
 // them. First they are disabled, which ends every session and revokes every
-// key they hold, so nothing of theirs still gets in; the identities they sign
-// in with through a provider stay, and sign nobody in while they are off.
-// Then they are deleted: their mailboxes, those mailboxes' credentials, their
-// sessions, their keys, their invite, and their identities with the keys
-// pinned for them. The mailboxes belong to internal/account, so the deletion
-// is one transaction that package opens and this one finishes (DeleteTx).
+// key they hold, so nothing of theirs still gets in, and expires the invites
+// they made; the identities they sign in with through a provider stay, and
+// sign nobody in while they are off. Then they are deleted: the mailboxes of
+// their personal workspace and of every team they were alone in, those
+// mailboxes' credentials, their sessions, their keys, their invite, and their
+// identities with the keys pinned for them. The mailboxes belong to
+// internal/account, so the deletion is one transaction that package opens and
+// this one finishes (DeleteTx). A team mailbox of a team others are in is the
+// team's, and stays; only a consent to sync it still bound to the person
+// (migration 0011) goes with them, and its index with it.
 //
 // Invites have a retention of their own: one that is never used is deleted
 // InviteRetention after it expires, by the daemon's hourly sweep.
@@ -42,22 +46,23 @@ var (
 )
 
 // BlockedError is a person whose teams depend on them: the last active owner
-// of a team other active members remain in, or the person a team mailbox
-// another member reads syncs under. Disabling or deleting them is refused
-// unless the caller insists; Blocks says which teams and mailboxes.
+// of a team other active members remain in, the last person who can read a
+// team mailbox of a team that outlives them, or the person a team mailbox
+// someone else reads still syncs under the consent of (migration 0011).
+// Disabling or deleting them is refused unless the caller insists; Blocks
+// says which teams and mailboxes.
 type BlockedError struct {
 	workspace.Blocks
 }
 
 func (e *BlockedError) Error() string {
-	return fmt.Sprintf("auth: that person is the last owner of %d team(s) and linked %d team mailbox(es) others read",
-		len(e.LastOwnerOf), len(e.Linked))
+	return fmt.Sprintf("auth: that person is the last owner of %d team(s), the last reader of %d team mailbox(es) "+
+		"and the consent to sync of %d team mailbox(es)", len(e.LastOwnerOf), len(e.LastReaderOf), len(e.BoundTo))
 }
 
 // RequireNoBlocksTx refuses, inside the caller's transaction and unless
 // force, a person whose teams depend on them (BlockedError). Deleting a
-// person runs it before their mailboxes go, which is when the mailboxes they
-// linked can still be asked about.
+// person runs it before anything of theirs goes.
 func (u *Users) RequireNoBlocksTx(ctx context.Context, tx *sql.Tx, id string, force bool) error {
 	if force {
 		return nil
@@ -95,17 +100,29 @@ func (u *Users) RequireActiveTx(ctx context.Context, tx *sql.Tx, id string) erro
 type Ended struct {
 	Sessions int
 	Keys     int
+	// Invites counts the invites they made that were still waiting, now
+	// expired.
+	Invites int
+	// Stopped are the team mailboxes whose consent to sync was still bound
+	// to theirs (migration 0011), stopped with their index deleted.
+	Stopped []string
 }
 
 // Disable switches a person off and ends every way they had in: their status
-// becomes disabled, every live session is revoked and every live key issued
-// for them is revoked, in one transaction. A disabled person still signed in
-// somewhere, or holding a key that would work again if they were switched back
-// on, would not be disabled.
+// becomes disabled, every live session is revoked, every live key issued for
+// them is revoked and every invite they made that is still waiting expires,
+// in one transaction. A disabled person still signed in somewhere, or
+// holding a key or an invite that would work again if they were switched
+// back on, would not be disabled. The mailboxes of their personal workspace
+// stop syncing, since they are no longer active; a team mailbox whose consent
+// was still bound to theirs stops in the same transaction, and its index is
+// deleted (store.StopBoundTx). Every other team mailbox carries on: it is the
+// team's.
 //
-// Disabling someone already disabled changes nothing and is not an error. The
-// only active owner is not switched off unless force says so, nor somebody
-// their teams depend on (BlockedError).
+// Disabling someone already disabled changes nothing and is not an error: a
+// team mailbox migration 0011 found bound to them, stopped with its index
+// kept, keeps it. The only active owner is not switched off unless force says
+// so, nor somebody their teams depend on (BlockedError).
 func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, error) {
 	var out Ended
 	now := u.now().Unix()
@@ -143,7 +160,18 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		if err != nil {
 			return fmt.Errorf("auth: revoke the user's keys: %w", err)
 		}
-		return nil
+		if status != userActive {
+			// Already off: what disabling them stopped stopped then, and a
+			// mailbox migration 0011 found bound to them, stopped with its
+			// index kept, keeps it until the team decides or they are
+			// deleted.
+			return nil
+		}
+		if out.Invites, err = expireInvitesByTx(ctx, tx, id, now); err != nil {
+			return err
+		}
+		out.Stopped, err = store.StopBoundTx(ctx, tx, id, now)
+		return err
 	})
 	if err != nil {
 		return Ended{}, err
@@ -156,6 +184,9 @@ type Removed struct {
 	Sessions int
 	Keys     int
 	Invites  int
+	// Stopped are the team mailboxes whose consent to sync was still bound
+	// to theirs (migration 0011), stopped with their index deleted.
+	Stopped []string
 	// Teams counts the teams deleted with the person, who was their only
 	// member.
 	Teams int
@@ -168,16 +199,20 @@ type Removed struct {
 // the keys issued for them together with those keys' account restrictions,
 // every invite for their address — the one they signed up with and any other,
 // used or not — the identities they signed in with through a provider and the
-// keys pinned for those identities, their personal workspace and every team
-// whose only member they are, their memberships and grants elsewhere, and
-// then the person.
+// keys pinned for those identities, the team mailboxes whose consent to sync
+// was still bound to theirs (stopped, their index deleted), their personal
+// workspace and every team whose only member they are, their memberships and
+// grants elsewhere, and then the person.
 //
-// The accounts they linked must already be gone from the same transaction:
-// the row cannot be deleted while an account names it, which is
+// The mailboxes that go with them — their personal workspace's, and those of
+// the teams they were alone in — must already be gone from the same
+// transaction: the row cannot be deleted while an account names it, which is
 // ErrOwnsAccounts, and it is deliberately not a cascade (see migration 0002);
-// nor can a workspace that still holds one. Invites they sent to other people,
-// and grants they gave, stay, since each is the record of how that person
-// arrived or got access; who sent or gave it does not.
+// nor can a workspace that still holds one. Invites they sent to other
+// people, grants they gave, mailboxes they linked and team consents they gave
+// stay, since each is the record of how someone arrived, got access or what
+// a team agreed to; who did it does not. An invite of theirs still waiting
+// expires first.
 //
 // The only active owner is not deleted unless force says so, disabled or not.
 func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool) (Removed, error) {
@@ -208,8 +243,15 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 		`DELETE FROM invites WHERE email = ? OR used_by = ?`, email, id); err != nil {
 		return Removed{}, fmt.Errorf("auth: delete the user's invites: %w", err)
 	}
+	now := u.now().Unix()
+	if _, err := expireInvitesByTx(ctx, tx, id, now); err != nil {
+		return Removed{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE invites SET created_by = '' WHERE created_by = ?`, id); err != nil {
 		return Removed{}, fmt.Errorf("auth: forget who sent invites: %w", err)
+	}
+	if out.Stopped, err = store.StopBoundTx(ctx, tx, id, now); err != nil {
+		return Removed{}, err
 	}
 	// Explicitly, rather than by the cascade from users: a pin goes only
 	// with the person its identity signs in, and the cascade would leave it.
@@ -277,6 +319,18 @@ func (u *Users) SweepInvites(ctx context.Context, ahead time.Duration) (int, err
 		return nil
 	})
 	return n, err
+}
+
+// expireInvitesByTx expires every invite a person made that is still
+// waiting, an instance invite or a team's: once they are disabled or deleted
+// nobody stands behind it. The record stays until the sweep.
+func expireInvitesByTx(ctx context.Context, tx *sql.Tx, id string, now int64) (int, error) {
+	n, err := execCount(ctx, tx, `UPDATE invites SET expires_at = ?1
+		WHERE created_by = ?2 AND used_at = 0 AND expires_at > ?1`, now, id)
+	if err != nil {
+		return 0, fmt.Errorf("auth: expire the user's invites: %w", err)
+	}
+	return n, nil
 }
 
 // requireAnotherOwnerTx refuses unless some other owner is active.

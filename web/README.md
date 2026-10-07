@@ -62,16 +62,17 @@ failure, never something to create from here. The fixtures of routes the open co
 by an in-memory fake daemon and the Google and Microsoft pages intercepted. It walks sign-in and
 sign-up by invitation, an IMAP mailbox, iCloud (a refused password, an app-specific one, a custom
 domain), the loopback and web OAuth flows, a Gmail consent that came back without the mailbox, a
-folder listing the mail server refuses, removal, the account section and an expired session, on
-desktop and phone, light and dark, then in pt-BR and German; then sync (the consent card, the first
-sync over the event stream with `Last-Event-ID` on every reconnection, Sync now, folders from the
-index, turning it off, the text changing while the page is open, a revoked session), actions in the
-Account section (allowing them offers Read and act on a new key; a consent to an older text is
-paused), API keys and the MCP endpoint at this origin (the key shown once, copied, never kept), and
-Storage (a mailbox whose account needs authorizing again keeps its index; turning sync off reads
-the figures again), and API keys on a server with MCP over HTTP off (no address, no command). It
-fails on a page error, a CSP violation, horizontal scrolling, any legal link, byline or company name,
-and any request to the message or sending routes, which its fake daemon does not implement.
+folder listing the mail server refuses, removal (with the mailbox's id repeated in `confirm`, as the
+daemon requires), the account section and an expired session, on desktop and phone, light and dark,
+then in pt-BR and German; then sync (the consent card, the first sync over the event stream with
+`Last-Event-ID` on every reconnection, Sync now, folders from the index, turning it off, the text
+changing while the page is open, a revoked session), actions in the Account section (allowing them
+offers Read and act on a new key; a consent to an older text is paused), API keys and the MCP
+endpoint at this origin (the key shown once, copied, never kept), and Storage (a mailbox whose
+account needs authorizing again keeps its index; turning sync off reads the figures again), and API
+keys on a server with MCP over HTTP off (no address, no command). It fails on a page error, a CSP
+violation, horizontal scrolling, any legal link, byline or company name, and any request to the
+message or sending routes, which its fake daemon does not implement.
 `QA_ONLY=console|sync|actions|keys|storage` runs one group.
 
 The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and sessions, mailboxes
@@ -82,17 +83,21 @@ contract is made once. Without workspaces it answers `GET /v1/workspaces` with `
 older than them would, and every list is the person's whole.
 
 `test/browser/teams.mjs` adds workspaces through the same `extend`: Ana's personal workspace, a team
-she owns with a mailbox Bea linked (Ana reads and sends from it, Carol only sends), one Ana linked
-and one she holds nothing on (Carol only manages it), and a second team whose invitation waits for
-her. It walks the switcher, each card's grant, a mailbox's access ticked and saved (act ticks read; a
-change that also adds sets the whole grant; one that only takes away names the flags taken), the
-protections said beforehand, the mailboxes an owner administers without holding them, the team's
-people (a role changed and back, an invitation's link shown once, kept through Escape, copied and
-gone with its dialog), creating a team, turning sync off with the team mailbox it reaches named, an
-invitation opened signed in, and then Carol, a member who reads none of those two: their cards
-without folders or messages, her own access only where she just sends, everyone's where she
-manages, and the team's people with nothing to administer. On desktop and phone, light and dark,
-then in Portuguese and German. It takes the same `QA_*` variables as `console.mjs`.
+she owns whose mailboxes are the team's (one Bea linked and synced for the team, which Ana reads
+and sends from and Carol only sends from; one only Ana reads, with sync off; one only Bea reads,
+under the agreement the upgrade carried over from her, which Carol manages and Ana holds nothing
+on), and a second team whose invitation waits for her. It walks the switcher; every mailbox of the
+team as a card its owner manages by her role, one she does not read without its folders; a
+mailbox's access ticked and saved (act ticks read; a change that also adds sets the whole grant; one
+that only takes away names the flags taken), the last reader's Read kept and what she cannot give
+said beforehand; a team mailbox's sync turned on for the team after its text, and the carried-over
+agreement confirmed; the team's people (the last reader marked, a role changed and back, an
+invitation's link shown once, kept through Escape, copied and gone with its dialog); creating a
+team; turning her own sync off, which reaches her personal workspace's mailboxes; an invitation
+opened signed in; and then Carol, a member: her cards without folders, messages, access, sync switch
+or removal, a line saying who manages the team's people, and no Members. On desktop and phone,
+light and dark, then in Portuguese and German, with the words each language expects read from the
+console's catalogs. It takes the same `QA_*` variables as `console.mjs`.
 
 ```sh
 npm run build && npx vite preview --port 4174 &     # or npm run dev, with QA_ORIGIN=http://localhost:5174
