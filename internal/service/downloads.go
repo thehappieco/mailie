@@ -144,7 +144,7 @@ func (h *budgetHold) release() {
 }
 
 // downloadCaller is whose places a download takes: the person's, whichever
-// of their sessions or keys asks, or the instance key's own.
+// of their sessions asks, or a key's own, which acts as nobody.
 func downloadCaller(p Principal) string {
 	if p.UserID != "" {
 		return "user:" + p.UserID

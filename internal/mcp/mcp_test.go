@@ -229,18 +229,26 @@ func TestAReadKeyCannotMarkMessagesReadThroughMCP(t *testing.T) {
 	})
 }
 
-func TestActionsThroughMCPNeedTheOwnersConsent(t *testing.T) {
+func TestActionsThroughMCPNeedTheKeysActFlagAndNoPersonsConsent(t *testing.T) {
+	// A key acts where it holds act, with the write scope, under the key
+	// terms the person who created it agreed to: nobody's own consent to
+	// actions is asked for it.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
 	const acc = "acc_00000000000000a1"
 	box := h.mailbox(acc, ana.user.ID, "ana@work.example")
 	id := h.deliver(acc, box, letter("Invoice", "Shop <orders@shop.example>", "Total: 10", "invoice.pdf", "%PDF"))
-	cs := h.connect(h.key(ana, "write"), "", nil)
-	refused(t, cs, "trash_message", map[string]any{"ids": []int64{id}}, service.CodeConflict)
-	if n := box.CallCount(providertest.MethodMove); n != 0 {
-		t.Errorf("an action without consent sent %d MOVE commands", n)
+	ws, err := workspace.NewRepository(h.store, nil).PersonalOf(t.Context(), ana.user.ID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	h.allowActions(ana)
+	readOnly := h.connect(authtest.NewWorkspaceKey(t, h.store, auth.ScopeWrite, ws.ID, ana.user.ID,
+		workspace.KeyGrant{AccountID: acc, Flags: workspace.Flags{Read: true}}), "", nil)
+	refused(t, readOnly, "trash_message", map[string]any{"ids": []int64{id}}, service.CodeNotAuthorized)
+	if n := box.CallCount(providertest.MethodMove); n != 0 {
+		t.Errorf("an action without act sent %d MOVE commands", n)
+	}
+	cs := h.connect(h.key(ana, "write"), "", nil)
 	res := ok[service.ActionResult](t, cs, "trash_message", map[string]any{"ids": []int64{id}})
 	if len(res.Messages) != 1 || res.Messages[0].FolderRole != "trash" {
 		t.Fatalf("trash_message answered %+v", res)
@@ -480,7 +488,7 @@ func TestAnInstanceKeyReachesOnlyOperatorMailboxes(t *testing.T) {
 	herID := h.deliver(hers, herBox, letter("Private", "Doctor <dr@clinic.example>", "Results", "r.pdf", "%PDF"))
 	opID := h.deliver(operators, opBox, letter("Alerts", "Monitor <mon@example.com>", "Disk", "d.pdf", "%PDF"))
 
-	instance := authtest.NewKey(t, h.store, auth.ScopeWrite, "")
+	instance := authtest.NewKey(t, h.store, auth.ScopeWrite)
 	cs := h.connect(instance, "", nil)
 	accounts := ok[struct {
 		Accounts []service.Account `json:"accounts"`
@@ -506,16 +514,15 @@ func TestAnInstanceKeyReachesOnlyOperatorMailboxes(t *testing.T) {
 	}
 }
 
-func TestAKeyAnAdministratorMadeForAPersonIsNotAToolCredential(t *testing.T) {
+func TestAKeyNobodyAgreedToTheTermsOfIsNotAToolCredential(t *testing.T) {
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
-	minted := authtest.NewKey(t, h.store, auth.ScopeRead, ana.user.ID)
-	_, err := h.svc.AuthenticateTool(t.Context(), minted, nil)
+	_, err := h.svc.AuthenticateTool(t.Context(), h.unagreedKey(ana), nil)
 	if service.CodeOf(err) != service.CodeNotAuthorized {
-		t.Fatalf("a key the person did not create authenticated a tool: %v", err)
+		t.Fatalf("a key nobody agreed to the terms of authenticated a tool: %v", err)
 	}
 	if _, err := h.svc.AuthenticateTool(t.Context(), h.key(ana, "read"), nil); err != nil {
-		t.Fatalf("the person's own key: %v", err)
+		t.Fatalf("a key she created: %v", err)
 	}
 	if _, err := h.svc.AuthenticateTool(t.Context(), ana.token, nil); service.CodeOf(err) != service.CodeUnauthorized {
 		t.Fatalf("a console session authenticated a tool: %v", err)
@@ -980,66 +987,61 @@ func TestSessionsThatClosedLeaveNoMemoryBehind(t *testing.T) {
 	}
 }
 
-func TestAHeldSessionNeverReachesAMailboxItsKeyLostEvenOnceReadComesBack(t *testing.T) {
+func TestAHeldSessionSeesAMailboxTakenOutOfItsKeyAtOnce(t *testing.T) {
 	// A client that launched the daemon holds the key it authenticated with
-	// for the whole session. Bea's key was made for the team's mailbox and
-	// her own; losing read on the team's takes it out of the key for good,
-	// so the session stops at its next call rather than reaching the
-	// mailbox again once read is granted back. The refusal says so, rather
-	// than that the key is dead: a new session with the same key goes on
-	// with her own mailbox.
+	// for the whole session. What the key holds is read at every call: a
+	// mailbox an owner takes out of it is gone for the session at once, and
+	// one given back is there again, which only a reader of it may do.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
-	bea := h.person("bea@example.com", auth.RoleMember)
-	team, ws := h.team(ana, bea)
-	const shared, own = "acc_00000000000000aa", "acc_00000000000000bb"
+	team, _ := h.team(ana)
+	const shared, billing = "acc_00000000000000aa", "acc_00000000000000bb"
 	h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
-	h.mailbox(own, bea.user.ID, "bea@mail.example")
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
-		t.Fatal(err)
-	}
-	key := h.key(bea, "read", shared, own)
+	h.mailboxIn(billing, team, ana.user.ID, "billing@mail.example")
+	key := h.key(ana, "read", shared, billing)
 	cs := h.connect(key, "", nil)
 	ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": shared})
 
-	if _, err := ws.Revoke(t.Context(), shared, bea.user.ID, workspace.Flags{}, nil); err != nil {
+	if err := h.svc.RevokeKeyAccess(t.Context(), ana.session, team, prefixOf(key), shared); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
+	refused(t, cs, "search_messages", map[string]any{"account": shared}, service.CodeNotFound)
+	ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": billing})
+	read := true
+	no := false
+	if _, err := h.svc.SetKeyAccess(t.Context(), ana.session, team, prefixOf(key), shared,
+		service.KeyAccessRequest{Read: &read, Act: &no, Send: &no}); err != nil {
 		t.Fatal(err)
 	}
-	msg := refused(t, cs, "search_messages", map[string]any{"account": shared}, service.CodeConflict)
-	if !strings.Contains(msg, "restart the session") {
-		t.Errorf("the refusal does not say what to do: %q", msg)
-	}
-	refused(t, cs, "list_folders", map[string]any{"account": own}, service.CodeConflict)
-
-	again := h.connect(key, "", nil)
-	ok[service.MessagePage](t, again, "search_messages", map[string]any{"account": own})
-	refused(t, again, "search_messages", map[string]any{"account": shared}, service.CodeNotFound)
+	ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": shared})
 }
 
 func TestSubscribingToAnInboxNeedsReadAccessToIt(t *testing.T) {
-	// Bea may send from the team's mailbox, and so sees it; being told when
+	// A key that may send from the team's mailbox sees it; being told when
 	// mail arrives in it is reading it.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
-	bea := h.person("bea@example.com", auth.RoleMember)
-	team, ws := h.team(ana, bea)
+	team, _ := h.team(ana)
 	const shared = "acc_00000000000000aa"
 	h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Send: true}, ana.user.ID, nil); err != nil {
+	created, err := h.svc.CreateWorkspaceKey(t.Context(), ana.session, team, service.WorkspaceKeyRequest{
+		Name: "sender", Scope: "send", TermsVersion: service.DefaultKeyTermsVersion,
+		Mailboxes: []service.KeyMailboxRequest{{AccountID: shared, Send: true}},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
 	// Under the older protocol the refusal is the answer.
-	cs := h.connect(h.key(bea, "read"), "2025-11-25", nil)
+	cs := h.connect(created.Key, "2025-11-25", nil)
 	inbox := "mail://" + shared + "/folder/inbox"
 	if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: inbox}); err == nil {
 		t.Error("subscribed to an inbox without read access to it")
 	}
 	h.waitForLog(`"msg":"mcp subscription refused"`, `"account":"`+shared+`"`, `"outcome":"not_authorized"`)
 
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true, Send: true}, ana.user.ID, nil); err != nil {
+	read, no := true, false
+	if _, err := h.svc.SetKeyAccess(t.Context(), ana.session, team, created.Prefix, shared,
+		service.KeyAccessRequest{Read: &read, Act: &no, Send: &read}); err != nil {
 		t.Fatal(err)
 	}
 	if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: inbox}); err != nil {
@@ -1048,22 +1050,18 @@ func TestSubscribingToAnInboxNeedsReadAccessToIt(t *testing.T) {
 }
 
 func TestASubscriptionToAnInboxTheKeyCanNoLongerReadIsDropped(t *testing.T) {
-	// Bea's key follows whatever she may read. She subscribed to the team's
-	// inbox and her own, then lost read on the team's: the watch drops it
-	// at its next turn, and never announces it again.
+	// The key subscribed to two of the team's inboxes, then one was taken
+	// out of it: the watch drops it at its next turn, and never announces
+	// it again.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
-	bea := h.person("bea@example.com", auth.RoleMember)
-	team, ws := h.team(ana, bea)
-	const shared, own = "acc_00000000000000aa", "acc_00000000000000bb"
+	team, _ := h.team(ana)
+	const shared, billing = "acc_00000000000000aa", "acc_00000000000000bb"
 	sharedBox := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
-	ownBox := h.mailbox(own, bea.user.ID, "bea@mail.example")
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true, Send: true}, ana.user.ID, nil); err != nil {
-		t.Fatal(err)
-	}
+	billingBox := h.mailboxIn(billing, team, ana.user.ID, "billing@mail.example")
 	var mu sync.Mutex
 	var updated []string
-	key := h.key(bea, "read")
+	key := h.key(ana, "read", shared, billing)
 	cs := h.connect(key, "", &sdk.ClientOptions{
 		ResourceUpdatedHandler: func(_ context.Context, req *sdk.ResourceUpdatedNotificationRequest) {
 			mu.Lock()
@@ -1071,7 +1069,7 @@ func TestASubscriptionToAnInboxTheKeyCanNoLongerReadIsDropped(t *testing.T) {
 			mu.Unlock()
 		},
 	})
-	for _, acc := range []string{shared, own} {
+	for _, acc := range []string{shared, billing} {
 		if err := cs.Subscribe(t.Context(), &sdk.SubscribeParams{URI: "mail://" + acc + "/folder/inbox"}); err != nil {
 			t.Fatal(err)
 		}
@@ -1079,26 +1077,27 @@ func TestASubscriptionToAnInboxTheKeyCanNoLongerReadIsDropped(t *testing.T) {
 	}
 	time.Sleep(300 * time.Millisecond)
 
-	if _, err := ws.Revoke(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, nil); err != nil {
+	if err := h.svc.RevokeKeyAccess(t.Context(), ana.session, team, prefixOf(key), shared); err != nil {
 		t.Fatal(err)
 	}
-	// Mail in her own inbox turns the watch.
-	h.announce(own, h.deliver(own, ownBox, letter("Hello", "Carl <carl@example.org>", "Hi", "h.pdf", "%PDF")), "Hello")
+	// Mail in the other inbox turns the watch.
+	h.announce(billing, h.deliver(billing, billingBox, letter("Hello", "Carl <carl@example.org>", "Hi", "h.pdf", "%PDF")), "Hello")
 	h.waitForLog(`"msg":"mcp subscription dropped: the key can no longer read the inbox"`, `"key":"`+prefixOf(key)+`"`,
-		`"account":"`+shared+`"`, `"outcome":"not_authorized"`)
+		`"account":"`+shared+`"`)
 	time.Sleep(200 * time.Millisecond)
 	h.announce(shared, h.deliver(shared, sharedBox, letter("Refund", "Client <c@example.org>", "x", "r.pdf", "%PDF")), "Refund")
 	time.Sleep(300 * time.Millisecond)
 	mu.Lock()
 	defer mu.Unlock()
-	if !slices.Equal(updated, []string{"mail://" + own + "/folder/inbox"}) {
-		t.Errorf("resource updates %v; want one, for her own inbox", updated)
+	if !slices.Equal(updated, []string{"mail://" + billing + "/folder/inbox"}) {
+		t.Errorf("resource updates %v; want one, for the inbox the key still reads", updated)
 	}
 }
 
 func TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey(t *testing.T) {
-	// Carol is an admin of the team, and manages its mailbox by her role:
-	// her key lists its card, and reaches nothing it holds.
+	// Carol is an admin of the team, and reads none of its mailboxes: she
+	// may give a key send on one, never read, so her key lists its card and
+	// reaches nothing it holds.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
 	carol := h.person("carol@example.com", auth.RoleMember)
@@ -1107,7 +1106,20 @@ func TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey(t *testing.T) {
 	const shared = "acc_00000000000000aa"
 	box := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
 	id := h.deliver(shared, box, letter("Refund", "Client <c@example.org>", "Order 4471", "r.pdf", "%PDF"))
-	cs := h.connect(h.key(carol, "read"), "", nil)
+	if _, err := h.svc.CreateWorkspaceKey(t.Context(), carol.session, team, service.WorkspaceKeyRequest{
+		Name: "carol's", Scope: "send", TermsVersion: service.DefaultKeyTermsVersion,
+		Mailboxes: []service.KeyMailboxRequest{{AccountID: shared, Read: true}},
+	}); service.CodeOf(err) != service.CodeNotAuthorized {
+		t.Fatalf("Carol giving a key read: %v", err)
+	}
+	created, err := h.svc.CreateWorkspaceKey(t.Context(), carol.session, team, service.WorkspaceKeyRequest{
+		Name: "carol's", Scope: "send", TermsVersion: service.DefaultKeyTermsVersion,
+		Mailboxes: []service.KeyMailboxRequest{{AccountID: shared, Send: true}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := h.connect(created.Key, "", nil)
 
 	accounts := ok[struct {
 		Accounts []service.Account `json:"accounts"`
@@ -1121,9 +1133,9 @@ func TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey(t *testing.T) {
 		!strings.Contains(listed, "no read access") || strings.Contains(listed, "can archive") {
 		t.Errorf("list_accounts says %q, want the card marked without read access", listed)
 	}
-	if listed := text(call(t, h.connect(h.key(ana, "read"), "", nil), "list_accounts", nil)); !strings.Contains(listed, shared) ||
+	if listed := text(call(t, h.connect(h.key(ana, "read", shared), "", nil), "list_accounts", nil)); !strings.Contains(listed, shared) ||
 		strings.Contains(listed, "no read access") {
-		t.Errorf("list_accounts for Ana, who reads it, says %q", listed)
+		t.Errorf("list_accounts for a key Ana, who reads it, gave read says %q", listed)
 	}
 	if page := ok[service.MessagePage](t, cs, "search_messages", nil); len(page.Messages) != 0 {
 		t.Errorf("search found %+v", page.Messages)
@@ -1148,19 +1160,24 @@ func TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey(t *testing.T) {
 	}
 }
 
-func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
-	// Bea belongs to the team Ana linked a mailbox into, and holds nothing on
-	// it: through her key, tools, resources and the wait never reach it.
-	// Then read is granted, and the same calls do, which is what makes the
-	// refusals about the grant.
+func TestAKeyHoldingNothingReachesNothingUntilAReaderGivesItAMailbox(t *testing.T) {
+	// A key of the team that holds nothing on its mailbox: tools, resources
+	// and the wait never reach it. Then Ana, who reads it, gives the key
+	// read, and the same calls do, which is what makes the refusals about
+	// what the key holds.
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
-	bea := h.person("bea@example.com", auth.RoleMember)
-	team, ws := h.team(ana, bea)
+	team, _ := h.team(ana)
 	const shared = "acc_00000000000000aa"
 	box := h.mailboxIn(shared, team, ana.user.ID, "support@mail.example")
 	id := h.deliver(shared, box, letter("Refund", "Client <c@example.org>", "Order 4471", "r.pdf", "%PDF"))
-	cs := h.connect(h.key(bea, "read"), "", nil)
+	created, err := h.svc.CreateWorkspaceKey(t.Context(), ana.session, team, service.WorkspaceKeyRequest{
+		Name: "empty", Scope: "read", TermsVersion: service.DefaultKeyTermsVersion,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := h.connect(created.Key, "", nil)
 
 	accounts := ok[struct {
 		Accounts []service.Account `json:"accounts"`
@@ -1190,7 +1207,9 @@ func TestAMemberWithoutAGrantCannotSeeTheMailbox(t *testing.T) {
 		t.Errorf("refused reads fetched %d parts", n)
 	}
 
-	if _, err := ws.SetGrant(t.Context(), shared, bea.user.ID, workspace.Flags{Read: true}, ana.user.ID, nil); err != nil {
+	read, no := true, false
+	if _, err := h.svc.SetKeyAccess(t.Context(), ana.session, team, created.Prefix, shared,
+		service.KeyAccessRequest{Read: &read, Act: &no, Send: &no}); err != nil {
 		t.Fatal(err)
 	}
 	if page := ok[service.MessagePage](t, cs, "search_messages", map[string]any{"account": shared}); len(page.Messages) != 1 {

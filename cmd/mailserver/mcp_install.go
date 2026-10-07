@@ -286,7 +286,8 @@ func mcpInstall(ctx context.Context, args []string) error {
 		say(mcpStdout, "Claude Desktop will run %s mcp connect --url %s; if this binary moves, run mcp install --force again.\n",
 			command, mcpbridge.Base(endpoint))
 	}
-	say(mcpStdout, "Restart %s to load it. To take the key back, revoke it in the console's API keys & MCP section.\n", app)
+	say(mcpStdout, "Restart %s to load it. To take the key back, revoke it in the console: the workspace's API keys, "+
+		"or your keys under My account.\n", app)
 	return nil
 }
 
@@ -405,7 +406,8 @@ func uninstallServer(path, name string) error {
 	}
 	say(mcpStdout, "Removed the MCP server %q from %s.\n", name, path)
 	sayBackup(path)
-	say(mcpStdout, "The key it held works until you revoke it, in the console's API keys & MCP section.\n")
+	say(mcpStdout, "The key it held works until it is revoked, in the console: the workspace's API keys, "+
+		"or your keys under My account.\n")
 	return nil
 }
 

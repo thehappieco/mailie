@@ -70,8 +70,8 @@ type SyncConsentRequest struct {
 // has already happened by then.
 const withdrawTimeout = 2 * time.Minute
 
-// SyncConsent reports whether the caller agreed to sync. A person's key may
-// read it; an instance key has no person to answer for.
+// SyncConsent reports whether the person signed in agreed to sync. A key has
+// no person to answer for.
 func (s *Service) SyncConsent(ctx context.Context, p Principal) (SyncConsent, error) {
 	if err := s.requirePerson(p); err != nil {
 		return SyncConsent{}, err
@@ -168,8 +168,8 @@ type ActionsConsentRequest struct {
 	Version string `json:"version"`
 }
 
-// ActionsConsent reports whether the caller allowed actions. A person's key
-// may read it; an instance key has no person to answer for.
+// ActionsConsent reports whether the person signed in allowed actions. A key
+// has no person to answer for.
 func (s *Service) ActionsConsent(ctx context.Context, p Principal) (ActionsConsent, error) {
 	if err := s.requirePerson(p); err != nil {
 		return ActionsConsent{}, err
@@ -262,8 +262,8 @@ type SendConsentRequest struct {
 	Version string `json:"version"`
 }
 
-// SendConsent reports whether the caller allowed sending. A person's key may
-// read it; an instance key has no person to answer for.
+// SendConsent reports whether the person signed in allowed sending. A key
+// has no person to answer for.
 func (s *Service) SendConsent(ctx context.Context, p Principal) (SendConsent, error) {
 	if err := s.requirePerson(p); err != nil {
 		return SendConsent{}, err
@@ -442,11 +442,11 @@ var (
 			"still indexed", nil)
 )
 
-// requirePerson guards what answers for a person: a session, or a key issued
-// to act as one.
+// requirePerson guards what answers for a person: a session. A key belongs
+// to a workspace and acts as no person.
 func (s *Service) requirePerson(p Principal) error {
-	if p.UserID == "" {
-		return E(CodeNotAuthorized, "this is a person's setting; an instance key has no person to answer for", nil)
+	if !p.IsSession() || p.UserID == "" {
+		return E(CodeNotAuthorized, "this is a person's setting; an API key has no person to answer for", nil)
 	}
 	return nil
 }

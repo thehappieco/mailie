@@ -8,6 +8,7 @@ import (
 	"github.com/emersion/go-imap/v2"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
@@ -43,7 +44,8 @@ func TestTheConfiguredConsentVersionIsTheCurrentOneAndTheOnlyOneAccepted(t *test
 	wantNotCurrent(t, "actions", err, revised.Actions)
 	_, err = m.svc.GrantSendConsent(ctx, ana, service.DefaultSendConsentVersion)
 	wantNotCurrent(t, "sending", err, revised.Send)
-	_, err = m.svc.CreateMyAPIKey(ctx, ana, service.PersonalKeyRequest{
+	personal := authtest.Personal(t, m.db, ana.UserID)
+	_, err = m.svc.CreateWorkspaceKey(ctx, ana, personal, service.WorkspaceKeyRequest{
 		Name: "assistant", Scope: "read", TermsVersion: service.DefaultKeyTermsVersion,
 	})
 	wantCode(t, "a key under the default terms", err, service.CodeConflict)
@@ -60,9 +62,11 @@ func TestTheConfiguredConsentVersionIsTheCurrentOneAndTheOnlyOneAccepted(t *test
 	if c, err := m.svc.GrantSendConsent(ctx, ana, revised.Send); err != nil || c.Version != revised.Send {
 		t.Fatalf("GrantSendConsent(%s) = %+v, %v", revised.Send, c, err)
 	}
-	key, err := m.svc.CreateMyAPIKey(ctx, ana, service.PersonalKeyRequest{Name: "assistant", Scope: "read", TermsVersion: revised.Keys})
+	key, err := m.svc.CreateWorkspaceKey(ctx, ana, personal, service.WorkspaceKeyRequest{
+		Name: "assistant", Scope: "read", TermsVersion: revised.Keys,
+	})
 	if err != nil || key.TermsVersion != revised.Keys {
-		t.Fatalf("CreateMyAPIKey(%s) = %+v, %v", revised.Keys, key.PersonalKey, err)
+		t.Fatalf("CreateWorkspaceKey(%s) = %+v, %v", revised.Keys, key.WorkspaceKey, err)
 	}
 }
 
@@ -199,12 +203,13 @@ func TestASyncConsentGivenToAnEarlierTextKeepsTheMailboxSyncingAfterTheTextChang
 }
 
 func TestAKeyKeepsWorkingUnderTheTermsItWasCreatedWith(t *testing.T) {
-	// New key terms are asked for on the next key; a key a person already
-	// created under the earlier terms is theirs until they revoke it.
+	// New key terms are asked for on the next key; a key created under the
+	// earlier terms works on until it expires or is revoked.
 	f := newFixtureWith(t, fixtureOptions{consent: revised})
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	secret, _, err := f.keys.Issue(t.Context(), auth.NewKeyRequest{
-		Name: "assistant", Scope: auth.ScopeRead, UserID: ana.UserID, TermsVersion: service.DefaultKeyTermsVersion,
+		Name: "assistant", Scope: auth.ScopeRead, WorkspaceID: authtest.Personal(t, f.db, ana.UserID),
+		CreatedBy: ana.UserID, TermsVersion: service.DefaultKeyTermsVersion,
 	})
 	if err != nil {
 		t.Fatal(err)

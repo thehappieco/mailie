@@ -143,7 +143,7 @@ func (m *mailie) waitForRequests(method string, n int) {
 // key is an instance key, which reaches the mailboxes nobody owns.
 func (m *mailie) key(scope auth.Scope) string {
 	m.t.Helper()
-	return authtest.NewKey(m.t, m.store, scope, "")
+	return authtest.NewKey(m.t, m.store, scope)
 }
 
 // mailbox registers an active mailbox nobody owns, switched on by the

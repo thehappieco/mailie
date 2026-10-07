@@ -34,7 +34,7 @@ onBeforeUnmount(() => clearTimeout(copiedTimer))
       <span class="connect-icon"><AppIcon name="layers" :size="20" /></span>
       <div class="grow">
         <h2 id="mcp-connect-title">{{ t('Connect an AI assistant') }}</h2>
-        <p>{{ t('Tools that speak MCP, such as Claude Code, reach your mail through Mailie’s MCP server with a key you create here.') }}</p>
+        <p>{{ t('Tools that speak MCP, such as Claude Code, reach the mailboxes a key is given through Mailie’s MCP server, with a key created here.') }}</p>
       </div>
     </div>
 

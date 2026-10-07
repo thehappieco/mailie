@@ -36,7 +36,7 @@ may still change.
 | Read/unread, star, archive, move, trash, undo | Composing HTML |
 | Sending over REST, with attachments, replies and forwards | MCP tools that send |
 | MCP over Streamable HTTP and stdio, with read and action tools | OAuth for MCP clients (claude.ai web connectors) |
-| The server console, invitations, personal API keys | Webhooks |
+| The server console, invitations, workspace API keys | Webhooks |
 | Encrypted database backups to S3 | |
 | A Docker image, Compose and a hardened systemd unit for self-hosting | |
 
@@ -206,10 +206,10 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   it off deletes their index; a team's mailbox syncs once an owner or an admin turns it on for the
   team, and turning it off deletes its index for everyone. Actions on messages are a second,
   separate permission.
-- `mailserver user disable --email X` ends a person's sessions and revokes their keys;
-  `mailserver user delete --email X` deletes them with the mailboxes of their personal workspace,
-  credentials, index, sessions, keys and personal workspace, and every team they were the only
-  member of; the mailboxes of a team others are in stay the team's. Either refuses, without
+- `mailserver user disable --email X` ends a person's sessions and revokes the API keys they
+  created; `mailserver user delete --email X` deletes them with the mailboxes of their personal
+  workspace, credentials, index, sessions, keys and personal workspace, and every team they were
+  the only member of; the mailboxes of a team others are in stay the team's. Either refuses, without
   `--force`, someone their teams depend on: a team's last owner, the last person who can read one
   of its mailboxes, or the linker whose own consent a team mailbox someone else reads still syncs
   under since the upgrade.
@@ -245,8 +245,8 @@ curl -H "$H" -H 'Idempotency-Key: 7d1c0e1a' localhost:8080/v1/messages/send \
 | Scope | Allows |
 |---|---|
 | `read` | listing, searching, reading bodies, downloading attachments and originals, waiting for new mail. It never marks anything as read. |
-| `write` | the above, plus flags, moves, archive and trash. In a person's mailbox only someone holding `act` on it acts, with their session or a key they created, and only after allowing actions in the console themselves. |
-| `send` | the above, plus sending. A person's mailbox sends only for someone holding `send` on it, signed in, after they allowed sending, under their own name. |
+| `write` | the above, plus flags, moves, archive and trash. A person acts only with `act` on the mailbox, signed in, after allowing actions in the console themselves; a workspace key only with `act` on it, under the key terms its creator agreed to. |
+| `send` | the above, plus sending. A person sends only with `send` on the mailbox, signed in, after allowing sending, under their own name; a workspace key only with `send` on it, under the address alone, unless the server says keys may not send (`MAIL_KEYS_MAY_SEND=false`). Every send needs `confirm: true`. |
 | `admin` | the above, plus mailboxes, keys and people. |
 
 There are two kinds of key:
@@ -260,21 +260,27 @@ There are two kinds of key:
   which exist only while it runs with `MAIL_ADMIN_API=true` (off by default; otherwise the daemon
   answers 404). Without them, `apikey create --bootstrap` issues a key straight into the database,
   with the daemon stopped, as for the first key above; listing and revoking need the routes.
-- **Personal keys**, which each person creates in the console for their own tools: `read` or
-  `write`, for all or some of the mailboxes they may read, for 30, 90 or 365 days, at most 20
-  alive. They are the only keys that act as a person, and the only way a tool reaches a person's
-  mailbox; they reach only what their person can, at each request.
+- **Workspace keys**, which an owner or an admin of a workspace creates in the console (in a
+  personal workspace, its person): `read`, `write` or `send`, for 30, 90 or 365 days, at most 20
+  alive per workspace. A key belongs to its workspace and acts as nobody: it reaches exactly the
+  mailboxes it was given, each with `read`, `act` or `send` — `read` only from someone who reads
+  that mailbox — and keeps them whoever gave them, until an owner or an admin takes them out or
+  revokes it. Every owner and admin of the workspace sees every key and may revoke it; it also
+  stops when the person who created it leaves the workspace or is closed. Members create none. See
+  [`docs/workspaces.md`](docs/workspaces.md#api-keys).
 
 Keys are stored only as Argon2id hashes and shown once. Revoked keys stay listed, because they
-answer "what could have read this mailbox". A key restricted to mailboxes that have all been
-removed is revoked rather than widened to every mailbox.
+answer "what could have read this mailbox". An instance key restricted to mailboxes that have all
+been removed is revoked rather than widened to every operator mailbox; a workspace key left with no
+mailbox reaches nothing.
 
 ## MCP
 
 The daemon is an MCP server: Streamable HTTP at `/mcp` and stdio. Tools to read (`list_accounts`,
 `list_folders`, `search_messages`, `get_message`, `get_attachment`, `wait_for_new_mail`) and to act
 (`mark_read`, `flag_message`, `move_message`, `trash_message`), and `mail://` resources. MCP takes
-API keys only, never a console session; a person creates theirs in the console.
+API keys only, never a console session; an owner or an admin of a workspace creates one in the
+console.
 
 Connecting a client, from the machine it runs on (the same binary, which needs nothing of the
 daemon's there):

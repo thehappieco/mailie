@@ -1,10 +1,11 @@
 // The person's consent to actions on their messages.
 //
 // Changing a mailbox is a new use of it, so it is asked for on its own,
-// apart from sync: until the person allows actions, the server refuses
-// every one, from a console or from a tool holding one of their keys, and
-// no key can be created to make them. "Not now" is remembered in memory
-// only, like sync's.
+// apart from sync: until the person allows actions, the server refuses every
+// one they ask for from a console, and every one a key they made before keys
+// belonged to workspaces asks for. A workspace's key acts under the key terms
+// its creator agreed to, where it is given Act, never under this consent.
+// "Not now" is remembered in memory only, like sync's.
 //
 // What an edition does with actions (one that shows messages may make them
 // from the console) is its own; it hears of every answer here through

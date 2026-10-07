@@ -124,6 +124,25 @@ type Config struct {
 	// API's JSON 404: MCP is then only `serve --mcp-stdio`, for a deployment
 	// whose MCP clients must not reach it over the network with a key.
 	MCPHTTP bool
+	// KeysMaySend lets a workspace's API keys send email, where the key
+	// holds the send flag on the mailbox and has the send scope. On by
+	// default under the open console's key terms, which say a key may send.
+	// Off, for an edition whose key terms do not cover sending, the send
+	// scope is refused when a key is created and every send by a workspace
+	// key is refused; instance keys are the operator's and are not affected.
+	// A deployment whose MAIL_CONSENT_VERSION_KEYS names other terms sets it
+	// itself: only those terms say whether a key may send, so no default
+	// stands for them.
+	KeysMaySend bool
+	// KeysActUnderCreatorConsent holds a workspace key's actions to its
+	// creator's own actions consent as well: the key acts only while the
+	// person who created it allows actions at the current revision (and is
+	// active). Off by default, under the open console's key terms, which
+	// say the key terms cover what a key does. On, for an edition whose key
+	// terms promise that a key acts only while its person allows actions.
+	// Like MAIL_KEYS_MAY_SEND, a deployment whose MAIL_CONSENT_VERSION_KEYS
+	// names other terms sets it itself.
+	KeysActUnderCreatorConsent bool
 	// Consent names the revisions of the texts a person agrees to in the
 	// console (see ConsentVersions).
 	Consent ConsentVersions
@@ -204,35 +223,48 @@ func Load() (Config, error) {
 	}
 
 	cfg := Config{
-		Env:                 env,
-		HTTPAddr:            str("MAIL_HTTP_ADDR", defaultHTTPAddr),
-		MetricsAddr:         str("MAIL_METRICS_ADDR", ""),
-		TrustedProxies:      prefixes("MAIL_TRUSTED_PROXIES", &errs),
-		DataDir:             dataDir(&errs),
-		Credentials:         credentials(&errs),
-		Google:              OAuthClient{ClientID: str("MAIL_GOOGLE_CLIENT_ID", ""), ClientSecret: str("MAIL_GOOGLE_CLIENT_SECRET", "")},
-		Microsoft:           OAuthClient{ClientID: str("MAIL_MICROSOFT_CLIENT_ID", ""), Tenant: str("MAIL_MICROSOFT_TENANT", "common")},
-		GoogleWeb:           OAuthClient{ClientID: str("MAIL_GOOGLE_WEB_CLIENT_ID", ""), ClientSecret: str("MAIL_GOOGLE_WEB_CLIENT_SECRET", "")},
-		MicrosoftWeb:        OAuthClient{ClientID: str("MAIL_MICROSOFT_WEB_CLIENT_ID", ""), ClientSecret: str("MAIL_MICROSOFT_WEB_CLIENT_SECRET", ""), Tenant: str("MAIL_MICROSOFT_TENANT", "common")},
-		WebDir:              webDir(&errs),
-		PublicURL:           publicURL(env, &errs),
-		ConnectSrc:          connectSrc(env, &errs),
-		AccountAllowPrivate: boolean("MAIL_ACCOUNT_ALLOW_PRIVATE", false, &errs),
-		Cache:               Cache{BodyMaxBytes: bytes("MAIL_CACHE_BODY_MAX_BYTES", defaultBodyCacheBytes, &errs), AttachMaxBytes: bytes("MAIL_CACHE_ATTACH_MAX_BYTES", defaultAttachBytes, &errs)},
-		DownloadSpoolBytes:  bytes("MAIL_DOWNLOAD_SPOOL_MAX_BYTES", defaultDownloadSpool, &errs),
-		Webhooks:            Webhooks{AllowHTTP: boolean("MAIL_WEBHOOK_ALLOW_HTTP", false, &errs), AllowPrivate: boolean("MAIL_WEBHOOK_ALLOW_PRIVATE", false, &errs)},
-		Log:                 Log{Level: str("MAIL_LOG_LEVEL", "info"), Format: str("MAIL_LOG_FORMAT", defaultLogFormat(env))},
-		AdminAPI:            boolean("MAIL_ADMIN_API", false, &errs),
-		AdminKey:            str("MAIL_ADMIN_KEY", ""),
-		MCPKey:              str("MAIL_MCP_KEY", ""),
-		MicrosoftDeviceCode: boolean("MAIL_MICROSOFT_DEVICE_CODE", false, &errs),
-		MCPHTTP:             boolean("MAIL_MCP_HTTP", true, &errs),
-		Consent:             consentVersions(&errs),
-		MCPElicitSend:       boolean("MAIL_MCP_ELICIT_SEND", false, &errs),
-		IMAPDebug:           boolean("MAIL_IMAP_DEBUG", false, &errs),
+		Env:                        env,
+		HTTPAddr:                   str("MAIL_HTTP_ADDR", defaultHTTPAddr),
+		MetricsAddr:                str("MAIL_METRICS_ADDR", ""),
+		TrustedProxies:             prefixes("MAIL_TRUSTED_PROXIES", &errs),
+		DataDir:                    dataDir(&errs),
+		Credentials:                credentials(&errs),
+		Google:                     OAuthClient{ClientID: str("MAIL_GOOGLE_CLIENT_ID", ""), ClientSecret: str("MAIL_GOOGLE_CLIENT_SECRET", "")},
+		Microsoft:                  OAuthClient{ClientID: str("MAIL_MICROSOFT_CLIENT_ID", ""), Tenant: str("MAIL_MICROSOFT_TENANT", "common")},
+		GoogleWeb:                  OAuthClient{ClientID: str("MAIL_GOOGLE_WEB_CLIENT_ID", ""), ClientSecret: str("MAIL_GOOGLE_WEB_CLIENT_SECRET", "")},
+		MicrosoftWeb:               OAuthClient{ClientID: str("MAIL_MICROSOFT_WEB_CLIENT_ID", ""), ClientSecret: str("MAIL_MICROSOFT_WEB_CLIENT_SECRET", ""), Tenant: str("MAIL_MICROSOFT_TENANT", "common")},
+		WebDir:                     webDir(&errs),
+		PublicURL:                  publicURL(env, &errs),
+		ConnectSrc:                 connectSrc(env, &errs),
+		AccountAllowPrivate:        boolean("MAIL_ACCOUNT_ALLOW_PRIVATE", false, &errs),
+		Cache:                      Cache{BodyMaxBytes: bytes("MAIL_CACHE_BODY_MAX_BYTES", defaultBodyCacheBytes, &errs), AttachMaxBytes: bytes("MAIL_CACHE_ATTACH_MAX_BYTES", defaultAttachBytes, &errs)},
+		DownloadSpoolBytes:         bytes("MAIL_DOWNLOAD_SPOOL_MAX_BYTES", defaultDownloadSpool, &errs),
+		Webhooks:                   Webhooks{AllowHTTP: boolean("MAIL_WEBHOOK_ALLOW_HTTP", false, &errs), AllowPrivate: boolean("MAIL_WEBHOOK_ALLOW_PRIVATE", false, &errs)},
+		Log:                        Log{Level: str("MAIL_LOG_LEVEL", "info"), Format: str("MAIL_LOG_FORMAT", defaultLogFormat(env))},
+		AdminAPI:                   boolean("MAIL_ADMIN_API", false, &errs),
+		AdminKey:                   str("MAIL_ADMIN_KEY", ""),
+		MCPKey:                     str("MAIL_MCP_KEY", ""),
+		MicrosoftDeviceCode:        boolean("MAIL_MICROSOFT_DEVICE_CODE", false, &errs),
+		MCPHTTP:                    boolean("MAIL_MCP_HTTP", true, &errs),
+		KeysMaySend:                boolean("MAIL_KEYS_MAY_SEND", true, &errs),
+		KeysActUnderCreatorConsent: boolean("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT", false, &errs),
+		Consent:                    consentVersions(&errs),
+		MCPElicitSend:              boolean("MAIL_MCP_ELICIT_SEND", false, &errs),
+		IMAPDebug:                  boolean("MAIL_IMAP_DEBUG", false, &errs),
 	}
 
 	errs = append(errs, cfg.Log.validate()...)
+
+	// The open key terms say a key may send; another edition's say what
+	// they say, and a daemon serving them is told, never assumed.
+	if v, _ := os.LookupEnv("MAIL_KEYS_MAY_SEND"); v == "" && cfg.Consent.Keys != DefaultKeyTermsVersion {
+		bad("MAIL_KEYS_MAY_SEND: set it to true or false: MAIL_CONSENT_VERSION_KEYS names key terms other " +
+			"than the open console's, and only those terms say whether an API key may send")
+	}
+	if v, _ := os.LookupEnv("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT"); v == "" && cfg.Consent.Keys != DefaultKeyTermsVersion {
+		bad("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT: set it to true or false: MAIL_CONSENT_VERSION_KEYS names key terms " +
+			"other than the open console's, and only those terms say whether a key acts under its creator's actions consent")
+	}
 
 	// Google issues a client secret for Desktop clients and the token endpoint
 	// may ask for it, so it is accepted — but on its own it configures nothing.
@@ -585,14 +617,15 @@ func (c Config) String() string {
 	return fmt.Sprintf(
 		"env=%s http=%s metrics=%s data=%s credential_keys=%s google=%s microsoft=%s/%s "+
 			"google_web=%s microsoft_web=%s public_url=%s web=%s account_allow_private=%t "+
-			"microsoft_device_code=%t admin_api=%t mcp_http=%t mcp_key=%s consent_versions=sync:%s,actions:%s,send:%s,keys:%s "+
+			"microsoft_device_code=%t admin_api=%t mcp_http=%t mcp_key=%s keys_may_send=%t "+
+			"consent_versions=sync:%s,actions:%s,send:%s,keys:%s "+
 			"download_spool=%dMiB log=%s/%s",
 		c.Env, c.HTTPAddr, orDefault(c.MetricsAddr, "inline"), c.DataDir,
 		orDefault(strings.Join(keys, ","), "none"),
 		configured(c.Google.Configured()), configured(c.Microsoft.Configured()), c.Microsoft.Tenant,
 		configured(c.GoogleWeb.Configured()), configured(c.MicrosoftWeb.Configured()),
 		orDefault(c.PublicURL, "unset"), orDefault(c.WebDir, "off"), c.AccountAllowPrivate,
-		c.MicrosoftDeviceCode, c.AdminAPI, c.MCPHTTP, configured(c.MCPKey != ""),
+		c.MicrosoftDeviceCode, c.AdminAPI, c.MCPHTTP, configured(c.MCPKey != ""), c.KeysMaySend,
 		c.Consent.Sync, c.Consent.Actions, c.Consent.Send, c.Consent.Keys,
 		c.DownloadSpoolBytes>>20, c.Log.Level, c.Log.Format,
 	) + connectSrcField(c.ConnectSrc)

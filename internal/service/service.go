@@ -72,6 +72,12 @@ type Service struct {
 	consent config.ConsentVersions
 	// mcpHTTP is whether this server answers MCP over HTTP at /mcp.
 	mcpHTTP bool
+	// keysMayNotSend refuses the send scope to a new workspace key and every
+	// send by one (MAIL_KEYS_MAY_SEND=false).
+	keysMayNotSend bool
+	// keysActUnderCreator holds every workspace key's actions to its
+	// creator's actions consent (MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT).
+	keysActUnderCreator bool
 	// externalSignInOnly is whether people sign in only through an
 	// extension (external.go): every password and invitation route is
 	// refused.
@@ -127,6 +133,14 @@ type Deps struct {
 	// (MAIL_MCP_HTTP), which the service only reports (MCPAccess): the
 	// transport decides what it mounts.
 	MCPHTTP bool
+	// KeysMayNotSend is MAIL_KEYS_MAY_SEND=false: an edition whose key terms
+	// do not cover sending. A workspace key is then never created with the
+	// send scope, and every send by one is refused. False, the default, lets
+	// a key send where it holds the send flag, with the send scope.
+	KeysMayNotSend bool
+	// KeysActUnderCreatorConsent is MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true:
+	// a workspace key acts only while its creator allows actions.
+	KeysActUnderCreatorConsent bool
 	// ExternalSignInOnly says people sign in only through an extension of
 	// the daemon (SignInExternal): signing in with a password, signing up
 	// or accepting an invitation, changing a password and creating an
@@ -182,6 +196,8 @@ func New(d Deps) *Service {
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
 		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
 		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP, externalSignInOnly: d.ExternalSignInOnly,
+		keysMayNotSend:      d.KeysMayNotSend,
+		keysActUnderCreator: d.KeysActUnderCreatorConsent,
 	}
 }
 
@@ -214,11 +230,12 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 	if err != nil {
 		return Principal{}, fromCredential(err)
 	}
-	if !p.IsSession() && p.UserID != "" && p.TermsVersion == "" {
-		// A key acting as a person reaches their mail only if they created
-		// it in the console, agreeing to what a tool holding it can do. One
-		// somebody else made for them — an administrator, before keys had
-		// terms — is refused on every transport, not only on the tools'.
+	if p.IsWorkspaceKey() && p.TermsVersion == "" {
+		// A workspace key reaches mail only if the person who created it
+		// agreed to the key terms, which say what a tool holding it can do.
+		// Migration 0012 revoked every person's key nobody agreed to them
+		// through; this refuses one on every transport, not only on the
+		// tools', should one ever be live.
 		return Principal{}, errKeyNotAgreed
 	}
 	return p, nil
@@ -228,15 +245,15 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 // tool: the MCP server's credential check.
 //
 // Stricter than Authenticate, because a tool is somebody's AI assistant or
-// script, and the privacy promise is that a tool reaches a person's mailbox
-// only through a key that person created in the console:
+// script, and the privacy promise is that a tool reaches a mailbox only
+// through a key of its workspace, holding what a reader of it gave:
 //
 //   - A console session is not a tool's credential. It stands for a person
 //     at a keyboard, and copying one out of a browser into an assistant's
 //     configuration must not work.
-//   - A key acting as a person works only if that person created it, agreeing
-//     to the key terms; one an administrator made for them does not — here as
-//     everywhere (Authenticate).
+//   - A workspace key reaches the mailboxes it holds something on, as over
+//     REST, and works only if the person who created it agreed to the key
+//     terms — here as everywhere (Authenticate).
 //   - An instance key sees only the operator workspace's mailboxes, here as
 //     over REST, never a person's (see visibility).
 func (s *Service) AuthenticateTool(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
@@ -254,9 +271,11 @@ func (s *Service) AuthenticateTool(ctx context.Context, token string, unknownKey
 // Errors of Authenticate and AuthenticateTool.
 var (
 	errToolNeedsKey = E(CodeUnauthorized,
-		"the MCP server takes an API key created in the console (API and MCP), not a console session", nil)
+		"the MCP server takes an API key, which an owner or an admin of a workspace creates in the console, "+
+			"not a console session", nil)
 	errKeyNotAgreed = E(CodeNotAuthorized,
-		"this key was not created by its person in the console; they create one there (API and MCP) for a tool to use", nil)
+		"this key was not created by a person who agreed to the key terms; an owner or an admin of the workspace "+
+			"creates one in the console for a tool to use", nil)
 )
 
 // Recheck re-reads a caller that already authenticated, immediately before a
@@ -347,19 +366,25 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 // repository applies it in SQL, the same for listing and for fetching one.
 //
 // An instance key — the operator's, over REST and MCP alike — sees the
-// operator workspace's mailboxes and nothing else. A person, signed in or
-// through a key they made, sees a mailbox when they are an active member of
-// its workspace and hold a grant on it. Nobody's role reaches further: an
-// owner of a team or of the instance gets no mailbox by being one.
+// operator workspace's mailboxes and nothing else. A person signed in sees a
+// mailbox when they are an active member of its workspace and hold a grant
+// on it or manage it by their role, owner or admin. A workspace key sees the
+// mailboxes it holds something on, read live, whoever holds the principal and
+// for however long. A role reaches no mailbox's index: an owner of a team or
+// of the instance reads nothing by being one.
 func visibility(p Principal) account.Visibility {
-	if p.IsInstance() {
+	switch {
+	case p.IsInstance():
 		return account.Visibility{Unowned: true}
+	case p.IsSession():
+		return account.Visibility{UserID: p.UserID}
 	}
-	return account.Visibility{UserID: p.UserID}
+	return account.Visibility{Key: p.KeyPrefix}
 }
 
 // readable is visibility narrowed to the mailboxes whose index the caller may
-// open: a person's read flag. An instance key reads every mailbox it sees.
+// open: a person's or a key's read flag. An instance key reads every mailbox
+// it sees.
 func readable(p Principal) account.Visibility {
 	v := visibility(p)
 	v.Need = workspace.Flags{Read: true}
@@ -367,8 +392,8 @@ func readable(p Principal) account.Visibility {
 }
 
 // requireSession guards what only a signed-in person may do: their own
-// profile, password and sessions. A key acting as a user is still not that
-// user at a keyboard.
+// profile, password and sessions, and every key: a key never mints, lists or
+// changes a key, so a leaked one cannot keep access after it is revoked.
 func requireSession(p Principal) error {
 	if !p.IsSession() {
 		return E(CodeNotAuthorized, "this needs a signed-in user; an API key cannot use it", nil)

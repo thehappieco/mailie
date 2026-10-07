@@ -9,6 +9,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // storageFixture is three people's mailboxes and one nobody owns, indexed:
@@ -90,16 +91,16 @@ func TestAMemberSeesTheStorageOfHerOwnMailboxesOnly(t *testing.T) {
 	if st.DatabaseBytes != nil {
 		t.Errorf("a member is told the database's size: %d", *st.DatabaseBytes)
 	}
-	if st := s.storage(t, keyOf(s.ana, auth.ScopeRead)); st.DatabaseBytes != nil || len(st.Mailboxes) != 2 {
-		t.Errorf("her key: %+v", st)
+	if st := s.storage(t, keyOf(t, s.fixture, s.ana, auth.ScopeRead)); st.DatabaseBytes != nil || len(st.Mailboxes) != 2 {
+		t.Errorf("a key of her workspace holding both: %+v", st)
 	}
 }
 
 func TestAnotherPersonsMailboxNeverAppearsInSomebodysStorage(t *testing.T) {
 	s := newStorageFixture(t)
 	for name, p := range map[string]service.Principal{
-		"bob": s.bob, "bob's key": keyOf(s.bob, auth.ScopeRead),
-		"olga, an owner": s.olga, "olga's key": keyOf(s.olga, auth.ScopeRead),
+		"bob": s.bob, "a key of bob's workspace": keyOf(t, s.fixture, s.bob, auth.ScopeRead),
+		"olga, an owner": s.olga, "a key of olga's workspace": keyOf(t, s.fixture, s.olga, auth.ScopeRead),
 		"an instance key": reader(),
 	} {
 		for _, m := range s.storage(t, p).Mailboxes {
@@ -131,17 +132,17 @@ func TestAnInstanceOwnerIsToldTheDatabaseSizeButSeesNoMailboxByBeingOne(t *testi
 	if *st.DatabaseBytes != want || want == 0 {
 		t.Errorf("database_bytes = %d, want the file and its log, %d", *st.DatabaseBytes, want)
 	}
-	// Her key acts as her, but the database's size is for her at the
-	// console.
-	if st := s.storage(t, keyOf(s.olga, auth.ScopeRead)); st.DatabaseBytes != nil {
+	// A key she created acts as nobody: the database's size is for her at
+	// the console.
+	if st := s.storage(t, keyOf(t, s.fixture, s.olga, auth.ScopeRead)); st.DatabaseBytes != nil {
 		t.Errorf("an owner's key is told the database's size: %d", *st.DatabaseBytes)
 	}
 }
 
-func TestAKeyRestrictedToOneMailboxSeesOnlyItsStorage(t *testing.T) {
+func TestAKeyHoldingOneMailboxSeesOnlyItsStorage(t *testing.T) {
 	s := newStorageFixture(t)
-	key := keyOf(s.ana, auth.ScopeRead)
-	key.AccountIDs = []string{s.home}
+	key := s.authenticate(t, authtest.NewWorkspaceKey(t, s.db, auth.ScopeRead, authtest.Personal(t, s.db, s.ana.UserID),
+		s.ana.UserID, workspace.KeyGrant{AccountID: s.home, Flags: workspace.Flags{Read: true}}))
 	st := s.storage(t, key)
 	if got := mailboxes(st); len(got) != 1 || got[s.home].Bytes != 500 || st.Total.Bytes != 500 {
 		t.Fatalf("a key for ana's home mailbox sees %+v, total %+v", st.Mailboxes, st.Total)

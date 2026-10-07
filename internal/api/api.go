@@ -91,6 +91,18 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/workspaces/{id}/invites", h.authenticated(auth.ScopeAdmin, opts(), h.createTeamInvite))
 	mux.Handle("DELETE /v1/workspaces/{id}/invites/{invite}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeTeamInvite))
 	mux.Handle("GET /v1/workspaces/{id}/access", h.authenticated(auth.ScopeRead, opts(), h.accessDirectory))
+	// A workspace's API keys: created, listed and revoked by its owners and
+	// admins signed in, who also give and take each key's mailboxes, and
+	// list its sends. The scope admits any credential; the service refuses
+	// a key, so no key mints, sees or changes another.
+	mux.Handle("GET /v1/workspaces/{id}/apikeys", h.authenticated(auth.ScopeRead, opts(), h.listWorkspaceKeys))
+	mux.Handle("POST /v1/workspaces/{id}/apikeys", h.authenticated(auth.ScopeRead, opts(), h.createWorkspaceKey))
+	mux.Handle("DELETE /v1/workspaces/{id}/apikeys/{prefix}", h.authenticated(auth.ScopeRead, opts(), h.revokeWorkspaceKey))
+	mux.Handle("PUT /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account}",
+		h.authenticated(auth.ScopeRead, opts(), h.setKeyAccess))
+	mux.Handle("DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account}",
+		h.authenticated(auth.ScopeRead, opts(), h.revokeKeyAccess))
+	mux.Handle("GET /v1/workspaces/{id}/apikeys/{prefix}/sends", h.authenticated(auth.ScopeRead, opts(), h.listKeySends))
 	mux.Handle("PUT /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setAccess))
 	mux.Handle("DELETE /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeAccess))
 
@@ -157,10 +169,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/messages/send", h.authenticated(auth.ScopeSend,
 		opts().withTimeout(service.SendTimeout).withMaxBody(service.SendBodyLimit()), h.sendMessage))
 	mux.Handle("GET /v1/sends/{key}", h.authenticated(auth.ScopeSend, opts(), h.sendStatus))
-	// A person's own API keys, for the tools they connect: listed, created
-	// and revoked by the person signed in, and by nobody else. The scope
-	// admits any credential; the service refuses a key, so no key mints
-	// another.
+	// The API keys the person signed in created, in every workspace: listed
+	// and revoked by them. A key is created in a workspace (above): POST
+	// here answers 400 and says so. The scope admits any credential; the
+	// service refuses a key.
 	mux.Handle("GET /v1/me/apikeys", h.authenticated(auth.ScopeRead, opts(), h.listMyAPIKeys))
 	mux.Handle("POST /v1/me/apikeys", h.authenticated(auth.ScopeRead, opts(), h.createMyAPIKey))
 	mux.Handle("DELETE /v1/me/apikeys/{prefix}", h.authenticated(auth.ScopeRead, opts(), h.revokeMyAPIKey))

@@ -11,28 +11,36 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 )
 
-// API keys are managed with an instance key only, here. A key belongs to the
-// instance, not to a person, so a console session — or a key acting as a
-// person — minting one would be a way out of the ownership rules. A person's
-// own keys are made in the console, in mykeys.go.
+// The operator's keys are managed with an instance key only, here. An
+// instance key belongs to the operator workspace, so a console session — or a
+// workspace's key — minting one would be a way out of the ownership rules. A
+// workspace's keys are made in the console by its owners and admins, in
+// workspacekeys.go; the operator lists and revokes every key here.
 
 // APIKey is a stored key as an administrator sees it. The secret is never
 // here.
 type APIKey struct {
-	Prefix     string     `json:"prefix"`
-	Name       string     `json:"name"`
-	Scope      auth.Scope `json:"scope"`
-	AccountIDs []string   `json:"account_ids,omitempty"`
-	// Restricted says the key was made for chosen accounts: with all of them
-	// removed, it lists none and is revoked, rather than reaching every one.
-	Restricted bool   `json:"restricted,omitempty"`
-	UserID     string `json:"user_id,omitempty"`
-	CreatedAt  int64  `json:"created_at"`
-	ExpiresAt  int64  `json:"expires_at,omitempty"`
-	RevokedAt  int64  `json:"revoked_at,omitempty"`
-	LastUsedAt int64  `json:"last_used_at,omitempty"`
-	// TermsVersion is the key terms revision the person agreed to when
-	// they created the key in the console; absent for every other key.
+	Prefix string     `json:"prefix"`
+	Name   string     `json:"name"`
+	Scope  auth.Scope `json:"scope"`
+	// WorkspaceID is the workspace the key belongs to: "wsp_operator" for
+	// an instance key; absent for a key carried over from a person's that
+	// reached several workspaces.
+	WorkspaceID string `json:"workspace_id,omitempty"`
+	// AccountIDs are the operator mailboxes an instance key is restricted
+	// to, none for every one; for a workspace key, the mailboxes it holds
+	// something on.
+	AccountIDs []string `json:"account_ids,omitempty"`
+	// Restricted says an instance key was made for chosen accounts: with
+	// all of them removed, it lists none and is revoked, rather than
+	// reaching every one.
+	Restricted bool  `json:"restricted,omitempty"`
+	CreatedAt  int64 `json:"created_at"`
+	ExpiresAt  int64 `json:"expires_at,omitempty"`
+	RevokedAt  int64 `json:"revoked_at,omitempty"`
+	LastUsedAt int64 `json:"last_used_at,omitempty"`
+	// TermsVersion is the key terms revision the person who created a
+	// workspace key agreed to; absent for an instance key.
 	TermsVersion string `json:"terms_version,omitempty"`
 	// CreatedBy is who created the key: "usr_…", "key:<prefix>" or "cli";
 	// absent for keys from before this was recorded.
@@ -44,9 +52,9 @@ type CreateAPIKeyRequest struct {
 	Name       string   `json:"name"`
 	Scope      string   `json:"scope"`
 	AccountIDs []string `json:"account_ids,omitempty"`
-	// UserID is refused. A key that acts as a person is one that person
-	// creates in the console, agreeing to the key terms (mykeys.go); one an
-	// administrator made for them would not be accepted anywhere.
+	// UserID is refused. No key acts as a person: a workspace's keys are
+	// created in the console by its owners and admins, agreeing to the key
+	// terms (workspacekeys.go).
 	UserID        string `json:"user_id,omitempty"`
 	ExpiresInDays int    `json:"expires_in_days,omitempty"`
 }
@@ -62,8 +70,9 @@ type CreatedAPIKey struct {
 // maxKeyName bounds a key's name, like a person's.
 const maxKeyName = 120
 
-// ListAPIKeys lists every key, revoked ones included: they are part of the
-// answer to "what could have reached this mailbox".
+// ListAPIKeys lists every key, instance and workspace keys alike, revoked ones
+// included: they are part of the answer to "what could have reached this
+// mailbox".
 func (s *Service) ListAPIKeys(ctx context.Context, p Principal) ([]APIKey, error) {
 	if err := s.authorizeKeyAdmin(p); err != nil {
 		return nil, err
@@ -79,7 +88,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, p Principal) ([]APIKey, error
 	return out, nil
 }
 
-// CreateAPIKey issues a key.
+// CreateAPIKey issues an instance key.
 //
 // A key may never reach further than the key that made it, in either
 // direction: not a higher scope — a leaked send key must not be a leaked admin
@@ -92,7 +101,8 @@ func (s *Service) CreateAPIKey(ctx context.Context, p Principal, req CreateAPIKe
 	}
 	if strings.TrimSpace(req.UserID) != "" {
 		return CreatedAPIKey{}, E(CodeBadRequest,
-			"user_id is not accepted: a key that acts as a person is one they create in the console (API and MCP)", nil)
+			"user_id is not accepted: no key acts as a person; an owner or an admin of a workspace creates its keys "+
+				"in the console", nil)
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || utf8.RuneCountInString(name) > maxKeyName {
@@ -144,7 +154,8 @@ func (s *Service) CreateAPIKey(ctx context.Context, p Principal, req CreateAPIKe
 	return CreatedAPIKey{APIKey: presentKey(key), Key: secret}, nil
 }
 
-// RevokeAPIKey revokes a key. Revoking one already revoked is not an error.
+// RevokeAPIKey revokes a key, an instance key or a workspace's. Revoking one
+// already revoked is not an error.
 func (s *Service) RevokeAPIKey(ctx context.Context, p Principal, prefix string) error {
 	if err := s.authorizeKeyAdmin(p); err != nil {
 		return err
@@ -155,6 +166,7 @@ func (s *Service) RevokeAPIKey(ctx context.Context, p Principal, prefix string) 
 	case err != nil:
 		return E(CodeInternal, "revoking the key failed", err)
 	}
+	s.accessChanged()
 	return nil
 }
 
@@ -170,10 +182,17 @@ func (s *Service) authorizeKeyAdmin(p Principal) error {
 }
 
 func presentKey(k auth.Key) APIKey {
+	ids := k.AccountIDs
+	if !k.IsInstance() {
+		ids = make([]string, 0, len(k.Mailboxes))
+		for _, m := range k.Mailboxes {
+			ids = append(ids, m.AccountID)
+		}
+	}
 	return APIKey{
-		Prefix: k.Prefix, Name: k.Name, Scope: k.Scope, AccountIDs: k.AccountIDs, Restricted: k.Restricted,
-		UserID:    k.UserID,
-		CreatedAt: unixOrZero(k.CreatedAt), ExpiresAt: unixOrZero(k.ExpiresAt),
+		Prefix: k.Prefix, Name: k.Name, Scope: k.Scope, WorkspaceID: k.WorkspaceID, AccountIDs: ids,
+		Restricted: k.Restricted && k.IsInstance(),
+		CreatedAt:  unixOrZero(k.CreatedAt), ExpiresAt: unixOrZero(k.ExpiresAt),
 		RevokedAt: unixOrZero(k.RevokedAt), LastUsedAt: unixOrZero(k.LastUsedAt),
 		TermsVersion: k.TermsVersion, CreatedBy: k.CreatedBy,
 	}

@@ -270,39 +270,60 @@ const (
 // the instance, who holds a grant on it or, as an owner or an admin of the
 // workspace, manages it by their role. Need narrows to the mailboxes on which
 // they may do what it names: read, act and send come only from a grant, never
-// from a role; manage from either.
+// from a role; manage from either. A workspace key sees a mailbox it holds
+// something on, and Need narrows to what it holds; a key never manages.
+// Whether the key still works is its authentication's, and the re-check's
+// before every answer, as a session's is.
 type Visibility struct {
 	// All is every account, for the daemon's own reads.
 	All bool
 	// UserID sees the mailboxes of their workspaces they hold a grant on or
 	// manage by their role.
 	UserID string
+	// Key sees the mailboxes a workspace key, by its prefix, holds something
+	// on (key_access).
+	Key string
 	// Unowned also sees the operator workspace's mailboxes: what an instance
 	// key reaches.
 	Unowned bool
-	// Need is what a person must be able to do with the mailbox; the zero
-	// value is seeing its card. It narrows only the person's half of the
-	// rule.
+	// Need is what the caller must be able to do with the mailbox; the zero
+	// value is seeing its card. It narrows a person's and a key's halves of
+	// the rule, not the operator workspace's.
 	Need workspace.Flags
 	// Workspace narrows to one workspace's mailboxes; empty is every one.
 	Workspace string
 }
 
 // clause is the WHERE fragment for v, over the accounts table, with its
-// arguments.
+// arguments. A Visibility naming nobody sees nothing.
 func (v Visibility) clause() (string, []any) {
 	where, args := "1", []any(nil)
 	if !v.All {
-		byRole := !v.Need.Read && !v.Need.Act && !v.Need.Send
-		where = `(EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
+		var parts []string
+		if v.UserID != "" {
+			byRole := !v.Need.Read && !v.Need.Act && !v.Need.Send
+			parts = append(parts, `EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
 		           WHERE m.workspace_id = accounts.workspace_id AND m.user_id = ? AND m.status = 'active'
 		             AND u.status = 'active'
 		             AND (EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = accounts.id AND g.user_id = m.user_id
 		                            AND g.read >= ? AND g.act >= ? AND g.send >= ?
 		                            AND (g.manage >= ? OR m.role IN ('owner', 'admin')))
-		                  OR (? AND m.role IN ('owner', 'admin'))))
-		      OR (? AND accounts.workspace_id = '` + workspace.OperatorID + `'))`
-		args = []any{v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, byRole, v.Unowned}
+		                  OR (? AND m.role IN ('owner', 'admin'))))`)
+			args = append(args, v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, byRole)
+		}
+		if v.Key != "" {
+			parts = append(parts, `EXISTS (SELECT 1 FROM key_access x
+		           WHERE x.key_prefix = ? AND x.account_id = accounts.id
+		             AND x.read >= ? AND x.act >= ? AND x.send >= ? AND NOT ?)`)
+			args = append(args, v.Key, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage)
+		}
+		if v.Unowned {
+			parts = append(parts, `accounts.workspace_id = '`+workspace.OperatorID+`'`)
+		}
+		where = "0"
+		if len(parts) > 0 {
+			where = "(" + strings.Join(parts, " OR ") + ")"
+		}
 	}
 	if v.Workspace != "" {
 		where += ` AND accounts.workspace_id = ?`
@@ -685,13 +706,15 @@ func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt,
 // caller's transaction, and reports how many accounts it deleted.
 //
 // Most of it is the schema's ON DELETE CASCADE: credentials, pending consent,
-// folders, messages with their parts, bodies and full-text rows, drafts, sends
-// and key restrictions. Three things are not, and go here first:
+// folders, messages with their parts, bodies and full-text rows, drafts, sends,
+// key restrictions and what keys hold on them (a workspace key left with no
+// mailbox reaches nothing; a carried-over one is revoked by the schema's
+// trigger). Three things are not, and go here first:
 //
-//   - A live key restricted to nothing but these accounts is revoked. Its
-//     restriction rows cascade away, and a key with no restriction rows
-//     reaches every account: without this, deleting the one mailbox a key was
-//     limited to would hand it all of them.
+//   - A live instance key restricted to nothing but these accounts is
+//     revoked. Its restriction rows cascade away, and an instance key with no
+//     restriction rows reaches every operator mailbox: without this, deleting
+//     the one mailbox a key was limited to would hand it all of them.
 //   - The event journal names accounts without a foreign key, so that event
 //     retention cannot cascade into pending webhook deliveries. The accounts'
 //     events, and any delivery of them, are deleted explicitly.

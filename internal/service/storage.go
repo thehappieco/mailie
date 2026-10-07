@@ -70,11 +70,11 @@ type StorageTotal struct {
 //
 // Which they are is the rule of reading a mailbox's index: a person's read
 // grant, as an active member of its workspace — a grant without read shows
-// the mailbox, but not what its index holds; a key restricted to some
-// mailboxes counts only those. An instance key answers for the operator
-// workspace's mailboxes, never a person's, which are theirs to count.
-// workspaceID narrows to one workspace the caller is an active member of;
-// empty is every one.
+// the mailbox, but not what its index holds; a workspace key's read on the
+// mailboxes it holds. An instance key answers for the operator workspace's
+// mailboxes (those it is restricted to, when it is), never a person's,
+// which are theirs to count. workspaceID narrows to one workspace the caller
+// reaches; empty is every one.
 func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) (Storage, error) {
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return Storage{}, err

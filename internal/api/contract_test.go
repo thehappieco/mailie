@@ -173,23 +173,38 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	first, _ := page["messages"].([]any)[0].(map[string]any)["id"].(float64)
 	capture("message", http.StatusOK, http.MethodGet, fmt.Sprintf("/v1/messages/%d", int64(first)), token, "")
 
-	// A person's own keys: one for a tool that reads one mailbox, used once,
-	// and one that could act on every mailbox, revoked.
-	created := capture("apikey_created", http.StatusCreated, http.MethodPost, "/v1/me/apikeys", token,
-		fmt.Sprintf(`{"name":"Claude Code","scope":"read","account_ids":[%q],"ttl_days":90,"terms_version":%q}`,
-			work, service.DefaultKeyTermsVersion))
+	// The keys of ana's personal workspace: one for a tool that reads her
+	// work mailbox, used once; one that could act on it, revoked; and one
+	// that reads and sends from it, which sends below.
+	var personal string
+	if err := h.store.Reader().QueryRowContext(t.Context(),
+		`SELECT id FROM workspaces WHERE person_id = ?`, ana.ID).Scan(&personal); err != nil {
+		t.Fatal(err)
+	}
+	keys := "/v1/workspaces/" + personal + "/apikeys"
+	created := capture("apikey_created", http.StatusCreated, http.MethodPost, keys, token,
+		fmt.Sprintf(`{"name":"Claude Code","scope":"read","mailboxes":[{"account_id":%q,"read":true,"act":false,"send":false}],`+
+			`"ttl_days":90,"terms_version":%q}`, work, service.DefaultKeyTermsVersion))
 	readPrefix, _ := created["prefix"].(string)
 	if _, err := h.store.Writer().ExecContext(t.Context(),
 		`UPDATE api_keys SET last_used_at = ? WHERE prefix = ?`, epoch.Add(time.Hour).Unix(), readPrefix); err != nil {
 		t.Fatal(err)
 	}
-	actor := capture("", http.StatusCreated, http.MethodPost, "/v1/me/apikeys", token,
+	actor := capture("", http.StatusCreated, http.MethodPost, keys, token,
 		fmt.Sprintf(`{"name":"Assistant","scope":"write","ttl_days":30,"terms_version":%q}`, service.DefaultKeyTermsVersion))
 	actorPrefix, _ := actor["prefix"].(string)
-	if resp := h.do(t, http.MethodDelete, "/v1/me/apikeys/"+actorPrefix, token, ""); resp.StatusCode != http.StatusNoContent {
+	capture("key_access", http.StatusOK, http.MethodPut, keys+"/"+actorPrefix+"/accounts/"+work, token,
+		`{"read":true,"act":true,"send":false}`)
+	if resp := h.do(t, http.MethodDelete, keys+"/"+actorPrefix, token, ""); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("revoking a key answered %d", resp.StatusCode)
 	}
-	capture("apikeys", http.StatusOK, http.MethodGet, "/v1/me/apikeys", token, "")
+	sender := capture("", http.StatusCreated, http.MethodPost, keys, token,
+		fmt.Sprintf(`{"name":"Mail assistant","scope":"send","mailboxes":[{"account_id":%q,"read":true,"act":false,"send":true}],`+
+			`"ttl_days":30,"terms_version":%q}`, work, service.DefaultKeyTermsVersion))
+	senderKey, _ := sender["key"].(string)
+	senderPrefix, _ := sender["prefix"].(string)
+	capture("apikeys", http.StatusOK, http.MethodGet, keys, token, "")
+	capture("my_apikeys", http.StatusOK, http.MethodGet, "/v1/me/apikeys", token, "")
 
 	// Actions: the consent, and what an action answers. The server here has
 	// MOVE and no UIDPLUS, so it reports no new UIDs: the message with a
@@ -270,6 +285,14 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	sendCapture("send_result_refused", "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
 		fmt.Sprintf(`{"account_id":%q,"to":[{"email":"bea@example.org"},{"email":"nobody@example.org"}],`+
 			`"subject":"Minutes","text":"Attached.","confirm":true}`, work))
+	// A key's send, as its workspace's owners and admins list them.
+	if resp := h.send(t, senderKey, "5c4d3e2f-1a0b-4c9d-8e7f-6a5b4c3d2e1f", fmt.Sprintf(`{"account_id":%q,`+
+		`"to":[{"email":"bea@example.org"}],"subject":"Agenda","text":"Sent by the assistant.","confirm":true}`,
+		work)); resp.StatusCode != http.StatusOK {
+		code, msg := decodeError(t, resp)
+		t.Fatalf("a key's send: %d %s %s", resp.StatusCode, code, msg)
+	}
+	capture("key_sends", http.StatusOK, http.MethodGet, keys+"/"+senderPrefix+"/sends", token, "")
 
 	// Storage, last, so its account ids take no number another fixture
 	// has: ana's mailboxes, as an owner signed in sees them, with the size
@@ -328,6 +351,10 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		strings.TrimSuffix(h.passwordAccount(t, "billing@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID))
 	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
 		`{"read":true,"act":false,"send":true,"manage":false}`)
+	// A key of the team, which ana gives read on the mailbox she reads.
+	capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/apikeys", token,
+		fmt.Sprintf(`{"name":"Support bot","scope":"write","mailboxes":[{"account_id":%q,"read":true,"act":true,"send":false}],`+
+			`"terms_version":%q}`, sharedID, service.DefaultKeyTermsVersion))
 	capture("members", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/members", token, "")
 	capture("access", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
 

@@ -28,7 +28,7 @@ import (
 // and the protections a change must never break — a team keeps an active
 // owner, a team mailbox someone reads keeps a reader — and runs, first inside
 // each write's transaction, the check this file hands it, which re-reads the
-// caller's own place in the workspace there. A person's key administers
+// caller's own place in the workspace there. A workspace's key administers
 // nothing: these take a person signed in, or the operator's unrestricted
 // instance admin key.
 //
@@ -150,6 +150,30 @@ type MailboxAccess struct {
 	// and only removing it and linking it again gives anyone read on it.
 	NoReader bool    `json:"no_reader"`
 	Grants   []Grant `json:"grants"`
+	// Keys are the live API keys holding something on it, by when they
+	// were given it. Keys never count as readers.
+	Keys []MailboxKey `json:"keys"`
+}
+
+// MailboxKey is a live API key holding something on a mailbox, as the access
+// directory lists it.
+type MailboxKey struct {
+	Prefix string     `json:"prefix"`
+	Name   string     `json:"name"`
+	Scope  auth.Scope `json:"scope"`
+	Read   bool       `json:"read"`
+	Act    bool       `json:"act"`
+	Send   bool       `json:"send"`
+	// CreatedBy is the person who created the key; absent once they are
+	// deleted.
+	CreatedBy string `json:"created_by,omitempty"`
+	// GrantedBy is who set what it holds here last: "usr_…" or "migration";
+	// absent once that person is deleted.
+	GrantedBy string `json:"granted_by,omitempty"`
+	UpdatedAt int64  `json:"updated_at"`
+	// CarriedOver is a person's key the upgrade to workspace keys carried
+	// over, with mailboxes in several workspaces.
+	CarriedOver bool `json:"carried_over,omitempty"`
 }
 
 // MailboxConsent is a mailbox's own consent to sync, as its workspace's
@@ -288,7 +312,8 @@ func callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) 
 // ListWorkspaces lists the workspaces the caller reaches: a person's active
 // memberships, with their role in each; for an instance key the operator
 // workspace; for the operator every workspace, with how many members and
-// mailboxes each has. A person's key lists its person's.
+// mailboxes each has. A workspace key lists its workspace, or, carried over
+// from a person's, the workspaces of the mailboxes it holds.
 func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace, error) {
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
@@ -312,6 +337,21 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 			return nil, E(CodeInternal, "reading the operator workspace failed", err)
 		}
 		out = append(out, presentWorkspace(w, false))
+	case p.IsWorkspaceKey():
+		ids, err := s.workspaces.KeyWorkspaces(ctx, p.KeyPrefix)
+		if err != nil {
+			return nil, E(CodeInternal, "listing workspaces failed", err)
+		}
+		for _, id := range ids {
+			w, err := s.workspaces.Get(ctx, id)
+			switch {
+			case errors.Is(err, workspace.ErrNotFound):
+				continue
+			case err != nil:
+				return nil, E(CodeInternal, "listing workspaces failed", err)
+			}
+			out = append(out, presentWorkspace(w, false))
+		}
 	default:
 		mine, err := s.workspaces.ForPerson(ctx, p.UserID)
 		if err != nil {
@@ -487,8 +527,9 @@ func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string,
 // themselves included while another active owner remains; an admin members
 // only; the operator anyone. A member or an admin never removes themselves.
 // Their grants in the team go with them, the team's invites still waiting
-// for their address are deleted, and the invites they made there expire. The
-// last reader of one of the team's mailboxes is not removed.
+// for their address are deleted, the invites they made there expire and the
+// API keys they created there are revoked. The last reader of one of the
+// team's mailboxes is not removed.
 func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID string) error {
 	if err := administers(p); err != nil {
 		return err
@@ -655,9 +696,10 @@ func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInvit
 }
 
 // AccessDirectory lists a workspace's mailboxes and every grant on each, with
-// who can read each one, its own consent to sync and who linked it: for its
-// owners and admins and the operator; a member is not_authorized. Addresses
-// and grants, never what a mailbox holds: seeing the directory reads no mail.
+// who can read each one, its own consent to sync, who linked it and the live
+// API keys holding something on it: for its owners and admins and the
+// operator; a member is not_authorized. Addresses and grants, never what a
+// mailbox holds: seeing the directory reads no mail.
 func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) ([]MailboxAccess, error) {
 	if err := administers(p); err != nil {
 		return nil, err
@@ -688,6 +730,14 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 		shown := MailboxAccess{
 			AccountID: mb.AccountID, Email: mb.Email, Provider: mb.Provider, State: mb.State,
 			LinkedBy: mb.LinkedBy, Readers: mb.Readers, NoReader: mb.NoReader, Grants: make([]Grant, 0, len(mb.Grants)),
+			Keys: make([]MailboxKey, 0, len(mb.Keys)),
+		}
+		for _, k := range mb.Keys {
+			shown.Keys = append(shown.Keys, MailboxKey{
+				Prefix: k.Prefix, Name: k.Name, Scope: auth.Scope(k.Scope), Read: k.Read, Act: k.Act, Send: k.Send,
+				CreatedBy: k.CreatedBy, GrantedBy: k.GrantedBy, UpdatedAt: unixOrZero(k.UpdatedAt),
+				CarriedOver: k.CarriedOver,
+			})
 		}
 		if a, ok := byID[mb.AccountID]; ok {
 			shown.Provider = a.ProviderName()

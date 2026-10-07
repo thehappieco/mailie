@@ -43,8 +43,13 @@ import (
 //     it, signed in, and only while they allow sending in the console under
 //     the current policy (SendConsent): a withdrawal stops every send that
 //     has not connected yet. The message goes out under the sender's name,
-//     whoever linked the mailbox. A mailbox of the operator workspace sends
-//     only for the operator: an instance key with the send scope.
+//     whoever linked the mailbox. A workspace's API key sends from a mailbox
+//     when it holds the send flag on it and has the send scope, on a server
+//     whose keys may send (MAIL_KEYS_MAY_SEND), while it is live: the key
+//     terms its creator agreed to cover it, and no person's consent is
+//     asked. Its message goes out under the address alone, and its record
+//     names the key. A mailbox of the operator workspace sends only for the
+//     operator: an instance key with the send scope.
 //   - Nothing of the message is kept. Its text lives in the request, its
 //     attachments in the spool (<data>/tmp/send-*) for as long as the send
 //     runs, and both are gone when it returns. The provider's Sent folder
@@ -76,7 +81,8 @@ const (
 	// forwarded together.
 	MaxAttachments = 100
 	// DailySendLimit is how many sends one person may start in a day, all
-	// their sessions and keys together.
+	// their sessions together. A workspace key has its own
+	// (DailyKeySendLimit); an instance key has none.
 	DailySendLimit = 200
 	// MaxIdempotencyKey bounds the Idempotency-Key a caller sends.
 	MaxIdempotencyKey = 128
@@ -200,8 +206,9 @@ type SendRequest struct {
 	Compose Compose
 	// IdempotencyKey makes a retried request safe: the same key and the same
 	// message is answered from the record instead of sent again. Required
-	// from a signed-in person (the console makes one per message); a key
-	// that leaves it out gets one made from the message and the minute.
+	// from a signed-in person (the console makes one per message); an API
+	// key that leaves it out gets one made from the message, the key and the
+	// minute.
 	IdempotencyKey string
 	Attachments    UploadSource
 }
@@ -258,8 +265,8 @@ type AccountSend struct {
 	Reason string `json:"reason,omitempty"`
 	// FromName is the name a message from this mailbox carries next to its
 	// address: the caller's own name, as in their profile, since a message
-	// goes out under the name of whoever sends it. Empty for an instance
-	// key, which sends under the address alone.
+	// goes out under the name of whoever sends it. Empty for a key, which
+	// sends under the address alone.
 	FromName string `json:"from_name,omitempty"`
 }
 
@@ -355,7 +362,7 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest)
 		// A caller that retries the same message within the minute — a
 		// model whose request timed out, the classic case — is answered
 		// from the record rather than sending twice.
-		key = hash + "/" + strconv.FormatInt(s.now().Unix()/60, 10)
+		key = autoSendKey(s.sendHashKey, p.Actor(), hash, s.now())
 	}
 
 	// Forwarded parts are fetched now, into the spool, on the account's
@@ -373,15 +380,15 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest)
 		s.pacer.giveBack(a.ID)
 		return SendResult{}, E(CodeInternal, "preparing the message failed", err)
 	}
+	limit, limitText := dailySendLimit(p)
 	row, reserved, err := s.store.ReserveSend(ctx, store.SendReservation{
 		AccountID: a.ID, Key: key, ComposeHash: hash, MessageID: messageID, Recipients: msg.recipients(),
-		CreatedBy: p.Actor(), UserID: p.UserID, DailyLimit: DailySendLimit,
+		CreatedBy: p.Actor(), UserID: p.UserID, DailyLimit: limit,
 	})
 	switch {
 	case errors.Is(err, store.ErrSendQuota):
 		s.pacer.giveBack(a.ID)
-		return SendResult{}, Retryable(
-			fmt.Sprintf("a person may send at most %d messages a day; try again later", DailySendLimit), time.Hour, err)
+		return SendResult{}, Retryable(limitText, time.Hour, err)
 	case err != nil:
 		s.pacer.giveBack(a.ID)
 		return SendResult{}, E(CodeInternal, "recording the send failed", err)
@@ -675,8 +682,9 @@ func (s *Service) markAnswered(ctx context.Context, p Principal, a account.Accou
 
 // SendStatus reads the record of one of the caller's own sends from an
 // account they may send from: whether it was sent, failed, or is still
-// unknown. Several people may send from one shared mailbox, and each reads
-// only their own records — an instance key, the operator's.
+// unknown. Several people and keys may send from one shared mailbox, and
+// each reads only their own records — a key its own, an instance key the
+// operator's.
 func (s *Service) SendStatus(ctx context.Context, p Principal, accountID, key string) (SendStatus, error) {
 	if err := s.authorize(p, auth.ScopeSend); err != nil {
 		return SendStatus{}, err
@@ -697,16 +705,48 @@ func (s *Service) SendStatus(ctx context.Context, p Principal, accountID, key st
 		return SendStatus{}, errNoSend
 	case err != nil:
 		return SendStatus{}, E(CodeInternal, "reading the send failed", err)
-	case row.UserID != p.UserID:
+	case !ownsSend(p, row.UserID, row.CreatedBy):
 		// Somebody else's send from the same mailbox: not this caller's to
 		// read, and answered as a key nobody used.
 		return SendStatus{}, errNoSend
 	}
+	return presentSendStatus(row), nil
+}
+
+func presentSendStatus(row store.Send) SendStatus {
 	return SendStatus{
 		AccountID: row.AccountID, IdempotencyKey: row.Key, State: row.State, MessageID: row.MessageID,
 		Reason: row.Reason, Attempts: row.Attempts, Recipients: row.Recipients, SentCopy: row.SentCopy,
 		CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt, SentAt: row.SentAt,
-	}, nil
+	}
+}
+
+// ownsSend reports whether a send record, by who it names, is the caller's
+// own: a person's, signed in; a workspace key's own; the operator's for an
+// instance key — the only one that sends from an operator mailbox, the only
+// mailboxes it sees.
+func ownsSend(p Principal, userID, createdBy string) bool {
+	switch {
+	case p.IsSession():
+		return userID != "" && userID == p.UserID
+	case p.IsInstance():
+		return userID == ""
+	}
+	return userID == "" && createdBy == p.Actor()
+}
+
+// dailySendLimit is how many sends the caller may start in a day, and the
+// words that say so: a person's, all their sessions together; a workspace
+// key's own; none for an instance key, the operator's.
+func dailySendLimit(p Principal) (int, string) {
+	switch {
+	case p.IsSession():
+		return DailySendLimit, fmt.Sprintf("a person may send at most %d messages a day; try again later", DailySendLimit)
+	case p.IsInstance():
+		return 0, ""
+	}
+	return DailyKeySendLimit, fmt.Sprintf("an API key may send at most %d messages a day; try again later",
+		DailyKeySendLimit)
 }
 
 // SendBodyLimit is the most a send request's body may hold: the largest
@@ -721,15 +761,19 @@ func SendBodyLimit() int64 {
 }
 
 // maySend decides whether the caller may send from this account, once it is
-// known they may see it: the sender rule, and for a person their own consent
-// to sending under the current policy. Asked when a send is accepted and
-// again before every connection (stillMaySend).
+// known they may see it: the sender rule; for a person their own consent to
+// sending under the current policy; for a workspace key that it is still
+// live, its key terms covering what it does. Asked when a send is accepted
+// and again before every connection (stillMaySend).
 func (s *Service) maySend(ctx context.Context, p Principal, a account.Account) error {
 	if err := s.maySendFrom(ctx, p, a); err != nil {
 		return err
 	}
 	if p.IsInstance() {
 		return nil
+	}
+	if p.IsWorkspaceKey() {
+		return s.keyStillLive(ctx, p)
 	}
 	c, err := s.store.SendConsentOf(ctx, p.UserID)
 	switch {
@@ -745,8 +789,11 @@ func (s *Service) maySend(ctx context.Context, p Principal, a account.Account) e
 
 // maySendFrom is the sender rule. A person sends from a mailbox when they
 // hold the send flag on it — whoever linked it, whatever their role. A
-// mailbox of the operator workspace sends with an instance key, the only
-// credential that sees it.
+// workspace key sends from a mailbox when it holds the send flag on it, on a
+// server whose keys may send; a person's key the upgrade to workspace keys
+// carried over never sends. A mailbox of the operator workspace sends with an
+// instance key, the only credential that sees it. The send scope is
+// authorize's.
 func (s *Service) maySendFrom(ctx context.Context, p Principal, a account.Account) error {
 	operator := a.WorkspaceID == workspace.OperatorID
 	if p.IsInstance() || operator {
@@ -755,6 +802,9 @@ func (s *Service) maySendFrom(ctx context.Context, p Principal, a account.Accoun
 		}
 		// Unreachable while visibility holds.
 		return errNotSendingOperator
+	}
+	if p.IsWorkspaceKey() && (s.keysMayNotSend || earlierKey(p)) {
+		return errKeysMayNotSend
 	}
 	return s.requireFlags(ctx, p, a, needSend)
 }
@@ -810,10 +860,10 @@ func sendOf(a account.Account, held workspace.Flags) AccountSend {
 // their profile. Not the linker's — on a shared mailbox the recipient should
 // see who wrote — and not the account's display name, which is a label a
 // person gave the mailbox in the console ("gmail", "work") and was never
-// meant for recipients. An instance key, a name that cannot be read, or one
-// that could not go in a header sends under the address alone.
+// meant for recipients. A key, which acts as no person, a name that cannot be
+// read, or one that could not go in a header sends under the address alone.
 func (s *Service) fromName(ctx context.Context, p Principal) string {
-	if p.UserID == "" || s.users == nil {
+	if !p.IsSession() || p.UserID == "" || s.users == nil {
 		return ""
 	}
 	user, err := s.users.Get(ctx, p.UserID)
@@ -829,11 +879,11 @@ func (s *Service) fromName(ctx context.Context, p Principal) string {
 }
 
 // replayOrRefuse answers a request whose key another request holds. A key
-// another person holds on the same mailbox is refused as a key reused for
+// another sender holds on the same mailbox is refused as a key reused for
 // another message, never replayed: the answer would be their send.
 func replayOrRefuse(p Principal, row store.Send, hash string) (SendResult, error) {
 	switch {
-	case row.UserID != p.UserID, row.ComposeHash != hash:
+	case !ownsSend(p, row.UserID, row.CreatedBy), row.ComposeHash != hash:
 		return SendResult{}, errSendKeyReused
 	case row.State == store.SendSent:
 		return presentSend(row, true), nil
@@ -1193,6 +1243,19 @@ func composeHash(key []byte, c Compose, spool *sendSpool) (string, error) {
 	mac := hmac.New(sha256.New, key)
 	mac.Write(body)
 	return hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+// autoSendKey is the idempotency key of a send that came without one: the
+// message, its sender and the minute, keyed as the compose hash is. The
+// sender is in it because the record is per mailbox and the key holds the
+// row: two tools whose keys send the same alert from one mailbox in the same
+// minute each send theirs, where one key made of the message alone would
+// refuse the second as a key reused — sending nothing, and telling it that
+// another sender had just sent exactly that.
+func autoSendKey(key []byte, actor, hash string, now time.Time) string {
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("auto-send-key\x00" + actor + "\x00" + hash))
+	return hex.EncodeToString(mac.Sum(nil)) + "/" + strconv.FormatInt(now.Unix()/60, 10)
 }
 
 func trimAddresses(in []Address) []Address {

@@ -21,6 +21,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // mailFixture is the service with an engine that lends each account's
@@ -550,11 +551,12 @@ func TestAPersonCannotReadAnotherPersonsMessage(t *testing.T) {
 
 	// A key restricted to one account reads nothing of another's, even the
 	// instance's.
-	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, AccountIDs: []string{anas}}
+	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, AccountIDs: []string{anas},
+		WorkspaceID: workspace.OperatorID}
 	_, err = m.svc.GetMessage(t.Context(), restricted, service.GetMessageRequest{ID: bobsMessage})
 	wantCode(t, "a key restricted to ana's account", err, service.CodeNotFound)
 	// And a key without read scope reads nothing at all.
-	_, err = m.svc.GetMessage(t.Context(), service.Principal{KeyPrefix: "dddddddd"}, service.GetMessageRequest{ID: bobsMessage})
+	_, err = m.svc.GetMessage(t.Context(), service.Principal{KeyPrefix: "dddddddd", WorkspaceID: workspace.OperatorID}, service.GetMessageRequest{ID: bobsMessage})
 	wantCode(t, "a key with no scope", err, service.CodeNotAuthorized)
 }
 

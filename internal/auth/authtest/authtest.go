@@ -15,6 +15,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,24 +64,46 @@ func Personal(t *testing.T, db *store.Store, userID string) string {
 	return w.ID
 }
 
-// NewKey inserts an instance key, or with a userID a key acting as that user
-// that somebody else made for them — which no route accepts — and returns the
-// presented form. Verifying it costs next to nothing, so a test can make
-// hundreds of requests with it.
-func NewKey(t *testing.T, db *store.Store, scope auth.Scope, userID string) string {
+// NewKey inserts an instance key — a key of the operator workspace, which
+// reaches its mailboxes — and returns the presented form. Verifying it costs
+// next to nothing, so a test can make hundreds of requests with it.
+func NewKey(t *testing.T, db *store.Store, scope auth.Scope) string {
 	t.Helper()
-	return newKey(t, db, scope, userID, "")
+	return newKey(t, db, scope, workspace.OperatorID, "cli", "")
 }
 
-// NewPersonalKey inserts a key the user created in the console, agreeing to
-// the key terms, at any scope, and returns the presented form.
-func NewPersonalKey(t *testing.T, db *store.Store, scope auth.Scope, userID string) string {
+// NewWorkspaceKey inserts a key of a workspace that createdBy created,
+// agreeing to the key terms, holding what grants name on mailboxes of that
+// workspace, given by createdBy, and returns the presented form. Who may give
+// what is not checked: the scene is set as a test needs it.
+func NewWorkspaceKey(t *testing.T, db *store.Store, scope auth.Scope, workspaceID, createdBy string,
+	grants ...workspace.KeyGrant,
+) string {
 	t.Helper()
-	// Any revision: what the service checks is that the person agreed to one.
-	return newKey(t, db, scope, userID, "authtest-terms")
+	presented := newKey(t, db, scope, workspaceID, createdBy, "authtest-terms")
+	prefix, _, _ := strings.Cut(presented, ".")
+	now := db.Now().UTC().Truncate(time.Second)
+	err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		for _, g := range grants {
+			if err := workspace.PutKeyAccessTx(t.Context(), tx, prefix, workspaceID, g, createdBy, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("authtest: give the key its mailboxes: %v", err)
+	}
+	return presented
 }
 
-func newKey(t *testing.T, db *store.Store, scope auth.Scope, userID, terms string) string {
+// Prefix is the prefix of a presented key.
+func Prefix(presented string) string {
+	prefix, _, _ := strings.Cut(presented, ".")
+	return prefix
+}
+
+func newKey(t *testing.T, db *store.Store, scope auth.Scope, workspaceID, createdBy, terms string) string {
 	t.Helper()
 	prefix := randomHex(t, 4)
 	raw := make([]byte, 32)
@@ -89,14 +112,11 @@ func newKey(t *testing.T, db *store.Store, scope auth.Scope, userID, terms strin
 	}
 	secret := base64.RawURLEncoding.EncodeToString(raw)
 	now := db.Now().UTC().Truncate(time.Second)
-	var user any
-	if userID != "" {
-		user = userID
-	}
 	_, err := db.Writer().ExecContext(t.Context(),
-		`INSERT INTO api_keys(prefix, hash, name, scope, created_at, expires_at, user_id, terms_version)
-		 VALUES (?, ?, 'authtest', ?, ?, ?, ?, ?)`,
-		prefix, cheapHash(t, secret), string(scope), now.Unix(), now.Add(auth.MaxLifetime).Unix(), user, terms)
+		`INSERT INTO api_keys(prefix, hash, name, scope, created_at, expires_at, workspace_id, terms_version, created_by)
+		 VALUES (?, ?, 'authtest', ?, ?, ?, ?, ?, ?)`,
+		prefix, cheapHash(t, secret), string(scope), now.Unix(), now.Add(auth.MaxLifetime).Unix(), workspaceID, terms,
+		createdBy)
 	if err != nil {
 		t.Fatalf("authtest: insert key: %v", err)
 	}

@@ -291,7 +291,7 @@ const headingTarget = () => heading.value
       <div v-if="creatable" class="team-more"><button class="ghost small" type="button" aria-haspopup="dialog" @click="openNaming('create')"><AppIcon name="plus" :size="16" />{{ t('Create another team…') }}</button></div>
     </template>
 
-    <p v-else-if="memberOnly" class="note">{{ t('The people of {team}, and who can use each of its mailboxes, are managed by its owners and admins.', { team: teamName }) }}</p>
+    <p v-else-if="memberOnly" class="note">{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</p>
 
     <template v-else>
       <section class="team-card personal">

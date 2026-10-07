@@ -110,8 +110,8 @@ func TestATeamInviteSignsUpANewPersonOnlyWhenTheOperatorOrAnInstanceOwnerMadeIt(
 
 	// The operator's team invites and an active instance owner's sign
 	// people up.
-	instanceKey, _, _ := strings.Cut(authtest.NewKey(t, db, auth.ScopeAdmin, ""), ".")
-	personKey, _, _ := strings.Cut(authtest.NewPersonalKey(t, db, auth.ScopeWrite, mallory.ID), ".")
+	instanceKey, _, _ := strings.Cut(authtest.NewKey(t, db, auth.ScopeAdmin), ".")
+	workspaceKey := authtest.Prefix(authtest.NewWorkspaceKey(t, db, auth.ScopeWrite, team.ID, mallory.ID))
 	for _, c := range []struct{ by, email string }{
 		{"cli", "cid@example.org"}, {"key:" + instanceKey, "dan@example.org"}, {ana.ID, "eve@example.org"},
 	} {
@@ -120,7 +120,7 @@ func TestATeamInviteSignsUpANewPersonOnlyWhenTheOperatorOrAnInstanceOwnerMadeIt(
 			t.Errorf("a team invite made by %s: %v", c.by, err)
 		}
 	}
-	for _, by := range []string{"key:" + personKey, "", "usr_nobody"} {
+	for _, by := range []string{"key:" + workspaceKey, "", "usr_nobody"} {
 		code, _ := teamInviteBy(t, users, by, "fay@example.org", team.ID, workspace.RoleMember)
 		if err := signUpWith(code, "fay@example.org"); !errors.Is(err, auth.ErrInviteJoinsOnly) {
 			t.Errorf("a team invite made by %q signed a new person up: %v", by, err)
@@ -388,94 +388,110 @@ func linkMailbox(t *testing.T, db *store.Store, id, workspaceID, userID, email s
 	}
 }
 
-func TestAHeldPrincipalNeverReachesAMailboxItsKeyLostWhenItsPersonLostRead(t *testing.T) {
-	// What a caller holds for long — a stdio MCP session, a subscription,
-	// an event stream — was authenticated once. Bea's key was made for a
-	// team mailbox and her own; losing read on the team's takes it out of
-	// the key, and the principal held since must stop at its next re-check,
-	// not keep the mailbox, and not reach it again when read comes back.
+func TestAWorkspaceKeysPrincipalNamesNoMailboxAndStopsWhenItsCreatorLeaves(t *testing.T) {
+	// What a workspace key holds is read live by every use, never kept in
+	// its principal: a held principal sees it change at once. The key keeps
+	// a mailbox its creator loses read on — it holds it on its own — and
+	// stops when its creator leaves the workspace.
 	keys, db, _ := newKeys(t)
 	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
 	bea := authtest.NewUser(t, db, "bea@example.org", auth.RoleMember)
 	team := teamOf(t, db, ana.ID)
 	ws := workspace.NewRepository(db, nil)
 	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
-		return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleMember, time.Now())
+		return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleAdmin, time.Now())
 	}); err != nil {
 		t.Fatal(err)
 	}
-	const shared, own = "acc_00000000000000aa", "acc_00000000000000bb"
+	const shared = "acc_00000000000000aa"
 	linkMailbox(t, db, shared, team.ID, ana.ID, "support@mail.example")
-	linkMailbox(t, db, own, authtest.Personal(t, db, bea.ID), bea.ID, "bea@mail.example")
 	if _, err := ws.SetGrant(t.Context(), shared, bea.ID, workspace.Flags{Read: true}, ana.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	secret, _ := issue(t, keys, auth.NewKeyRequest{Scope: auth.ScopeRead, UserID: bea.ID,
-		AccountIDs: []string{shared, own}, TermsVersion: "terms"})
+	secret, key := issue(t, keys, auth.NewKeyRequest{Scope: auth.ScopeRead, WorkspaceID: team.ID, CreatedBy: bea.ID,
+		Mailboxes: []workspace.KeyGrant{{AccountID: shared, Flags: workspace.Flags{Read: true}}}, TermsVersion: "terms"})
+	if len(key.Mailboxes) != 1 || !key.Mailboxes[0].Read || key.Mailboxes[0].GrantedBy != bea.ID {
+		t.Fatalf("the new key holds %+v", key.Mailboxes)
+	}
 	held, err := keys.Authenticate(t.Context(), secret, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.Recheck(t.Context(), held); err != nil {
-		t.Fatalf("Recheck while nothing changed: %v", err)
+	if len(held.AccountIDs) != 0 || held.WorkspaceID != team.ID || held.UserID != "" {
+		t.Fatalf("the principal is %+v, want the team's, naming no mailbox and no person", held)
 	}
 
 	if _, err := ws.Revoke(t.Context(), shared, bea.ID, workspace.Flags{}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.Recheck(t.Context(), held); !errors.Is(err, auth.ErrKeyNarrowed) {
-		t.Errorf("a principal still naming the mailbox its key lost passes the re-check: %v", err)
+	if err := keys.Recheck(t.Context(), held); err != nil {
+		t.Errorf("the key stopped when its creator lost read: %v", err)
 	}
-	if _, err := ws.SetGrant(t.Context(), shared, bea.ID, workspace.Flags{Read: true}, ana.ID, nil); err != nil {
+	if err := ws.RemoveMember(t.Context(), team.ID, bea.ID, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := keys.Recheck(t.Context(), held); !errors.Is(err, auth.ErrKeyNarrowed) {
-		t.Errorf("read granted back revived the held principal: %v", err)
+	if err := keys.Recheck(t.Context(), held); !errors.Is(err, auth.ErrInvalidKey) {
+		t.Errorf("a key whose creator left the workspace passes the re-check: %v", err)
 	}
-
-	// The key itself works on, for what it still names: authenticating
-	// again gives a principal without the lost mailbox.
-	fresh, err := keys.Authenticate(t.Context(), secret, nil)
-	if err != nil {
-		t.Fatalf("the key stopped working for its other mailbox: %v", err)
-	}
-	if len(fresh.AccountIDs) != 1 || fresh.AccountIDs[0] != own || fresh.MayAccess(shared) {
-		t.Errorf("the key names %v after losing the team's mailbox", fresh.AccountIDs)
-	}
-	if err := keys.Recheck(t.Context(), fresh); err != nil {
-		t.Errorf("a fresh principal fails the re-check: %v", err)
+	if _, err := keys.Authenticate(t.Context(), secret, nil); !errors.Is(err, auth.ErrInvalidKey) {
+		t.Errorf("a key whose creator left the workspace authenticates: %v", err)
 	}
 }
 
-func TestAHeldPrincipalOutlivesTheRemovalOfOneOfItsKeysMailboxes(t *testing.T) {
-	// A removed mailbox leaves its key's restriction too, but its id is
-	// never reused: a principal still naming it reaches nothing more, and a
-	// stdio session must not end over a mailbox somebody removed.
+func TestAWorkspaceKeyOutlivesTheRemovalOfItsMailboxes(t *testing.T) {
+	// A mailbox removed takes what keys held on it, and a key of the
+	// workspace left with none reaches nothing: it is not revoked, and an
+	// owner or an admin may give it another.
 	keys, db, _ := newKeys(t)
 	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
 	personal := authtest.Personal(t, db, ana.ID)
 	const first, second = "acc_00000000000000a1", "acc_00000000000000a2"
 	linkMailbox(t, db, first, personal, ana.ID, "ana@mail.example")
 	linkMailbox(t, db, second, personal, ana.ID, "ana@work.example")
-	secret, _ := issue(t, keys, auth.NewKeyRequest{Scope: auth.ScopeRead, UserID: ana.ID,
-		AccountIDs: []string{first, second}, TermsVersion: "terms"})
+	read := workspace.Flags{Read: true}
+	secret, _ := issue(t, keys, auth.NewKeyRequest{Scope: auth.ScopeRead, WorkspaceID: personal, CreatedBy: ana.ID,
+		Mailboxes:    []workspace.KeyGrant{{AccountID: first, Flags: read}, {AccountID: second, Flags: read}},
+		TermsVersion: "terms"})
 	held, err := keys.Authenticate(t.Context(), secret, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	repo := account.NewRepository(db, nil)
-	if err := repo.Delete(t.Context(), first); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{first, second} {
+		if err := repo.Delete(t.Context(), id); err != nil {
+			t.Fatal(err)
+		}
+		if err := keys.Recheck(t.Context(), held); err != nil {
+			t.Errorf("removing %s ended the key: %v", id, err)
+		}
 	}
-	if err := keys.Recheck(t.Context(), held); err != nil {
-		t.Errorf("removing one of the key's mailboxes ended a principal held for the other: %v", err)
+	listed, err := keys.ListIn(t.Context(), personal)
+	if err != nil || len(listed) != 1 || len(listed[0].Mailboxes) != 0 || listed[0].Revoked() {
+		t.Errorf("the key with no mailbox left is listed as %+v (%v)", listed, err)
 	}
-	// The last one gone revokes the key, as it always did.
-	if err := repo.Delete(t.Context(), second); err != nil {
-		t.Fatal(err)
+}
+
+func TestAWorkspaceKeyIsNeitherAnInstanceKeyNorRestricted(t *testing.T) {
+	keys, db, _ := newKeys(t)
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
+	personal := authtest.Personal(t, db, ana.ID)
+	for name, req := range map[string]auth.NewKeyRequest{
+		"the admin scope":      {Scope: auth.ScopeAdmin},
+		"a restriction":        {Scope: auth.ScopeRead, AccountIDs: []string{"acc_00000000000000a1"}},
+		"no workspace that is": {Scope: auth.ScopeRead, WorkspaceID: "wsp_nowhere"},
+	} {
+		req.Name, req.CreatedBy, req.TermsVersion = "k", ana.ID, "terms"
+		if req.WorkspaceID == "" {
+			req.WorkspaceID = personal
+		}
+		if _, _, err := keys.Issue(t.Context(), req); err == nil {
+			t.Errorf("a workspace key with %s was issued", name)
+		}
 	}
-	if err := keys.Recheck(t.Context(), held); !errors.Is(err, auth.ErrInvalidKey) {
-		t.Errorf("a key with none of its mailboxes left passes the re-check: %v", err)
+	// An instance key holds no mailbox in key_access.
+	if _, _, err := keys.Issue(t.Context(), auth.NewKeyRequest{Name: "k", Scope: auth.ScopeRead,
+		Mailboxes: []workspace.KeyGrant{{AccountID: "acc_00000000000000a1", Flags: workspace.Flags{Read: true}}}}); err == nil {
+		t.Error("an instance key was given a mailbox to hold")
 	}
 }
 

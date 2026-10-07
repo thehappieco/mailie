@@ -58,6 +58,9 @@ type serviceOptions struct {
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
+	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false, which GET /v1/me/mcp
+	// reports.
+	keysMayNotSend bool
 }
 
 // newService wires the real service to a temporary database, because testing
@@ -91,6 +94,7 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		SpoolDir:           opts.SpoolDir,
 		ConsentVersions:    o.consent,
 		MCPHTTP:            o.mcpHTTP,
+		KeysMayNotSend:     o.keysMayNotSend,
 		ExternalSignInOnly: o.externalSignInOnly,
 	})
 }

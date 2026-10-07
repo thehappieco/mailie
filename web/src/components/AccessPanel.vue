@@ -8,18 +8,23 @@
 // who reads it, and Send to anyone; Manage is given to members, as owners
 // and admins have it by their role; and the last person who can read the
 // mailbox keeps Read. A mailbox nobody can read says so, and what is left to
-// do about it. The server decides every change.
+// do about it. Below the people, the API keys holding something on it: what
+// each holds and who created it, and taking the mailbox out of one; keys
+// never count as readers, and what one holds is changed in the workspace's
+// API keys. The server decides every change.
 import { computed, onMounted, ref } from 'vue'
-import type { GrantFlags, Member } from '../api/types'
+import type { GrantFlags, MailboxKey, Member } from '../api/types'
+import { dropKeyMailbox } from '../state/apikeys'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
-import { directoryEntry, loadDirectory, loadMembers, saveGrant, team } from '../state/team'
+import { directoryEntry, loadDirectory, loadMembers, personName, saveGrant, team } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
 import {
   activeMember, administers, flagHint, flagLabel, flagNames, flagsOf, grantPermissions, grantSummary, holdsAny, lastReaderOf, sameFlags,
   toggleFlag, workspaceName, workspaceRoleLabel, type FlagName, type GrantPermissions,
 } from '../ui/access'
 import { announce } from '../ui/announce'
+import { keyFlagsSummary, keyPerson, scopeLabel } from '../ui/apikeys'
 import { describe } from '../ui/errors'
 import { t } from '../ui/i18n'
 import AppIcon from './AppIcon.vue'
@@ -119,6 +124,27 @@ function lockText(row: Row): string {
 const giving = computed(() => mine.value.read ? ''
   : t('You do not read this mailbox, so you cannot give Read on it, not even to yourself: only an owner or an admin who reads it can.'))
 
+/** The live keys holding something on the mailbox, by name. */
+const keys = computed<MailboxKey[]>(() => [...(entry.value?.keys ?? [])].sort((a, b) => a.name.localeCompare(b.name)))
+/** The key whose removal from this mailbox is being asked about, and the one being removed. */
+const taking = ref('')
+const takingBusy = ref(false)
+const keyProblems = ref<Record<string, Failure>>({})
+function askTake(key: MailboxKey) {
+  delete keyProblems.value[key.prefix]
+  taking.value = key.prefix
+}
+async function take(key: MailboxKey) {
+  if (takingBusy.value) return
+  takingBusy.value = true
+  const problem = await dropKeyMailbox(key.prefix, props.accountId)
+  takingBusy.value = false
+  if (problem) { keyProblems.value[key.prefix] = problem; return }
+  taking.value = ''
+  announce(t('{email} was taken out of {name}.', { email: props.email, name: key.name }))
+}
+const keyCreator = (key: MailboxKey) => keyPerson(key.created_by, me.value, personName)
+
 function refresh() {
   void loadMembers()
   void loadDirectory()
@@ -171,6 +197,27 @@ onMounted(() => {
     <dl class="flag-legend">
       <div v-for="flag in flagNames" :key="flag"><dt>{{ flagLabel(flag) }}</dt><dd>{{ flagHint(flag) }}</dd></div>
     </dl>
+
+    <section v-if="entry && !gone" class="access-keys" :aria-labelledby="`keys-${accountId}`">
+      <h4 :id="`keys-${accountId}`">{{ t('API keys') }}</h4>
+      <p v-if="!keys.length" class="dim">{{ t('No API key holds anything on this mailbox.') }}</p>
+      <ul v-else class="access-rows" :aria-label="t('API keys on {email}', { email })">
+        <li v-for="key in keys" :key="key.prefix" class="access-row key-holder" :data-key="key.prefix">
+          <div class="who">
+            <strong>{{ key.name }} <span class="mono" translate="no">{{ key.prefix }}…</span></strong>
+            <small>{{ keyFlagsSummary(key) }} · {{ scopeLabel(key.scope) }}<template v-if="key.created_by === me"> · {{ t('Created by you') }}</template><template v-else-if="keyCreator(key)"> · {{ t('Created by {name}', { name: keyCreator(key) }) }}</template><template v-if="key.carried_over"> · {{ t('Made before keys belonged to workspaces') }}</template></small>
+          </div>
+          <div v-if="taking === key.prefix" class="row-save">
+            <span class="dim">{{ t('{name} loses everything it holds on this mailbox.', { name: key.name }) }}</span>
+            <button class="ghost small" type="button" :disabled="takingBusy" @click="taking = ''">{{ t('Cancel') }}</button>
+            <button class="danger small" type="button" :disabled="takingBusy" @click="take(key)">{{ takingBusy ? t('Saving…') : t('Take out of the key') }}</button>
+          </div>
+          <div v-else-if="admin" class="row-save"><button class="ghost small remove" type="button" @click="askTake(key)">{{ t('Take out of the key…') }}</button></div>
+          <p v-if="keyProblems[key.prefix]" class="alert" role="alert">{{ describe(keyProblems[key.prefix]!) }}</p>
+        </li>
+      </ul>
+      <p class="hint">{{ t('A key reads a mailbox only where an owner or an admin who reads it gave it Read, and keeps what it holds when they lose their own access. Keys never count as readers. What a key holds on each mailbox is changed in API keys & MCP.') }}</p>
+    </section>
   </div>
 </template>
 
@@ -199,6 +246,10 @@ onMounted(() => {
 .flag-legend div { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; }
 .flag-legend dt { font-weight: 600; }
 .flag-legend dd { margin: 0; color: var(--text-dim); }
+.access-keys { display: grid; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.access-keys h4 { margin: 0; font-size: 13px; }
+.access-keys .mono { font-weight: 400; font-size: 12px; color: var(--text-dim); }
+.remove { color: var(--danger); }
 @media (max-width: 600px) {
   .flag { flex: 1 1 calc(50% - 8px); justify-content: center; }
   .row-save button { flex: 1; }

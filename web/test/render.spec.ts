@@ -491,7 +491,7 @@ describe('sync, as the console shows it', () => {
     consented()
     Object.assign(actionsConsent, { loaded: true, consented: false, currentVersion: ACTIONS_TEXT_VERSION })
     let html = await render(OpenAccount)
-    expect(text(html)).toContain('Actions on my messages Off. Mailie does not change anything in your mailboxes.')
+    expect(text(html)).toContain('Actions on my messages Off. Mailie does not change your mailboxes when you ask.')
     expect(actionsSwitch(html)).toContain('aria-checked="false"')
     Object.assign(actionsConsent, { consented: true, version: ACTIONS_TEXT_VERSION, consentedAt: Date.UTC(2026, 8, 25, 12) / 1000 })
     html = await render(OpenAccount)
@@ -546,22 +546,27 @@ describe('sync, as the console shows it', () => {
 })
 
 describe('API keys, as the console shows them', () => {
-  const key = { prefix: '3f9a0c1d2e4b5a6c', name: hostile, scope: 'write', account_ids: ['acc_0000000000000001', 'acc_gone'], created_at: 1_790_000_000, expires_at: 4_000_000_000, terms_version: KEY_TERMS_VERSION }
+  const held = (accountID: string, fields = {}) => ({ account_id: accountID, workspace_id: 'wsp_000000000000aaaa', read: true, act: false, send: false, updated_at: 1_790_000_000, ...fields })
+  const key = {
+    prefix: '3f9a0c1d2e4b5a6c', name: hostile, scope: 'write', workspace_id: 'wsp_000000000000aaaa',
+    mailboxes: [held('acc_0000000000000001', { act: true }), held('acc_gone')], created_at: 1_790_000_000, expires_at: 4_000_000_000,
+    live: true, terms_version: KEY_TERMS_VERSION, sends: false,
+  }
 
-  it('shows a key’s name and the mailboxes it reaches as text, and what it may do in words', async () => {
+  it('shows a key’s name and what it holds on each mailbox as text, and what it may do in words', async () => {
     vi.stubGlobal('location', new URL('http://localhost:5174/'))
     signIn()
     Object.assign(accounts, { list: [account({ state: 'active' })], loaded: true })
-    Object.assign(apiKeys, { list: [key, { ...key, prefix: 'aaaaaaaaaaaaaaaa', name: 'Old', scope: 'read', account_ids: [], revoked_at: 1_790_000_500 }], loaded: true })
+    Object.assign(apiKeys, { list: [key, { ...key, prefix: 'aaaaaaaaaaaaaaaa', name: 'Old', scope: 'read', mailboxes: [], revoked_at: 1_790_000_500, live: false }], loaded: true })
     const html = await render(KeysPanel)
     expect(html).not.toContain('<img')
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
     const [live, revoked] = html.match(/<article class="[^"]*key-card[^]*?<\/article>/g) ?? []
     expect(text(live!)).toContain('Access Read and act')
-    expect(text(live!)).toContain('Mailboxes suporte@example.test, A removed mailbox')
+    expect(text(live!)).toContain('Mailboxes suporte@example.test (Read, Act), A removed mailbox (Read)')
     expect(text(live!)).toContain('Revoke')
     expect(text(revoked!)).toContain('Revoked')
-    expect(text(revoked!)).toContain('Mailboxes All your mailboxes')
+    expect(text(revoked!)).toContain('Mailboxes None yet')
     expect(revoked).not.toContain('>Revoke<')
   })
 

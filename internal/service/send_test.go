@@ -27,6 +27,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // sendBox is a mailbox that sends: its IMAP side on a fake server, for the
@@ -163,7 +164,7 @@ func TestNobodySendsWithoutTheOwnersCurrentSendConsent(t *testing.T) {
 	wantCode(t, "ana with an old consent", err, service.CodeConflict)
 
 	// Only a session gives or takes it back.
-	key := service.Principal{KeyPrefix: "dddddddd", UserID: ana.UserID, Scope: auth.ScopeWrite, TermsVersion: service.DefaultKeyTermsVersion}
+	key := keyOf(t, m.fixture, ana, auth.ScopeWrite)
 	_, err = m.svc.GrantSendConsent(t.Context(), key, service.DefaultSendConsentVersion)
 	wantCode(t, "a key granting the consent", err, service.CodeNotAuthorized)
 	_, err = m.svc.GrantSendConsent(t.Context(), ana, "2026-01-sending")
@@ -203,7 +204,7 @@ func TestAnInstanceKeyCannotSendFromAPersonsMailbox(t *testing.T) {
 	owner := m.person(t, "olga@example.com", auth.RoleOwner)
 	anas := m.sendingBox(t, ana, "ana@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
 	shared := m.sendingBox(t, service.Principal{}, "team@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
-	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend}
+	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend, WorkspaceID: workspace.OperatorID}
 
 	// The instance key reaches the operator workspace's mailboxes only:
 	// ana's does not exist for it.
@@ -213,7 +214,7 @@ func TestAnInstanceKeyCannotSendFromAPersonsMailbox(t *testing.T) {
 	_, err = anas.send(t, owner, "k-2", anas.compose("bea@example.org"))
 	wantCode(t, "an owner on ana's mailbox", err, service.CodeNotFound)
 	// A key below the send scope sends nothing anywhere.
-	_, err = shared.send(t, service.Principal{KeyPrefix: "eeeeeeee", Scope: auth.ScopeWrite}, "k-3",
+	_, err = shared.send(t, service.Principal{KeyPrefix: "eeeeeeee", Scope: auth.ScopeWrite, WorkspaceID: workspace.OperatorID}, "k-3",
 		shared.compose("bea@example.org"))
 	wantCode(t, "a write key", err, service.CodeNotAuthorized)
 	// Ana does not see the operator's mailbox.
@@ -271,7 +272,7 @@ func TestSendingTheSameIdempotencyKeyTwiceSubmitsOnce(t *testing.T) {
 	// A caller that sends no key — a script, a model that retries after a
 	// timeout — gets one made from the message and the minute.
 	shared := b.m.sendingBox(t, service.Principal{}, "team@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
-	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend}
+	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend, WorkspaceID: workspace.OperatorID}
 	one, err := shared.send(t, instance, "", shared.compose("bea@example.org"))
 	if err != nil || one.State != service.SendStateSent {
 		t.Fatalf("keyless send: %+v, %v", one, err)
@@ -1212,7 +1213,7 @@ func TestTheStoredComposeHashDoesNotConfirmAGuessOfTheMessage(t *testing.T) {
 	// A key-less send gets a key made from the hash, and that goes in the
 	// log and back to the caller.
 	shared := m.sendingBox(t, service.Principal{}, "team@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
-	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend}
+	instance := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeSend, WorkspaceID: workspace.OperatorID}
 	c.AccountID = shared.id
 	if res, err := shared.send(t, instance, "", c); err != nil || res.State != service.SendStateSent {
 		t.Fatalf("keyless SendMessage = %+v, %v", res, err)

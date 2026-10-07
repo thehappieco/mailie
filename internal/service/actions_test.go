@@ -20,6 +20,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // actionBox is one person's mailbox on a fake server, indexed as sync would
@@ -220,18 +221,13 @@ func (b *actionBox) lastSeq(t *testing.T) int64 {
 // serverCalls counts the calls that reached the fake server of one method.
 func (b *actionBox) serverCalls(method providertest.Method) int { return b.box.CallCount(method) }
 
-// key is a principal for an API key of scope issued to p's person.
-func keyOf(p service.Principal, scope auth.Scope) service.Principal {
-	return service.Principal{Kind: auth.KindKey, KeyPrefix: "cccccccc", Scope: scope, UserID: p.UserID, UserRole: p.UserRole}
-}
-
 func yes() *bool { v := true; return &v }
 func no() *bool  { v := false; return &v }
 
 func TestAReadKeyCannotAct(t *testing.T) {
 	b := genericBox(t)
 	a := b.row(t, "INBOX", "a")
-	read := keyOf(b.owner, auth.ScopeRead)
+	read := keyOf(t, b.m.fixture, b.owner, auth.ScopeRead)
 	ctx := t.Context()
 	_, err := b.m.svc.SetFlags(ctx, read, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 	wantCode(t, "marking read with a read key", err, service.CodeNotAuthorized)
@@ -251,29 +247,25 @@ func TestNobodyActsWithoutTheirOwnCurrentConsent(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := b.row(t, "INBOX", "a")
-	for _, who := range []struct {
-		name string
-		p    service.Principal
-	}{{"her session", b.owner}, {"her own write key", keyOf(b.owner, auth.ScopeWrite)}} {
-		_, err := b.m.svc.SetFlags(ctx, who.p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
-		wantCode(t, who.name+" without consent", err, service.CodeConflict)
-		if msg := service.MessageOf(err); msg != "actions are off: you have not allowed them in the console" {
-			t.Errorf("message = %q", msg)
-		}
+	// Her session; a key of her workspace acts under its key terms instead
+	// (TestAKeyActsOnlyWithActAndTheWriteScopeUnderItsKeyTerms).
+	_, err := b.m.svc.SetFlags(ctx, b.owner, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
+	wantCode(t, "her session without consent", err, service.CodeConflict)
+	if msg := service.MessageOf(err); msg != "actions are off: you have not allowed them in the console" {
+		t.Errorf("message = %q", msg)
 	}
 	// Consent to an older text is not consent to this one.
 	b.m.exec(t, `UPDATE users SET actions_consent_at = 5, actions_consent_version = '2025-01-older' WHERE id = ?`,
 		b.owner.UserID)
-	_, err := b.m.svc.MoveMessages(ctx, b.owner, service.MoveRequest{IDs: []int64{a}, To: "archive"})
+	_, err = b.m.svc.MoveMessages(ctx, b.owner, service.MoveRequest{IDs: []int64{a}, To: "archive"})
 	wantCode(t, "acting on an older consent", err, service.CodeConflict)
 	if n := b.box.Opens(provider.RoleInteractive); n != 0 {
 		t.Fatalf("refused actions opened %d connections", n)
 	}
 
 	b.allow(t)
-	if _, err := b.m.svc.SetFlags(ctx, keyOf(b.owner, auth.ScopeWrite),
-		service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()}); err != nil {
-		t.Fatalf("with consent, her own write key: %v", err)
+	if _, err := b.m.svc.SetFlags(ctx, b.owner, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()}); err != nil {
+		t.Fatalf("with consent, her session: %v", err)
 	}
 }
 
@@ -289,7 +281,7 @@ func TestAnInstanceKeyCannotChangeAPersonsMessages(t *testing.T) {
 		p    service.Principal
 	}{
 		{"an instance admin key", admin()},
-		{"an instance write key", service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite}},
+		{"an instance write key", service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite, WorkspaceID: workspace.OperatorID}},
 	} {
 		_, err := b.m.svc.SetFlags(ctx, who.p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 		wantCode(t, who.name, err, service.CodeNotFound)
@@ -304,9 +296,10 @@ func TestAnInstanceKeyCannotChangeAPersonsMessages(t *testing.T) {
 		t.Fatalf("refused actions opened %d connections", n)
 	}
 
-	res, err := b.m.svc.SetFlags(ctx, keyOf(b.owner, auth.ScopeWrite), service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
+	res, err := b.m.svc.SetFlags(ctx, keyOf(t, b.m.fixture, b.owner, auth.ScopeWrite),
+		service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 	if err != nil || len(res.Messages) != 1 || !res.Messages[0].Seen {
-		t.Fatalf("her own write key: %+v, %v", res, err)
+		t.Fatalf("a write key of her workspace: %+v, %v", res, err)
 	}
 }
 
@@ -321,14 +314,15 @@ func TestAMailboxNobodyOwnsIsChangedOnlyByTheOperator(t *testing.T) {
 	member := m.person(t, "mo@example.com", auth.RoleMember)
 	ctx := t.Context()
 
-	operator := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite}
+	operator := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeWrite, WorkspaceID: workspace.OperatorID}
 	if _, err := m.svc.SetFlags(ctx, operator, service.SetFlagsRequest{IDs: []int64{a}, Flagged: yes()}); err != nil {
 		t.Fatalf("an instance write key: %v", err)
 	}
 	// An owner of the instance administers its people, not the operator
 	// workspace's mail: it does not exist for her, signed in or by key.
 	for name, p := range map[string]service.Principal{
-		"an owner signed in": owner, "an owner's own key": keyOf(owner, auth.ScopeWrite), "a member": member,
+		"an owner signed in": owner, "a key of an owner's workspace": keyOf(t, m.fixture, owner, auth.ScopeWrite),
+		"a member": member,
 	} {
 		_, err := m.svc.SetFlags(ctx, p, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 		wantCode(t, name, err, service.CodeNotFound)
@@ -958,18 +952,19 @@ func TestActionsConsentIsThePersonsAndNamesTheCurrentPolicy(t *testing.T) {
 	}
 	_, err = m.svc.GrantActionsConsent(ctx, ana, "2026-01-older")
 	wantCode(t, "an older text", err, service.CodeBadRequest)
-	_, err = m.svc.GrantActionsConsent(ctx, keyOf(ana, auth.ScopeAdmin), service.DefaultActionsConsentVersion)
+	key := keyOf(t, m.fixture, ana, auth.ScopeAdmin)
+	_, err = m.svc.GrantActionsConsent(ctx, key, service.DefaultActionsConsentVersion)
 	wantCode(t, "a key agreeing for her", err, service.CodeNotAuthorized)
 	_, err = m.svc.ActionsConsent(ctx, admin())
 	wantCode(t, "an instance key reading", err, service.CodeNotAuthorized)
-	if c, err := m.svc.ActionsConsent(ctx, keyOf(ana, auth.ScopeRead)); err != nil || c.Consented {
-		t.Fatalf("her key reading: %+v, %v", c, err)
-	}
+	// A key of her workspace acts as nobody: it has no consent to read.
+	_, err = m.svc.ActionsConsent(ctx, keyOf(t, m.fixture, ana, auth.ScopeRead))
+	wantCode(t, "a key of her workspace reading", err, service.CodeNotAuthorized)
 	c, err = m.svc.GrantActionsConsent(ctx, ana, service.DefaultActionsConsentVersion)
 	if err != nil || !c.Consented || c.Version != service.DefaultActionsConsentVersion || c.ConsentedAt == 0 {
 		t.Fatalf("grant: %+v, %v", c, err)
 	}
-	_, err = m.svc.WithdrawActionsConsent(ctx, keyOf(ana, auth.ScopeAdmin))
+	_, err = m.svc.WithdrawActionsConsent(ctx, key)
 	wantCode(t, "a key withdrawing for her", err, service.CodeNotAuthorized)
 	if sync, _ := m.svc.SyncConsent(ctx, ana); sync.Consented {
 		t.Error("allowing actions turned sync on")

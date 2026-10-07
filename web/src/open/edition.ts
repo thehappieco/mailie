@@ -35,7 +35,7 @@ export const openEdition: Edition = {
     accountSection: () => t('Account'),
     mailboxesIntro: () => t('Gmail, Microsoft 365 or Outlook, iCloud Mail, or any provider that offers IMAP. This server checks the sign-in, lists the mailbox’s folders and, once you turn sync on, keeps an index of its messages’ details for your tools to search.'),
     indexHint: () => t('This server stores only the details of each message, never bodies or attachments. When a tool reads a message, the server fetches it from the mail server and does not keep it.'),
-    actionsOff: () => t('This server stops changing your mailboxes: a tool asking to mark, star, archive or move a message is refused. Nothing is deleted, and your mail stays as it is now.'),
+    actionsOff: () => t('This server stops making the changes you ask for, and those asked for with an API key you created before keys belonged to workspaces: marking, starring, archiving or moving a message is refused. A key created since keeps acting where it is given Act, under its own terms, until Act is taken away from it or it is revoked. Nothing is deleted, and your mail stays as it is now.'),
   },
   // Where the server serves MCP over HTTP (MAIL_MCP_HTTP, its default).
   mcp: true,

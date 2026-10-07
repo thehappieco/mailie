@@ -4,8 +4,8 @@ import "fmt"
 
 // ConsentVersions name the revisions of the texts a person agrees to in the
 // console: what sync stores (Sync), Mailie changing their mailboxes when they
-// ask (Actions), sending from them (Send), and what a tool holding one of
-// their API keys can do (Keys).
+// ask (Actions), sending from them (Send), and what a tool holding an API key
+// they create in a workspace can do (Keys).
 //
 // A console asking for an agreement names the revision of the text it showed,
 // and the daemon records only the one configured here, so an answer given to
@@ -30,9 +30,9 @@ type ConsentVersions struct {
 // own app.
 const (
 	DefaultSyncConsentVersion    = "2026-10-open-sync-3"
-	DefaultActionsConsentVersion = "2026-10-open-actions-2"
+	DefaultActionsConsentVersion = "2026-10-open-actions-3"
 	DefaultSendConsentVersion    = "2026-10-open-sending"
-	DefaultKeyTermsVersion       = "2026-10-open-api-keys"
+	DefaultKeyTermsVersion       = "2026-10-open-api-keys-2"
 )
 
 // maxConsentVersionLen bounds a revision: it is stored beside every consent

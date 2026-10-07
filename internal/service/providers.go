@@ -137,7 +137,7 @@ func (s *Service) chooseFlow(p Principal, kind provider.Kind, requested string) 
 // IMAP only has passwords, and so does iCloud, which is stored as generic
 // IMAP. Microsoft refuses them for IMAP altogether. Gmail still takes an app
 // password, which the operator's CLI can use, but a person connects Gmail
-// with Google sign-in only — from the console or with a key acting for them:
+// with Google sign-in only, from the console; a workspace key links nothing:
 // an app password is a credential with no scope and no expiry, and a form
 // that asks for one teaches people to paste it.
 func passwordAllowed(p Principal, kind provider.Kind) bool {

@@ -21,6 +21,7 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 type fixture struct {
@@ -74,6 +75,10 @@ type fixtureOptions struct {
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
+	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false.
+	keysMayNotSend bool
+	// keysActUnderCreator is MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true.
+	keysActUnderCreator bool
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -147,13 +152,15 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		Log:       logger,
 		PublicURL: f.opts.publicURL,
 
-		DownloadSpoolBytes: f.opts.downloadSpool,
-		DownloadsPerCaller: f.opts.downloadsPerCaller,
-		SpoolDir:           f.spool,
-		SendHashKey:        f.opts.sendHashKey,
-		SendSpoolBytes:     f.opts.sendSpool,
-		ConsentVersions:    f.opts.consent,
-		ExternalSignInOnly: f.opts.externalSignInOnly,
+		DownloadSpoolBytes:         f.opts.downloadSpool,
+		DownloadsPerCaller:         f.opts.downloadsPerCaller,
+		SpoolDir:                   f.spool,
+		SendHashKey:                f.opts.sendHashKey,
+		SendSpoolBytes:             f.opts.sendSpool,
+		ConsentVersions:            f.opts.consent,
+		ExternalSignInOnly:         f.opts.externalSignInOnly,
+		KeysMayNotSend:             f.opts.keysMayNotSend,
+		KeysActUnderCreatorConsent: f.opts.keysActUnderCreator,
 	}), registry
 }
 
@@ -185,10 +192,10 @@ func (f *fixture) rebuild(t *testing.T, registryOpts account.RegistryOptions) *s
 }
 
 func admin() service.Principal {
-	return service.Principal{KeyPrefix: "aaaaaaaa", Scope: auth.ScopeAdmin}
+	return service.Principal{KeyPrefix: "aaaaaaaa", Scope: auth.ScopeAdmin, WorkspaceID: workspace.OperatorID}
 }
 func reader() service.Principal {
-	return service.Principal{KeyPrefix: "bbbbbbbb", Scope: auth.ScopeRead}
+	return service.Principal{KeyPrefix: "bbbbbbbb", Scope: auth.ScopeRead, WorkspaceID: workspace.OperatorID}
 }
 
 // switchSync is a request to switch a mailbox's own sync on or off: an
@@ -294,7 +301,7 @@ func TestAKeyRestrictedToOtherAccountsCannotEvenLearnTheyExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, AccountIDs: []string{"acc_other"}}
+	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, AccountIDs: []string{"acc_other"}, WorkspaceID: workspace.OperatorID}
 
 	_, err = f.svc.GetAccount(t.Context(), restricted, created.Account.ID)
 	if service.CodeOf(err) != service.CodeNotFound {
@@ -313,7 +320,7 @@ func TestAKeyRestrictedToSomeAccountsCannotAddAnother(t *testing.T) {
 	// Its restriction names the accounts it was issued for; an account it
 	// added would be one it could never see again, so it may not add any.
 	f := newFixture(t)
-	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{"acc_other"}}
+	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{"acc_other"}, WorkspaceID: workspace.OperatorID}
 	_, err := f.svc.AddAccount(t.Context(), restricted, f.passwordAccount(t, "person@example.com"))
 	if service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Fatalf("want not_authorized, got %v", err)

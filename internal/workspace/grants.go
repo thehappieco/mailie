@@ -240,9 +240,9 @@ func (mb mailbox) grantable() error {
 // personal or the operator workspace's mailbox, and when it would take read
 // from the last person who can read it (ErrLastReader).
 //
-// Who may grant what is the Check's to decide. Losing read takes the mailbox
-// out of the restrictions of the person's keys, and losing manage ends the
-// consent attempts they started on it, in the same transaction.
+// Who may grant what is the Check's to decide. Losing manage ends the
+// consent attempts the person started on the mailbox, in the same
+// transaction. What the keys they gave something to hold stands on its own.
 func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, flags Flags, grantedBy string, check Check) (Grant, error) {
 	if err := flags.check(); err != nil {
 		return Grant{}, err
@@ -286,11 +286,6 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 			accountID, mb.workspaceID, userID, flags.Read, flags.Act, flags.Send, flags.Manage, grantedBy, now, now); err != nil {
 			return fmt.Errorf("workspace: set grant: %w", err)
 		}
-		if before.Read && !flags.Read {
-			if err := forgetInKeysTx(ctx, tx, userID, []string{accountID}); err != nil {
-				return err
-			}
-		}
 		if before.Manage && !flags.Manage {
 			if err := dropAttemptsTx(ctx, tx, userID, accountID); err != nil {
 				return err
@@ -311,8 +306,7 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 //
 // Refused as SetGrant is on personal and operator mailboxes, and when it
 // would take read from the last person who can read the mailbox
-// (ErrLastReader). Losing read takes the mailbox out of the restrictions of
-// the person's keys, and losing manage, which only a member stores, ends the
+// (ErrLastReader). Losing manage, which only a member stores, ends the
 // consent attempts they started on it.
 func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop Flags, check Check) (Grant, error) {
 	if !drop.Any() {
@@ -353,11 +347,6 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 		}
 		if err != nil {
 			return fmt.Errorf("workspace: revoke: %w", err)
-		}
-		if before.Read && !left.Read {
-			if err := forgetInKeysTx(ctx, tx, userID, []string{accountID}); err != nil {
-				return err
-			}
 		}
 		if before.Manage && !left.Manage {
 			if err := dropAttemptsTx(ctx, tx, userID, accountID); err != nil {
@@ -452,6 +441,9 @@ type MailboxAccess struct {
 	// again gets read on it again.
 	NoReader bool
 	Grants   []Grant
+	// Keys are the live keys holding something on it: what each holds, who
+	// created it and who gave it last.
+	Keys []MailboxKey
 }
 
 // Consent is a mailbox's own consent to sync, as the directory shows it. A
@@ -473,8 +465,8 @@ type Consent struct {
 
 // Directory lists a workspace's mailboxes and the grants on each, oldest
 // first (as linked, within a second), each mailbox's grants by when they were
-// made and then by address:
-// what its owners and admins and the operator see.
+// made and then by address, and the live keys holding something on each, by
+// when they were given it: what its owners and admins and the operator see.
 func (r *Repository) Directory(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
 	if _, err := r.Get(ctx, workspaceID); err != nil {
 		return nil, err
@@ -507,6 +499,13 @@ func (r *Repository) Directory(ctx context.Context, workspaceID string) ([]Mailb
 	}
 	if err := grants.Err(); err != nil {
 		return nil, fmt.Errorf("workspace: list the directory's grants: %w", err)
+	}
+	keys, err := r.mailboxKeys(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Keys = keys[out[i].AccountID]
 	}
 	return out, nil
 }

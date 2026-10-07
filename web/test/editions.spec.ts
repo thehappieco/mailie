@@ -15,6 +15,7 @@ import KeyTermsText from '../src/open/KeyTermsText.vue'
 import SyncText from '../src/open/SyncText.vue'
 import { accounts } from '../src/state/accounts'
 import { session } from '../src/state/session'
+import { workspaces } from '../src/state/workspaces'
 import { languageOptions, locale } from '../src/ui/i18n'
 import { hostedName } from './hosted'
 import { literalKeys, sourceFiles } from './i18nGuard'
@@ -40,6 +41,7 @@ afterEach(() => {
   locale.value = 'en'
   Object.assign(session, { phase: 'signed-out', user: null, expiresAt: 0 })
   Object.assign(accounts, { list: [], loaded: false })
+  Object.assign(workspaces, { list: [], loaded: false, supported: false, currentID: '', failure: null, lost: null })
   vi.unstubAllGlobals()
 })
 
@@ -85,7 +87,7 @@ describe('the open edition', () => {
   it('words what a person agrees to as this server’s, in every language, linking no policy and naming no company', async () => {
     for (const { value } of languageOptions) {
       locale.value = value
-      for (const html of [await render(SyncText), await render(ActionsText), await render(KeyTermsText, { write: true })]) {
+      for (const html of [await render(SyncText), await render(ActionsText), await render(KeyTermsText, { write: true }), await render(KeyTermsText, { write: true, send: true, team: 'Support' })]) {
         expect(html).not.toMatch(/<a\b/)
         expect(html, value).not.toMatch(/Happie|thehappie|Mailie/)
       }
@@ -96,9 +98,13 @@ describe('the open edition', () => {
     vi.stubGlobal('location', new URL('https://mail.example.org/'))
     Object.assign(session, { phase: 'ready', user: ana, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
     Object.assign(accounts, { list: [], loaded: true })
+    const nav = (html: string) => (html.match(/<nav class="console-nav"[^]*?<\/nav>/)?.[0] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    // API keys are a workspace's: offered once the person's workspaces say which is shown.
+    expect(nav(await render(OpenConsole))).toBe('Mailboxes 0 Storage Account')
+    Object.assign(workspaces, { list: [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }], loaded: true, supported: true, currentID: 'wsp_000000000000aaaa' })
+    Object.assign(accounts, { list: [], loaded: true, workspace: 'wsp_000000000000aaaa' })
     const html = await render(OpenConsole)
-    const nav = html.match(/<nav class="console-nav"[^]*?<\/nav>/)?.[0] ?? ''
-    expect(nav.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()).toBe('Mailboxes 0 API keys &amp; MCP Storage Account')
+    expect(nav(html)).toBe('Mailboxes 0 Members API keys &amp; MCP Storage Account')
     expect(html).not.toMatch(/Compose|mail-compose|Mail sent|by The Happie Co/)
     expect(html).not.toContain('lockup-by')
   })

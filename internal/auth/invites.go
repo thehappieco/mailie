@@ -543,13 +543,14 @@ type rowQuerier interface {
 
 // signsUpTx refuses, with ErrInviteJoinsOnly, a team invite whose creator may
 // not bring a new person onto the server: only the operator ("cli", or an
-// instance key's "key:<prefix>") and an instance owner who is still active
+// instance key's "key:<prefix>": a key of the operator workspace) and an instance owner who is still active
 // may. A creator who was deleted is "" by then, and vouches for nobody.
 func signsUpTx(ctx context.Context, q rowQuerier, createdBy string) error {
 	var ok bool
 	err := q.QueryRowContext(ctx, `SELECT ?1 = 'cli'
-		OR EXISTS (SELECT 1 FROM api_keys WHERE 'key:' || prefix = ?1 AND user_id IS NULL)
-		OR EXISTS (SELECT 1 FROM users WHERE id = ?1 AND role = 'owner' AND status = 'active')`, createdBy).Scan(&ok)
+		OR EXISTS (SELECT 1 FROM api_keys WHERE 'key:' || prefix = ?1 AND workspace_id = ?2)
+		OR EXISTS (SELECT 1 FROM users WHERE id = ?1 AND role = 'owner' AND status = 'active')`,
+		createdBy, workspace.OperatorID).Scan(&ok)
 	switch {
 	case err != nil:
 		return fmt.Errorf("auth: check who made the invite: %w", err)

@@ -5,14 +5,14 @@ console: migrations 0008 and 0009 and the runner's rebuild procedure, `internal/
 service's authorization on workspaces and grants for every path (REST, MCP, the event stream and
 the long poll), the routes, the command line and the contract fixtures. **The workspace model of
 2026-10-06** — Mailie follows Wappie's: a team's mailbox belongs to the team, its owners and admins
-manage it by their role, the last reader is protected — was approved by the owner on 2026-10-06,
-and its first step is implemented on the server (migration 0011, the service, the routes, the
-command line, the contract fixtures and the open texts' revisions); the console follows it. Its
-**API keys of the workspace (step 3) are not built yet**: until then a person's keys work as
-[Keys, tools and the operator](#keys-tools-and-the-operator) says. Not yet either: the platform's
-workspace source, of which only the stub is here. [`console.md`](console.md) describes the routes
-as the console reads them, and its screens. Where this document had to choose between readings of
-the plan, or found a rule that conflicts with the code or with another rule, it says so in
+manage it by their role, the last reader is protected, and every API key belongs to a workspace —
+was approved by the owner on 2026-10-06. Its first step (migration 0011, team mailboxes) and its
+third (**migration 0012, the workspace's API keys**: `key_access`, the routes, sending by key, the
+command line, the contract fixtures and the open key terms' revision) are implemented on the
+server; the console follows them. Not yet: the platform's workspace source, of which only the stub
+is here. [`console.md`](console.md) describes the routes as the console reads them, and its
+screens. Where this document had to choose between readings of the plan, or found a rule that
+conflicts with the code or with another rule, it says so in
 [Conflicts and resolutions](#conflicts-and-resolutions).
 
 ## In short
@@ -37,12 +37,21 @@ the plan, or found a rule that conflicts with the code or with another rule, it 
 - Members see only the mailboxes they hold a grant on; only owners and admins (and the operator)
   see the team's members and who holds what, invite, and remove; a member or an admin does not
   leave by themselves; an owner leaves while another owner remains.
+- **API keys belong to their workspace**, as Wappie's: only its owners and admins, signed in,
+  create, list and revoke them (in a personal workspace, its person). A key acts as nobody and
+  reaches exactly the mailboxes it holds `read`, `act` or `send` on (`key_access`): `read` only from
+  an owner or an admin who reads the mailbox then, `act` and `send` from any of them. What a key
+  holds stands on its own, whoever gave it; keys never count as readers and never pass `read`. A key
+  may send, with the `send` scope and flag and `confirm: true`, unless the server says keys may not
+  (`MAIL_KEYS_MAY_SEND=false`). It stops when its creator leaves the workspace or is disabled or
+  deleted on the instance. See [API keys](#api-keys).
 - The same address may be linked in several workspaces; each link is an independent mailbox with
   its own credentials, worker and index. Within one workspace an address is linked at most once.
 - `users.role` (`owner`, `member`) is purely the **instance role** of a self-hosted server. It
   gives no mailbox visibility. The first owner comes only from `user invite --bootstrap`.
 - Migration 0008 created the workspaces and rebuilt `accounts`; 0009 set right what 0008 could not
-  change; **0011** makes team mailboxes their team's (see [Migration 0011](#migration-0011)).
+  change; **0011** makes team mailboxes their team's (see [Migration 0011](#migration-0011));
+  **0012** moves every key into its workspace (see [Migration 0012](#migration-0012)).
 
 ## The model
 
@@ -234,6 +243,7 @@ the invites whose creator could no longer make them.
 | Actions | the **actor**'s, at the current revision | the actor's `act` flag |
 | Sending | the **sender**'s, at the current revision | the sender's `send` flag |
 | `\Answered` after a reply | the sender's actions consent | the sender's `act` flag |
+| A workspace key's actions and sends | **nobody's**: the key terms its creator agreed to, recorded on the key (`terms_version`), say what it may do | the key's own `act` or `send` flag on the mailbox, its scope, and for sending `MAIL_KEYS_MAY_SEND`; with `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` every workspace key acts only while its creator allows actions; a person's key carried over by 0012 always does, and never sends |
 
 - An owner or an admin gives a team mailbox's consent on the team's behalf, signed in, to the
   current revision of the sync text (`MAIL_CONSENT_VERSION_SYNC`, the same text that covers
@@ -272,23 +282,23 @@ the invites whose creator could no longer make them.
   again changes nothing. The daemon lists these at start; one only the disabled linker read is
   listed as read by nobody instead, and can only be removed or turned off.
 - The From name is the **sender's** profile name (`fromName` reads the caller), so an account's
-  `send.from_name` is per caller. An instance key sends under the address alone.
+  `send.from_name` is per caller. A key, instance or workspace, sends under the address alone.
 
 ## Who may do what
 
 ### Using a mailbox
 
-| Operation | A person (session, or their key within its scope) | An instance key |
-|---|---|---|
-| list it, read its card | any grant; or owner or admin of its workspace, by the role | operator mailbox |
-| folders, search, read, originals, attachments, events, storage | `read` | operator mailbox, `read` scope |
-| ask for a sync pass | `read`, `write` scope | operator mailbox, `write` scope |
-| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent); a personal one: never (its person's own consent decides) | operator mailbox, unrestricted admin key |
-| act | `act`, actions consent, `write` scope | operator mailbox, `write` scope |
-| send, read own send records | `send`, send consent, a session (personal keys never have `send`) | operator mailbox, `send` scope |
-| re-authorize | manage (owner or admin, or a member holding `manage`), a session | operator mailbox, `admin` scope |
-| remove (repeating its id) | a team's: its owners and admins; a personal one: its person; a session | operator mailbox, `admin` scope |
-| restrict a new key to it | `read` | operator mailbox |
+| Operation | A person (session) | A workspace key | An instance key |
+|---|---|---|---|
+| list it, read its card | any grant; or owner or admin of its workspace, by the role | it holds anything on it | operator mailbox |
+| folders, search, read, originals, attachments, events, storage | `read` | `read` | operator mailbox, `read` scope |
+| ask for a sync pass | `read`, `write` scope | `read`, `write` scope | operator mailbox, `write` scope |
+| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent); a personal one: never (its person's own consent decides) | never | operator mailbox, unrestricted admin key |
+| act | `act`, actions consent | `act`, `write` scope (under its key terms; no person's consent) | operator mailbox, `write` scope |
+| send, read own send records | `send`, send consent | `send`, `send` scope, `MAIL_KEYS_MAY_SEND` (under its key terms; no person's consent) | operator mailbox, `send` scope |
+| re-authorize | manage (owner or admin, or a member holding `manage`) | never | operator mailbox, `admin` scope |
+| remove (repeating its id) | a team's: its owners and admins; a personal one: its person | never | operator mailbox, `admin` scope |
+| restrict a new instance key to it | | | operator mailbox |
 
 ### Administering a workspace
 
@@ -311,13 +321,17 @@ the invites whose creator could no longer make them.
 | grant `send` | to any active member, themselves included | likewise | no | no |
 | grant `manage` | to members | to members | no | to members |
 | revoke | any flag, their own included | any flag, their own included | no, not their own | any flag |
+| create a key; list the workspace's keys; revoke any of them | yes, signed in | yes, signed in | no | lists and revokes every key (`/v1/apikeys`, with `MAIL_ADMIN_API=true`) |
+| give a key `read` on a mailbox | while they read it themselves, now | likewise | no | no |
+| give a key `act` (where it reads) or `send`; take anything out of a key | yes | yes | no | no |
+| list a key's sends | yes | yes | no | no |
 
 Any person may create a team, with a session, and becomes its owner; the operator creates one for
 a named existing person. A personal workspace's person is its owner, and holds every power above
 in it, with `read`, `act` and `send` on each of its mailboxes; personal workspaces have no invites,
 other members or renaming. The operator workspace has no members, grants or invites. Every row is
-subject to the [protections](#protections). A person's key never administers anything: these routes
-take a session or the operator's key.
+subject to the [protections](#protections). A workspace key never administers anything, keys
+included: these routes take a session or the operator's key.
 
 ### Who may change a grant
 
@@ -350,7 +364,7 @@ take a session or the operator's key.
 | disable a person (`POST /v1/users/disable`) | yes, not themselves | no | yes |
 | delete a person (`POST /v1/users/delete`) | yes, not themselves | no | yes |
 | `database_bytes` in storage | yes | no | no |
-| instance keys (`/v1/apikeys`, with `MAIL_ADMIN_API=true`) | no | no | yes |
+| every key, instance and workspace keys (`/v1/apikeys`, with `MAIL_ADMIN_API=true`): list, revoke; issue instance keys | no | no | yes |
 
 ## Protections
 
@@ -399,47 +413,121 @@ The seven codes do not change.
 | Situation | Code |
 |---|---|
 | a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of | `404 not_found`, never `403` |
-| a mailbox the caller sees, without the flag the operation needs; a role that may not do this (a member listing members, leaving, granting); a person's key on an administration route | `403 not_authorized` |
+| a mailbox the caller sees, without the flag the operation needs; a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration or key route; a key's send where keys may not send | `403 not_authorized` |
 | a protection; a platform-sourced workspace changed locally; a missing actions or send consent | `409 conflict` |
-| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one | `400 bad_request` |
+| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys` | `400 bad_request` |
 
-## Keys, tools and the operator
+## API keys
 
-The approved model makes every API key its workspace's, created by an owner or an admin, with
-mailboxes given by someone who reads them (step 3 of the plan of 2026-10-06, **not built yet**).
-Until it is, keys work as phase 2 made them:
+Every API key belongs to one workspace, as Wappie's do (migration 0012):
 
-- **Instance keys** (no person) reach only the operator workspace's mailboxes, over REST and MCP
-  alike ([conflict 3](#conflicts-and-resolutions)). A restriction to accounts keeps working, and may
-  name only operator mailboxes, through the route and through `apikey create --bootstrap` alike.
-- **Person keys** reach what their person can, live, within their scope (`read` or `write`) and
-  their optional restriction: the cards of what their person manages by a role included, and
-  never the index of a mailbox their person does not read. Losing `read` on a mailbox also deletes it from the restrictions of
-  that person's keys in the same transaction, so a key made for that mailbox alone is revoked by
-  0005's trigger, as when a mailbox is removed today, rather than waking up again if the person is
-  granted access later. A key with other mailboxes left keeps working for those. What a caller
-  holds for long — the stdio MCP session, a resource subscription, an event stream — authenticated
-  once, with the restriction as it was; the re-check before each answer (`auth.Keys.Recheck`)
-  refuses a principal that still names a mailbox its key no longer does, so it never reaches the
-  lost mailbox again, even once `read` comes back. A mailbox removed since is no difference: its
-  id is never reused. The refusal is `409 conflict` ("this key no longer reaches a mailbox it was
-  authenticated with"), not the `401` of a key that no longer works: the key does, and the caller
-  authenticates again — reconnects the stream, restarts the stdio session — and goes on with what
-  the key still names.
-- **MCP** tools and resources call the same service methods and see exactly what the key may; the
-  account they list carries `workspace_id` and `access`. `Principal.Tool` no longer changes what an
-  instance key sees, since REST and MCP now agree; it keeps refusing sessions on `/mcp`.
+- **An operator key** (`workspace_id = 'wsp_operator'`, formerly "instance key") is what the
+  command line holds. It reaches the operator workspace's mailboxes, over REST and MCP alike
+  ([conflict 3](#conflicts-and-resolutions)), with every flag its scope (`read` to `admin`) allows;
+  an optional restriction to some of them (`api_key_accounts`) names only operator mailboxes,
+  through the route and through `apikey create --bootstrap` alike, and a key whose last restriction
+  goes is revoked rather than widened. Nothing about it changed.
+- **A workspace key** belongs to a personal workspace or a team, and acts as nobody: its
+  `api_keys.user_id` is `NULL` (a trigger refuses anything else) and its creator is
+  `created_by` (`usr_…`). Its scope is `read`, `write` or `send`, never `admin`. It reaches exactly
+  the mailboxes of its workspace it holds something on:
+
+  ```sql
+  key_access(key_prefix, account_id, workspace_id, read, act, send, granted_by, created_at, updated_at)
+    PRIMARY KEY (key_prefix, account_id)
+    FOREIGN KEY (account_id, workspace_id) REFERENCES accounts(id, workspace_id) ON DELETE CASCADE
+    CHECK (act = 0 OR read = 1), CHECK (read + act + send > 0)
+  ```
+
+  Triggers hold that a row is in the key's own workspace (never the operator's), never moves, and
+  that `act` needs the `write` scope or more and `send` the `send` scope. A key with no row
+  reaches nothing, and is not revoked for that: an owner or an admin may give it a mailbox later.
+- **A carried-over key** (`workspace_id NULL`) is a person's key 0012 found reaching mailboxes of
+  several workspaces. It keeps exactly what it held, gains nothing (the same trigger), expires
+  within 365 days, and is revoked when its last mailbox goes. Each workspace it reaches lists it,
+  with that workspace's mailboxes and a count of the others (`other_workspaces`); revoking it there
+  takes that workspace's mailboxes out of it. The daemon says at start how many are live.
+
+**Who.** Only an active owner or admin of the workspace, signed in, creates a key, lists the
+workspace's keys (revoked and expired ones too, live first, newest first in each group) and revokes
+any of them, whoever created it; in a personal workspace that is its person. A member creates
+none. A key never mints, lists or changes a key, so a leaked one cannot keep access after it is
+revoked; the operator lists and revokes every key on `/v1/apikeys`. A person lists the keys they
+created, in every workspace, on `GET /v1/me/apikeys`, and revokes any of them.
+
+**What a key holds.** `read` on a mailbox is given only by an owner or an admin who **reads that
+mailbox themselves, then**, checked in the transaction that writes `key_access`: a role reads
+nothing, and minting a key never lets an owner or an admin read mail they hold no grant on. `act`
+(where the key reads, with the `write` scope or more) and `send` (with the `send` scope) any owner
+or admin gives. What a key holds **stands on its own**: whoever gave it, and its creator, may lose
+their own access, demotion included, and the key keeps its mailboxes until an owner or an admin
+takes them out or revokes it; so every owner and admin sees every key of the workspace, and each
+mailbox's keys in the access directory. Keys never count as readers ([Protections](#protections))
+and never pass `read`.
+
+**Creating one** (`POST /v1/workspaces/{id}/apikeys`): a name (up to 120 characters), the scope,
+`ttl_days` (30, 90 — the default — or 365; not bounded by what is left of the session it is created
+in), `terms_version`, which must be the current key terms (`MAIL_CONSENT_VERSION_KEYS`, `409`
+otherwise), and the mailboxes with their flags. At most 20 live keys per workspace made as keys are
+now, counted in the transaction that issues (`409`); the persons' keys migration 0012 moved in are
+not counted, since a team may hold more than 20 of them, and they expire on their own. The secret is in the answer and nowhere else; only its Argon2id
+hash is stored. `POST /v1/me/apikeys` answers `400` ("API keys are created in a workspace by its
+owners and admins").
+
+**What a key does.** The key terms its creator agreed to, recorded on the key, cover what a tool
+holding it does with what it holds: no person's consent to actions or sending is asked for a key's.
+Before a mail server is touched the service asks again whether the key is live and not expired,
+still holds the flag and has the scope, and, for sending, whether keys may send. A person's key
+0012 carried over was created under terms that let it act only while its person allowed actions
+and never send: it goes on that way. The actions text says so too (`2026-10-open-actions-3`):
+turning actions off stops the person's own and those of such a key of theirs, never one created
+since, which taking `act` away or revoking it stops ([conflict 24](#conflicts-and-resolutions)).
+
+**Sending by key** takes the one send path: `confirm: true` on every send, the idempotency key
+reserved before anything is dialed, an outcome after `DATA` `unknown` (never retried) or `failed`.
+Only from a mailbox the key holds `send` on, with the `send` scope; at most `DailyKeySendLimit`
+(100) sends a day per key; the message goes out under the address alone, no person's name; the
+send record's `created_by` and the `send.finished` notice's `sent_by` name the key
+(`key:<prefix>`), and only that key reads them (`GET /v1/sends/{key}`, the event stream). The
+workspace's owners and admins list a key's sends
+(`GET /v1/workspaces/{id}/apikeys/{prefix}/sends`). A key-less send's idempotency key is a keyed
+hash of the message and the key, and the minute: the same key retrying is answered from its record,
+another key sending the same message from the same mailbox sends its own
+([conflict 10](#conflicts-and-resolutions)). `MAIL_KEYS_MAY_SEND=false` is for an edition whose key
+terms do not cover sending: the `send` scope and flag are refused when a key is created or given a
+mailbox, and every send by a workspace key is refused; operator keys are not affected. It defaults
+to `true` only under the open key terms: a daemon whose `MAIL_CONSENT_VERSION_KEYS` names other
+terms refuses to start until it is set ([conflict 25](#conflicts-and-resolutions)).
+
+**Revoked automatically**, in the same transaction, the keys a person created: when they are
+removed from the workspace (a carried-over key loses that workspace's mailboxes), and when they
+are disabled or deleted on the instance. Demoting them or disabling their membership keeps the
+keys, as Wappie does. Deleting a person deletes the keys of their personal workspace and of the
+teams they were alone in, with those workspaces, and blanks their name on the keys they created in
+a team that stays, which stay revoked as the team's record.
+
+**Held principals.** A workspace key's principal names no mailbox: every use reads what the key
+holds now, so the stdio MCP session, a resource subscription, an event stream and a long poll see
+a mailbox given or taken at once (the stream says so with `event: access`), and a key revoked or
+expired stops at the next re-check, before every answer. `ErrKeyNarrowed` (`409`) is left only for
+an operator key whose restriction lost a mailbox.
+
+**MCP.** Tools and resources call the same service methods and see exactly what the key holds;
+`AuthenticateTool` keeps refusing sessions on `/mcp`, and a key nobody agreed to the key terms
+through, which migration 0012 revoked, everywhere.
 
 ## Choosing the workspace in a request
 
-There is no "current workspace" on the server: sessions and keys are not bound to a workspace, so a
-person's key reaches their mailboxes in every workspace they belong to, as the plan says. Instead:
+There is no "current workspace" on the server for a session, which reaches the person's mailboxes
+in every workspace they belong to; a workspace key belongs to its workspace and reaches only what it
+holds there. Instead:
 
 - Every mailbox-bearing answer carries `workspace_id` (accounts, storage).
 - `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events` and
   `GET /v1/events/wait` accept `?workspace=ID`, which narrows them to that workspace's mailboxes. A
-  workspace the caller is not an active member of is `404`; with `account` as well, the account
-  must be in that workspace.
+  workspace the caller is not an active member of is `404` (for a key, any workspace but its own,
+  or for a carried-over key one it holds no mailbox in); with `account` as well, the account must
+  be in that workspace.
 - The console keeps the current workspace itself (per tab, remembered for each person in local
   storage) and passes `?workspace=` so a view never fetches another workspace's data
   ([`console.md`](console.md), "Workspaces in the console").
@@ -451,7 +539,8 @@ see it, assuming that never changes. With grants it does:
 
 - The service keeps an **access epoch**, a counter it advances after every commit that can give or
   take `read` from someone: a grant set or revoked, a membership disabled or removed, a mailbox
-  linked or removed, a person disabled or deleted. A role never gives `read`, so a role change
+  linked or removed, a person disabled or deleted, a key created, given or taken a mailbox, or
+  revoked. A role never gives `read`, so a role change
   moves nothing a stream carries; an owner's or an admin's stream carries a team mailbox's events
   only while they hold `read` on it. Switching a team mailbox's sync off deletes its events with
   its index; nothing journals the switch itself. One daemon writes the database (the lock),
@@ -467,16 +556,17 @@ see it, assuming that never changes. With grants it does:
   `event: access` with `{"account_id": "…", "read": false}`, and `"read": true` when one joins;
   like `lagged`, it has no `id`, since it is not a journal entry. A stream ends with `event: error`
   and `{"code": "not_found", …}` only when its filter can match nothing again: every mailbox named
-  by `?account=`, or every mailbox of a restricted key, is gone, or the caller is no longer an
+  by `?account=`, or every mailbox of a restricted instance key, is gone, or the caller is no longer an
   active member of the workspace `?workspace=` named. Do not reconnect with the same filter then. A
   stream of everything the caller may read stays open however little that is — none since the last
   grant was revoked, or none yet — because one opened now would be the same: a mailbox granted or
   linked later appears on it without reconnecting.
 - **`send.finished`** is not the mailbox's but one sender's record (see
-  [conflict 10](#conflicts-and-resolutions)): its payload names the sender (`user_id`), and it goes
-  only to whoever may read that record with `GET /v1/sends/{key}` — the person who sent it, with
-  the `send` scope and the `send` flag on the mailbox at delivery, `read` or not; an instance key's
-  send, to the instance keys with the `send` scope. A member who reads a shared mailbox never hears
+  [conflict 10](#conflicts-and-resolutions)): its payload names the sender — `user_id` for a
+  person, `sent_by` (`key:<prefix>`) for a key — and it goes only to whoever may read that record
+  with `GET /v1/sends/{key}`: the person who sent it, with the `send` flag on the mailbox at
+  delivery, `read` or not; a workspace key's send, to that key while it may send from the mailbox;
+  an instance key's send, to the instance keys with the `send` scope. A member who reads a shared mailbox never hears
   of another member's sends, and a member who may send without reading hears of their own, on a
   stream without `?account=` (which names mailboxes the caller reads).
 - **Long poll.** The same gate: events of a mailbox lost during the wait are left out, and
@@ -505,7 +595,8 @@ renders, as it renders a credential failure today.
 ```
 
 `workspaces` sums the caller's readable mailboxes per workspace, never a mailbox they cannot read,
-so it is not a workspace's whole usage. An instance key answers for the operator workspace.
+so it is not a workspace's whole usage. An instance key answers for the operator workspace, a
+workspace key for the mailboxes it reads.
 
 ## REST
 
@@ -526,6 +617,15 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`, every mailbox of the workspace |
 | `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant); session; operator for `manage` | `{read, act, send, manage}`, all four required, not all false → `Grant` |
 | `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it |
+| `GET /v1/workspaces/{id}/apikeys` | owner or admin, signed in | `[WorkspaceKey]`: every key of the workspace and the carried-over keys holding one of its mailboxes, revoked and expired ones too, live first |
+| `POST /v1/workspaces/{id}/apikeys` | owner or admin, signed in | `{name, scope, ttl_days, terms_version, mailboxes: [{account_id, read, act, send}]}` → `{key, …WorkspaceKey}` (201), the secret shown once |
+| `DELETE /v1/workspaces/{id}/apikeys/{prefix}` | owner or admin, signed in | `204`; a carried-over key loses the workspace's mailboxes instead |
+| `PUT /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | owner or admin, signed in; `read` only from one who reads the mailbox | `{read, act, send}`, all three required, not all false → `KeyMailbox` |
+| `DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | owner or admin, signed in | `204`: the mailbox is out of the key |
+| `GET /v1/workspaces/{id}/apikeys/{prefix}/sends` | owner or admin, signed in | `[SendStatus]`, the key's sends from the workspace's mailboxes, newest first (at most 200) |
+| `GET /v1/me/apikeys` | session | `[WorkspaceKey]`: the keys the person created, in every workspace |
+| `DELETE /v1/me/apikeys/{prefix}` | session | `204`: revokes a key the person created |
+| `POST /v1/me/apikeys` | session | `400`: keys are created in a workspace |
 
 Gone: `POST /v1/accounts/{id}/take-over` (`404`; see [Taking over a link](#taking-over-a-link)).
 
@@ -541,7 +641,10 @@ Changed routes:
 | `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; `400` for a personal mailbox; `409` to turn on a team mailbox nobody can read. Answers `AccountSync` |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
-| `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)) |
+| `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)); a key's are that key's |
+| `POST /v1/messages/send` | a workspace key holding `send`, with the `send` scope, where keys may send |
+| `GET /v1/workspaces/{id}/access` | each mailbox lists its live keys (`keys`) |
+| `GET /v1/apikeys` (operator) | each key names its `workspace_id`; a workspace key's `account_ids` are the mailboxes it holds |
 
 Shapes:
 
@@ -569,6 +672,22 @@ Shapes:
              "manage": false, "granted_by": "migration", "updated_at": 1790000000}]}
 // a Grant's manage is the stored flag, which only a member holds; owners and admins manage by
 // their role, which the members list says
+
+// MailboxAccess.keys: the live keys holding something on the mailbox
+{"prefix": "0a1b2c3d", "name": "Support bot", "scope": "write", "read": true, "act": true,
+ "send": false, "created_by": "usr_…", "granted_by": "usr_…", "updated_at": 1790000000}
+// "carried_over": true for a key 0012 carried over
+
+// WorkspaceKey (the secret is never here; created_by absent once that person is deleted; origin
+// "person" or "person-all" for a person's key 0012 moved into its workspace; carried_over and
+// other_workspaces for one it carried over; sends: the key can send at all, its scope and the
+// server allowing)
+{"prefix": "0a1b2c3d", "name": "Claude Code", "scope": "read", "workspace_id": "wsp_…",
+ "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "read": true, "act": false,
+                "send": false, "granted_by": "usr_…", "updated_at": 1790000000}],
+ "created_by": "usr_…", "created_at": 1790000000, "expires_at": 1797776000,
+ "last_used_at": 1790003600, "live": true, "terms_version": "2026-10-open-api-keys-2",
+ "sends": false}
 
 // TeamInvite (role is the role in the team; url only in the answer that creates it). An instance
 // invite keeps the shape POST /v1/users/invites always answered: {email, role, url, expires_at}.
@@ -618,7 +737,10 @@ mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] 
   and marks one nobody can read.
 - `account add|list|authorize|folders|remove|sync` and `apikey` keep working, on the operator
   workspace. `account list` no longer lists people's mailboxes; `account remove` repeats the id
-  (`?confirm=`).
+  (`?confirm=`). `apikey create` issues operator keys; `apikey list` lists every key with its
+  workspace (`several` for a carried-over one) and, for a workspace key, the mailboxes it holds
+  (`none` when it holds none); `apikey revoke` revokes any key. A workspace's keys are created in
+  the console only.
 - `user invite --bootstrap` takes `--workspace` too. Without `--role`, `--bootstrap` makes an
   `owner` invite while the instance has no active owner and no live owner invite, and a `member`
   invite otherwise ([conflict 6](#conflicts-and-resolutions)).
@@ -808,9 +930,38 @@ they were. The tests in `internal/store/migrate_eleven_test.go` dump every table
 on that shape and on a self-hosted one with teams, and compare them value by value except the
 columns named.
 
+## Migration 0012
+
+`0012_workspace_keys.sql`, an ordinary migration in one transaction with foreign keys on: two
+columns added to `api_keys` (`workspace_id`, `origin`), the table `key_access`, three indexes (keys
+by workspace and by creator, sends by who sent them), rows updated and moved, 0005's trigger on
+`api_key_accounts` dropped and created again as it was around the move, and the triggers of
+[API keys](#api-keys) added. What becomes of a schema-11 database:
+
+| Before | After |
+|---|---|
+| an instance key (`user_id NULL`) | `workspace_id = 'wsp_operator'`; nothing else changes, its restriction rows included (one restricted to a person's mailbox still reaches nothing) |
+| a person's key made for chosen mailboxes, live | `origin = 'person'`; a `key_access` row for each chosen mailbox its person reads now (an active grant with `read`, as an active member, active on the instance) with `read`, `act` where the key was `write` and its person held `act`, never `send`, `granted_by = 'migration'`; a chosen mailbox its person no longer reads is left out: nothing it could do yesterday is widened |
+| a person's key made for every mailbox of theirs, live | `origin = 'person-all'`; a row for every mailbox its person reads now, the same way. Mailboxes linked later are not added: an owner or an admin who reads one adds it |
+| a revoked or expired person's key | mapped the same way, with the mailboxes it was made for, for the record; it reaches nothing |
+| its workspace | the one its mailboxes are in; its person's personal workspace when it has none; `NULL` (carried over) when they span several, with `expires_at` brought within 365 days. A team may end up with more than 20 live keys this way (each person could hold 20): they do not count toward its limit |
+| a person's key nobody agreed to the key terms through (`terms_version ''`: made for them by an administrator, or before keys had terms), refused everywhere since phase 4 | revoked, holding nothing, in its person's personal workspace whatever it reached: a team never sees a key made for one of its members, and the key goes with that workspace when its person is deleted, as it went with them before ([conflict 26](#conflicts-and-resolutions)) |
+| `api_keys.user_id` | `NULL` everywhere; the column stays, since dropping it takes a rebuild, and a trigger refuses anything else. `created_by` keeps who created each key |
+| `api_key_accounts` | only the operator keys' rows |
+| everything else | untouched, value for value |
+
+A person's key in a team where its person is a plain member becomes that team's key all the same:
+listed to its owners and admins, revocable by them; only creating new ones is closed to members.
+The hosted service's shape — one person, two personal mailboxes, one key whichever it is — keeps
+the key working on what it reached: the person's key goes into their personal workspace with both
+mailboxes, an instance key stays the operator's, a revoked one stays revoked. The tests in
+`internal/store/migrate_twelve_test.go` dump every table before and after, on that shape (each kind
+of key) and on a self-hosted one with teams and keys of every kind, and compare them value by
+value except the columns named.
+
 ## Going back
 
-Schemas 10 and 11 are refused by an older binary like any newer one: going back past 0011 is the
+Schemas 10 to 12 are refused by an older binary like any newer one: going back past 0012 is the
 backup taken before the upgrade, restored with the binary of its time.
 
 From the release of 0008 on the runner refuses a database whose `user_version` is past the last migration
@@ -870,8 +1021,9 @@ with no children of its own, is the one exception, named in the test).
 
 Test names state the guarantee. At least:
 
-- Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, MCP, the event stream, the
-  long poll and storage (one test per transport, the same fixture);
+- Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, the event stream, the long
+  poll and storage, and over MCP, which takes keys only,
+  `TestAKeyHoldingNothingReachesNothingUntilAReaderGivesItAMailbox`;
   `TestAnOwnerOrAdminManagesEveryTeamMailboxAndReadsNone` (the service, every path) with
   `TestAnOwnerOrAdminSeesATeamMailboxsCardAndReadsNoneOfItOverREST` and
   `TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey` (MCP);
@@ -918,11 +1070,28 @@ Test names state the guarantee. At least:
   `TestDeletingTheOnlyMemberOfATeamStopsItsMailboxesWorkersAndAttempts`;
   `TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes` (every form of attribution).
 - Keys: `TestAnInstanceKeyReachesOnlyOperatorMailboxes` (REST and MCP);
-  `TestAPersonKeyLosesAMailboxWhenItsPersonLosesTheGrant`;
-  `TestAKeyMadeForALostMailboxIsRevoked`;
-  `TestAHeldPrincipalNeverReachesAMailboxItsKeyLostWhenItsPersonLostRead`;
-  `TestAHeldSessionNeverReachesAMailboxItsKeyLostEvenOnceReadComesBack` (MCP);
-  `TestAStreamWhoseKeyLostAMailboxEndsWithAConflictAndReconnects` (SSE).
+  `TestOnlyAnOwnerOrAdminSignedInCreatesAWorkspacesKeys` (and over REST
+  `TestOnlyAnOwnerOrAdminSignedInManagesAWorkspacesKeys`); `TestAKeyNeverMintsListsOrChangesAKey`;
+  `TestAKeyReadsOnlyMailboxesAReaderGaveItAndAnAdminWhoReadsNothingCannotReadThroughOne` (the
+  service, every path: search, message, folders, storage, the stream, the long poll, a
+  subscription), over REST `TestAnAdminWhoReadsNothingCannotReadThroughAKeyOverREST` and over MCP
+  `TestAnOwnerOrAdminReadsNoTeamMailboxThroughTheirKey`;
+  `TestAKeyKeepsItsMailboxWhenItsCreatorLosesReadAndEveryOwnerOrAdminSeesAndRevokesIt`;
+  `TestAKeyActsOnlyWithActAndTheWriteScopeUnderItsKeyTerms`;
+  `TestAPersonsKeyCarriedOverActsOnlyWhileItsCreatorAllowsActionsAndNeverSends`;
+  `TestAKeySendsOnlyWithTheSendFlagTheSendScopeAndConfirmAndUnderTheAddressAlone`;
+  `TestAKeysSendThatMayHaveBeenDeliveredIsNeverRetried`; `TestNoKeySendsWhereTheServersKeysMayNotSend`
+  (and `TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTheyMay` in
+  `internal/config`); `TestTwoKeysSendingTheSameMessageWithoutAKeyInOneMinuteEachSendTheirs`;
+  `TestAKeySendsAtMostItsDailyLimit`; `TestAKeyNeverReachesAnotherWorkspace`;
+  `TestRemovingDisablingOrDeletingTheCreatorRevokesTheirKeysButADemotionDoesNot` (and in
+  `internal/workspace` and `internal/auth`);
+  `TestAWorkspaceHoldsAtMostTwentyLiveKeys`,
+  `TestThePersonsKeysTheUpgradeMovedIntoATeamDoNotCountTowardItsTwentyLiveKeys`;
+  `TestAHeldKeySeesWhatItHoldsChangeAtOnce`,
+  `TestAHeldSessionSeesAMailboxTakenOutOfItsKeyAtOnce` (MCP) and
+  `TestAKeysStreamStopsCarryingAMailboxTakenOutOfIt` (SSE);
+  `TestACarriedOverKeyGainsNothingAndIsRevokedWithItsLastMailbox`.
 - Events: `TestAStreamFollowsAccessAsItChanges`;
   `TestAStreamOfEverythingOutlivesTheLossOfEveryMailboxItRead`;
   `TestASendFinishedReachesOnlyItsSender`.
@@ -971,7 +1140,16 @@ Test names state the guarantee. At least:
   `TestMigrationElevenRefusesAPersonalMailboxThatNamesAnotherPerson`,
   `TestMigrationElevenTakesStoredManageFromOwnersAndAdminsOnly`,
   `TestMigrationElevenExpiresTheInvitesTheirCreatorCouldNotMakeNow` and
-  `TestMigrationElevenRefusesWhatItsSchemaForbids`.
+  `TestMigrationElevenRefusesWhatItsSchemaForbids`. 0012:
+  `TestMigrationTwelveMovesEachPersonKeyIntoTheWorkspaceItReaches` (the self-hosted shape with
+  every kind of key, every table compared value by value, an administrator's key for a team member
+  left in that member's personal workspace),
+  `TestMigrationTwelveKeepsTheSmallestShapesKey` (the hosted shape, with each kind of key),
+  `TestMigrationTwelveNeverWidensAKeysActions`,
+  `TestMigrationTwelveGivesAnUnrestrictedKeyWhatItReachedAndNoMore`,
+  `TestMigrationTwelveCarriesOverAKeySpanningWorkspacesFrozen`,
+  `TestMigrationTwelveLeavesOperatorKeysAndTheirRestrictionsAlone` and
+  `TestMigrationTwelveRefusesWhatItsSchemaForbids`.
 
 ## Conflicts and resolutions
 
@@ -1037,7 +1215,13 @@ Test names state the guarantee. At least:
     answers only the caller's own sends (the operator's for instance keys). The journal's
     `send.finished`, which names a send's key and outcome, follows the same rule rather than the
     mailbox's: it carries its sender (`user_id`, absent for an instance key and once that person is
-    deleted) and reaches only who may read the record (see [Events](#events)).
+    deleted) and reaches only who may read the record (see [Events](#events)). *Then (2026-10-06,
+    with workspace keys):* keys are how tools send, many of them from one shared mailbox, and a
+    key-less send's derived key made of the message alone refused a second key's identical alert in
+    the same minute as a reused key — sending nothing, and telling it that another sender had just
+    sent exactly that. A derived key is now a keyed hash of the message and its sender, and the
+    minute: the same sender retrying is still answered from its record, and another sends its own.
+    An `Idempotency-Key` a caller chose stays per mailbox, as above.
 11. **"Seeing a mailbox requires a grant" against administering it.** Owners and admins must see
     which mailboxes exist in their team to grant, revoke, re-authorize and remove. *Resolution
     (2026-10-06):* they see each team mailbox's card by their role — address, state, sync counters,
@@ -1072,7 +1256,8 @@ Test names state the guarantee. At least:
     someone allowed to act on it asks, under their own agreement. As for any revision, everyone is
     asked again; sync keeps running for whoever agreed before, and actions are refused until they
     agree again. Linking into a team with the team's consent, or turning it on, needs `-3`. The API
-    key text keeps its revision until step 3.
+    key text kept its revision until step 3, which gave it `2026-10-open-api-keys-2`
+    ([conflict 20](#conflicts-and-resolutions)).
 15. **A migrated consent and the promise it was given under.** Migration 0011 turns each team
     mailbox's linker's own consent into the team's, which would otherwise be a consent its person
     can no longer withdraw, recorded under a revision whose text promised the opposite.
@@ -1097,14 +1282,76 @@ Test names state the guarantee. At least:
     and an admin removes members only. *Resolution (the owner, 2026-10-06):* only an owner leaves,
     while another owner remains; a member or an admin asks an owner (or, for a member, an admin) to
     remove them.
-18. **Keys of the workspace.** The owner decided that API keys belong to their workspace, made by
-    its owners and admins, may send, and hold their own mailboxes. That is step 3, not built yet;
-    until it is, a person's key reaches what its person can, as phase 2 made it, and a member of a
-    self-hosted team still creates keys for the mailboxes they read.
+18. **Keys of the workspace.** Phase 2 let each person create keys acting as them, reaching live
+    what they could. *Resolution (the owner, 2026-10-06):* keys belong to their workspace, as
+    Wappie's: only its owners and admins create, list and revoke them, a key never mints a key, and
+    each holds its own mailboxes (`key_access`). See [API keys](#api-keys).
+19. **What a key holds stands on its own.** The design of 2026-10-06 capped each key live by the
+    person who answered for it (losing `read` took the mailbox out of their keys).
+    *Resolution (the owner, 2026-10-06, replacing that):* no cap, as in Wappie: a key keeps a
+    mailbox when its creator, or whoever gave it, loses `read` or is demoted; every owner and admin
+    sees every key of the workspace, and each mailbox's keys in the access directory, and revokes
+    them. What keeps "no role reads" true is where `read` comes from: only an owner or an admin who
+    reads the mailbox then gives a key `read`, and keys never count as readers nor pass `read`. The
+    key stops when its creator leaves the workspace or is disabled or deleted on the instance —
+    never on a demotion or a disabled membership, as Wappie revokes only on removal.
+20. **Keys may send.** Phase 2's keys never sent (`read` or `write`). *Resolution (the owner,
+    2026-10-06):* keys send, as Wappie's do: the `send` scope and the `send` flag on the mailbox,
+    `confirm: true` on every send, the one send path (idempotency reserved before dialing, `unknown`
+    never retried), a daily limit per key (100), the address alone in the From, records and notices
+    naming the key. What a key does is covered by the key terms its creator agreed to, on the key,
+    not by anybody's own consent to actions or sending. An edition whose key terms do not cover
+    sending turns it off with `MAIL_KEYS_MAY_SEND=false`, which refuses the `send` scope and every
+    send by a workspace key. The open key terms say so at `2026-10-open-api-keys-2`; keys created
+    under `2026-10-open-api-keys` keep working under it and never send (their scope is at most
+    `write`), and, as people's keys from before, act only while their creator allows actions, as
+    that text said.
+21. **Carried-over keys.** A person's key that reached mailboxes of several workspaces has no one
+    workspace to go into. *Resolution:* migration 0012 carries it over with no workspace: exactly
+    what it held, nothing more ever (a trigger), within a year, revoked with its last mailbox, and
+    listed by each workspace it reaches, whose owners and admins take their mailboxes out of it. A
+    later migration drops the case once none is left; the daemon says at start how many are live.
+22. **Members create no keys.** A member of a self-hosted team could create keys for the mailboxes
+    they read; now an owner or an admin creates one for them, holding what they decide.
+    `POST /v1/me/apikeys` answers `400` and says where keys are made. The upgrade notes in
+    [`self-hosting.md`](self-hosting.md) say so.
+23. **A key's lifetime and the session it was created in.** A key lasts what it was created for
+    (30, 90 or 365 days), whatever is left of the session it was created in, as before: a session an
+    extension started for less than a password's (`SignInExternal`) bounds the session, not the
+    key, and disabling the person is what revokes the keys they created sooner.
+24. **The actions text and keys that act under their own terms.** The open actions text
+    `2026-10-open-actions-2` counted "a tool with an API key you created that can act" among those
+    acting under the person's agreement, and said that turning actions off stops them at once; a
+    key created since 0012 acts under the key terms, whatever anyone chooses about actions, and a
+    key another owner or admin created acts on a team's mailboxes too. *Resolution:* a new revision,
+    `2026-10-open-actions-3` (`ActionsText.vue`, `versions.ts`, `config.DefaultActionsConsentVersion`):
+    the server changes a mailbox when you ask, under this agreement, anyone else allowed to act
+    there, under their own, or a tool whose key is given Act there, under the key terms; turning
+    actions off stops yours and those of a key you created before keys belonged to workspaces,
+    never a key created since, which taking Act away or revoking it stops. The key terms
+    (`-2`) say the same of the key, the open console's dialog for turning actions off says what
+    stops and what does not, and its notices no longer say the mailboxes stop changing. As for any
+    revision, everyone is asked again before acting.
+25. **The sending switch and an edition's own key terms.** `MAIL_KEYS_MAY_SEND` defaults to `true`
+    because the open key terms say a key may send. An edition with its own key terms, which may say
+    a key cannot send, inherited that default with nothing to catch it before its next release. *Resolution:* the default stands only under the open key terms; a
+    daemon whose `MAIL_CONSENT_VERSION_KEYS` names other terms refuses to start until
+    `MAIL_KEYS_MAY_SEND` is set, `true` or `false`. Whether those terms also say that a key acts
+    under them rather than under its creator's actions consent is that edition's text to settle.
+26. **Keys made for a person by an administrator.** Before keys had terms, an administrator could
+    make a key acting as a person; 0012 found such keys (`terms_version ''`) and would have put
+    one into the team whose mailboxes it reached, listed there for good, with its name and last use,
+    and kept after its person's deletion, with nothing left that said whose it had been.
+    *Resolution:* such a key is revoked holding nothing, in its person's personal workspace, and
+    goes with that workspace when the person is deleted, as it went with them before.
+27. **A team over its key limit from day one.** Each person could hold 20 live keys before 0012, so
+    a team whose members' keys 0012 moved in may hold many more than 20. *Resolution:* the limit
+    counts the keys made as keys are now (`origin = ''`); the ones moved in expire on their own,
+    and the team's owners and admins revoke those they no longer want.
 
 ## Not in this phase
 
-- API keys of the workspace (step 3 of the plan of 2026-10-06).
+- A send tool over MCP (the planned draft and confirmed send); keys send over REST.
 - Deleting a team workspace but with its last member; moving a mailbox between workspaces (link it
   again instead).
 - The platform source beyond its stub, a later step; with it, an edition's own screens for teams
@@ -1123,6 +1370,9 @@ Test names state the guarantee. At least:
 | `internal/service` | `authorizeAccount` takes the flag it needs; `mayAct`, `maySend`, `fromName`, `sendOf` per caller; the event gate's epoch and `access` events; storage; new `workspaces.go`, `members.go`, `access.go`; invites; closure |
 | `internal/api`, `internal/mcp` | the routes above, as thin adapters; `?workspace=`; the SSE handler renders the stream's end |
 | `internal/app` | `Options.WorkspaceSource` |
+| `internal/store/migrations/0012_workspace_keys.sql` | keys of the workspace, `key_access`, the carried-over keys |
+| `internal/workspace/keys.go`, `internal/auth/keys.go` | what a key holds; keys issued, listed and revoked per workspace; a principal naming its workspace, `IsInstance` meaning the operator workspace's |
+| `internal/service/workspacekeys.go` (replacing `mykeys.go`) | who creates, lists, changes and revokes keys; sending and acting by key (`send.go`, `actions.go`); `MAIL_KEYS_MAY_SEND` |
 | `cmd/mailserver` | `workspace`, `member`, `access`; `user invite --workspace`; the bootstrap default; the startup hint |
 | `.golangci.yml` | `internal/workspace` joins the packages transports may not import |
 | docs | `console.md` (ownership becomes workspaces, routes, storage, events, the current workspace), `architecture.md` and `CLAUDE.md` (the ownership rule), `mcp.md` (instance keys), `self-hosting.md` and the README (the first owner) |

@@ -383,7 +383,7 @@ func TestConsentToSyncIsGivenAndTakenBackOnlyByThePersonSignedIn(t *testing.T) {
 	if err := h.store.Reader().QueryRowContext(t.Context(), `SELECT id FROM users WHERE email = 'ana@example.com'`).Scan(&user.ID); err != nil {
 		t.Fatal(err)
 	}
-	hersByKey := authtest.NewPersonalKey(t, h.store, auth.ScopeAdmin, user.ID)
+	hersByKey := authtest.NewWorkspaceKey(t, h.store, auth.ScopeSend, authtest.Personal(t, h.store, user.ID), user.ID)
 	instance := h.key(t, auth.ScopeAdmin)
 
 	consent := func(resp *http.Response) service.SyncConsent {
@@ -407,7 +407,7 @@ func TestConsentToSyncIsGivenAndTakenBackOnlyByThePersonSignedIn(t *testing.T) {
 	}{
 		"an older text":      {ana, `{"version":"2025-01-privacy"}`, http.StatusBadRequest},
 		"no text":            {ana, `{}`, http.StatusBadRequest},
-		"her key":            {hersByKey, `{"version":"` + service.DefaultSyncConsentVersion + `"}`, http.StatusForbidden},
+		"a key of hers":      {hersByKey, `{"version":"` + service.DefaultSyncConsentVersion + `"}`, http.StatusForbidden},
 		"an instance key":    {instance, `{"version":"` + service.DefaultSyncConsentVersion + `"}`, http.StatusForbidden},
 		"a misspelt field":   {ana, `{"versio":"` + service.DefaultSyncConsentVersion + `"}`, http.StatusBadRequest},
 		"nobody signed in":   {"", `{"version":"` + service.DefaultSyncConsentVersion + `"}`, http.StatusUnauthorized},
@@ -561,14 +561,11 @@ func TestARevokedKeysEventStreamReceivesNoEventAfterTheRevocation(t *testing.T) 
 	h := newHarness(t, false)
 	ana := h.person(t, "ana@example.com", auth.RoleMember)
 	anas := h.mailbox(t, ana, "ana@mail.example")
-	resp := h.do(t, http.MethodPost, "/v1/me/apikeys", ana, createKeyBody("read", service.DefaultKeyTermsVersion))
-	var created struct {
-		Key    string `json:"key"`
-		Prefix string `json:"prefix"`
+	anaUser, err := h.users.GetByEmail(t.Context(), "ana@example.com")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil || created.Key == "" {
-		t.Fatalf("creating a key: %d %v", resp.StatusCode, err)
-	}
+	created := h.createKey(t, ana, authtest.Personal(t, h.store, anaUser.ID), keyBody("read", holding(anas, true, false, false)))
 	stream := h.openStream(t, "/v1/events?types=message.new", created.Key, "")
 	h.publish(t, mailEvent(t, anas, "before"))
 	if f, ok := stream.next(t); !ok || subjectOf(t, f) != "before" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -18,9 +19,11 @@ import (
 // sync, never what it holds. Each flag of a grant opens one use: read its
 // index, act on its messages, send from it; manage is the card and
 // re-authorizing it, which owners and admins hold by their role and members
-// only as a stored flag. No role reads, acts or sends. An instance key
-// reaches the operator workspace's mailboxes, and its scope is what limits it
-// there.
+// only as a stored flag. No role reads, acts or sends. A workspace's API key
+// sees a mailbox it holds something on (key_access), and each flag it holds
+// there opens the same use, within its scope; a key never manages. An
+// instance key reaches the operator workspace's mailboxes, and its scope is
+// what limits it there.
 
 // What an operation needs of the caller's grant.
 var (
@@ -62,9 +65,10 @@ func intersect(a, b workspace.Flags) workspace.Flags {
 
 // grantsOf reads what the caller may do with each mailbox named: a person's
 // grant, counting only an active member's, with manage from it or from their
-// role, owner or admin; and every flag on each mailbox for an instance key,
-// which sees only the operator's. A mailbox the caller neither holds a grant
-// on nor manages by their role is absent.
+// role, owner or admin; what a workspace key holds, without send while this
+// server's keys may not send; and every flag on each mailbox for an instance
+// key, which sees only the operator's. A mailbox the caller neither holds a
+// grant on nor manages by their role is absent.
 func (s *Service) grantsOf(ctx context.Context, p Principal, accountIDs ...string) (map[string]workspace.Flags, error) {
 	if p.IsInstance() {
 		out := make(map[string]workspace.Flags, len(accountIDs))
@@ -75,6 +79,19 @@ func (s *Service) grantsOf(ctx context.Context, p Principal, accountIDs ...strin
 	}
 	if s.workspaces == nil {
 		return map[string]workspace.Flags{}, nil
+	}
+	if p.IsWorkspaceKey() {
+		held, err := s.workspaces.KeyAccessOf(ctx, p.KeyPrefix, accountIDs)
+		if err != nil {
+			return nil, err
+		}
+		if s.keysMayNotSend {
+			for id, f := range held {
+				f.Send = false
+				held[id] = f
+			}
+		}
+		return held, nil
 	}
 	return s.workspaces.Access(ctx, p.UserID, accountIDs)
 }
@@ -128,9 +145,10 @@ var (
 func (s *Service) accessChanged() { s.accessEpoch.Add(1) }
 
 // inWorkspace checks a ?workspace= a caller narrowed a listing to: a
-// workspace they are an active member of, or, for an instance key, the
-// operator workspace. Anything else does not exist for them. Empty is every
-// workspace, and is always fine.
+// workspace they are an active member of; for a workspace key, its own, or,
+// for a key carried over from a person's, one it holds a mailbox of; for an
+// instance key, the operator workspace. Anything else does not exist for
+// them. Empty is every workspace, and is always fine.
 func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID string) error {
 	switch {
 	case workspaceID == "":
@@ -141,6 +159,20 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 		}
 		return errNoWorkspace
 	case s.workspaces == nil:
+		return errNoWorkspace
+	case p.IsWorkspaceKey() && p.WorkspaceID != "":
+		if workspaceID == p.WorkspaceID {
+			return nil
+		}
+		return errNoWorkspace
+	case p.IsWorkspaceKey():
+		reached, err := s.workspaces.KeyWorkspaces(ctx, p.KeyPrefix)
+		if err != nil {
+			return E(CodeInternal, "reading the workspace failed", err)
+		}
+		if slices.Contains(reached, workspaceID) {
+			return nil
+		}
 		return errNoWorkspace
 	}
 	m, err := s.workspaces.Member(ctx, workspaceID, p.UserID)
@@ -209,6 +241,17 @@ func fromWorkspace(err error, what string) error {
 		return E(CodeBadRequest, "the operator workspace has no members, grants or invites", err)
 	case errors.Is(err, workspace.ErrActWithoutRead):
 		return E(CodeBadRequest, "act needs read", err)
+	case errors.Is(err, workspace.ErrNoKey):
+		return errNoSuchKey
+	case errors.Is(err, workspace.ErrNoKeyAccess):
+		return E(CodeNotFound, "that key holds nothing on the mailbox", err)
+	case errors.Is(err, workspace.ErrKeyNotLive):
+		return E(CodeConflict, "that key is revoked or expired: it is given nothing more", err)
+	case errors.Is(err, workspace.ErrKeyScope):
+		return E(CodeBadRequest, "act needs a key of the write or send scope, and send a key of the send scope", err)
+	case errors.Is(err, workspace.ErrCarriedOver):
+		return E(CodeBadRequest, "a key carried over from a person's gains no mailbox and no flag; "+
+			"create a key of the workspace instead", err)
 	case errors.Is(err, workspace.ErrNoFlags):
 		return E(CodeBadRequest, "a grant needs at least one of read, act, send and manage", err)
 	case errors.Is(err, workspace.ErrInvalidName):

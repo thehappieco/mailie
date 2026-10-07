@@ -536,52 +536,6 @@ func TestAGrantNeedsAFlagAndActNeedsRead(t *testing.T) {
 	}(), workspace.ErrNoGrant)
 }
 
-func TestRemovingAMemberRemovesTheirGrantsAndTheirKeysLoseTheMailbox(t *testing.T) {
-	f := newFixture(t)
-	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
-	team := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
-	shared := f.link(team.ID, ana.ID, "support@example.org")
-	own := f.link(f.personal(bea.ID), bea.ID, "bea@gmail.com")
-	f.grant(shared.ID, bea.ID, readAct())
-	ctx := t.Context()
-
-	keys := auth.NewKeys(f.db)
-	_, onlyShared, err := keys.Issue(ctx, auth.NewKeyRequest{Name: "shared", Scope: auth.ScopeRead, UserID: bea.ID,
-		AccountIDs: []string{shared.ID}, TermsVersion: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, both, err := keys.Issue(ctx, auth.NewKeyRequest{Name: "both", Scope: auth.ScopeRead, UserID: bea.ID,
-		AccountIDs: []string{shared.ID, own.ID}, TermsVersion: "t"})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if err := f.ws.RemoveMember(ctx, team.ID, bea.ID, nil); err != nil {
-		t.Fatal(err)
-	}
-	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE user_id = ? AND workspace_id = ?`, bea.ID, team.ID); n != 0 {
-		t.Errorf("a removed member kept %d grants", n)
-	}
-	listed, err := keys.ListFor(ctx, bea.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	byPrefix := map[string]auth.Key{}
-	for _, k := range listed {
-		byPrefix[k.Prefix] = k
-	}
-	if k := byPrefix[onlyShared.Prefix]; !k.Revoked() {
-		t.Errorf("the key made for the lost mailbox alone is %+v, want revoked", k)
-	}
-	if k := byPrefix[both.Prefix]; k.Revoked() || len(k.AccountIDs) != 1 || k.AccountIDs[0] != own.ID {
-		t.Errorf("the key for both mailboxes is %+v, want it reaching only Bea's own", k)
-	}
-	if _, err := f.ws.Member(ctx, team.ID, bea.ID); !errors.Is(err, workspace.ErrNotMember) {
-		t.Errorf("Bea is still a member: %v", err)
-	}
-}
-
 func (f *fixture) personal(userID string) string {
 	f.t.Helper()
 	return authtest.Personal(f.t, f.db, userID)

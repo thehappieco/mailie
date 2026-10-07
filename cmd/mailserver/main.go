@@ -133,13 +133,13 @@ Usage:
   mailserver account remove ID            Forget an account and its index
   mailserver apikey create --scope SCOPE --name NAME
                                           Issue an instance key (the daemon needs MAIL_ADMIN_API=true)
-  mailserver apikey list                  List instance keys, including revoked ones (the same)
-  mailserver apikey revoke PREFIX         Revoke an instance key (the same)
+  mailserver apikey list                  List every key, with its workspace, revoked ones too (the same)
+  mailserver apikey revoke PREFIX         Revoke any key (the same)
   mailserver user invite --email ADDR [--role owner|member]
                                           Invite a person to this server and its web console
   mailserver user invite --email ADDR --workspace ID [--role owner|admin|member]
                                           Invite a person into a team
-  mailserver user disable --email ADDR    End a person's sessions and revoke their keys
+  mailserver user disable --email ADDR    End a person's sessions and revoke the keys they created
   mailserver user delete --email ADDR     Delete a person, the mailboxes they linked, sessions, keys and invite
   mailserver workspace list               List every workspace: personal, teams and the operator's
   mailserver workspace create --name NAME --owner ADDR

@@ -28,7 +28,7 @@ func TestEveryConsentVersionDefaultsToTheOpenConsolesText(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.ConsentVersions{
-		Sync: "2026-10-open-sync-3", Actions: "2026-10-open-actions-2", Send: "2026-10-open-sending", Keys: "2026-10-open-api-keys",
+		Sync: "2026-10-open-sync-3", Actions: "2026-10-open-actions-3", Send: "2026-10-open-sending", Keys: "2026-10-open-api-keys-2",
 	}
 	if cfg.Consent != want || config.DefaultConsentVersions() != want {
 		t.Fatalf("consent versions %+v, defaults %+v; want %+v", cfg.Consent, config.DefaultConsentVersions(), want)
@@ -42,10 +42,12 @@ func TestEveryConsentVersionDefaultsToTheOpenConsolesText(t *testing.T) {
 
 func TestEachConsentVersionIsReadFromItsOwnVariable(t *testing.T) {
 	setenv(t, minimal(t, map[string]string{
-		"MAIL_CONSENT_VERSION_SYNC":    "sync-2",
-		"MAIL_CONSENT_VERSION_ACTIONS": "actions-2",
-		"MAIL_CONSENT_VERSION_SEND":    "send-2",
-		"MAIL_CONSENT_VERSION_KEYS":    "keys-2",
+		"MAIL_CONSENT_VERSION_SYNC":           "sync-2",
+		"MAIL_CONSENT_VERSION_ACTIONS":        "actions-2",
+		"MAIL_CONSENT_VERSION_SEND":           "send-2",
+		"MAIL_CONSENT_VERSION_KEYS":           "keys-2",
+		"MAIL_KEYS_MAY_SEND":                  "false",
+		"MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT": "false",
 	}))
 	cfg, err := config.Load()
 	if err != nil {
@@ -69,7 +71,8 @@ func TestAConsentVersionIsPrintableASCIIWithoutSpacesAndAtMost64Bytes(t *testing
 		}
 	}
 	longest := strings.Repeat("v", 64)
-	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": longest}))
+	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": longest, "MAIL_KEYS_MAY_SEND": "false",
+		"MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT": "false"}))
 	if cfg, err := config.Load(); err != nil || cfg.Consent.Keys != longest {
 		t.Fatalf("64 bytes: %q, %v", cfg.Consent.Keys, err)
 	}
@@ -97,5 +100,43 @@ func TestTheMCPHTTPEndpointIsOnUnlessSwitchedOff(t *testing.T) {
 	setenv(t, minimal(t, map[string]string{"MAIL_MCP_HTTP": "sometimes"}))
 	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_MCP_HTTP") {
 		t.Errorf("MAIL_MCP_HTTP=sometimes: err = %v", err)
+	}
+}
+
+func TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTheyMay(t *testing.T) {
+	// The open console's key terms say a key may send. Another edition's
+	// may not: a daemon serving them is never left to a default that would
+	// let its keys send what its terms say they cannot.
+	setenv(t, minimal(t, nil))
+	if cfg, err := config.Load(); err != nil || !cfg.KeysMaySend {
+		t.Fatalf("the open key terms: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
+	}
+	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1"}))
+	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_KEYS_MAY_SEND") {
+		t.Fatalf("other key terms without MAIL_KEYS_MAY_SEND: err = %v", err)
+	}
+	for value, want := range map[string]bool{"false": false, "true": true} {
+		setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1", "MAIL_KEYS_MAY_SEND": value,
+			"MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT": "false"}))
+		if cfg, err := config.Load(); err != nil || cfg.KeysMaySend != want {
+			t.Errorf("other key terms with MAIL_KEYS_MAY_SEND=%s: KeysMaySend = %v, %v", value, cfg.KeysMaySend, err)
+		}
+	}
+	// Whether a key acts under its creator's actions consent goes with the
+	// key terms the same way: off under the open terms, said by the edition
+	// under its own.
+	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1", "MAIL_KEYS_MAY_SEND": "false"}))
+	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT") {
+		t.Fatalf("other key terms without MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT: err = %v", err)
+	}
+	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1", "MAIL_KEYS_MAY_SEND": "false",
+		"MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT": "true"}))
+	if cfg, err := config.Load(); err != nil || !cfg.KeysActUnderCreatorConsent {
+		t.Errorf("other key terms with MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true: %v, %v", cfg.KeysActUnderCreatorConsent, err)
+	}
+	// Set to the open terms by name, it is the open default again.
+	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": config.DefaultKeyTermsVersion}))
+	if cfg, err := config.Load(); err != nil || !cfg.KeysMaySend {
+		t.Errorf("the open key terms named: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
 	}
 }

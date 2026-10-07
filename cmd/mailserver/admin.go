@@ -21,6 +21,7 @@ import (
 	"github.com/thehappieco/mailie/internal/lockfile"
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func apikeyCommand(ctx context.Context, cfg config.Config, args []string) error {
@@ -43,7 +44,7 @@ func apikeyCreate(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("apikey create", flag.ContinueOnError)
 	scopeFlag := fs.String("scope", "", "read, write, send or admin")
 	name := fs.String("name", "", "what this key is for, so it can be recognised later")
-	accounts := fs.String("accounts", "", "comma-separated account ids; empty means every account")
+	accounts := fs.String("accounts", "", "comma-separated ids of operator mailboxes; empty means every one of them")
 	days := fs.Int("days", 365, "how many days the key lives (at most 365)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, for the first key, when no daemon is running")
 	if err := fs.Parse(args); err != nil {
@@ -120,13 +121,14 @@ func apikeyList(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 	var keys []struct {
-		Prefix     string   `json:"prefix"`
-		Name       string   `json:"name"`
-		Scope      string   `json:"scope"`
-		AccountIDs []string `json:"account_ids"`
-		ExpiresAt  int64    `json:"expires_at"`
-		RevokedAt  int64    `json:"revoked_at"`
-		LastUsedAt int64    `json:"last_used_at"`
+		Prefix      string   `json:"prefix"`
+		Name        string   `json:"name"`
+		Scope       string   `json:"scope"`
+		WorkspaceID string   `json:"workspace_id"`
+		AccountIDs  []string `json:"account_ids"`
+		ExpiresAt   int64    `json:"expires_at"`
+		RevokedAt   int64    `json:"revoked_at"`
+		LastUsedAt  int64    `json:"last_used_at"`
 	}
 	if err := json.Unmarshal(body, &keys); err != nil {
 		return fmt.Errorf("apikey list: unexpected response: %w", err)
@@ -135,7 +137,7 @@ func apikeyList(ctx context.Context, cfg config.Config, args []string) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	// The tabwriter buffers; Flush at the end is what reports a write error.
 	//nolint:errcheck // checked by Flush
-	fmt.Fprintln(w, "PREFIX\tNAME\tSCOPE\tACCOUNTS\tEXPIRES\tLAST USED\tSTATE")
+	fmt.Fprintln(w, "PREFIX\tNAME\tSCOPE\tWORKSPACE\tACCOUNTS\tEXPIRES\tLAST USED\tSTATE")
 	for _, k := range keys {
 		state := "active"
 		if k.RevokedAt != 0 {
@@ -143,14 +145,25 @@ func apikeyList(ctx context.Context, cfg config.Config, args []string) error {
 		} else if k.ExpiresAt != 0 && time.Now().After(time.Unix(k.ExpiresAt, 0)) {
 			state = "expired"
 		}
-		scope := k.AccountIDs
-		accounts := "all"
-		if len(scope) > 0 {
-			accounts = strings.Join(scope, ",")
+		// An instance key with no restriction reaches every operator
+		// mailbox; a workspace key reaches only the mailboxes it holds.
+		accounts := strings.Join(k.AccountIDs, ",")
+		switch {
+		case accounts != "":
+		case k.WorkspaceID == workspace.OperatorID:
+			accounts = "all"
+		default:
+			accounts = "none"
+		}
+		ws := k.WorkspaceID
+		if ws == "" {
+			// Carried over from a person's key that reached several
+			// workspaces (migration 0012).
+			ws = "several"
 		}
 		//nolint:errcheck // checked by Flush
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			k.Prefix, k.Name, k.Scope, accounts,
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			k.Prefix, k.Name, k.Scope, ws, accounts,
 			formatUnix(k.ExpiresAt), formatUnix(k.LastUsedAt), state)
 	}
 	return w.Flush()

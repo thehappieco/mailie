@@ -13,7 +13,6 @@ import (
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/thehappieco/mailie/internal/auth"
-	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/mcp"
 	"github.com/thehappieco/mailie/internal/ratelimit"
 	"github.com/thehappieco/mailie/internal/service"
@@ -163,13 +162,13 @@ func TestAConsoleSessionTokenIsNotAnMCPCredential(t *testing.T) {
 	}
 }
 
-func TestAKeyAnAdministratorMadeForAPersonCannotOpenAnMCPSession(t *testing.T) {
+func TestAKeyNobodyAgreedToTheTermsOfCannotOpenAnMCPSession(t *testing.T) {
 	h := newHarness(t)
 	ana := h.person("ana@example.com", auth.RoleMember)
 	srv := h.serve(mcp.HTTPOptions{})
-	resp := post(t, srv, authtest.NewKey(t, h.store, auth.ScopeRead, ana.user.ID), "", "", initialize)
+	resp := post(t, srv, h.unagreedKey(ana), "", "", initialize)
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("a key the person did not create answered %d, want 403", resp.StatusCode)
+		t.Fatalf("a key nobody agreed to the terms of answered %d, want 403", resp.StatusCode)
 	}
 }
 

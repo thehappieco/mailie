@@ -301,7 +301,9 @@ func TestADisabledUsersSessionsStopWorking(t *testing.T) {
 		t.Fatal(err)
 	}
 	keys := auth.NewKeys(db)
-	keySecret, _, err := keys.Issue(t.Context(), auth.NewKeyRequest{Name: "ana's agent", Scope: auth.ScopeRead, UserID: ana.ID})
+	personal := authtest.Personal(t, db, ana.ID)
+	keySecret, _, err := keys.Issue(t.Context(), auth.NewKeyRequest{Name: "ana's agent", Scope: auth.ScopeRead,
+		WorkspaceID: personal, CreatedBy: ana.ID, TermsVersion: "terms"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,8 +311,8 @@ func TestADisabledUsersSessionsStopWorking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if kp.UserID != ana.ID || kp.IsInstance() {
-		t.Fatalf("a key issued for a user does not act as them: %+v", kp)
+	if kp.UserID != "" || kp.IsInstance() || !kp.IsWorkspaceKey() || kp.WorkspaceID != personal || kp.CreatedBy != ana.ID {
+		t.Fatalf("a key of Ana's workspace is %+v: it acts as nobody, and she answers for it", kp)
 	}
 
 	if err := users.SetDisabled(t.Context(), ana.ID, true); err != nil {
@@ -322,12 +324,12 @@ func TestADisabledUsersSessionsStopWorking(t *testing.T) {
 	if err := users.RecheckSession(t.Context(), p); !errors.Is(err, auth.ErrInvalidSession) {
 		t.Errorf("recheck accepted a disabled user's session: %v", err)
 	}
-	// Every way in, not only the browser.
+	// Every way in, not only the browser: the keys they created stop.
 	if _, err := keys.Authenticate(t.Context(), keySecret, nil); !errors.Is(err, auth.ErrInvalidKey) {
-		t.Errorf("a disabled user's key still works: %v", err)
+		t.Errorf("a key a disabled user created still works: %v", err)
 	}
 	if err := keys.Recheck(t.Context(), kp); !errors.Is(err, auth.ErrInvalidKey) {
-		t.Errorf("recheck accepted a disabled user's key: %v", err)
+		t.Errorf("recheck accepted a key a disabled user created: %v", err)
 	}
 
 	// Switching the account back on does not revive the sessions it had.
@@ -336,6 +338,9 @@ func TestADisabledUsersSessionsStopWorking(t *testing.T) {
 	}
 	if _, err := users.AuthenticateSession(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
 		t.Errorf("re-enabling brought an old session back: %v", err)
+	}
+	if _, err := keys.Authenticate(t.Context(), keySecret, nil); !errors.Is(err, auth.ErrInvalidKey) {
+		t.Errorf("re-enabling brought a key back: %v", err)
 	}
 }
 

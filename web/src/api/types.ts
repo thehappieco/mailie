@@ -175,38 +175,111 @@ export interface Folder {
 export interface Invite { email: string; role: Role; url: string; expires_at: number }
 export interface ErrorBody { code: ServerCode; message: string }
 /**
- * What a person may give one of their own API keys: read (search and read),
- * or write (read, and the actions on messages their consent allows).
+ * What a workspace key may do at most (docs/workspaces.md, "API keys"): read
+ * (search and read), write (read, and the actions on messages), or send
+ * (write, and sending email). What it does on each mailbox is what it holds
+ * there (KeyMailbox), within its scope.
  */
-export type KeyScope = 'read' | 'write'
-/** How long a new key lives, in days: the three lifetimes POST /v1/me/apikeys takes. */
+export type KeyScope = 'read' | 'write' | 'send'
+/** How long a new key lives, in days: the three lifetimes a key may be created with. */
 export type KeyLifetime = 30 | 90 | 365
+/** What a key holds on one mailbox: read its index, act on its messages, send from it. act never comes without read. */
+export interface KeyFlags { read: boolean; act: boolean; send: boolean }
 /**
- * One of the person's API keys, as GET /v1/me/apikeys lists it. Never the
- * secret: that exists once, in the answer to the call that created the key.
- * account_ids empty: every mailbox of the person, including the ones
- * connected later, unless restricted says the key was made for chosen
- * mailboxes, all removed since (the server revoked it with the last).
- * terms_version: the revision of the text the person agreed to when they
- * created it; empty for a key an administrator made for them, which the
- * list includes, as it does revoked and expired keys.
+ * What a key holds on one mailbox, as its workspace lists it: who set it last
+ * ("usr_…" or "migration"; absent once that person is deleted) and when.
  */
-export interface PersonalKey {
+export interface KeyMailbox extends KeyFlags {
+  account_id: string
+  workspace_id: string
+  granted_by?: string
+  updated_at: number
+}
+/**
+ * How a key came to be in its workspace: "person" for a person's key made for
+ * mailboxes they chose, "person-all" for one made for every mailbox of
+ * theirs, which the upgrade to workspace keys moved into their workspace
+ * (the second with the mailboxes its person read then, and none linked
+ * since). Absent for a key made as keys are now.
+ */
+export type KeyOrigin = 'person' | 'person-all'
+/**
+ * A key of a workspace, as its owners and admins list it (GET
+ * /v1/workspaces/{id}/apikeys), and as the person who created it does (GET
+ * /v1/me/apikeys). Never the secret: that exists once, in the answer to the
+ * call that created the key.
+ *
+ * carried_over: a person's key the upgrade found reaching mailboxes of
+ * several workspaces, with no workspace of its own: it keeps exactly those,
+ * gains none, and is revoked with its last; a workspace lists it with its own
+ * mailboxes and counts the others (other_workspaces) without naming them.
+ * created_by: the person who created it, absent once they are deleted.
+ * sends: whether it can send at all (the send scope, on a server whose keys
+ * may send, under the current key terms). terms_version: the revision of the
+ * key terms its creator agreed to.
+ */
+export interface WorkspaceKey {
   prefix: string
   name: string
-  /** A person's keys are read or write; the running console reads another scope as its identifier. */
+  /** The running console reads a scope it does not know as its identifier. */
   scope: KeyScope | (string & {})
-  account_ids?: string[]
-  /** Made for the mailboxes chosen, not for all of them. Left out, account_ids alone says. */
-  restricted?: boolean
+  workspace_id?: string
+  carried_over?: boolean
+  origin?: KeyOrigin | (string & {})
+  mailboxes: KeyMailbox[]
+  other_workspaces?: number
+  created_by?: string
   created_at: number
   expires_at: number
   last_used_at?: number
   revoked_at?: number
+  /** Neither revoked nor expired, by the server's clock. */
+  live: boolean
   terms_version: string
+  sends: boolean
 }
 /** The answer to creating a key: the key as listed, and its secret, "<prefix>.<secret>", this once. */
-export interface CreatedKey extends PersonalKey { key: string }
+export interface CreatedKey extends WorkspaceKey { key: string }
+/**
+ * A live API key holding something on a mailbox, as the access directory
+ * lists it to the workspace's owners and admins. Keys never count as readers.
+ */
+export interface MailboxKey extends KeyFlags {
+  prefix: string
+  name: string
+  scope: KeyScope | (string & {})
+  created_by?: string
+  granted_by?: string
+  updated_at: number
+  carried_over?: boolean
+}
+/**
+ * One of a key's sends, as its workspace's owners and admins list them (GET
+ * /v1/workspaces/{id}/apikeys/{prefix}/sends): what Mailie keeps of a send for
+ * 30 days. Never who it went to, its subject or its text: how many
+ * recipients, how many attempts, and where the copy Mailie files in Sent
+ * stands.
+ */
+export interface KeySend {
+  account_id: string
+  idempotency_key: string
+  state: SendState | (string & {})
+  message_id: string
+  reason?: string
+  attempts: number
+  recipients: number
+  sent_copy: string
+  created_at: number
+  updated_at: number
+  sent_at?: number
+}
+/**
+ * Where a send stands: sending, sent (the server accepted it), failed
+ * (nothing was delivered), or unknown (the connection dropped after the
+ * message was handed over: it may have been delivered, and it is never
+ * sent again by itself).
+ */
+export type SendState = 'sending' | 'sent' | 'failed' | 'unknown'
 /**
  * What one of the caller's mailboxes takes up in the index, as GET
  * /v1/me/storage reports it: the messages indexed (a copy in each folder it
@@ -237,16 +310,21 @@ export interface Storage {
 }
 /**
  * GET /v1/me/mcp: whether this server answers MCP over HTTP at /mcp
- * (MAIL_MCP_HTTP). Off, the console shows no MCP address: /mcp answers 404.
+ * (MAIL_MCP_HTTP), and whether its API keys may send email
+ * (MAIL_KEYS_MAY_SEND). Off, the console shows no MCP address: /mcp answers
+ * 404; keys_send false (or absent, from a server older than it), it offers
+ * neither the send scope nor Send on a key's mailbox.
  */
-export interface McpAccess { http: boolean }
-/** The body of POST /v1/me/apikeys. account_ids is left out for every mailbox. */
+export interface McpAccess { http: boolean; keys_send?: boolean }
+/** What a key is given on one mailbox when it is created. */
+export interface KeyMailboxRequest extends KeyFlags { account_id: string }
+/** The body of POST /v1/workspaces/{id}/apikeys. mailboxes is left out for a key that reaches nothing yet. */
 export interface CreateKeyRequest {
   name: string
   scope: KeyScope
-  account_ids?: string[]
   ttl_days: KeyLifetime
   terms_version: string
+  mailboxes?: KeyMailboxRequest[]
 }
 
 /** The body of POST /v1/accounts. Unknown fields are refused by the daemon, so only these are ever sent. */
@@ -362,7 +440,8 @@ export interface MailboxConsent {
  * can read it (keys and roles never count), and no_reader marks a team
  * mailbox nobody can read: it syncs nothing, and only removing it gives
  * anyone Read on it again. sync is its own agreement to sync; absent for a
- * personal mailbox, which syncs under its person's.
+ * personal mailbox, which syncs under its person's. keys are the API keys
+ * holding something on it, which never count as readers.
  */
 export interface MailboxAccess {
   account_id: string
@@ -375,6 +454,8 @@ export interface MailboxAccess {
   readers?: number
   no_reader?: boolean
   grants: Grant[]
+  /** The live API keys holding something on it. Absent from a daemon older than workspace keys. */
+  keys?: MailboxKey[]
 }
 /** The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on to the sync text revision shown. */
 export interface MailboxSyncRequest { enabled: boolean; version?: string }
@@ -408,7 +489,10 @@ export const accountStates: readonly AccountState[] = ['pending_auth', 'active',
 export const flowKinds: readonly FlowKind[] = ['web', 'loopback', 'pasted', 'device']
 export const syncStates: readonly SyncState[] = ['off', 'initial', 'live', 'backoff', 'stopped']
 export const archiveReasons: readonly ArchiveReason[] = ['all_mail_hidden']
-export const keyScopes: readonly KeyScope[] = ['read', 'write']
+export const keyScopes: readonly KeyScope[] = ['read', 'write', 'send']
+export const keyOrigins: readonly KeyOrigin[] = ['person', 'person-all']
+export const sendStates: readonly SendState[] = ['sending', 'sent', 'failed', 'unknown']
+export const sentCopyStates = ['n/a', 'pending', 'appended', 'failed'] as const
 export const keyLifetimes: readonly KeyLifetime[] = [30, 90, 365]
 /** internal/events: the closed vocabulary of the journal. */
 export const eventTypes = ['message.new', 'message.flags', 'message.moved', 'message.deleted', 'folder.changed', 'account.state', 'send.finished', 'sync.progress'] as const
@@ -549,31 +633,57 @@ export function isInvite(v: unknown, strict = false): v is Invite {
     && filled(v.email, 320) && oneOf(roles)(v.role) && filled(v.url, 4096) && seconds(v.expires_at)
 }
 
-const keyFields = ['prefix', 'name', 'scope', 'account_ids', 'restricted', 'created_at', 'expires_at', 'last_used_at', 'revoked_at', 'terms_version'] as const
+const keyFields = ['prefix', 'name', 'scope', 'workspace_id', 'carried_over', 'origin', 'mailboxes', 'other_workspaces', 'created_by',
+  'created_at', 'expires_at', 'last_used_at', 'revoked_at', 'live', 'terms_version', 'sends'] as const
 
 /**
- * A key's prefix names it in a path (DELETE /v1/me/apikeys/{prefix}), so the
+ * A key's prefix names it in a path (DELETE …/apikeys/{prefix}), so the
  * running console holds it to a short run without a separator; the contract
  * check, to the hex the daemon issues.
  */
-const keyPrefix = (v: unknown, strict: boolean): v is string => filled(v, 64) && (strict ? /^[0-9a-f]+$/.test(v) : /^[^\s./\\]+$/.test(v))
+const keyPrefix = (v: unknown, strict: boolean): v is string => filled(v, 64) && (strict ? /^[0-9a-f]+$/.test(v) : /^[^\s./\\?#]+$/.test(v))
 
-const accountIDs = (v: unknown): v is string[] => Array.isArray(v) && v.every(id => filled(id, 64))
-
-function keyListed(v: Fields, strict: boolean): boolean {
-  return keyPrefix(v.prefix, strict) && filled(v.name, 1024) && (strict ? oneOf(keyScopes)(v.scope) : filled(v.scope, 32))
-    // The daemon always names them, [] for every mailbox; an older answer may leave them out.
-    && (strict ? accountIDs(v.account_ids) : optional(v.account_ids, accountIDs)) && optional(v.restricted, flag)
-    && seconds(v.created_at) && seconds(v.expires_at) && optional(v.last_used_at, seconds) && optional(v.revoked_at, seconds)
-    && text(v.terms_version, 128)
+export function isKeyMailbox(v: unknown, strict = false): v is KeyMailbox {
+  return record(v) && known(v, ['account_id', 'workspace_id', 'read', 'act', 'send', 'granted_by', 'updated_at'], strict)
+    && pathID(v.account_id) && pathID(v.workspace_id) && flag(v.read) && flag(v.act) && flag(v.send)
+    && optional(v.granted_by, x => filled(x, 128)) && seconds(v.updated_at)
+    // Never act without read, and never a hold of nothing: taking the last flag away takes the mailbox out.
+    && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send)))
 }
 
-export function isPersonalKey(v: unknown, strict = false): v is PersonalKey {
+function keyListed(v: Fields, strict: boolean): boolean {
+  const mailboxes = v.mailboxes
+  return keyPrefix(v.prefix, strict) && filled(v.name, 1024) && (strict ? oneOf(keyScopes)(v.scope) : filled(v.scope, 32))
+    && optional(v.workspace_id, pathID) && optional(v.carried_over, flag)
+    && optional(v.origin, x => strict ? oneOf(keyOrigins)(x) : filled(x, 32))
+    && Array.isArray(mailboxes) && mailboxes.every(item => isKeyMailbox(item, strict))
+    && optional(v.other_workspaces, counter) && optional(v.created_by, x => filled(x, 128))
+    && seconds(v.created_at) && seconds(v.expires_at) && optional(v.last_used_at, seconds) && optional(v.revoked_at, seconds)
+    && flag(v.live) && text(v.terms_version, 128) && flag(v.sends)
+    // A key has its workspace, or was carried over without one; only a carried-over key counts other workspaces.
+    && (!strict || ((v.workspace_id === undefined) === (v.carried_over === true) && (v.other_workspaces === undefined || v.carried_over === true)))
+    // A key's mailboxes are its workspace's.
+    && (!strict || v.workspace_id === undefined || (mailboxes as KeyMailbox[]).every(item => item.workspace_id === v.workspace_id))
+}
+
+export function isWorkspaceKey(v: unknown, strict = false): v is WorkspaceKey {
   return record(v) && known(v, keyFields, strict) && keyListed(v, strict)
 }
 
-export function isPersonalKeyList(v: unknown, strict = false): v is PersonalKey[] {
-  return Array.isArray(v) && v.every(item => isPersonalKey(item, strict))
+export function isWorkspaceKeyList(v: unknown, strict = false): v is WorkspaceKey[] {
+  return Array.isArray(v) && v.every(item => isWorkspaceKey(item, strict))
+}
+
+export function isKeySend(v: unknown, strict = false): v is KeySend {
+  if (!record(v) || !known(v, ['account_id', 'idempotency_key', 'state', 'message_id', 'reason', 'attempts', 'recipients', 'sent_copy', 'created_at', 'updated_at', 'sent_at'], strict)) return false
+  return filled(v.account_id, 64) && filled(v.idempotency_key, 128) && (strict ? oneOf(sendStates)(v.state) : filled(v.state, 32))
+    && text(v.message_id, 1024) && optional(v.reason, x => filled(x, 64)) && counter(v.attempts) && counter(v.recipients)
+    && (strict ? oneOf(sentCopyStates)(v.sent_copy) : text(v.sent_copy, 32)) && seconds(v.created_at) && seconds(v.updated_at)
+    && optional(v.sent_at, seconds)
+}
+
+export function isKeySendList(v: unknown, strict = false): v is KeySend[] {
+  return Array.isArray(v) && v.every(item => isKeySend(item, strict))
 }
 
 export function isMailboxStorage(v: unknown, strict = false): v is MailboxStorage {
@@ -598,7 +708,9 @@ export function isStorage(v: unknown, strict = false): v is Storage {
 }
 
 export function isMcpAccess(v: unknown, strict = false): v is McpAccess {
-  return record(v) && known(v, ['http'], strict) && flag(v.http)
+  return record(v) && known(v, ['http', 'keys_send'], strict) && flag(v.http)
+    // The daemon that writes the fixtures always says; an older one may not.
+    && (strict ? flag(v.keys_send) : optional(v.keys_send, flag))
 }
 
 /** The one answer that carries a secret: "<prefix>.<secret>", under the prefix it is listed by. */
@@ -661,8 +773,16 @@ export function isMailboxConsent(v: unknown, strict = false): v is MailboxConsen
     && (!strict || ((!v.current || v.version !== undefined) && (!v.enabled || v.enabled_at !== undefined)))
 }
 
+export function isMailboxKey(v: unknown, strict = false): v is MailboxKey {
+  return record(v) && known(v, ['prefix', 'name', 'scope', 'read', 'act', 'send', 'created_by', 'granted_by', 'updated_at', 'carried_over'], strict)
+    && keyPrefix(v.prefix, strict) && filled(v.name, 1024) && (strict ? oneOf(keyScopes)(v.scope) : filled(v.scope, 32))
+    && flag(v.read) && flag(v.act) && flag(v.send) && optional(v.created_by, x => filled(x, 128)) && optional(v.granted_by, x => filled(x, 128))
+    && seconds(v.updated_at) && optional(v.carried_over, flag)
+    && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send)))
+}
+
 export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess {
-  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'grants'], strict)
+  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'grants', 'keys'], strict)
     && pathID(v.account_id) && filled(v.email, 320) && word(providerIDs, strict)(v.provider) && word(accountStates, strict)(v.state)
     && optional(v.linked_by, actor) && optional(v.sync, x => isMailboxConsent(x, strict))
     // The daemon that writes the fixtures always says; an older one may not.
@@ -670,7 +790,11 @@ export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess 
     // Nobody can read a mailbox only when it has no reader.
     && (!strict || !v.no_reader || v.readers === 0)
     && Array.isArray(v.grants) && v.grants.every(grant => isGrant(grant, strict) && grant.account_id === v.account_id)
+    // The daemon that writes the fixtures always lists them, [] for none; an older one may not.
+    && (strict ? mailboxKeys(v.keys, strict) : optional(v.keys, x => mailboxKeys(x, false)))
 }
+
+const mailboxKeys = (v: unknown, strict: boolean): boolean => Array.isArray(v) && v.every(item => isMailboxKey(item, strict))
 
 export function isMailboxAccessList(v: unknown, strict = false): v is MailboxAccess[] {
   return Array.isArray(v) && v.every(item => isMailboxAccess(item, strict))

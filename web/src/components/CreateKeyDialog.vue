@@ -1,29 +1,35 @@
 <script setup lang="ts">
-// Creating an API key: a name, what the key may do, which mailboxes it
-// reaches and how long it lives, then the edition's text of what that
-// authorizes above the one button that agrees to it. Read and act is offered
-// only while the person allows actions on their messages. Then the key
-// itself, shown this once, with a button that copies it and, where the
-// edition shows how to reach the MCP server and the server answers at /mcp,
-// one that copies the Claude Code command with the key in it: to the
-// clipboard only, never drawn. The secret
-// lives in this component alone and is let go of when the dialog closes;
-// nothing about it reaches storage, the address bar or history. While it is
-// shown, only Done and the close button close the dialog: an Escape pressed
-// by habit, or a tap beside it, would lose a key that cannot be shown again.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { keyLifetimes, type CreatedKey, type KeyLifetime, type KeyScope } from '../api/types'
+// Creating an API key of the workspace shown: a name, what the key may do at
+// most (its scope), what it holds on each of the workspace's mailboxes, and
+// how long it lives, then the edition's text of what that authorizes above
+// the one button that agrees to it. What it may be given is said before
+// anyone tries (ui/apikeys.ts keyAccessRules): Read only on a mailbox the
+// person creating it reads; Act where it reads, with a scope that acts; Send
+// with the send scope, which is offered only where the server says its keys
+// may send. A key given no mailbox reaches nothing until one is given to it.
+//
+// Then the key itself, shown this once, with a button that copies it and,
+// where the edition shows how to reach the MCP server and the server answers
+// at /mcp, one that copies the Claude Code command with the key in it: to the
+// clipboard only, never drawn. The secret lives in this component alone and
+// is let go of when the dialog closes; nothing about it reaches storage, the
+// address bar or history. While it is shown, only Done and the close button
+// close the dialog: an Escape pressed by habit, or a tap beside it, would
+// lose a key that cannot be shown again.
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { keyLifetimes, type CreatedKey, type KeyFlags, type KeyLifetime, type KeyScope } from '../api/types'
 import { edition } from '../edition'
 import { accounts } from '../state/accounts'
-import { actionsAllowed } from '../state/actionsConsent'
 import { atKeyLimit, createKey } from '../state/apikeys'
-import { everyMailbox, loadEveryMailbox } from '../state/everyMailbox'
-import { workspaces } from '../state/workspaces'
-import { accessOf, workspaceName } from '../ui/access'
 import type { Failure } from '../state/failure'
-import { mcpOffered } from '../state/mcp'
+import { keysMaySend, mcpOffered } from '../state/mcp'
+import { currentWorkspace } from '../state/workspaces'
+import { accessOf, workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
-import { DEFAULT_LIFETIME, claudeCommand, keyMailboxes, lifetimeLabel, mcpEndpoint, scopeLabel } from '../ui/apikeys'
+import {
+  DEFAULT_LIFETIME, NO_KEY_ACCESS, claudeCommand, holdsAnyKeyFlag, keyAccessRules, keyFlagEditable, keyFlagLabel, keyFlagNames, keyFlagsSummary,
+  lifetimeLabel, mcpEndpoint, scopeActs, scopeLabel, toggleKeyFlag, type KeyFlag,
+} from '../ui/apikeys'
 import { copyText } from '../ui/clipboard'
 import { describe } from '../ui/errors'
 import { dayStamp } from '../ui/format'
@@ -37,13 +43,11 @@ const emit = defineEmits<{ close: [] }>()
 
 const name = ref('')
 const scope = ref<KeyScope>('read')
-/** Every mailbox of the person's, the ones connected later too; else only those chosen. */
-const every = ref(true)
-const chosen = ref<string[]>([])
+/** What the key is given on each mailbox, by its id; a mailbox with nothing ticked is not given. */
+const given = ref<Record<string, KeyFlags>>({})
 const lifetime = ref<KeyLifetime>(DEFAULT_LIFETIME)
 const busy = ref(false)
 const problem = ref<Failure | null>(null)
-const noneChosen = ref(false)
 /** The key just made, its secret included. Here and nowhere else, until the dialog closes. */
 const created = shallowRef<CreatedKey | null>(null)
 const copied = ref<'' | 'key' | 'command'>('')
@@ -51,39 +55,53 @@ const copyFailed = ref(false)
 const copyButton = ref<HTMLButtonElement>()
 let copiedTimer: ReturnType<typeof setTimeout> | undefined
 
-// Actions turned off (here or elsewhere) while the dialog is open take the choice with them.
-const writeOffered = computed(actionsAllowed)
-watch(writeOffered, offered => { if (!offered) scope.value = 'read' })
+const workspace = computed(currentWorkspace)
+/** The team's name, which the key terms name; empty in a personal workspace. */
+const team = computed(() => workspace.value?.kind === 'team' ? workspaceName(workspace.value) : '')
+const sendOffered = computed(keysMaySend)
+const scopes = computed<KeyScope[]>(() => sendOffered.value ? ['read', 'write', 'send'] : ['read', 'write'])
+// The server said meanwhile that its keys do not send: the choice goes with it.
+watch(sendOffered, offered => { if (!offered && scope.value === 'send') scope.value = 'write' })
+/** The workspace's mailboxes: a key is given only its own workspace's. */
+const mailboxes = computed(() => accounts.list.filter(item => !workspace.value || item.workspace_id === undefined || item.workspace_id === workspace.value.id))
+const rulesFor = (accountID: string) => keyAccessRules({
+  key: { scope: scope.value, sends: scope.value === 'send', live: true },
+  viewerReads: accessOf(accounts.list.find(item => item.id === accountID)).read,
+  keysSend: sendOffered.value,
+})
+const flagsOf = (accountID: string): KeyFlags => given.value[accountID] ?? NO_KEY_ACCESS
+const editable = (accountID: string, flag: KeyFlag) => !busy.value && keyFlagEditable(rulesFor(accountID), NO_KEY_ACCESS, flagsOf(accountID), flag)
+/** The flags the scope chosen lets a key hold: Act with one that acts, Send with send. */
+const flagsShown = computed(() => keyFlagNames.filter(flag => flag === 'read' || (flag === 'act' ? scopeActs(scope.value) : scope.value === 'send')))
+
+function toggle(accountID: string, flag: KeyFlag, event: Event) {
+  const next = toggleKeyFlag(flagsOf(accountID), flag, (event.target as HTMLInputElement).checked)
+  // Act ticks Read only where the person may give it; otherwise it stays as it was.
+  if (next.read && !flagsOf(accountID).read && !rulesFor(accountID).canAdd.read) return
+  given.value = { ...given.value, [accountID]: next }
+}
+// A narrower scope takes the flags it does not cover with it.
+watch(scope, value => {
+  const next: Record<string, KeyFlags> = {}
+  for (const [id, flags] of Object.entries(given.value)) next[id] = { read: flags.read, act: flags.act && scopeActs(value), send: flags.send && value === 'send' }
+  given.value = next
+})
+/** Chosen from the list as it is now: a mailbox removed meanwhile is not asked for. */
+const chosen = computed(() => mailboxes.value.map(item => ({ account_id: item.id, ...flagsOf(item.id) })).filter(holdsAnyKeyFlag))
+const readsNone = computed(() => mailboxes.value.length > 0 && !mailboxes.value.some(item => accessOf(item).read))
+
 const expiresOn = computed(() => dayStamp(Math.floor(Date.now() / 1000) + lifetime.value * 86_400))
 const termsChanged = computed(() => problem.value?.code === 'terms_changed')
-const { keyTerms, copy: words } = edition()
+const { keyTerms } = edition()
 const mcp = computed(mcpOffered)
-const accountSection = computed(() => words.accountSection())
-/**
- * The mailboxes a key may be made for: every one the person may read, in
- * every workspace (a key acts as them wherever they are a member). The list
- * of the workspace shown stands in until the whole one is read.
- */
-const choices = computed(() => (everyMailbox.loaded ? everyMailbox.list : accounts.list).filter(item => accessOf(item).read))
-/** The choices by workspace, named, when they come from more than one. */
-const groups = computed(() => {
-  const ids = [...new Set(choices.value.map(item => item.workspace_id ?? ''))]
-  return ids.map(id => ({
-    id,
-    name: ids.length > 1 ? workspaceName(workspaces.list.find(item => item.id === id)) || t('Another workspace') : '',
-    mailboxes: choices.value.filter(item => (item.workspace_id ?? '') === id),
-  }))
-})
+/** The mailboxes a key holds something on, by address, with what it holds. */
+const createdMailboxes = computed(() => (created.value?.mailboxes ?? []).map(item => `${accounts.list.find(account => account.id === item.account_id)?.email ?? t('A removed mailbox')} (${keyFlagsSummary(item)})`))
 
 async function submit() {
   if (busy.value || created.value || !name.value.trim()) return
-  // Chosen from the list as it is now: a mailbox removed meanwhile is not asked for.
-  const accountIDs = every.value ? null : choices.value.filter(item => chosen.value.includes(item.id)).map(item => item.id)
-  noneChosen.value = accountIDs !== null && accountIDs.length === 0
-  if (noneChosen.value) return
   busy.value = true
   problem.value = null
-  const outcome = await createKey({ name: name.value.trim(), scope: writeOffered.value ? scope.value : 'read', accountIDs, lifetime: lifetime.value })
+  const outcome = await createKey({ name: name.value.trim(), scope: scope.value, mailboxes: chosen.value, lifetime: lifetime.value })
   busy.value = false
   if ('failure' in outcome) {
     problem.value = outcome.failure
@@ -126,8 +144,6 @@ function close() {
 
 function reload() { location.reload() }
 
-// The mailboxes as they are now, in every workspace: one connected or shared since the list was read is offered too.
-onMounted(() => { if (!everyMailbox.loading) void loadEveryMailbox() })
 onBeforeUnmount(forget)
 </script>
 
@@ -146,7 +162,7 @@ onBeforeUnmount(forget)
       <dl class="key-facts">
         <div><dt>{{ t('Name') }}</dt><dd>{{ created.name }}</dd></div>
         <div><dt>{{ t('Access') }}</dt><dd>{{ scopeLabel(created.scope) }}</dd></div>
-        <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ keyMailboxes(created, choices).join(', ') }}</dd></div>
+        <div><dt>{{ t('Mailboxes') }}</dt><dd>{{ createdMailboxes.length ? createdMailboxes.join(', ') : t('None yet') }}</dd></div>
         <div><dt>{{ t('Expires') }}</dt><dd>{{ dayStamp(created.expires_at) }}</dd></div>
       </dl>
       <div class="dialog-actions"><button class="ghost" type="button" @click="close">{{ t('Done') }}</button></div>
@@ -155,22 +171,29 @@ onBeforeUnmount(forget)
     <form v-else class="form-stack key-form" name="mailie-new-key" autocomplete="off" novalidate @submit.prevent="submit">
       <label>{{ t('Name') }}<input v-model="name" name="key-name" maxlength="120" required autocomplete="off" spellcheck="false" :placeholder="t('For example, Claude Code on my laptop')" :disabled="busy" /></label>
       <fieldset class="key-choice" :disabled="busy">
-        <legend>{{ t('Access') }}</legend>
-        <label class="option"><input v-model="scope" type="radio" name="scope" value="read" /><span><strong>{{ t('Read') }}</strong><small>{{ t('Search and read messages.') }}</small></span></label>
-        <label v-if="writeOffered" class="option"><input v-model="scope" type="radio" name="scope" value="write" /><span><strong>{{ t('Read and act') }}</strong><small>{{ t('Also mark as read or unread, star, archive, move and move to the trash, while actions on your messages are allowed in {section}.', { section: accountSection }) }}</small></span></label>
-        <p v-else class="hint">{{ t('To create a key that can also change messages, first allow actions on your messages in {section}.', { section: accountSection }) }}</p>
+        <legend>{{ t('What the key may do') }}</legend>
+        <label v-for="option in scopes" :key="option" class="option"><input v-model="scope" type="radio" name="scope" :value="option" /><span><strong>{{ scopeLabel(option) }}</strong>
+          <small v-if="option === 'read'">{{ t('Search and read the messages of the mailboxes it is given Read on.') }}</small>
+          <small v-else-if="option === 'write'">{{ t('Also mark as read or unread, star, archive and move messages, on the mailboxes it is given Act on.') }}</small>
+          <small v-else>{{ t('Also send email from the mailboxes it is given Send on, each message confirmed by the tool.') }}</small>
+        </span></label>
       </fieldset>
       <fieldset class="key-choice" :disabled="busy">
         <legend>{{ t('Mailboxes') }}</legend>
-        <label class="option"><input v-model="every" type="radio" name="mailboxes" :value="true" /><span><strong>{{ t('All my mailboxes') }}</strong><small>{{ workspaces.supported ? t('Every mailbox you can read, in every workspace, including the ones connected or shared with you later.') : t('Including the ones you connect later.') }}</small></span></label>
-        <label v-if="choices.length" class="option"><input v-model="every" type="radio" name="mailboxes" :value="false" /><span><strong>{{ t('Only the ones I choose') }}</strong></span></label>
-        <div v-if="!every" class="mailbox-choices" role="group" :aria-label="t('Mailboxes this key reaches')">
-          <template v-for="group in groups" :key="group.id">
-            <p v-if="group.name" class="choice-group">{{ group.name }}</p>
-            <label v-for="account in group.mailboxes" :key="account.id" class="choice"><input v-model="chosen" type="checkbox" name="account" :value="account.id" /><span class="grow">{{ account.email }}</span><small>{{ providerName(account.provider) }}</small></label>
-          </template>
-        </div>
-        <p v-if="noneChosen && !every" class="alert" role="alert">{{ t('Choose at least one mailbox.') }}</p>
+        <p v-if="!mailboxes.length" class="hint">{{ t('This workspace has no mailbox yet. The key reaches nothing until one is connected and given to it.') }}</p>
+        <ul v-else class="mailbox-flags" :aria-label="t('Mailboxes this key reaches')">
+          <li v-for="account in mailboxes" :key="account.id" class="mailbox-flag-row">
+            <div class="who"><strong>{{ account.email }}</strong><small>{{ providerName(account.provider) }}<template v-if="!accessOf(account).read"> · {{ t('You do not read it') }}</template></small></div>
+            <div class="flags" role="group" :aria-label="t('What the key holds on {email}', { email: account.email })">
+              <label v-for="flag in flagsShown" :key="flag" class="flag">
+                <input type="checkbox" :name="`${account.id}-${flag}`" :value="flag" :checked="flagsOf(account.id)[flag]" :disabled="!editable(account.id, flag)" @change="toggle(account.id, flag, $event)" />
+                <span>{{ keyFlagLabel(flag) }}</span>
+              </label>
+            </div>
+          </li>
+        </ul>
+        <p v-if="readsNone" class="hint">{{ t('You read none of these mailboxes, so you cannot give the key Read on any: an owner or an admin who reads one can give it later.') }}</p>
+        <p v-else-if="mailboxes.length" class="hint">{{ t('Read is given only on a mailbox you read yourself. With no mailbox ticked, the key reaches nothing until one is given to it.') }}</p>
       </fieldset>
       <fieldset class="key-choice" :disabled="busy">
         <legend>{{ t('Expires after') }}</legend>
@@ -182,7 +205,7 @@ onBeforeUnmount(forget)
       <!-- Not once the server asks about another text: this one is no longer what a key would be created under. -->
       <section v-if="!termsChanged" class="key-terms" aria-labelledby="key-terms-title">
         <h3 id="key-terms-title">{{ t('What creating this key allows') }}</h3>
-        <component :is="keyTerms.component" :write="writeOffered && scope === 'write'" />
+        <component :is="keyTerms.component" :write="scopeActs(scope)" :send="scope === 'send'" :team="team" />
       </section>
       <p v-if="problem" class="alert" role="alert">{{ describe(problem) }}</p>
       <div class="dialog-actions">
@@ -205,13 +228,17 @@ onBeforeUnmount(forget)
 .key-form .option span { display: grid; gap: 3px; min-width: 0; }
 .key-form .option strong { font-size: 13px; font-weight: 600; }
 .key-form .option small { font-size: 12px; line-height: 1.45; color: var(--text-dim); }
-.mailbox-choices { display: grid; gap: 2px; padding: 2px 0 0 12px; }
-.key-form .mailbox-choices .choice { display: flex; align-items: center; gap: 10px; min-height: 38px; font-size: 13px; cursor: pointer; }
-.key-form .mailbox-choices .choice input { flex: none; margin: 0; }
-.mailbox-choices .choice span { min-width: 0; overflow-wrap: anywhere; }
-.mailbox-choices small { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
-.mailbox-choices .choice-group { margin: 8px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .4px; overflow-wrap: anywhere; }
-.mailbox-choices .choice-group:first-child { margin-top: 0; }
+.mailbox-flags { list-style: none; margin: 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.mailbox-flag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.mailbox-flag-row:first-child { border-top: 0; }
+.mailbox-flag-row .who { flex: 1 1 200px; min-width: 0; }
+.mailbox-flag-row .who strong { display: block; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.mailbox-flag-row .who small { display: block; margin-top: 2px; font-size: 12px; color: var(--text-dim); }
+.flags { display: flex; flex-wrap: wrap; gap: 8px; }
+.key-form .flag { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-raised); font-size: 12.5px; cursor: pointer; }
+.key-form .flag:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); font-weight: 600; }
+.key-form .flag:has(input:disabled) { cursor: default; opacity: .65; }
+.key-form .flag input { width: auto; min-height: 0; margin: 0; accent-color: var(--accent); }
 .lifetimes { display: flex; flex-wrap: wrap; gap: 8px; }
 .key-form .lifetime { display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-raised); font-size: 13px; cursor: pointer; }
 .key-form .lifetime:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); font-weight: 600; }
@@ -231,7 +258,6 @@ onBeforeUnmount(forget)
 @media (max-width: 600px) {
   .copy-actions button { flex: 1 1 100%; justify-content: center; }
   .key-facts { grid-template-columns: 1fr; }
-  .mailbox-choices { padding-left: 4px; }
-  .key-form .mailbox-choices .choice { flex-wrap: wrap; row-gap: 0; }
+  .key-form .flag { flex: 1 1 calc(33% - 8px); justify-content: center; }
 }
 </style>

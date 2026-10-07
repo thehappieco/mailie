@@ -1,0 +1,9 @@
+{
+  "account_id": "acc_0000000000000004",
+  "act": true,
+  "granted_by": "usr_0000000000000001",
+  "read": true,
+  "send": false,
+  "updated_at": 1790000000,
+  "workspace_id": "wsp_0000000000000001"
+}

@@ -11,10 +11,11 @@ import (
 )
 
 // Closing a person's account, on their request, is two steps, as the privacy
-// policy promises. Disabling ends every session, revokes every key the person
-// holds and expires the invites they made; deleting removes the mailboxes of
-// their personal workspace and of every team they were alone in, with those
-// mailboxes' credentials and index, their sessions, their keys, their
+// policy promises. Disabling ends every session, revokes every API key the
+// person created, in whichever workspace, and expires the invites they made;
+// deleting removes the mailboxes of their personal workspace and of every
+// team they were alone in, with those mailboxes' credentials, index and keys,
+// their sessions, their name on the keys they created in other teams, their
 // invite, the identities they sign in with through a provider with the keys
 // pinned for them, and their personal workspace, in one transaction. A team
 // mailbox of a team others are in is the team's: closing a person never stops
@@ -66,8 +67,11 @@ type DeletedUser struct {
 	Email           string `json:"email"`
 	AccountsRemoved int    `json:"accounts_removed"`
 	SessionsDeleted int    `json:"sessions_deleted"`
-	KeysDeleted     int    `json:"keys_deleted"`
-	InvitesDeleted  int    `json:"invites_deleted"`
+	// KeysDeleted counts the API keys they created: gone with their
+	// personal workspace and the teams they were alone in, or revoked and
+	// kept, without their name, by a team that stays.
+	KeysDeleted    int `json:"keys_deleted"`
+	InvitesDeleted int `json:"invites_deleted"`
 	// TeamsDeleted counts the teams whose only member they were, deleted
 	// with them.
 	TeamsDeleted int `json:"teams_deleted"`
@@ -77,8 +81,8 @@ type DeletedUser struct {
 	TeamSyncsStopped []string `json:"team_syncs_stopped,omitempty"`
 }
 
-// DisableUser switches a person off: every session they have ends, every key
-// issued for them is revoked, every invite they made expires, and every
+// DisableUser switches a person off: every session they have ends, every API
+// key they created is revoked, in whichever workspace, every invite they made expires, and every
 // consent attempt they started stops. Their memberships and grants stay, and
 // count for nothing while they are off; the mailboxes of their personal
 // workspace stop syncing, and so does a team mailbox whose consent was still
@@ -133,12 +137,13 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 // DeleteUser deletes a person and everything kept about them: the mailboxes
 // of their personal workspace, with those mailboxes' credentials, folders and
 // everything else indexed for them, since the consent they synced under goes
-// with them; their sessions; their keys; every invite for their address; the
-// identities they signed in with through a provider, and the keys pinned for
-// those identities; their personal workspace, and every team they were the
-// only member of, with its mailboxes. Their name goes from what they did for
-// others — the grants they gave, the mailboxes they linked, the team consents
-// they gave — which stays. A team mailbox whose consent was still bound to
+// with them; their sessions; every invite for their address; the identities
+// they signed in with through a provider, and the keys pinned for those
+// identities; their personal workspace, and every team they were the only
+// member of, with its mailboxes and API keys. Their name goes from what they
+// did for others — the grants they gave, what they gave keys, the mailboxes
+// they linked, the team consents they gave, the keys they created in a team
+// that stays, revoked — which stays. A team mailbox whose consent was still bound to
 // theirs stops, its index deleted. One transaction, so an interruption leaves
 // the person whole rather than half deleted.
 //

@@ -3,9 +3,10 @@
 The console is where a person signs in to **their** account on a Mailie server and connects their
 own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their personal
 workspace or in a team. The open console (`web/`) has five sections: **Mailboxes**, **Members**
-(the people of the team shown, or making a team), **API keys & MCP**, **Storage** and **Account**
-(name, password, sessions, and what they allow the server to do: sync and actions). No mail is read
-or written there; a tool does that, with a key.
+(the people of the team shown, or making a team), **API keys & MCP** (the keys of the workspace
+shown, for its owners and admins, and how to connect a tool over MCP), **Storage** and **Account**
+(name, password, sessions, what they allow the server to do, sync and actions, and the API keys
+they created). No mail is read or written there; a tool does that, with a key.
 
 This document is the console's architecture and the REST API it uses, which is the same API the
 command line and any other client use. The MCP server is in [`mcp.md`](mcp.md), backups in
@@ -54,7 +55,7 @@ built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, acti
 terms) with their revisions, what the frame calls itself (`shell`: the breadcrumb's root and the
 sidebar's name; the open edition's is the server's "Console"), its sections as data (each one the
 workspace shown's, or with `scope: 'person'` the person's own, where the breadcrumb names no
-workspace), a few sentences it words its own
+workspace; the API keys section is the workspace's), a few sentences it words its own
 way, whether to show how to connect over MCP, whether people make and run teams on this server
 (`teams`: the open edition's, for the local workspace source), whether the account section names
 the person's role on this server (`serverRole`, the open edition's), and optional extras (a
@@ -199,13 +200,14 @@ says the person is, and answers its page with the `Session` that comes back, exa
   (`sessions_expiry_fixed`, an upsert's included) and an insert under an id or token a session
   already has (`sessions_started_once`), which is how `INSERT OR REPLACE` would get around the
   first. The code only ever starts a session new, under a new id and token.
-- **A personal key outlives the session it was created in.** A key the person creates while
-  signed in (`POST /v1/me/apikeys`) lasts what they chose, 30, 90 or 365 days, whatever their
-  session's lifetime: a short session bounds how long a browser stays signed in, not what the
-  person deliberately hands a tool, which is what a key is for. So a session kept short because the
-  provider cannot yet tell this server that it closed or locked someone does not close that gap for
-  keys: until it can, the operator disabling the person here (`user disable`) is what revokes their
-  keys and ends their sessions, in one transaction.
+- **A key outlives the session it was created in.** A key an owner or an admin creates in a
+  workspace while signed in (`POST /v1/workspaces/{id}/apikeys`) lasts what they chose, 30, 90 or
+  365 days, whatever their session's lifetime: a short session bounds how long a browser stays
+  signed in, not what the person deliberately hands a tool, which is what a key is for. So a session
+  kept short because the provider cannot yet tell this server that it closed or locked someone does
+  not close that gap for keys: until it can, the operator disabling the person here
+  (`user disable`) is what revokes the keys they created and ends their sessions, in one
+  transaction.
 - **Key pins.** `Service.PinIdentityKey(issuer, subject, keyID, key)` keeps the public keys an
   identity is known by (`identity_key_pins`, at most 4096 bytes each): inserted the first time a key
   id is seen, then read back, in one transaction, so of two sign-ins racing each other both get the
@@ -242,9 +244,10 @@ Argon2id hash is stored; the prefix names it in lists and logs. Scopes are order
   `apikey revoke PREFIX` are clients of those routes, so they need it too. Without it the only way
   to issue one is `mailserver apikey create --bootstrap`, which writes to the database with the
   daemon stopped.
-- **Personal keys**, which a person creates in the console for their own tools (see
-  [API keys](#api-keys) below). They act as that person, and they are the only way a tool reaches
-  a person's mailbox.
+- **Workspace keys**, which an owner or an admin of a workspace creates in the console (see
+  [API keys](#api-keys) below), scope `read`, `write` or `send`. They act as nobody and reach the
+  mailboxes of their workspace they hold something on; they are the only way a tool reaches a
+  mailbox outside the operator workspace.
 
 A session counts as a person with every scope; what it may do to a mailbox still depends on
 their grant on it and their consent.
@@ -306,8 +309,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
 
 - **The workspace shown.** The sidebar (the drawer on a phone) has a switcher once the person
   belongs to more than one workspace, and the header's breadcrumb names the one shown on the
-  sections that are a workspace's (Mailboxes, Members, Storage), never on the person's own (API
-  keys & MCP, Account), which an edition marks `scope: 'person'` (its account section always is).
+  sections that are a workspace's (Mailboxes, Members, API keys & MCP, Storage), never on the
+  person's own (Account), which an edition may mark `scope: 'person'` (its account section always
+  is).
   It is kept in memory for the tab; the last one chosen is remembered for each person apart, in
   this host's local storage under a key naming only their opaque user id
   (`mailie_workspace:usr_…`, never a cookie, so no request and no other host carries it; someone
@@ -325,11 +329,30 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   reads the lists once the workspace is known. Refresh reads the workspaces again too, as does a
   refusal for want of a role (`not_authorized` from a team or access route): a role changed
   elsewhere, or a team joined in another tab, shows without reloading.
-- **The person's own settings are not a workspace's.** API keys act as their person in every
-  workspace (until step 3 makes keys a workspace's, [`workspaces.md`](workspaces.md)), so the keys
-  section names a key's mailboxes, and the new-key dialog offers them, from every workspace
-  (`GET /v1/accounts` without `?workspace=`, grouped by workspace); only mailboxes the person may
-  read are offered. The dialog that turns the person's own sync off says it deletes the index of
+- **API keys are the workspace's** ([`workspaces.md`](workspaces.md), "API keys"). **API keys &
+  MCP** is there for an owner or an admin of the team shown, or the person of their personal
+  workspace, and not for a member, whose team says that its owners and admins manage its people,
+  access and API keys (the console never asks a member's team for its keys). It lists every key of
+  the workspace, revoked and expired ones too, live first: what each holds on each mailbox, who
+  created it (in a team), and what a key from before keys belonged to workspaces does differently
+  (`origin`, `carried_over`). Creating one asks for a name, a scope (`send` only where
+  `GET /v1/me/mcp` says `keys_send`), what it holds on each of the workspace's mailboxes
+  (`GET /v1/accounts?workspace=`: `read` only on those the viewer reads, `act` with `read` and a
+  scope that acts, `send` with the send scope; none, a key that reaches nothing yet) and a
+  lifetime, above the edition's key terms, worded for the team or the personal workspace; the
+  secret is shown once. A key's sheet changes what it holds, mailbox by mailbox, ticked and then
+  saved (`PUT …/accounts/{account_id}` with all three flags, or `DELETE` when none is left), gives
+  a carried-over key nothing, and lists its sends (`GET …/sends`: state, mailbox, time and how many
+  recipients, never who or what) for a key that can send. Revoking asks first; for a carried-over
+  key it takes this workspace's mailboxes out of it, and says so after (the key may still work
+  elsewhere). The workspace's limit of 20 counts what the server counts: neither carried-over keys
+  nor the ones the upgrade moved in (`origin`). Each team mailbox's **Access** lists the keys
+  holding something on it (`keys`), never as readers, and takes the mailbox out of one after
+  asking. **Account** lists the keys the person created, in every workspace (`GET /v1/me/apikeys`),
+  once there is one, and revokes any of them (`DELETE /v1/me/apikeys/{prefix}`), a carried-over one
+  in every workspace, which its note there says.
+- **The person's own settings are not a workspace's.** The dialog
+  that turns the person's own sync off says it deletes the index of
   their personal mailboxes, and, to someone in a team, that a team's mailboxes sync under the
   team's consent and keep syncing, but for one they linked before the upgrade whose carried-over
   consent no owner or admin has confirmed yet, which stops with its index. It reads no list first.
@@ -341,12 +364,12 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   mailbox's address typed and sends its id as `confirm`.
 - **A member of a team** gets the switcher and cards for the mailboxes they hold a grant on
   (re-authorizing where they hold `manage`; an edition with Mail and Compose offers those they read
-  or may send from). No Members, no Access, no team sync switch and no removing: one line instead,
-  on the team's mailboxes and in Members, says that its owners and admins manage the team's people
-  and who can use each mailbox; the console never asks for the members or the directory, which the
-  server refuses them. No Leave. Nor is the person's own consent card asked in a team: a team's
-  mailboxes sync under the team's consent, and a member's sheet says that its owners and admins
-  turn it on.
+  or may send from). No Members, no API keys, no Access, no team sync switch and no removing: one
+  line instead, on the team's mailboxes and in Members, says that its owners and admins manage the
+  team's people, who can use each mailbox and its API keys; the console never asks for the members,
+  the directory or the keys, which the server refuses them. No Leave. Nor is the person's own
+  consent card asked in a team: a team's mailboxes sync under the team's consent, and a member's
+  sheet says that its owners and admins turn it on.
 - **Who can use a mailbox** (the sheet's Access, in a team, for its owners and admins): every
   active member with their flags, ticked and then saved. `read` is offered only to a viewer who
   reads the mailbox; `act` only for someone who reads; `send` for anyone; `manage` for members
@@ -467,8 +490,11 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
 | `GET /v1/me/storage` | read | what the mailboxes the caller may read take up in the index; `?workspace=` narrows |
-| `GET /v1/me/mcp` | read | `{http}`: whether this server answers MCP over HTTP at `/mcp` |
-| `GET/POST /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the person's own keys |
+| `GET /v1/me/mcp` | read | `{http, keys_send}`: whether this server answers MCP over HTTP at `/mcp`, and whether its API keys may send (`MAIL_KEYS_MAY_SEND`) |
+| `GET /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the keys the person created, in every workspace; `POST` answers `400` |
+| `GET/POST /v1/workspaces/{id}/apikeys`, `DELETE …/apikeys/{prefix}` | session, owner or admin | the workspace's keys |
+| `PUT/DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | session, owner or admin | what a key holds on a mailbox |
+| `GET /v1/workspaces/{id}/apikeys/{prefix}/sends` | session, owner or admin | the key's sends |
 | `GET /v1/events` | read | Server-Sent Events of the mailboxes the caller may read; `?workspace=` narrows |
 | `GET /v1/events/wait` | read | long poll for new mail; `?workspace=` narrows |
 | `GET /v1/messages` | read | search the index; `?workspace=` narrows |
@@ -478,15 +504,15 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `PATCH /v1/messages/{id}`, `POST /v1/messages/{flags,move,trash}` | write | actions |
 | `POST /v1/messages/send` | send | send a message |
 | `GET /v1/sends/{key}?account=` | send | the record of one of the caller's own sends |
-| `GET/POST /v1/apikeys`, `DELETE /v1/apikeys/{prefix}` | admin, only with `MAIL_ADMIN_API=true` | instance keys; `mailserver apikey create\|list\|revoke` without `--bootstrap` call these |
+| `GET/POST /v1/apikeys`, `DELETE /v1/apikeys/{prefix}` | admin, only with `MAIL_ADMIN_API=true` | every key, with its `workspace_id`; issues instance keys; `mailserver apikey create\|list\|revoke` without `--bootstrap` call these |
 
 `/v1/users/disable` and `/v1/users/delete` carry the address in the body, never in the URL. A
 server whose people sign in only through an extension answers `403 not_authorized` to the routes
 that sign in with a password, sign up or accept an invitation, change a password or create an
 invitation ([Signing in through an extension](#signing-in-through-an-extension)).
 
-There is no current workspace on the server: a session or a key reaches the caller's mailboxes in
-every workspace they belong to, and every account (and every storage entry) carries its
+There is no current workspace on the server: a session reaches the person's mailboxes in every
+workspace they belong to (a key, only what it holds in its own), and every account (and every storage entry) carries its
 `workspace_id`. The console keeps the workspace it shows itself — per tab, remembered for each
 person in local storage — and passes `?workspace=ID` to `GET /v1/accounts`, `GET /v1/messages`,
 `GET /v1/me/storage`, `GET /v1/events` and `GET /v1/events/wait`, which narrows them to that
@@ -683,9 +709,9 @@ Each text a person agrees to has a revision, configured on the daemon:
 | Variable | Default | The text |
 |---|---|---|
 | `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-3` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), and who reads a team mailbox's index (`web/src/open/SyncText.vue`) |
-| `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-2` | the server changing a mailbox when someone allowed to act on it asks (`web/src/open/ActionsText.vue`) |
+| `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-3` | the server changing a mailbox when someone allowed to act on it asks, and a key given Act acting under the key terms, not under this agreement (`web/src/open/ActionsText.vue`) |
 | `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console has no such text) |
-| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
+| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-2` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
 
 The defaults are the open console's texts, held to `web/src/open/versions.ts` by
 `web/test/contract.spec.ts`: moving a default without a new text fails the build. A server that
@@ -698,6 +724,23 @@ keeps its mailbox syncing, but a team's consent is only ever given to the curren
 the terms it was created under.
 Values are printable ASCII without spaces, at most 64 bytes. A console whose texts carry other
 revisions than the daemon's sees every agreement refused, and offers only a reload.
+
+`MAIL_KEYS_MAY_SEND` goes with the key terms: `false` is for a console whose key terms do not say a
+key may send. The `send` scope and the `send` flag are then refused when a key is created or given
+a mailbox, every send by a workspace key is refused, and `sends` is `false` on every key, and
+`GET /v1/me/mcp` says `keys_send: false`, so a console offers neither. It defaults to `true` only
+under the open console's key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms
+must set it, or the daemon refuses to start, since only those terms say whether a key may send.
+Those terms are also what a key's actions answer to: a key acts where it is given Act whatever
+anyone chooses about actions in their account, but for a person's key the upgrade to workspace keys
+carried over, which acts only while its creator allows actions.
+
+`MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` goes with them too: `true` is for a console whose key terms
+say a key acts only while its person allows actions. Every workspace key then acts only while the
+person who created it is active and agrees to the actions text at the current revision, as a
+person's key carried over by migration 0012 always does. It defaults to `false` under the open
+console's key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms sets it, or the
+daemon refuses to start.
 
 ## Storage
 
@@ -865,8 +908,8 @@ message.
 
 Changing a mailbox is a new use of it, so actions have their **own** consent, separate from sync:
 `users.actions_consent_at` and `users.actions_consent_version`, revision
-`MAIL_CONSENT_VERSION_ACTIONS`. `GET /v1/me/actions-consent` reads it (a person's key may; an
-instance key may not). `POST {"version": …}` and `DELETE` are the person's, signed in. Withdrawing
+`MAIL_CONSENT_VERSION_ACTIONS`. `GET /v1/me/actions-consent` reads it (a session; no key, which
+acts as nobody). `POST {"version": …}` and `DELETE` are the person's, signed in. Withdrawing
 deletes nothing and stops actions at once: every action checks the consent before connecting and
 again, on the connection, before each command that changes the mailbox. `ActionsConsent` has the
 shape of `SyncConsent`. Without sync there is no index, and without an index no message to act on.
@@ -878,9 +921,12 @@ Decided in `internal/service`, before any connection, in this order:
 1. The `write` scope; a `read` key gets `403`.
 2. Every message must be readable by the caller (`read` on its mailbox); one they cannot read, or
    one that does not exist, makes the whole request `404`. All in one account, 1 to 100 ids.
-3. **A person's mailbox**: the caller (their session or a key they created) must hold `act` on it,
-   and **their own** consent to actions must name the current revision — whoever linked the
-   mailbox. Without `act`, `403`; without consent, or with an old one, `409`.
+3. **A person's or a team's mailbox**: a person signed in must hold `act` on it, and **their own**
+   consent to actions must name the current revision — whoever linked the mailbox. Without `act`,
+   `403`; without consent, or with an old one, `409`. A workspace key must hold `act` on it: the
+   key terms its creator agreed to cover what it does, and no person's consent is asked (a
+   person's key the upgrade carried over acts only while its creator allows actions, `409`
+   otherwise). Asked again, the key still live, before each command.
 4. **A mailbox of the operator workspace**: an instance key with `write`.
 5. The account must be usable: `needs_reauth`, `pending_auth` and `disabled` are `409`.
 
@@ -949,13 +995,16 @@ send unless that person agrees through the API with their session.
 
 ### Who may send
 
-1. The `send` scope (sessions have it; personal keys never do).
+1. The `send` scope (sessions have it; a workspace key only if created with it).
 2. `confirm: true` in the message. Without it, `400` before anything else: nothing is reserved or
    dialed. No flag or test relaxes this.
 3. The account must be visible to the caller (`404` otherwise).
-4. **A person's mailbox**: the caller must hold `send` on it, with **their own** consent to sending
-   at the current revision. Without `send`, `403`; without consent, `409`. A reply or a forward
-   also needs `read` on the original.
+4. **A person's or a team's mailbox**: a person signed in must hold `send` on it, with **their
+   own** consent to sending at the current revision. Without `send`, `403`; without consent, `409`.
+   A workspace key must hold `send` on it, on a server whose keys may send
+   (`MAIL_KEYS_MAY_SEND`, `403` otherwise); no person's consent is asked, the key terms cover it,
+   and the key is asked again, still live, before each connection. A reply or a forward also needs
+   `read` on the original.
 5. **A mailbox of the operator workspace**: an instance key with `send`.
 6. The account must be usable (`409` otherwise).
 
@@ -968,9 +1017,10 @@ own profile name: a message goes out under the name of whoever sends it.
 
 `multipart/form-data`, 3 minutes: first a `compose` part (JSON), then zero or more `attachment`
 parts, each a file. An `Idempotency-Key` header (1 to 128 letters, digits, `-`, `_`, `.` or `:`) is
-**required for a session** and optional for a key; without it, a key's sends are keyed by
-`<compose_hash>/<minute>`, so repeating the same message within the minute is a replay, not a second
-send.
+**required for a session** and optional for a key; without it, a key's sends are keyed by a keyed
+hash of the message and the key, and the minute (`<hash>/<minute>`), so the same key repeating the
+same message within the minute is a replay, not a second send, while another key sending the same
+message from the same mailbox sends its own.
 
 ```jsonc
 {
@@ -990,7 +1040,9 @@ Limits, each a `400` before any connection: 1 to 100 recipients across `to`, `cc
 addresses of at most 254 bytes; no line breaks or control characters in names and subject; a subject
 of at most 998 bytes; text up to 1 MiB; up to 100 attachments; the estimated message within the
 provider's size limit. Error messages cite positions (`to[2]`), never addresses. A person sends at
-most 200 messages a day, and each account at most its provider's rate per minute (`429`).
+most 200 messages a day, a workspace key 100, and each account at most its provider's rate per
+minute (`429`). A key's message goes out under the address alone, and its record and
+`send.finished` name the key (`sent_by`), which alone reads them.
 
 - The sender is the account's address, under the **sender's** profile name, whoever linked the
   mailbox (the address alone for an instance key).
@@ -1049,48 +1101,67 @@ asked. **No subject, address or text.**
 
 ## API keys
 
-A person creates their own keys in **API keys & MCP**, for a tool (an assistant over MCP, a script
-over REST) to read the mailboxes they choose and, with `write`, act on them. Creating the key is
-their agreement to what a tool holding it can do. Only the person **signed in** lists, creates and
-revokes their keys: any key, the new one included, gets `403` on these routes. No key creates a key.
+A workspace's keys are its owners' and admins' (in a personal workspace, its person's), for a tool —
+an assistant over MCP, a script over REST — to read the mailboxes they give it and, with `write`,
+act on them, with `send`, send from them. Creating a key is its creator's agreement to the key
+terms, which say what a tool holding it can do. Only an owner or an admin **signed in** lists,
+creates and revokes the workspace's keys and changes what they hold: any key, the new one included,
+gets `403` on these routes, and a member does too. No key creates a key.
 
 | Route | Body | Answer |
 |---|---|---|
-| `GET /v1/me/apikeys` | | `[PersonalKey]`, newest first, revoked and expired ones included |
-| `POST /v1/me/apikeys` | `{name, scope, account_ids?, ttl_days?, terms_version}` | `201` `PersonalKey` + `{key}` |
-| `DELETE /v1/me/apikeys/{prefix}` | | `204`, also when already revoked |
+| `GET /v1/workspaces/{id}/apikeys` | | `[WorkspaceKey]`, live first, newest first, revoked and expired ones included |
+| `POST /v1/workspaces/{id}/apikeys` | `{name, scope, ttl_days?, terms_version, mailboxes?: [{account_id, read, act, send}]}` | `201` `WorkspaceKey` + `{key}` |
+| `DELETE /v1/workspaces/{id}/apikeys/{prefix}` | | `204`, also when already revoked |
+| `PUT /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | `{read, act, send}`, all required | `KeyMailbox` |
+| `DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | | `204` |
+| `GET /v1/workspaces/{id}/apikeys/{prefix}/sends` | | `[SendStatus]`, newest first |
+| `GET /v1/me/apikeys` | | `[WorkspaceKey]`: the keys the person created, in every workspace, with everything each holds |
+| `DELETE /v1/me/apikeys/{prefix}` | | `204`: revokes a key the person created |
+| `POST /v1/me/apikeys` | | `400`: keys are created in a workspace |
 
 ```jsonc
 {
   "prefix": "0a0b0c01",            // names the key; not a secret
   "name": "Claude Code",
-  "scope": "read",                 // "read" | "write"
-  "account_ids": ["acc_…"],        // the mailboxes it reaches; [] means all, including future ones, unless restricted
-  "restricted": true,              // created for chosen mailboxes; with all of them removed it is revoked
+  "scope": "read",                 // "read" | "write" | "send"
+  "workspace_id": "wsp_…",         // absent for a key carried over from before (carried_over)
+  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "read": true, "act": false,
+                 "send": false, "granted_by": "usr_…", "updated_at": 1790000000}],
+  "created_by": "usr_…",           // who created it; absent once they are deleted
   "created_at": 1790000000,
   "expires_at": 1797776000,
   "last_used_at": 1790003600,      // absent if never used; one-minute resolution
   "revoked_at": 1790000000,        // absent while alive
-  "terms_version": "2026-10-open-api-keys"
+  "live": true,                    // neither revoked nor expired
+  "terms_version": "2026-10-open-api-keys-2",
+  "sends": false                   // can send at all: the send scope, on a server whose keys may send
+  // "origin": "person" | "person-all" for a person's key the upgrade moved into its workspace;
+  // "carried_over": true and "other_workspaces": n for one it carried over with no workspace
 }
 ```
 
-- `name`: 1 to 120 characters. `scope`: `read` or `write`. `ttl_days`: 30, 90 or 365 (default 90).
-- `account_ids`: mailboxes the person may **read**; one they do not see is `404`, one they see
-  without `read` `403`, and nothing is created. A key reaches only what its person can, at each
-  request: with `read` on a mailbox lost, the key no longer reaches it.
+- `name`: 1 to 120 characters. `scope`: `read`, `write` or `send` (`send` is `400` where
+  `MAIL_KEYS_MAY_SEND=false`). `ttl_days`: 30, 90 or 365 (default 90).
+- `mailboxes`: each a mailbox of the workspace (another is `404`, and nothing is created), each
+  flag allowed by the scope (`act` needs `write` or more and `read`, `send` needs `send`; `400`
+  otherwise). `read` only where the person creating it **reads the mailbox themselves** (`403`
+  otherwise); `act` and `send` any owner or admin gives. The same holds on `PUT …/accounts/…`:
+  `read` the key does not hold yet only from someone who reads the mailbox; taking flags away
+  needs nothing. A key with no mailbox reaches nothing, and is not revoked for that.
+- What a key holds **stands on its own**: whoever gave it, and the person who created it, may lose
+  their own access, and the key keeps its mailboxes until an owner or an admin takes them out or
+  revokes it. The access directory (`GET /v1/workspaces/{id}/access`) lists each mailbox's live
+  keys (`keys`); keys never count as readers.
 - `terms_version` must be `MAIL_CONSENT_VERSION_KEYS`; another is `409`. A key keeps working under
   the terms it was created with.
-- At most **20 live keys** per person; the 21st is `409`.
+- At most **20 live keys** per workspace; the 21st is `409`.
 - The secret appears **once**, in the `POST` answer (`Cache-Control: no-store`).
-- The list shows every key that acts as the person, so they can revoke it, including one an
-  administrator issued for them before personal keys existed (`terms_version` empty). Such a key
-  works on no route, REST or `/mcp`.
-- A key restricted to mailboxes is **revoked** when its last mailbox is removed, rather than becoming
-  a key for every mailbox. Losing `read` on a mailbox takes it out of the person's keys in the same
-  transaction, so a key made for it alone is revoked too, and does not come back with a new grant; a
-  caller still holding what such a key authenticated as (an MCP session, a stream) is refused at
-  its next re-check.
+- A key is revoked when the person who created it leaves the workspace, or is disabled or deleted
+  on the instance; demoting them, or disabling their membership, keeps it.
+- A key sends through `POST /v1/messages/send` from a mailbox it holds `send` on, with
+  `confirm: true`, at most 100 a day; the message goes out under the address alone; its record is
+  the key's own, and its owners and admins list its sends.
 
 The console shows the MCP address (`<origin>/mcp`) and the Claude Code command only when
 `GET /v1/me/mcp` says the server answers there.

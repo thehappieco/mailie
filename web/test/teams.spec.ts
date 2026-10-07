@@ -100,7 +100,7 @@ describe('mailboxes in a team', () => {
     expect(text(html)).toContain('The provider asks for this mailbox to be authorized again, by someone who manages it. Mail is not syncing.')
     expect(text(html)).toContain('You can see this mailbox, but not read it. Read comes only from an owner or an admin of the team who reads it.')
     // In place of the sections a member is not shown.
-    expect(text(html)).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+    expect(text(html)).toContain('The people of Support, who can use each of its mailboxes, and its API keys are managed by its owners and admins.')
   })
 
   it('offers connecting a mailbox only where the person may link one: their personal workspace, or a team they own or administer', async () => {
@@ -132,7 +132,7 @@ describe('mailboxes in a team', () => {
       expect(words, role).toContain('You manage this mailbox by your role, but do not read it. Read comes only from an owner or an admin who reads it.')
       // No second list of mailboxes "held by nobody": every card is in the one list.
       expect(words, role).not.toContain('Other mailboxes of Support')
-      expect(words, role).not.toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+      expect(words, role).not.toContain('The people of Support, who can use each of its mailboxes, and its API keys are managed by its owners and admins.')
     }
   })
 
@@ -382,7 +382,7 @@ describe('the people of a team', () => {
     showing(TEAM, [personal, support('member')])
     teamState([member(CAROL, { role: 'owner', last_owner: true, name: 'Carol' }), anaMember(), beaMember()])
     const html = await render(OpenMembers)
-    expect(text(html)).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+    expect(text(html)).toContain('The people of Support, who can use each of its mailboxes, and its API keys are managed by its owners and admins.')
     expect(html).not.toContain('data-user=')
     expect(text(html)).not.toMatch(/Leave the team…|Remove…|Disable…|Rename…|Invite someone|Pending invitations/)
   })
@@ -425,12 +425,12 @@ describe('the workspace shown', () => {
     expect(text(nav)).toBe('Mailboxes 0 Members API keys & MCP Storage Account')
   })
 
-  it('offers a member of a team no Members, and describes its mailboxes by what each role does with them', async () => {
+  it('offers a member of a team no Members and no API keys, and describes its mailboxes by what each role does with them', async () => {
     vi.stubGlobal('location', new URL('https://mail.example.org/'))
     showing(TEAM, [personal, support('member')])
     Object.assign(accounts, { list: [], loaded: true, workspace: TEAM })
     const html = await render(OpenConsole)
-    expect(text(html.match(/<nav class="console-nav"[^]*?<\/nav>/)?.[0] ?? '')).toBe('Mailboxes 0 API keys & MCP Storage Account')
+    expect(text(html.match(/<nav class="console-nav"[^]*?<\/nav>/)?.[0] ?? '')).toBe('Mailboxes 0 Storage Account')
     expect(text(html)).toContain('The mailboxes of Support you have access to')
     showing(TEAM, [personal, support('owner')])
     expect(text(await render(OpenConsole))).toContain('Every mailbox of Support: you manage them by your role, and read those you are given Read on.')

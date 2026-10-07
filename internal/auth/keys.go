@@ -50,37 +50,53 @@ type Principal struct {
 	KeyPrefix string
 	// SessionID identifies a console session. Safe to log, unlike the token.
 	SessionID string
-	// UserID is the person the caller acts as: the signed-in user, or the
-	// user a key was issued for. Empty for an instance key, which answers to
-	// nobody but the operator and reaches the operator workspace's mailboxes.
+	// UserID is the person signed in. Empty for every key: a key belongs to
+	// a workspace and acts as no person.
 	UserID   string
 	UserRole Role
 	Scope    Scope
-	// AccountIDs restricts the key to specific accounts. Empty means every
-	// account, which is what a personal deployment wants and what a key handed
-	// to one integration should not have.
+	// WorkspaceID is, for a key, the workspace it belongs to: the operator
+	// workspace for an instance key, which reaches that workspace's
+	// mailboxes; a personal workspace or a team for a workspace key, which
+	// reaches what it holds there. Empty for a key carried over from a
+	// person's that reached several workspaces (migration 0012), which
+	// reaches what it still holds in each.
+	WorkspaceID string
+	// AccountIDs restricts an instance key to some of the operator
+	// workspace's mailboxes. Empty means every one of them. A workspace key
+	// is never restricted this way: what it holds is read live.
 	AccountIDs []string
 	// Tool marks a key presented to the MCP server: a tool, such as an AI
-	// assistant, acting with it. It changes what nothing sees: an instance
-	// key reaches the operator workspace's mailboxes over REST and MCP alike,
-	// and a person's mailbox is reached by a tool only through a key that
-	// person created.
+	// assistant, acting with it. It changes what nothing sees: a key reaches
+	// the same mailboxes over REST and MCP alike.
 	Tool bool
-	// TermsVersion is, for a key, the revision of the key terms the person
-	// it acts as agreed to by creating it; empty for an instance key and for
-	// a key somebody else made for them.
+	// TermsVersion is, for a workspace key, the revision of the key terms the
+	// person who created it agreed to; empty for an instance key.
 	TermsVersion string
+	// CreatedBy is, for a key, who created it: "usr_…" for a workspace key,
+	// "key:<prefix>" or "cli" for an instance key; empty once that person is
+	// deleted.
+	CreatedBy string
+	// Origin is, for a workspace key, OriginPerson or OriginPersonAll when it
+	// is a person's key migration 0012 carried over, and empty for a key made
+	// as keys are now.
+	Origin string
 }
 
 // IsSession reports whether the caller is a person signed in to the console.
 func (p Principal) IsSession() bool { return p.Kind == KindSession }
 
-// IsInstance reports whether the caller is an instance key: a key bound to no
-// user, which is what the CLI holds and what reaches the operator workspace.
-func (p Principal) IsInstance() bool { return !p.IsSession() && p.UserID == "" }
+// IsInstance reports whether the caller is an instance key: a key of the
+// operator workspace, which is what the CLI holds.
+func (p Principal) IsInstance() bool { return !p.IsSession() && p.WorkspaceID == workspace.OperatorID }
+
+// IsWorkspaceKey reports whether the caller is a key of a workspace other
+// than the operator's, or one carried over from a person's: a key that
+// reaches exactly what it holds on mailboxes.
+func (p Principal) IsWorkspaceKey() bool { return !p.IsSession() && !p.IsInstance() }
 
 // Actor names the caller for audit columns: "usr_…" for a person, "key:<prefix>"
-// for a key, whoever it acts as — the key is what did it.
+// for a key.
 func (p Principal) Actor() string {
 	if p.IsSession() {
 		return p.UserID
@@ -88,7 +104,8 @@ func (p Principal) Actor() string {
 	return "key:" + p.KeyPrefix
 }
 
-// MayAccess reports whether the principal may touch an account.
+// MayAccess reports whether the principal may touch an account, as far as an
+// instance key's restriction goes.
 func (p Principal) MayAccess(accountID string) bool {
 	if len(p.AccountIDs) == 0 {
 		return true
@@ -101,28 +118,47 @@ func (p Principal) MayAccess(accountID string) bool {
 	return false
 }
 
-// Key is a stored key, as listed to an administrator. It never carries the
-// secret: that exists once, in the response to the call that created it.
+// Origins of a key, beside one made as it is now.
+const (
+	// OriginPerson is a person's key made for chosen mailboxes, which
+	// migration 0012 moved into its workspace.
+	OriginPerson = "person"
+	// OriginPersonAll is a person's key made for every mailbox of theirs,
+	// which migration 0012 gave the mailboxes its person read then.
+	OriginPersonAll = "person-all"
+)
+
+// Key is a stored key, as listed. It never carries the secret: that exists
+// once, in the response to the call that created it.
 type Key struct {
-	Prefix     string
-	Name       string
-	Scope      Scope
+	Prefix string
+	Name   string
+	Scope  Scope
+	// WorkspaceID is the workspace the key belongs to; empty for a key
+	// carried over from a person's (migration 0012).
+	WorkspaceID string
+	// AccountIDs restricts an instance key; Restricted records that it was
+	// made for chosen accounts. With none of them left, AccountIDs is empty
+	// like a key for every account's, and the key has been revoked.
 	AccountIDs []string
-	// Restricted records that the key was made for chosen accounts. With
-	// none of them left, AccountIDs is empty like a key for every account's,
-	// and the key has been revoked.
 	Restricted bool
-	// UserID is the person the key acts as. Empty for an instance key.
-	UserID     string
+	// Mailboxes are what a workspace key holds: in every workspace, or, as
+	// one workspace lists its keys, in that one. OtherWorkspaces counts the
+	// other workspaces a carried-over key holds mailboxes in, then.
+	Mailboxes       []workspace.KeyAccess
+	OtherWorkspaces int
+	// Origin is "" for a key made as keys are now, OriginPerson or
+	// OriginPersonAll for a person's key migration 0012 carried over.
+	Origin     string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	RevokedAt  time.Time
 	LastUsedAt time.Time
-	// TermsVersion is the revision of the key terms the person agreed to
-	// when they created the key; empty for a key nobody agreed to anything
-	// through (an instance key, or one from before keys had terms).
+	// TermsVersion is the revision of the key terms the person who created
+	// a workspace key agreed to; empty for an instance key.
 	TermsVersion string
-	// CreatedBy is who created the key: "usr_…", "key:<prefix>" or "cli".
+	// CreatedBy is who created the key: "usr_…", "key:<prefix>" or "cli";
+	// empty once that person is deleted.
 	CreatedBy string
 }
 
@@ -131,6 +167,12 @@ func (k Key) Revoked() bool { return !k.RevokedAt.IsZero() }
 
 // Expired reports whether the key has expired at the given time.
 func (k Key) Expired(now time.Time) bool { return !k.ExpiresAt.IsZero() && !now.Before(k.ExpiresAt) }
+
+// Live reports whether the key works at the given time.
+func (k Key) Live(now time.Time) bool { return !k.Revoked() && !k.Expired(now) }
+
+// IsInstance reports whether the key is an instance key.
+func (k Key) IsInstance() bool { return k.WorkspaceID == workspace.OperatorID }
 
 // Keys is the API-key repository.
 type Keys struct {
@@ -146,38 +188,54 @@ func NewKeysWithClock(s *store.Store, now func() time.Time) *Keys { return &Keys
 
 // NewKeyRequest describes a key to issue.
 type NewKeyRequest struct {
-	Name       string
-	Scope      Scope
+	Name  string
+	Scope Scope
+	// WorkspaceID is the workspace the key belongs to. Empty, or the
+	// operator workspace, issues an instance key; any other a workspace key,
+	// whose scope is read, write or send.
+	WorkspaceID string
+	// AccountIDs restricts an instance key to some of the operator
+	// workspace's mailboxes. Refused for a workspace key.
 	AccountIDs []string
-	// UserID binds the key to a person: it then sees what that person owns
-	// and nothing else, within its own scope and restriction. Empty issues an
-	// instance key.
-	UserID string
+	// Mailboxes are what a workspace key holds from the start, each on a
+	// mailbox of its workspace. Who may give what is Check's to decide.
+	Mailboxes []workspace.KeyGrant
 	// TTL is how long the key lives. Zero means MaxLifetime.
 	TTL time.Duration
-	// TermsVersion is the revision of the key terms the person was shown and
-	// agreed to; recorded on the key.
+	// TermsVersion is the revision of the key terms the person creating a
+	// workspace key was shown and agreed to; recorded on the key.
 	TermsVersion string
 	// CreatedBy names who created the key, for the record: "usr_…",
-	// "key:<prefix>" or "cli".
+	// "key:<prefix>" or "cli". Also who gave its mailboxes.
 	CreatedBy string
 	// MaxLive, when positive, bounds how many live keys (neither revoked nor
-	// expired) UserID may hold, this one included. Counted in the
-	// transaction that inserts, so two creations at once cannot both pass.
+	// expired) made as keys are now the workspace may hold, this one
+	// included. The persons' keys migration 0012 moved in are not counted:
+	// each person could hold 20 before, so a team may hold many more of
+	// them, and they expire on their own. Counted in the transaction that
+	// inserts, so two creations at once cannot both pass.
 	MaxLive int
+	// Check, when set, runs first in the transaction that issues: the
+	// service's rule about who may create the key and give it what.
+	Check func(*sql.Tx) error
 }
 
 // Errors issuing a key can report about its request.
 var (
-	// ErrUnknownAccount is a restriction naming an account that does not
-	// exist, or, for an instance key, one outside the operator workspace,
-	// which is all an instance key ever reaches.
-	ErrUnknownAccount = errors.New("auth: a key cannot be restricted to an account that does not exist")
+	// ErrUnknownAccount is a restriction or a mailbox naming an account that
+	// does not exist, or one outside the workspace the key is for: for an
+	// instance key the operator workspace, which is all it ever reaches.
+	ErrUnknownAccount = errors.New("auth: a key cannot be given an account that does not exist")
 	// ErrUserNotFound is a user id nobody has.
 	ErrUserNotFound = errors.New("auth: no such user")
-	// ErrTooManyKeys is a person who already holds NewKeyRequest.MaxLive
+	// ErrNoWorkspace is a workspace that does not exist.
+	ErrNoWorkspace = errors.New("auth: no such workspace")
+	// ErrTooManyKeys is a workspace that already holds NewKeyRequest.MaxLive
 	// live keys.
-	ErrTooManyKeys = errors.New("auth: this person already holds as many live keys as allowed")
+	ErrTooManyKeys = errors.New("auth: this workspace already holds as many live keys as allowed")
+	// ErrWorkspaceKeyScope is a workspace key asked for with the admin
+	// scope, or restricted to accounts: what only an instance key is.
+	ErrWorkspaceKeyScope = errors.New("auth: a workspace key has the read, write or send scope and holds mailboxes")
 )
 
 // Issue creates a key and returns the only copy of its secret.
@@ -195,6 +253,17 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 	if ttl > MaxLifetime {
 		return "", Key{}, fmt.Errorf("auth: a key may live at most %v", MaxLifetime)
 	}
+	ws := req.WorkspaceID
+	if ws == "" {
+		ws = workspace.OperatorID
+	}
+	instance := ws == workspace.OperatorID
+	if !instance && (req.Scope == ScopeAdmin || len(req.AccountIDs) > 0) {
+		return "", Key{}, ErrWorkspaceKeyScope
+	}
+	if instance && len(req.Mailboxes) > 0 {
+		return "", Key{}, ErrUnknownAccount
+	}
 
 	presented, prefix, hash, err := Generate()
 	if err != nil {
@@ -205,9 +274,9 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 		Prefix:       prefix,
 		Name:         req.Name,
 		Scope:        req.Scope,
+		WorkspaceID:  ws,
 		AccountIDs:   req.AccountIDs,
 		Restricted:   len(req.AccountIDs) > 0,
-		UserID:       req.UserID,
 		CreatedAt:    now,
 		ExpiresAt:    now.Add(ttl),
 		TermsVersion: req.TermsVersion,
@@ -215,11 +284,16 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 	}
 
 	err = k.store.Write(ctx, func(tx *sql.Tx) error {
-		if req.MaxLive > 0 && req.UserID != "" {
+		if req.Check != nil {
+			if err := req.Check(tx); err != nil {
+				return err
+			}
+		}
+		if req.MaxLive > 0 {
 			var live int
 			if err := tx.QueryRowContext(ctx,
-				`SELECT count(*) FROM api_keys WHERE user_id = ? AND revoked_at = 0 AND expires_at > ?`,
-				req.UserID, now.Unix()).Scan(&live); err != nil {
+				`SELECT count(*) FROM api_keys WHERE workspace_id = ? AND origin = '' AND revoked_at = 0 AND expires_at > ?`,
+				ws, now.Unix()).Scan(&live); err != nil {
 				return fmt.Errorf("auth: count live keys: %w", err)
 			}
 			if live >= req.MaxLive {
@@ -227,31 +301,29 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 			}
 		}
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO api_keys(prefix, hash, name, scope, created_at, expires_at, user_id, terms_version, created_by,
-			                      restricted)
+			`INSERT INTO api_keys(prefix, hash, name, scope, created_at, expires_at, workspace_id, terms_version,
+			                      created_by, restricted)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			out.Prefix, hash, out.Name, string(out.Scope), out.CreatedAt.Unix(), out.ExpiresAt.Unix(), nullable(out.UserID),
+			out.Prefix, hash, out.Name, string(out.Scope), out.CreatedAt.Unix(), out.ExpiresAt.Unix(), ws,
 			out.TermsVersion, out.CreatedBy, out.Restricted,
 		)
 		if store.IsForeignKey(err) {
-			return ErrUserNotFound
+			return ErrNoWorkspace
 		}
 		if err != nil {
 			return fmt.Errorf("auth: insert key: %w", err)
 		}
 		for _, accountID := range req.AccountIDs {
-			if req.UserID == "" {
-				// An instance key reaches the operator workspace's
-				// mailboxes and nothing else: one restricted to a person's
-				// mailbox would reach nothing at all.
-				var operator int
-				if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?`,
-					accountID, workspace.OperatorID).Scan(&operator); err != nil {
-					return fmt.Errorf("auth: check account %s: %w", accountID, err)
-				}
-				if operator == 0 {
-					return ErrUnknownAccount
-				}
+			// An instance key reaches the operator workspace's mailboxes
+			// and nothing else: one restricted to a person's mailbox would
+			// reach nothing at all.
+			var operator int
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?`,
+				accountID, workspace.OperatorID).Scan(&operator); err != nil {
+				return fmt.Errorf("auth: check account %s: %w", accountID, err)
+			}
+			if operator == 0 {
+				return ErrUnknownAccount
 			}
 			_, err := tx.ExecContext(ctx,
 				`INSERT INTO api_key_accounts(key_prefix, account_id) VALUES (?, ?)`, out.Prefix, accountID)
@@ -262,12 +334,54 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 				return fmt.Errorf("auth: restrict key to account %s: %w", accountID, err)
 			}
 		}
+		for _, grant := range req.Mailboxes {
+			err := workspace.PutKeyAccessTx(ctx, tx, out.Prefix, ws, grant, req.CreatedBy, now)
+			if errors.Is(err, workspace.ErrNoMailbox) {
+				return ErrUnknownAccount
+			}
+			if err != nil {
+				return err
+			}
+		}
+		if len(req.Mailboxes) > 0 {
+			var err error
+			out.Mailboxes, err = keyMailboxesTx(ctx, tx, out.Prefix)
+			return err
+		}
 		return nil
 	})
 	if err != nil {
 		return "", Key{}, err
 	}
 	return presented, out, nil
+}
+
+// keyMailboxesTx reads what a key holds, inside the transaction that gave it.
+func keyMailboxesTx(ctx context.Context, tx *sql.Tx, prefix string) ([]workspace.KeyAccess, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT x.account_id, x.workspace_id, x.read, x.act, x.send, x.granted_by,
+		       x.created_at, x.updated_at
+		  FROM key_access x JOIN accounts a ON a.id = x.account_id
+		 WHERE x.key_prefix = ? ORDER BY x.created_at, a.created_at, a.rowid`, prefix)
+	if err != nil {
+		return nil, fmt.Errorf("auth: read what the key holds: %w", err)
+	}
+	//nolint:errcheck // read to the end below
+	defer func() { _ = rows.Close() }()
+	var out []workspace.KeyAccess
+	for rows.Next() {
+		a := workspace.KeyAccess{KeyPrefix: prefix}
+		var created, updated int64
+		if err := rows.Scan(&a.AccountID, &a.WorkspaceID, &a.Read, &a.Act, &a.Send, &a.GrantedBy,
+			&created, &updated); err != nil {
+			return nil, fmt.Errorf("auth: read what the key holds: %w", err)
+		}
+		a.CreatedAt, a.UpdatedAt = unixOrZero(created), unixOrZero(updated)
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: read what the key holds: %w", err)
+	}
+	return out, nil
 }
 
 // Gate decides whether a key check that cannot succeed may still run. It is
@@ -331,13 +445,14 @@ func (k *Keys) Authenticate(ctx context.Context, presented string, unknown Gate)
 		expiresAt int64
 		revokedAt int64
 		terms     string
-		owner     keyOwner
+		ws        string
+		createdBy string
+		origin    string
 	)
 	err := k.store.Reader().QueryRowContext(ctx,
-		`SELECT k.hash, k.scope, k.expires_at, k.revoked_at, k.terms_version, k.user_id, u.role, u.status
-		   FROM api_keys k LEFT JOIN users u ON u.id = k.user_id
-		  WHERE k.prefix = ?`, prefix,
-	).Scan(&hash, &scopeStr, &expiresAt, &revokedAt, &terms, &owner.userID, &owner.role, &owner.status)
+		`SELECT hash, scope, expires_at, revoked_at, terms_version, coalesce(workspace_id, ''), created_by, origin
+		   FROM api_keys WHERE prefix = ?`, prefix,
+	).Scan(&hash, &scopeStr, &expiresAt, &revokedAt, &terms, &ws, &createdBy, &origin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return Principal{}, miss(ctx, secret, unknown)
@@ -353,30 +468,28 @@ func (k *Keys) Authenticate(ctx context.Context, presented string, unknown Gate)
 		return Principal{}, ErrInvalidKey
 	}
 	// Checked after the comparison so that a revoked or expired key costs the
-	// same as a live one with the wrong secret.
+	// same as a live one with the wrong secret. Disabling, deleting or
+	// removing the person who created a workspace key revokes it in the
+	// same transaction (workspace.RemoveMember, Users.Disable, DeleteTx).
 	now := k.now()
 	if revokedAt != 0 || (expiresAt != 0 && !now.Before(time.Unix(expiresAt, 0))) {
-		return Principal{}, ErrInvalidKey
-	}
-	// A key acting as a person stops with that person: disabling someone
-	// has to end every way they had in, not only their browser sessions.
-	if !owner.usable() {
 		return Principal{}, ErrInvalidKey
 	}
 	scope, err := ParseScope(scopeStr)
 	if err != nil {
 		return Principal{}, ErrInvalidKey
 	}
-
-	accountIDs, err := k.accountsFor(ctx, prefix)
-	if err != nil {
-		return Principal{}, err
+	p := Principal{
+		Kind: KindKey, KeyPrefix: prefix, Scope: scope, WorkspaceID: ws, TermsVersion: terms, CreatedBy: createdBy,
+		Origin: origin,
+	}
+	if p.IsInstance() {
+		if p.AccountIDs, err = k.accountsFor(ctx, prefix); err != nil {
+			return Principal{}, err
+		}
 	}
 	k.touch(ctx, prefix, now)
-	return Principal{
-		Kind: KindKey, KeyPrefix: prefix, Scope: scope, AccountIDs: accountIDs,
-		UserID: owner.userID.String, UserRole: Role(owner.role.String), TermsVersion: terms,
-	}, nil
+	return p, nil
 }
 
 // miss answers a presented key that matches no stored key: after one
@@ -395,33 +508,22 @@ func miss(ctx context.Context, secret string, unknown Gate) error {
 	return ErrInvalidKey
 }
 
-// keyOwner is the user a key acts as, read beside the key in one query.
-type keyOwner struct {
-	userID, role, status sql.NullString
-}
-
-// usable reports whether the key may still act: an instance key always may, a
-// user's key only while that user is active.
-func (o keyOwner) usable() bool {
-	return !o.userID.Valid || o.status.String == userActive
-}
-
 // Recheck re-reads the mutable parts of a key that has already authenticated.
 //
 // Handlers call this immediately before writing a response: a long query that
 // started while a key was live must not publish its result after the key was
 // revoked. It is a row read, never another Argon2id derivation — paying for a
 // second hash on every request would halve throughput for no extra safety,
-// since the secret was already proved.
+// since the secret was already proved. What a workspace key holds on
+// mailboxes is not part of the principal: every use reads it live.
 func (k *Keys) Recheck(ctx context.Context, p Principal) error {
-	var scopeStr string
-	var expiresAt, revokedAt int64
-	var owner keyOwner
+	var (
+		scopeStr, ws         string
+		expiresAt, revokedAt int64
+	)
 	err := k.store.Reader().QueryRowContext(ctx,
-		`SELECT k.scope, k.expires_at, k.revoked_at, k.user_id, u.role, u.status
-		   FROM api_keys k LEFT JOIN users u ON u.id = k.user_id
-		  WHERE k.prefix = ?`, p.KeyPrefix,
-	).Scan(&scopeStr, &expiresAt, &revokedAt, &owner.userID, &owner.role, &owner.status)
+		`SELECT scope, expires_at, revoked_at, coalesce(workspace_id, '') FROM api_keys WHERE prefix = ?`, p.KeyPrefix,
+	).Scan(&scopeStr, &expiresAt, &revokedAt, &ws)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrInvalidKey
@@ -432,17 +534,15 @@ func (k *Keys) Recheck(ctx context.Context, p Principal) error {
 	if revokedAt != 0 || (expiresAt != 0 && !now.Before(time.Unix(expiresAt, 0))) {
 		return ErrInvalidKey
 	}
-	// A scope that shrank mid-request is also a reason to stop, and so is a
-	// person disabled or demoted while their key's request ran: the answer
-	// was computed for a role they no longer hold.
-	if Scope(scopeStr) != p.Scope || !owner.usable() || Role(owner.role.String) != p.UserRole {
+	// A scope that shrank mid-request is also a reason to stop: the answer
+	// was computed for a scope the key no longer has.
+	if Scope(scopeStr) != p.Scope || ws != p.WorkspaceID {
 		return ErrInvalidKey
 	}
-	// And so is a restriction that lost a mailbox the principal still names
-	// (its person lost read on it): a caller that holds a principal for
-	// long — a stdio MCP session, a subscription, an event stream — would
-	// otherwise keep reaching it, and reach it again once read is granted
-	// back, which the key itself never will.
+	// And so is an instance key's restriction that lost a mailbox the
+	// principal still names: a caller that holds a principal for long — a
+	// stdio MCP session, a subscription, an event stream — would otherwise
+	// keep reaching it.
 	return k.recheckRestriction(ctx, p)
 }
 
@@ -484,27 +584,82 @@ func (k *Keys) recheckRestriction(ctx context.Context, p Principal) error {
 	return nil
 }
 
-// List returns every key, including revoked ones.
+// List returns every key, including revoked ones, newest first: the
+// operator's listing, with each instance key's restriction and what each
+// workspace key holds.
 //
 // Revoked keys stay listed deliberately: they are part of the answer to "what
 // could have reached this mailbox", and deleting the row destroys that answer.
 func (k *Keys) List(ctx context.Context) ([]Key, error) {
-	return k.list(ctx, `1`)
+	return k.list(ctx, "", `1`)
 }
 
-// ListFor returns the keys that act as one person, revoked and expired ones
-// included, newest first.
-func (k *Keys) ListFor(ctx context.Context, userID string) ([]Key, error) {
-	return k.list(ctx, `user_id = ?`, userID)
+// ListIn returns the keys of a workspace, revoked and expired ones too, live
+// ones first and each group newest first, with what each holds there: its
+// own keys, and the carried-over keys that hold one of its mailboxes, which
+// count the other workspaces they reach without naming them.
+func (k *Keys) ListIn(ctx context.Context, workspaceID string) ([]Key, error) {
+	keys, err := k.list(ctx, workspaceID, `(k.workspace_id = ?1
+		OR (k.workspace_id IS NULL AND EXISTS (SELECT 1 FROM key_access x WHERE x.key_prefix = k.prefix AND x.workspace_id = ?1)))`,
+		workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	return liveFirst(keys, k.now()), nil
 }
 
-// list reads the keys matching where, a constant fragment with its
-// arguments, newest first, with their account restrictions.
-func (k *Keys) list(ctx context.Context, where string, args ...any) ([]Key, error) {
+// ListCreatedBy returns the workspace keys a person created, in every
+// workspace, revoked and expired ones too, live ones first and each group
+// newest first, with everything each holds.
+func (k *Keys) ListCreatedBy(ctx context.Context, userID string) ([]Key, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	keys, err := k.list(ctx, "", `k.created_by = ?1 AND (k.workspace_id IS NULL OR k.workspace_id <> '`+
+		workspace.OperatorID+`')`, userID)
+	if err != nil {
+		return nil, err
+	}
+	return liveFirst(keys, k.now()), nil
+}
+
+// Get reads one key, with everything it holds; ErrNotFound when there is none.
+func (k *Keys) Get(ctx context.Context, prefix string) (Key, error) {
+	keys, err := k.list(ctx, "", `k.prefix = ?1`, prefix)
+	if err != nil {
+		return Key{}, err
+	}
+	if len(keys) == 0 {
+		return Key{}, ErrNotFound
+	}
+	return keys[0], nil
+}
+
+// liveFirst orders keys with the live ones first, keeping the order within
+// each group.
+func liveFirst(keys []Key, now time.Time) []Key {
+	slices.SortStableFunc(keys, func(a, b Key) int {
+		switch al, bl := a.Live(now), b.Live(now); {
+		case al == bl:
+			return 0
+		case al:
+			return -1
+		default:
+			return 1
+		}
+	})
+	return keys
+}
+
+// list reads the keys matching where, a constant fragment over api_keys
+// aliased k with its arguments, newest first, with their account
+// restrictions and what they hold: in workspaceID only, when it is not
+// empty.
+func (k *Keys) list(ctx context.Context, workspaceID, where string, args ...any) ([]Key, error) {
 	rows, err := k.store.Reader().QueryContext(ctx,
-		`SELECT prefix, name, scope, coalesce(user_id, ''), created_at, expires_at, revoked_at, last_used_at,
-		        terms_version, created_by, restricted
-		   FROM api_keys WHERE `+where+` ORDER BY created_at DESC, rowid DESC`, args...)
+		`SELECT k.prefix, k.name, k.scope, coalesce(k.workspace_id, ''), k.origin, k.created_at, k.expires_at,
+		        k.revoked_at, k.last_used_at, k.terms_version, k.created_by, k.restricted
+		   FROM api_keys k WHERE `+where+` ORDER BY k.created_at DESC, k.rowid DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list keys: %w", err)
 	}
@@ -518,8 +673,8 @@ func (k *Keys) list(ctx context.Context, where string, args ...any) ([]Key, erro
 			scopeStr                            string
 			created, expires, revoked, lastUsed int64
 		)
-		if err := rows.Scan(&key.Prefix, &key.Name, &scopeStr, &key.UserID, &created, &expires, &revoked, &lastUsed,
-			&key.TermsVersion, &key.CreatedBy, &key.Restricted); err != nil {
+		if err := rows.Scan(&key.Prefix, &key.Name, &scopeStr, &key.WorkspaceID, &key.Origin, &created, &expires,
+			&revoked, &lastUsed, &key.TermsVersion, &key.CreatedBy, &key.Restricted); err != nil {
 			return nil, fmt.Errorf("auth: scan key: %w", err)
 		}
 		key.Scope = Scope(scopeStr)
@@ -533,20 +688,63 @@ func (k *Keys) list(ctx context.Context, where string, args ...any) ([]Key, erro
 		return nil, fmt.Errorf("auth: list keys: %w", err)
 	}
 	for i := range out {
-		ids, err := k.accountsFor(ctx, out[i].Prefix)
-		if err != nil {
+		if out[i].IsInstance() {
+			ids, err := k.accountsFor(ctx, out[i].Prefix)
+			if err != nil {
+				return nil, err
+			}
+			out[i].AccountIDs = ids
+			continue
+		}
+		if err := k.holds(ctx, &out[i], workspaceID); err != nil {
 			return nil, err
 		}
-		out[i].AccountIDs = ids
 	}
 	return out, nil
 }
 
-// ErrNotFound means no key carries that prefix.
+// holds reads what a workspace key holds into it: everything, or with
+// workspaceID that workspace's mailboxes, counting the other workspaces a
+// carried-over key reaches.
+func (k *Keys) holds(ctx context.Context, key *Key, workspaceID string) error {
+	rows, err := k.store.Reader().QueryContext(ctx, `SELECT x.account_id, x.workspace_id, x.read, x.act, x.send,
+		       x.granted_by, x.created_at, x.updated_at
+		  FROM key_access x JOIN accounts a ON a.id = x.account_id
+		 WHERE x.key_prefix = ? ORDER BY x.created_at, a.created_at, a.rowid`, key.Prefix)
+	if err != nil {
+		return fmt.Errorf("auth: read what the key holds: %w", err)
+	}
+	//nolint:errcheck // read to the end below
+	defer func() { _ = rows.Close() }()
+	others := map[string]bool{}
+	key.Mailboxes = []workspace.KeyAccess{}
+	for rows.Next() {
+		a := workspace.KeyAccess{KeyPrefix: key.Prefix}
+		var created, updated int64
+		if err := rows.Scan(&a.AccountID, &a.WorkspaceID, &a.Read, &a.Act, &a.Send, &a.GrantedBy,
+			&created, &updated); err != nil {
+			return fmt.Errorf("auth: read what the key holds: %w", err)
+		}
+		a.CreatedAt, a.UpdatedAt = unixOrZero(created), unixOrZero(updated)
+		if workspaceID != "" && a.WorkspaceID != workspaceID {
+			others[a.WorkspaceID] = true
+			continue
+		}
+		key.Mailboxes = append(key.Mailboxes, a)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("auth: read what the key holds: %w", err)
+	}
+	key.OtherWorkspaces = len(others)
+	return nil
+}
+
+// ErrNotFound means no key carries that prefix, or none the caller may see.
 var ErrNotFound = errors.New("auth: no such key")
 
-// Revoke marks a key unusable. Revoking an already-revoked key is not an error:
-// the caller asked for a state, and the state holds.
+// Revoke marks a key unusable: the operator's, for any key. Revoking an
+// already-revoked key is not an error: the caller asked for a state, and the
+// state holds.
 func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
@@ -572,13 +770,60 @@ func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 	})
 }
 
-// RevokeFor revokes a key that acts as userID. Anyone else's key, or an
-// instance key, is ErrNotFound: to this caller it does not exist.
-func (k *Keys) RevokeFor(ctx context.Context, prefix, userID string) error {
+// RevokeIn revokes a key of a workspace: one of its own keys is revoked; a
+// carried-over key that holds mailboxes of the workspace loses them, and is
+// revoked with its last (the schema's trigger), since it is not this
+// workspace's alone. Any other key is ErrNotFound. check runs first in the
+// transaction. Revoking a key already revoked is not an error.
+func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check func(*sql.Tx) error) error {
+	return k.store.Write(ctx, func(tx *sql.Tx) error {
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
+		var (
+			ws      string
+			revoked int64
+			held    int
+		)
+		err := tx.QueryRowContext(ctx, `SELECT coalesce(workspace_id, ''), revoked_at,
+			       (SELECT count(*) FROM key_access x WHERE x.key_prefix = k.prefix AND x.workspace_id = ?)
+			  FROM api_keys k WHERE prefix = ?`, workspaceID, prefix).Scan(&ws, &revoked, &held)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return ErrNotFound
+		case err != nil:
+			return fmt.Errorf("auth: revoke key: %w", err)
+		case ws == workspaceID && ws != "":
+			if revoked != 0 {
+				return nil
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ? WHERE prefix = ? AND revoked_at = 0`,
+				k.now().Unix(), prefix); err != nil {
+				return fmt.Errorf("auth: revoke key: %w", err)
+			}
+			return nil
+		case ws == "" && held > 0:
+			if _, err := tx.ExecContext(ctx, `DELETE FROM key_access WHERE key_prefix = ? AND workspace_id = ?`,
+				prefix, workspaceID); err != nil {
+				return fmt.Errorf("auth: take the workspace out of the key: %w", err)
+			}
+			return nil
+		}
+		return ErrNotFound
+	})
+}
+
+// RevokeCreatedBy revokes a workspace key a person created, in any
+// workspace. Anyone else's key, or an instance key, is ErrNotFound: to this
+// caller it does not exist. Revoking one already revoked is not an error.
+func (k *Keys) RevokeCreatedBy(ctx context.Context, prefix, userID string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		var revokedAt int64
 		err := tx.QueryRowContext(ctx,
-			`SELECT revoked_at FROM api_keys WHERE prefix = ? AND user_id = ?`, prefix, userID).Scan(&revokedAt)
+			`SELECT revoked_at FROM api_keys WHERE prefix = ? AND created_by = ? AND created_by <> ''
+			    AND (workspace_id IS NULL OR workspace_id <> ?)`, prefix, userID, workspace.OperatorID).Scan(&revokedAt)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNotFound
@@ -593,6 +838,18 @@ func (k *Keys) RevokeFor(ctx context.Context, prefix, userID string) error {
 		}
 		return nil
 	})
+}
+
+// CarriedOverLive counts the live keys migration 0012 carried over from a
+// person's, with no workspace: what the daemon says at start until none is
+// left.
+func (k *Keys) CarriedOverLive(ctx context.Context) (int, error) {
+	var n int
+	if err := k.store.Reader().QueryRowContext(ctx, `SELECT count(*) FROM api_keys
+		WHERE workspace_id IS NULL AND revoked_at = 0 AND (expires_at = 0 OR expires_at > ?)`, k.now().Unix()).Scan(&n); err != nil {
+		return 0, fmt.Errorf("auth: count carried-over keys: %w", err)
+	}
+	return n, nil
 }
 
 // Count reports how many keys exist, so the daemon can say whether it has been
@@ -647,17 +904,17 @@ func (k *Keys) touch(ctx context.Context, prefix string, now time.Time) {
 	}()
 }
 
+func unixOrZero(v int64) time.Time {
+	if v == 0 {
+		return time.Time{}
+	}
+	return time.Unix(v, 0).UTC()
+}
+
 // nullable stores an empty string as NULL, for the optional foreign keys.
 func nullable(s string) any {
 	if s == "" {
 		return nil
 	}
 	return s
-}
-
-func unixOrZero(v int64) time.Time {
-	if v == 0 {
-		return time.Time{}
-	}
-	return time.Unix(v, 0).UTC()
 }

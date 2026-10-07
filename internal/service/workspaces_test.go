@@ -425,7 +425,7 @@ func TestATeamMailboxSyncsUnderItsWorkspacesConsent(t *testing.T) {
 	tm.grant(t, shared, workspace.Flags{Read: true})
 	_, err = m.svc.SetMailboxSync(ctx, tm.bea, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
 	wantCode(t, "Bea, a member who reads it, turning it on", err, service.CodeNotAuthorized)
-	_, err = m.svc.SetMailboxSync(ctx, keyOf(carol, auth.ScopeAdmin), shared,
+	_, err = m.svc.SetMailboxSync(ctx, keyOf(t, m.fixture, carol, auth.ScopeAdmin, tm.id), shared,
 		service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
 	wantCode(t, "a key of Carol's turning it on", err, service.CodeNotAuthorized)
 	st, err := m.svc.SetMailboxSync(ctx, carol, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
@@ -586,81 +586,6 @@ func TestAnAdminCannotChangeAnotherAdmin(t *testing.T) {
 	wantCode(t, "Bea renaming the team", err, service.CodeNotAuthorized)
 }
 
-// beaReadsTheTeamsMailbox is a mailbox Ana linked in the team, indexed with
-// one message, which Bea may read; and a way to make Bea a key for a tool.
-func beaReadsTheTeamsMailbox(t *testing.T) (*mailFixture, supportTeam, string, func(accounts ...string) string) {
-	t.Helper()
-	m := newMailFixture(t)
-	tm := newSupportTeam(t, m.fixture)
-	shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
-	box.Deliver("INBOX", message("a", "Refund for order 4471"))
-	m.index(t, shared, box)
-	if _, err := m.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, grantRequest(true, false, false, false)); err != nil {
-		t.Fatal(err)
-	}
-	key := func(accounts ...string) string {
-		t.Helper()
-		created, err := m.svc.CreateMyAPIKey(t.Context(), tm.bea, service.PersonalKeyRequest{
-			Name: "assistant", Scope: "read", AccountIDs: accounts, TermsVersion: service.DefaultKeyTermsVersion,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return created.Key
-	}
-	return m, tm, shared, key
-}
-
-func TestAPersonKeyLosesAMailboxWhenItsPersonLosesTheGrant(t *testing.T) {
-	m, tm, shared, key := beaReadsTheTeamsMailbox(t)
-	ctx := t.Context()
-	secret := key()
-	p, err := m.svc.Authenticate(ctx, secret, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if page, err := m.svc.SearchMessages(ctx, p, service.SearchRequest{AccountID: shared}); err != nil || len(page.Messages) != 1 {
-		t.Fatalf("her key reads %d messages (%v)", len(page.Messages), err)
-	}
-
-	if err := m.svc.RevokeAccess(ctx, tm.ana, shared, tm.bea.UserID, workspace.Flags{}); err != nil {
-		t.Fatal(err)
-	}
-	// The same principal, held: the rule runs on every call.
-	_, err = m.svc.SearchMessages(ctx, p, service.SearchRequest{AccountID: shared})
-	wantCode(t, "her key searching the mailbox she lost", err, service.CodeNotFound)
-	if page, err := m.svc.SearchMessages(ctx, p, service.SearchRequest{Query: "refund"}); err != nil || len(page.Messages) != 0 {
-		t.Errorf("her key still finds %d messages (%v)", len(page.Messages), err)
-	}
-	if got := ids(t, m.fixture, p); slices.Contains(got, shared) {
-		t.Errorf("her key lists %v", got)
-	}
-	// And the key itself keeps working for the rest.
-	if _, err := m.svc.Authenticate(ctx, secret, nil); err != nil {
-		t.Errorf("her key stopped working: %v", err)
-	}
-}
-
-func TestAKeyMadeForALostMailboxIsRevoked(t *testing.T) {
-	m, tm, shared, key := beaReadsTheTeamsMailbox(t)
-	ctx := t.Context()
-	secret := key(shared)
-	if _, err := m.svc.Authenticate(ctx, secret, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := m.svc.RevokeAccess(ctx, tm.ana, shared, tm.bea.UserID, workspace.Flags{Read: true}); err != nil {
-		t.Fatal(err)
-	}
-	_, err := m.svc.Authenticate(ctx, secret, nil)
-	wantCode(t, "the key made for that mailbox alone", err, service.CodeUnauthorized)
-	// Nor does it wake up when she is granted read again.
-	if _, err := m.svc.SetAccess(ctx, tm.ana, shared, tm.bea.UserID, grantRequest(true, false, false, false)); err != nil {
-		t.Fatal(err)
-	}
-	_, err = m.svc.Authenticate(ctx, secret, nil)
-	wantCode(t, "the key once read is back", err, service.CodeUnauthorized)
-}
-
 // teamSends is a mailbox Ana linked in the team, sending, with every flag
 // hers and nothing granted to Bea yet.
 func teamSends(t *testing.T) (*sendBox, supportTeam) {
@@ -701,10 +626,10 @@ func TestActingNeedsTheActorsConsentAndTheActFlag(t *testing.T) {
 	if err := mark(tm.bea); err != nil {
 		t.Fatalf("Bea with act and her consent: %v", err)
 	}
-	if err := mark(keyOf(tm.bea, auth.ScopeWrite)); err != nil {
-		t.Errorf("her write key: %v", err)
+	if err := mark(keyOf(t, m.fixture, tm.bea, auth.ScopeWrite, tm.id)); err != nil {
+		t.Errorf("a write key holding act: %v", err)
 	}
-	wantCode(t, "her read key", mark(keyOf(tm.bea, auth.ScopeRead)), service.CodeNotAuthorized)
+	wantCode(t, "a read key", mark(keyOf(t, m.fixture, tm.bea, auth.ScopeRead, tm.id)), service.CodeNotAuthorized)
 	// Losing act stops her, whoever else may act.
 	tm.grant(t, shared, workspace.Flags{Read: true})
 	wantCode(t, "Bea once act is gone", mark(tm.bea), service.CodeNotAuthorized)
@@ -987,17 +912,18 @@ func TestTheOperatorAdministersEveryTeamAndReadsNoMail(t *testing.T) {
 	_, err = f.svc.GetAccount(ctx, op, shared)
 	wantCode(t, "the operator reading the team's mailbox", err, service.CodeNotFound)
 
-	// A person's own workspaces, and nothing of the operator's; a key of
-	// theirs lists the same, and administers none of them.
+	// A person's own workspaces, and nothing of the operator's; a key lists
+	// the one it belongs to, and administers none.
 	mine, err := f.svc.ListWorkspaces(ctx, tm.bea)
 	if err != nil || len(mine) != 3 || mine[0].Kind != "personal" {
 		t.Errorf("Bea lists %+v (%v): personal first, then her two teams", mine, err)
 	}
-	if listed, err := f.svc.ListWorkspaces(ctx, keyOf(tm.bea, auth.ScopeRead)); err != nil || len(listed) != 3 {
-		t.Errorf("her key lists %+v (%v)", listed, err)
+	if listed, err := f.svc.ListWorkspaces(ctx, keyOf(t, f, tm.bea, auth.ScopeRead, tm.id)); err != nil ||
+		len(listed) != 1 || listed[0].ID != tm.id {
+		t.Errorf("a key of the team lists %+v (%v)", listed, err)
 	}
-	_, err = f.svc.ListMembers(ctx, keyOf(tm.bea, auth.ScopeAdmin), tm.id)
-	wantCode(t, "her key administering", err, service.CodeNotAuthorized)
+	_, err = f.svc.ListMembers(ctx, keyOf(t, f, tm.ana, auth.ScopeAdmin, tm.id), tm.id)
+	wantCode(t, "a key of the team administering", err, service.CodeNotAuthorized)
 	_, err = f.svc.ListMembers(ctx, reader(), tm.id)
 	wantCode(t, "a read instance key administering", err, service.CodeNotAuthorized)
 	if listed, err := f.svc.ListWorkspaces(ctx, reader()); err != nil || len(listed) != 1 || listed[0].ID != workspace.OperatorID {

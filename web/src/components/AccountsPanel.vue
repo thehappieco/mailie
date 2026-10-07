@@ -5,7 +5,7 @@
 // far its sync has got) and who has access to it, never what it holds unless
 // they are given Read; one nobody can read is marked. A member of a team sees
 // the mailboxes they hold a grant on, and a line saying who manages the
-// team's people and access. Connecting a mailbox is offered only where the
+// team's people, access and API keys. Connecting a mailbox is offered only where the
 // person may link one (docs/workspaces.md, "Mailboxes"): their personal
 // workspace, or a team they own or administer. In another team the button
 // would only ever connect to their personal workspace, so it is not there;
@@ -118,7 +118,7 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
     </div>
 
     <SyncConsentCard v-if="askConsent" />
-    <p v-if="inTeam && !admin" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, and who can use each of its mailboxes, are managed by its owners and admins.', { team: teamName }) }}</span></p>
+    <p v-if="inTeam && !admin" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
 
     <div class="console-overview">
       <article><span>{{ t('Email accounts') }}</span><strong>{{ accounts.loaded ? count(accounts.list.length) : '—' }}</strong><small>{{ t('added to Mailie') }}</small></article>

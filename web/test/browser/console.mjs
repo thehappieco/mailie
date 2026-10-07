@@ -18,8 +18,9 @@
 // QA_PLAYWRIGHT_MODULE (path to playwright's index.mjs when it is not
 // installed here), QA_BROWSER (chromium|firefox|webkit), QA_BROWSER_EXECUTABLE
 // or QA_BROWSER_CHANNEL (e.g. chrome) to use an installed browser.
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import {
   APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED,
@@ -41,9 +42,9 @@ if (screenshots) await mkdir(screenshots, { recursive: true })
 /** The revision of the open console's sync text, the daemon's default (src/open/versions.ts). */
 const SYNC_VERSION = '2026-10-open-sync-3'
 /** The one that describes actions on messages. */
-const ACTIONS_VERSION = '2026-10-open-actions-2'
+const ACTIONS_VERSION = '2026-10-open-actions-3'
 /** The text a person agrees to by creating an API key. */
-const KEY_TERMS_VERSION = '2026-10-open-api-keys'
+const KEY_TERMS_VERSION = '2026-10-open-api-keys-2'
 
 /**
  * The core's fake daemon (fakeDaemon.mjs), asking about the open console's
@@ -162,9 +163,10 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.locator('.console-main').waitFor()
       await page.locator('.account-card').first().waitFor()
       assert.equal(await page.locator('.account-card').count(), 3)
-      // The server's sections, and nothing to read or send mail with.
+      // The server's sections, and nothing to read or send mail with. API keys
+      // are a workspace's, and this fake server has none (the keys pass has).
       if (mobile) await page.getByRole('button', { name: 'Open menu', exact: true }).click()
-      assert.deepEqual((await page.locator('.console-nav:visible .console-nav-item > span:not(.nav-count)').allTextContents()).map(item => item.trim()), ['Mailboxes', 'API keys & MCP', 'Storage', 'Account'])
+      assert.deepEqual((await page.locator('.console-nav:visible .console-nav-item > span:not(.nav-count)').allTextContents()).map(item => item.trim()), ['Mailboxes', 'Storage', 'Account'])
       if (mobile) await page.keyboard.press('Escape')
       await noLegal(page, 'mailboxes')
       assert.equal(await page.locator('img[src=x]').count(), 0, 'a display name is text, never markup')
@@ -787,30 +789,30 @@ for (const { language, mobile, scheme } of only && only !== 'sync' ? [] : [
 
 // --- actions on messages ----------------------------------------------------------
 // The open console makes no change to a mailbox itself; it lets the person
-// allow, or stop, the changes a tool with a key that can act may ask for. In
-// Account: the switch asks first, with this server's text and no policy
-// linked; allowed, a new key can read and act; turned off, after saying what
+// allow, or stop, the changes they make themselves on the mailboxes where
+// they may act. In Account: the switch asks first, with this server's text
+// and no policy linked; allowed, it says so; turned off, after saying what
 // stops. A consent to an older text is paused, and the new text is one click
 // away.
 
 const ACTIONS_TEXT = {
   'en-US': {
-    account: 'Account', switch: 'Actions on my messages', title: 'Allow actions on your messages?', allow: 'Allow actions', lead: 'This server changes a mailbox only when someone allowed to act on it asks: you, under this agreement, on the mailboxes where you may act, or a tool with an API key you created that can act.',
-    onDone: 'Actions are on. Mailie changes your mailbox only when you ask.', offTitle: 'Turn off actions?', off: 'Turn off actions', offDone: 'Actions are off. Mailie no longer changes anything in your mailboxes.',
+    account: 'Account', switch: 'Actions on my messages', title: 'Allow actions on your messages?', allow: 'Allow actions', lead: 'This server changes a mailbox only when someone allowed to act on it asks: you, under this agreement, on the mailboxes where you may act; anyone else allowed to act there, under their own; or a tool with an API key given Act there, under the terms the key was created with.',
+    onDone: 'Actions are on. Mailie changes your mailbox only when you ask.', offTitle: 'Turn off actions?', off: 'Turn off actions', offDone: 'Actions are off. Mailie no longer changes your mailboxes when you ask.',
     reviewAgree: 'Review and agree', agree: 'I agree', renewTitle: 'Actions on your messages: the terms changed', paused: 'Paused: this server’s text about actions changed since you allowed them on',
-    keys: 'API keys & MCP', create: 'Create key', readAct: 'Read and act', openMenu: 'Open menu',
+    openMenu: 'Open menu',
   },
   'pt-BR': {
-    account: 'Conta', switch: 'Ações nas minhas mensagens', title: 'Permitir ações nas suas mensagens?', allow: 'Permitir ações', lead: 'Este servidor muda uma caixa de email só quando alguém com permissão para agir nela pede: você, sob este consentimento, nas caixas de email em que pode agir, ou uma ferramenta com uma chave de API que você criou e que pode agir.',
-    onDone: 'As ações estão ligadas. O Mailie muda sua caixa de email só quando você pede.', offTitle: 'Desligar as ações?', off: 'Desligar as ações', offDone: 'As ações estão desligadas. O Mailie não muda mais nada nas suas caixas de email.',
+    account: 'Conta', switch: 'Ações nas minhas mensagens', title: 'Permitir ações nas suas mensagens?', allow: 'Permitir ações', lead: 'Este servidor muda uma caixa de email só quando alguém com permissão para agir nela pede: você, sob este consentimento, nas caixas de email em que pode agir; outra pessoa com permissão para agir ali, sob o consentimento dela; ou uma ferramenta com uma chave de API que recebeu Ações ali, sob os termos com que a chave foi criada.',
+    onDone: 'As ações estão ligadas. O Mailie muda sua caixa de email só quando você pede.', offTitle: 'Desligar as ações?', off: 'Desligar as ações', offDone: 'As ações estão desligadas. O Mailie não muda mais suas caixas de email quando você pede.',
     reviewAgree: 'Revisar e concordar', agree: 'Concordo', renewTitle: 'Ações nas suas mensagens: os termos mudaram', paused: 'Pausadas: o texto deste servidor sobre as ações mudou desde que você as permitiu',
-    keys: 'Chaves de API e MCP', create: 'Criar chave', readAct: 'Leitura e ações', openMenu: 'Abrir menu',
+    openMenu: 'Abrir menu',
   },
   'de-DE': {
-    account: 'Konto', switch: 'Aktionen für meine Nachrichten', title: 'Aktionen für Ihre Nachrichten erlauben?', allow: 'Aktionen erlauben', lead: 'Dieser Server ändert ein Postfach nur, wenn jemand darum bittet, der darin handeln darf: Sie, unter dieser Zustimmung, in den Postfächern, in denen Sie handeln dürfen, oder ein Tool mit einem von Ihnen erstellten API-Schlüssel, der handeln darf.',
-    onDone: 'Aktionen sind eingeschaltet. Mailie ändert Ihr Postfach nur, wenn Sie es verlangen.', offTitle: 'Aktionen ausschalten?', off: 'Aktionen ausschalten', offDone: 'Aktionen sind ausgeschaltet. Mailie ändert nichts mehr in Ihren Postfächern.',
+    account: 'Konto', switch: 'Aktionen für meine Nachrichten', title: 'Aktionen für Ihre Nachrichten erlauben?', allow: 'Aktionen erlauben', lead: 'Dieser Server ändert ein Postfach nur, wenn jemand darum bittet, der darin handeln darf: Sie, unter dieser Zustimmung, in den Postfächern, in denen Sie handeln dürfen; jemand anderes, der dort handeln darf, unter seiner eigenen; oder ein Tool mit einem API-Schlüssel, der dort Aktionen erhalten hat, unter den Bedingungen, unter denen der Schlüssel erstellt wurde.',
+    onDone: 'Aktionen sind eingeschaltet. Mailie ändert Ihr Postfach nur, wenn Sie es verlangen.', offTitle: 'Aktionen ausschalten?', off: 'Aktionen ausschalten', offDone: 'Aktionen sind ausgeschaltet. Mailie ändert Ihre Postfächer nicht mehr, wenn Sie darum bitten.',
     reviewAgree: 'Prüfen und zustimmen', agree: 'Ich stimme zu', renewTitle: 'Aktionen für Ihre Nachrichten: Die Bedingungen haben sich geändert', paused: 'Pausiert: Der Text dieses Servers zu Aktionen hat sich geändert, seit Sie sie am',
-    keys: 'API-Schlüssel und MCP', create: 'Schlüssel erstellen', readAct: 'Lesen und Aktionen', openMenu: 'Menü öffnen',
+    openMenu: 'Menü öffnen',
   },
 }
 
@@ -880,14 +882,6 @@ for (const { language, mobile, scheme, older } of only && only !== 'actions' ? [
     assert.equal(await toggle.getAttribute('aria-checked'), 'true')
     await shot('actions-on')
 
-    // A key can now read and act.
-    await openSection(text.keys)
-    await page.locator('.keys-section .empty-card').getByRole('button', { name: text.create, exact: true }).click()
-    const create = page.locator('.console-dialog')
-    await create.locator('label.option', { hasText: text.readAct }).waitFor()
-    await page.keyboard.press('Escape')
-    await create.waitFor({ state: 'hidden' })
-
     // Turned off, after saying what stops.
     await openSection(text.account)
     await toggle.click()
@@ -914,57 +908,59 @@ for (const { language, mobile, scheme, older } of only && only !== 'actions' ? [
 
 
 // --- API keys and connecting an AI assistant ---------------------------------------
-// A person creates a key for a tool: nothing is asked of the daemon before
-// Create key, under this server's text of what the key authorizes (no policy
-// linked); Read and act is offered only while actions are allowed. The key
-// is shown once: Copy key, and the Claude Code command with the key, go to
-// the clipboard (recorded here instead of the machine's own) and the command
-// with the key is never drawn. Escape, pressed twice, and a tap beside the
-// dialog leave it on screen; Done lets go of it: it is gone from the page,
-// and nothing about it reached storage, the address bar or history. Then the
-// list, and revoking after a confirmation. The connect panel shows the MCP URL
+// Ana creates a key of her personal workspace for a tool: nothing is asked of
+// the daemon before Create key, under this server's text of what the key
+// authorizes (no policy linked); the send scope is offered only where the
+// server says its keys may send, and what the key holds is ticked mailbox by
+// mailbox. The key is shown once: Copy key, and the Claude Code command with
+// the key, go to the clipboard (recorded here instead of the machine's own)
+// and the command with the key is never drawn. Escape, pressed twice, and a
+// tap beside the dialog leave it on screen; Done lets go of it: it is gone
+// from the page, and nothing about it reached storage, the address bar or
+// history. Then the list; the key's sheet, where a mailbox is given to it and
+// its sends are listed; revoking after a confirmation; and the key, revoked,
+// among those she created in her account. The connect panel shows the MCP URL
 // (this origin's /mcp) and a command with a placeholder where the key goes.
 
-const KEYS_TEXT = {
-  'en-US': {
-    section: 'API keys & MCP', openMenu: 'Open menu', create: 'Create key', createTitle: 'Create an API key', createdTitle: 'Your new API key',
-    lead: 'Whoever holds this key can reach the mailboxes it names through this server’s API and MCP server, until the key expires or you revoke it. Give it only to a tool you trust.',
-    held: 'This server does not store what it fetches for the tool. So that the tool can pick up a dropped connection, the MCP server holds what it sent in memory only, never on disk, for at most five minutes.',
-    writeHint: 'To create a key that can also change messages, first allow actions on your messages in Account.',
-    only: 'Only the ones I choose', days: '30 days', readAct: 'Read and act', copyKey: 'Copy key', copyCommand: 'Copy the Claude Code command with this key',
-    done: 'Done', revoke: 'Revoke', revokeTitle: 'Revoke this key?', revokeKey: 'Revoke key', revoked: 'Revoked', privacy: 'Privacy Policy', empty: 'No API keys yet',
-    copyURL: 'Copy URL', placeholder: '<your key>', all: 'All your mailboxes', gone: 'was revoked. A tool using it can no longer reach your mail.',
-  },
-  'pt-BR': {
-    section: 'Chaves de API e MCP', openMenu: 'Abrir menu', create: 'Criar chave', createTitle: 'Criar uma chave de API', createdTitle: 'Sua nova chave de API',
-    lead: 'Quem tiver esta chave pode alcançar as caixas de email indicadas nela pela API e pelo servidor MCP deste servidor, até a chave expirar ou você revogá-la. Entregue-a só a uma ferramenta em que você confia.',
-    held: 'Este servidor não guarda o que busca para a ferramenta. Para que ela possa retomar uma conexão interrompida, o servidor MCP mantém o que enviou só na memória, nunca em disco, por no máximo cinco minutos.',
-    writeHint: 'Para criar uma chave que também possa mudar mensagens, primeiro permita as ações nas suas mensagens em Conta.',
-    only: 'Só as que eu escolher', days: '30 dias', readAct: 'Leitura e ações', copyKey: 'Copiar chave', copyCommand: 'Copiar o comando do Claude Code com esta chave',
-    done: 'Concluir', revoke: 'Revogar', revokeTitle: 'Revogar esta chave?', revokeKey: 'Revogar chave', revoked: 'Revogada', privacy: 'Política de Privacidade', empty: 'Nenhuma chave de API ainda',
-    copyURL: 'Copiar URL', placeholder: '<sua chave>', all: 'Todas as suas caixas de email', gone: 'foi revogada. Uma ferramenta que a use não alcança mais seus emails.',
-  },
-  'de-DE': {
-    section: 'API-Schlüssel und MCP', openMenu: 'Menü öffnen', create: 'Schlüssel erstellen', createTitle: 'API-Schlüssel erstellen', createdTitle: 'Ihr neuer API-Schlüssel',
-    lead: 'Wer diesen Schlüssel hat, erreicht die Postfächer, die er nennt, über die API und den MCP-Server dieses Servers, bis der Schlüssel abläuft oder Sie ihn widerrufen. Geben Sie ihn nur einem Tool, dem Sie vertrauen.',
-    held: 'Dieser Server speichert nicht, was er für das Tool abruft. Damit das Tool eine unterbrochene Verbindung fortsetzen kann, behält der MCP-Server das Gesendete nur im Arbeitsspeicher, nie auf der Festplatte, und höchstens fünf Minuten lang.',
-    writeHint: 'Um einen Schlüssel zu erstellen, der auch Nachrichten ändern kann, erlauben Sie zuerst Aktionen für Ihre Nachrichten unter Konto.',
-    only: 'Nur die, die ich auswähle', days: '30 Tage', readAct: 'Lesen und Aktionen', copyKey: 'Schlüssel kopieren', copyCommand: 'Claude-Code-Befehl mit diesem Schlüssel kopieren',
-    done: 'Fertig', revoke: 'Widerrufen', revokeTitle: 'Diesen Schlüssel widerrufen?', revokeKey: 'Schlüssel widerrufen', revoked: 'Widerrufen', privacy: 'Datenschutzerklärung', empty: 'Noch keine API-Schlüssel',
-    copyURL: 'URL kopieren', placeholder: '<Ihr Schlüssel>', all: 'Alle Ihre Postfächer', gone: 'wurde widerrufen. Ein Tool, das den Schlüssel verwendet, erreicht Ihre E-Mails nicht mehr.',
-  },
+/**
+ * The console's catalogs, each key with its translations in the order
+ * src/ui/i18n.ts reads them: what a pass in another language expects, said
+ * the way the console says it.
+ */
+const COLUMNS = { 'pt-BR': 0, 'es-ES': 1, 'fr-FR': 2, 'de-DE': 3 }
+const localeDir = resolve(fileURLToPath(import.meta.url), '../../../src/ui/locales')
+const catalog = Object.assign({}, ...await Promise.all((await readdir(localeDir)).filter(name => name.endsWith('.json'))
+  .map(async name => JSON.parse(await readFile(resolve(localeDir, name), 'utf8')))))
+function say(language, key, values = {}) {
+  const index = COLUMNS[language]
+  if (index !== undefined && !catalog[key]) throw new Error(`console.mjs: no translation of ${key}`)
+  const text = index === undefined ? key.split('|')[0] : catalog[key][index]
+  return text.replace(/\{(\w+)\}/g, (_, name) => String(values[name]))
 }
+const keysText = language => Object.fromEntries(Object.entries({
+  section: 'API keys & MCP', openMenu: 'Open menu', create: 'Create key', createTitle: 'Create an API key', createdTitle: 'Your new API key',
+  lead: 'Whoever holds this key can reach the mailboxes it is given through this server’s API and MCP server, until the key expires or is revoked. Give it only to a tool you trust.',
+  held: 'This server does not store what it fetches for the tool. So that the tool can pick up a dropped connection, the MCP server holds what it sent in memory only, never on disk, for at most five minutes.',
+  days: '30 days', copyKey: 'Copy key', copyCommand: 'Copy the Claude Code command with this key', done: 'Done', revoke: 'Revoke', revokeTitle: 'Revoke this key?',
+  revokeKey: 'Revoke key', revoked: 'Revoked', empty: 'No API keys yet', copyURL: 'Copy URL', none: 'None yet', manage: 'Mailboxes and sends…',
+  save: 'Save access', noSends: 'This key sent nothing in the last 30 days.', account: 'Account', mine: 'API keys you created',
+}).map(([name, key]) => [name, say(language, key)]).concat([
+  ['placeholder', `<${say(language, 'your key')}>`],
+  ['gone', say(language, '{name} was revoked. A tool using it can no longer reach these mailboxes.', { name: 'Claude Code' })],
+]))
 
-for (const { language, mobile, scheme, actions, chosen, served = true } of only && only !== 'keys' ? [] : [
-  { language: 'en-US', mobile: false, scheme: 'light', actions: false, chosen: true },
-  { language: 'en-US', mobile: true, scheme: 'dark', actions: true, chosen: false },
-  { language: 'pt-BR', mobile: false, scheme: 'dark', actions: true, chosen: true },
-  { language: 'de-DE', mobile: true, scheme: 'light', actions: false, chosen: true },
+for (const { language, mobile, scheme, scope, chosen, served = true, sends = true } of only && only !== 'keys' ? [] : [
+  { language: 'en-US', mobile: false, scheme: 'light', scope: 'read', chosen: true },
+  { language: 'en-US', mobile: true, scheme: 'dark', scope: 'write', chosen: false },
+  { language: 'pt-BR', mobile: false, scheme: 'dark', scope: 'send', chosen: true },
+  { language: 'de-DE', mobile: true, scheme: 'light', scope: 'write', chosen: true },
   // A server with MCP over HTTP off (MAIL_MCP_HTTP=false): no MCP address, no command.
-  { language: 'en-US', mobile: false, scheme: 'dark', actions: false, chosen: false, served: false },
+  { language: 'en-US', mobile: false, scheme: 'dark', scope: 'read', chosen: false, served: false },
+  // A server whose keys do not send (MAIL_KEYS_MAY_SEND=false): no send scope offered.
+  { language: 'en-US', mobile: true, scheme: 'light', scope: 'write', chosen: true, sends: false },
 ]) {
-  const label = `${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}${served ? '' : '-no-mcp'}`
-  const text = KEYS_TEXT[language]
+  const label = `${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}-${scope}${served ? '' : '-no-mcp'}${sends ? '' : '-no-send'}`
+  const text = keysText(language)
   const context = await browser.newContext({
     serviceWorkers: 'block', locale: language, colorScheme: scheme, reducedMotion: 'reduce',
     viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
@@ -974,7 +970,7 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
     window.__copied = []
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async value => { window.__copied.push(String(value)) } } })
   })
-  const daemon = fakeDaemon({ consented: true, actionsAgreed: actions ? ACTIONS_VERSION : '', mcpHTTP: served })
+  const daemon = fakeDaemon({ consented: true, personal: true, mcpHTTP: served, keysSend: sends })
   const errors = []
   await context.route('**/v1/**', route => daemon.handle(route))
   const page = await context.newPage()
@@ -995,6 +991,7 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
     assert.ok(!(await page.locator('.keys-section').innerText()).includes('/mcp'), `${where}: no MCP address`)
   }
   const endpoint = `${origin}/mcp`
+  const workspace = 'wsp_00000000000000a1'
   try {
     await page.goto(origin + '/')
     await page.locator('input[name=username]').fill('ana@example.test')
@@ -1014,7 +1011,7 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
       const [url, command] = await connect.locator('code').allTextContents()
       assert.equal(url, endpoint, 'the MCP URL is this origin’s /mcp')
       assert.equal(command, `claude mcp add --transport http mailie ${endpoint} --header "Authorization: Bearer ${text.placeholder}"`)
-      await connect.getByRole('button', { name: text.copyURL , exact: true }).click()
+      await connect.getByRole('button', { name: text.copyURL, exact: true }).click()
       assert.equal(await copied(), endpoint)
     } else {
       await page.waitForTimeout(300)
@@ -1024,19 +1021,19 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
 
     // --- the dialog: nothing asked before Create key --------------------------------
     const history = await page.evaluate(() => history.length)
-    await section.locator('.empty-card').getByRole('button', { name: text.create , exact: true }).click()
+    await section.locator('.empty-card').getByRole('button', { name: text.create, exact: true }).click()
     const dialog = page.getByRole('dialog', { name: text.createTitle })
     await dialog.waitFor()
     assert.equal((await dialog.locator('.key-terms .consent-lead').textContent()).trim(), text.lead)
     assert.ok((await dialog.locator('.key-terms p').allTextContents()).map(line => line.trim()).includes(text.held), 'the terms say what the MCP server holds, and for how long')
     await noLegal(page, `${label} key terms`)
-    assert.equal(await dialog.locator('input[value=write]').count(), actions ? 1 : 0, actions ? 'Read and act is offered with actions allowed' : 'no Read and act while actions are off')
-    if (!actions) await dialog.getByText(text.writeHint).waitFor()
+    assert.equal(await dialog.locator('input[value=send]').count(), sends ? 1 : 0, sends ? 'the send scope is offered where keys send' : 'no send scope where keys do not send')
     await dialog.locator('input[name=key-name]').fill('Claude Code')
-    if (actions) await dialog.locator('label.option', { hasText: text.readAct }).locator('input').check()
+    await dialog.locator(`input[name=scope][value=${scope}]`).check()
     if (chosen) {
-      await dialog.locator('label.option', { hasText: text.only }).locator('input').check()
-      await dialog.locator('.mailbox-choices label', { hasText: 'suporte@example.test' }).locator('input').check()
+      await dialog.locator(`input[name=${GMAIL_ACCOUNT}-read]`).check()
+      if (scope !== 'read') await dialog.locator(`input[name=${GMAIL_ACCOUNT}-act]`).check()
+      if (scope === 'send') await dialog.locator(`input[name=${GMAIL_ACCOUNT}-send]`).check()
     }
     await dialog.locator('label.lifetime', { hasText: text.days }).locator('input').check()
     await dialog.locator('.dialog-content').evaluate(content => content.scrollTo(0, 0))
@@ -1050,7 +1047,8 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
     const shown = page.getByRole('dialog', { name: text.createdTitle })
     await shown.waitFor()
     const [call] = daemon.calls.keys
-    assert.deepEqual(call.body, { name: 'Claude Code', scope: actions ? 'write' : 'read', ...(chosen ? { account_ids: [GMAIL_ACCOUNT] } : {}), ttl_days: 30, terms_version: KEY_TERMS_VERSION })
+    const given = chosen ? { mailboxes: [{ account_id: GMAIL_ACCOUNT, read: true, act: scope !== 'read', send: scope === 'send' }] } : {}
+    assert.deepEqual(call.body, { name: 'Claude Code', scope, ttl_days: 30, terms_version: KEY_TERMS_VERSION, ...given })
     const secret = call.key
     assert.equal((await shown.locator('.key-secret').textContent()).trim(), secret, 'the key is shown')
     assert.match(await focused(page), new RegExp(text.copyKey), 'the keyboard lands on Copy key')
@@ -1063,16 +1061,16 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
     else await page.mouse.click(4, 4)
     assert.ok(await shown.isVisible(), 'Escape and a tap beside the dialog leave the key on screen')
     assert.equal((await shown.locator('.key-secret').textContent()).trim(), secret, 'the key is still shown')
-    await shown.getByRole('button', { name: text.copyKey , exact: true }).click()
+    await shown.getByRole('button', { name: text.copyKey, exact: true }).click()
     assert.equal(await copied(), secret)
     if (served) {
-      await shown.getByRole('button', { name: text.copyCommand , exact: true }).click()
+      await shown.getByRole('button', { name: text.copyCommand, exact: true }).click()
       assert.equal(await copied(), `claude mcp add --transport http mailie ${endpoint} --header "Authorization: Bearer ${secret}"`)
     } else {
-      assert.equal(await shown.getByRole('button', { name: text.copyCommand , exact: true }).count(), 0, 'no Claude Code command where /mcp is not served')
+      assert.equal(await shown.getByRole('button', { name: text.copyCommand, exact: true }).count(), 0, 'no Claude Code command where /mcp is not served')
     }
     assert.ok(!(await page.locator('body').innerText()).includes(`Bearer ${secret}`), 'the command with the key is never drawn')
-    await shown.getByRole('button', { name: text.done , exact: true }).click()
+    await shown.getByRole('button', { name: text.done, exact: true }).click()
     await shown.waitFor({ state: 'detached' })
 
     // --- gone from the page, and never kept ------------------------------------------
@@ -1087,24 +1085,49 @@ for (const { language, mobile, scheme, actions, chosen, served = true } of only 
     assert.deepEqual(kept.caches, [], 'no Cache API storage')
     assert.deepEqual(kept.databases, ['mailie-browser-session'], 'IndexedDB holds only the session vault')
 
-    // --- the list, and revoking after a confirmation ---------------------------------
+    // --- the list, and the key's sheet: a mailbox given, its sends ---------------------
+    const prefix = secret.split('.')[0]
     const card = section.locator('.key-card', { hasText: 'Claude Code' })
     await card.waitFor()
-    assert.ok((await card.innerText()).includes(chosen ? 'suporte@example.test' : text.all), 'the card names the mailboxes the key reaches')
+    assert.ok((await card.innerText()).includes(chosen ? 'suporte@example.test' : text.none), 'the card names what the key holds')
     await shot('keys-list')
-    await card.getByRole('button', { name: text.revoke , exact: true }).click()
+    await card.getByRole('button', { name: text.manage, exact: true }).click()
+    const sheet = page.getByRole('dialog', { name: 'Claude Code' })
+    await sheet.waitFor()
+    const row = sheet.locator('.key-row[data-account=acc_0000000000000003]')
+    await row.locator('input[value=read]').check()
+    await row.getByRole('button', { name: text.save, exact: true }).click()
+    await until(() => daemon.calls.keys.length === 2, 'the mailbox to be given to the key')
+    assert.deepEqual(daemon.calls.keys[1], { method: 'PUT', path: `/v1/workspaces/${workspace}/apikeys/${prefix}/accounts/acc_0000000000000003`, body: { read: true, act: false, send: false } })
+    await row.getByRole('button', { name: text.save, exact: true }).waitFor({ state: 'detached' })
+    if (scope === 'send') await sheet.getByText(text.noSends).waitFor()
+    else assert.equal(await sheet.getByText(text.noSends).count(), 0, 'no sends listed for a key that cannot send')
+    await shot('keys-sheet')
+    await sheet.getByRole('button', { name: text.done, exact: true }).click()
+    await sheet.waitFor({ state: 'detached' })
+
+    // --- revoking after a confirmation ------------------------------------------------
+    await card.getByRole('button', { name: text.revoke, exact: true }).click()
     const confirm = page.getByRole('dialog', { name: text.revokeTitle })
     await confirm.waitFor()
-    assert.equal(daemon.calls.keys.length, 1, 'nothing revoked before the confirmation')
+    assert.equal(daemon.calls.keys.length, 2, 'nothing revoked before the confirmation')
     await shot('keys-revoke')
-    await confirm.getByRole('button', { name: text.revokeKey , exact: true }).click()
+    await confirm.getByRole('button', { name: text.revokeKey, exact: true }).click()
     await confirm.waitFor({ state: 'detached' })
-    assert.deepEqual(daemon.calls.keys.slice(1), [{ method: 'DELETE', prefix: secret.split('.')[0] }])
+    assert.deepEqual(daemon.calls.keys.slice(2), [{ method: 'DELETE', path: `/v1/workspaces/${workspace}/apikeys/${prefix}` }])
     await card.locator('.status-chip', { hasText: text.revoked }).waitFor()
-    assert.equal(await card.getByRole('button', { name: text.revoke , exact: true }).count(), 0, 'a revoked key offers no revoke')
+    assert.equal(await card.getByRole('button', { name: text.revoke, exact: true }).count(), 0, 'a revoked key offers no revoke')
     await section.locator('.success', { hasText: text.gone }).waitFor()
     await shot('keys-revoked')
     if (!served) await noMcp('keys-revoked')
+
+    // --- the keys she created, in her account -------------------------------------------
+    await openSection(text.account)
+    const mine = page.locator('.my-keys')
+    await mine.getByText(text.mine).waitFor()
+    await mine.locator('.my-key', { hasText: 'Claude Code' }).locator('.status-chip', { hasText: text.revoked }).waitFor()
+    await mine.scrollIntoViewIfNeeded()
+    await shot('keys-account')
     assert.equal(daemon.calls.mcp, 1, 'asked once whether /mcp is served')
     assert.deepEqual(daemon.calls.unoffered, [], 'no request to the mail or sending routes')
     assert.deepEqual(errors, [], 'no page, script or CSP errors')

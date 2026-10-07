@@ -135,21 +135,36 @@ function specific(failure: Failure): string | undefined {
       if (code === 'unavailable' || code === 'internal') return t('Could not confirm that actions were turned off. Try again: doing it twice is safe.')
       return undefined
     case 'load-keys':
-      if (code === 'unavailable' || code === 'internal') return t('Could not load your API keys. Try again in a moment.')
+      if (code === 'unavailable' || code === 'internal') return t('Could not load the API keys. Try again in a moment.')
+      if (code === 'not_authorized') return t('Only the owners and admins of a team see its API keys.')
       return undefined
     case 'create-key':
-      // A mailbox removed meanwhile, or one the person no longer sees; one they see without read is not_authorized.
-      if (code === 'not_found') return t('A chosen mailbox cannot be given to a key: it was removed, or you no longer have access to it. Choose again.')
-      if (code === 'bad_request') return t('The server did not accept this key. Check its name and the mailboxes, and try again.')
-      if (code === 'not_authorized') return t('Your account is not allowed to create API keys, or a chosen mailbox is one you cannot read.')
+      // A mailbox removed meanwhile, or one of another workspace.
+      if (code === 'not_found') return t('A chosen mailbox is no longer in this workspace. Choose again.')
+      if (code === 'bad_request') return t('The server did not accept this key. Check its name, and that what it holds on each mailbox fits what it may do: Act needs Read.')
+      // A member, a role lost meanwhile, Read on a mailbox the person does not read, or Send where keys do not send.
+      if (code === 'not_authorized') return t('The server refused this key: only owners and admins create keys, Read is given only on a mailbox you read yourself, and Send only where this server’s keys may send.')
       // No answer, or one the console cannot read, says nothing sure about whether the key was made;
       // the list, read again, shows it if it was. Trying again as if it were not leaves a key nobody saw.
       if (code === 'unavailable' || code === 'internal' || code === 'invalid_response') return t('Mailie could not confirm that the key was created. If it is in the list, revoke it and create another: its secret cannot be shown again.')
       return undefined
     case 'revoke-key':
       if (code === 'not_found') return t('This key no longer exists.')
+      if (code === 'not_authorized') return t('Only the owners and admins of a team revoke its API keys.')
       // Revoking twice is harmless, so asking again is the answer to not knowing.
       if (code === 'unavailable' || code === 'internal') return t('Could not confirm that the key was revoked. Try again: doing it twice is safe.')
+      return undefined
+    case 'change-key-access':
+      if (code === 'not_authorized') return t('The server refused this: you can give a key Read only on a mailbox you read yourself, and Send only where this server’s keys may send.')
+      if (code === 'bad_request') return t('The server did not accept this: Act needs Read and a key that can act, Send a key that can send, and a key made before keys belonged to workspaces gains nothing.')
+      if (code === 'conflict') return t('This key no longer works: it was revoked, or it expired.')
+      if (code === 'not_found') return t('This key, or this mailbox, is no longer in the workspace.')
+      return undefined
+    case 'load-key-sends':
+      if (code === 'unavailable' || code === 'internal') return t('Could not read this key’s sends. Try again in a moment.')
+      return undefined
+    case 'load-my-keys':
+      if (code === 'unavailable' || code === 'internal') return t('Could not load the API keys you created. Try again in a moment.')
       return undefined
     case 'load-storage':
       if (code === 'unavailable' || code === 'internal') return t('Could not read what your mailboxes take up. Try again in a moment.')
@@ -240,7 +255,7 @@ function general(failure: Failure): string {
     case 'flow_unsupported': return t('This server offered a way to sign in that this page cannot finish.')
     case 'return_invalid': return t('The provider sent back an incomplete answer. Start again.')
     case 'return_expired': return t('This authorization took too long and expired. Start again.')
-    case 'key_limit': return t('You have {count} active keys, the most you can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
+    case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'aborted':
     case 'internal':

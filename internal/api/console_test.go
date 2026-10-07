@@ -317,7 +317,7 @@ func TestPollingAnAccountEveryTwoSecondsIsNeverThrottled(t *testing.T) {
 		h.Limits = limits
 	}, serviceOptions{})
 
-	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin, "")
+	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin)
 	resp := h.do(t, http.MethodPost, "/v1/accounts", cli, h.passwordAccount(t, "person@example.com"))
 	var added struct{ Account struct{ ID string } }
 	decodeInto(t, resp, &added)
@@ -371,7 +371,7 @@ func (h *harness) statusOf(t *testing.T, path, token, from string) int {
 // still holds after its key was revoked.
 func (h *harness) revokedKey(t *testing.T) string {
 	t.Helper()
-	key := authtest.NewKey(t, h.store, auth.ScopeRead, "")
+	key := authtest.NewKey(t, h.store, auth.ScopeRead)
 	prefix, _, _ := strings.Cut(key, ".")
 	if err := h.keys.Revoke(t.Context(), prefix); err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestGuessingCredentialsIsThrottled(t *testing.T) {
 		t.Fatalf("a good session from the address that guessed: %d, want 200", got)
 	}
 
-	key := authtest.NewKey(t, h.store, auth.ScopeRead, "")
+	key := authtest.NewKey(t, h.store, auth.ScopeRead)
 	prefix, _, _ := strings.Cut(key, ".")
 	wrong := prefix + "." + strings.Repeat("B", 43)
 	for i := range 10 {
@@ -425,7 +425,7 @@ func TestGuessingCredentialsIsThrottled(t *testing.T) {
 	if got := get("f00000ff."+strings.Repeat("C", 43), "192.0.2.1"); got != http.StatusTooManyRequests {
 		t.Fatalf("an eleventh unknown key from one address: %d, want 429", got)
 	}
-	good := authtest.NewKey(t, h.store, auth.ScopeRead, "")
+	good := authtest.NewKey(t, h.store, auth.ScopeRead)
 	if got := get(good, "192.0.2.1"); got != http.StatusOK {
 		t.Fatalf("a real key from the address that sent unknown ones: %d, want 200", got)
 	}
@@ -436,7 +436,7 @@ func TestConcurrentWrongSecretsCannotOutrunTheFailureBucket(t *testing.T) {
 	// request in a simultaneous burst see the same last token.
 	proxy := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	h := newHarnessWith(t, func(h *api.Handler) { h.Limits = ratelimit.DefaultAuth(proxy) }, serviceOptions{})
-	key := authtest.NewKey(t, h.store, auth.ScopeRead, "")
+	key := authtest.NewKey(t, h.store, auth.ScopeRead)
 	prefix, _, _ := strings.Cut(key, ".")
 
 	burst := func(token func(i int) string, from func(i int) string) map[int]int {
@@ -488,7 +488,7 @@ func TestAnotherCallersMissesNeverThrottleAGoodCredential(t *testing.T) {
 		h.Limits = limits
 	}, serviceOptions{})
 
-	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin, "")
+	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin)
 	resp := h.do(t, http.MethodPost, "/v1/accounts", cli, h.passwordAccount(t, "person@example.com"))
 	var added struct{ Account struct{ ID string } }
 	decodeInto(t, resp, &added)
@@ -547,7 +547,7 @@ func TestAnotherClientsFailuresNeverThrottleAValidPoller(t *testing.T) {
 		h.Limits = limits
 	}, serviceOptions{})
 
-	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin, "")
+	cli := authtest.NewKey(t, h.store, auth.ScopeAdmin)
 	resp := h.do(t, http.MethodPost, "/v1/accounts", cli, h.passwordAccount(t, "person@example.com"))
 	var added struct{ Account struct{ ID string } }
 	decodeInto(t, resp, &added)

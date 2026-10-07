@@ -93,12 +93,13 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 // transaction that deletes them, once the mailboxes that go with them are
 // gone from it — their personal workspace's, and those of every team whose
 // only member they are (account.Registry.RemoveOwner): those teams and their
-// personal workspace, with their memberships and the invites still waiting
-// to join them; and their name wherever it is kept as attribution: on the
-// grants they gave others, on the mailboxes they linked and on the team
-// consents to sync they gave, which stay, with their date and revision, the
-// workspace's. Their memberships of other teams, and their grants there, go
-// with the person (ON DELETE CASCADE). It returns the teams it deleted.
+// personal workspace, with their memberships, their keys and the invites
+// still waiting to join them; and their name wherever it is kept as
+// attribution: on the grants they gave others and what they gave keys, on
+// the mailboxes they linked and on the team consents to sync they gave,
+// which stay, with their date and revision, the workspace's. Their
+// memberships of other teams, and their grants there, go with the person
+// (ON DELETE CASCADE). It returns the teams it deleted.
 //
 // A used invite to a deleted team is not theirs to take: it is the record of
 // how another person arrived, and stays, without its team (ON DELETE SET
@@ -109,6 +110,7 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
 	for _, step := range []struct{ what, query string }{
 		{"forget who granted", `UPDATE mailbox_access SET granted_by = '' WHERE granted_by = ?`},
+		{"forget who gave keys mailboxes", `UPDATE key_access SET granted_by = '' WHERE granted_by = ?`},
 		{"forget who linked", `UPDATE accounts SET linked_by = '' WHERE linked_by = ?`},
 		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''
 		   WHERE sync_enabled_by = ?`},

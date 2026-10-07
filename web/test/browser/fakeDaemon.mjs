@@ -35,15 +35,22 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * consented: Ana turned sync on a day ago. actionsAgreed: the revision of the
  * actions text Ana agreed to three days ago; '' for none. allMailHidden: Show
  * in IMAP is off for All Mail in the Gmail account's settings, so its IMAP
- * lists no All Mail. mcpHTTP: what GET /v1/me/mcp says (MAIL_MCP_HTTP).
+ * lists no All Mail. mcpHTTP and keysSend: what GET /v1/me/mcp says
+ * (MAIL_MCP_HTTP, MAIL_KEYS_MAY_SEND). personal: the server lists each
+ * person's personal workspace (GET /v1/workspaces), as every server with
+ * workspaces does, and its owner keeps that workspace's API keys; left out,
+ * it answers 404, as a server older than workspaces would.
  *
  * extend(core): an edition's own state and routes, called once with the
  * core's state and helpers. It may return methods (added to the daemon),
  * route(request), which sees every authenticated request before the core
- * does and returns undefined for one it leaves to the core, and
- * trashMessages(), what the index holds in the Gmail account's Trash.
+ * does and returns undefined for one it leaves to the core,
+ * trashMessages(), what the index holds in the Gmail account's Trash, and
+ * keyWorkspace(user, id), a workspace whose API keys the core's key routes
+ * keep: { admin, mailboxes: [{ id, reads }] } for a member (admin: an owner
+ * or an admin of it; reads: the person reads that mailbox), or null.
  */
-export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, extend } = {}) {
+export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, extend } = {}) {
   if (!origin || !versions?.sync || !versions.actions || !versions.keys) throw new Error('fakeDaemon: origin and versions { sync, actions, keys } are required')
   const users = new Map([['ana@example.test', { id: 'usr_00000000000000a1', email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: now() - 86400 * 30, password: PASSWORD, consent: consented ? now() - 86400 : 0, ...(consented ? { consentVersion: versions.sync } : {}), actions: actionsAgreed ? now() - 3 * 86400 : 0, actionsVersion: actionsAgreed }]])
   const sessions = new Map()
@@ -53,8 +60,10 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
   const calls = { login: 0, me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], storage: 0, mcp: 0 }
-  /** Each person's API keys as the daemon stores them: never the secret, which only the creating answer carries. */
-  const keysByUser = new Map()
+  /** Every workspace's API keys as the daemon stores them: never the secret, which only the creating answer carries. */
+  const keys = []
+  /** The record of each key's sends, by prefix (service.SendStatus): never who a message went to, its subject or its text. */
+  const keySends = new Map()
   // The journal, as internal/events keeps it: every event names its account,
   // and a stream only carries the events of the caller's accounts.
   const journal = []
@@ -156,10 +165,19 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     return { token: value, expires_at: session.expires_at, user: publicUser(user) }
   }
   const publicUser = ({ id, email, name, role, created_at }) => ({ id, email, name, role, created_at })
-  const extension = extend?.({ users, calls, accountsByUser, journal, allMail, versions, emit, owner, present, indexedFolders }) ?? {}
+  /** A person's personal workspace, as the daemon names it. */
+  const personalOf = user => `wsp_${user.id.slice(4)}`
+  /** A key's mailbox, as listed (service.KeyMailbox). */
+  const presentHeld = item => ({ account_id: item.account_id, workspace_id: item.workspace_id, read: item.read, act: item.act, send: item.send, ...(item.granted_by ? { granted_by: item.granted_by } : {}), updated_at: item.updated_at })
+  /** A key as its workspace lists it (service.WorkspaceKey): sends only with the send scope, on a server whose keys send. */
+  const presentKey = key => {
+    const { mailboxes, revoked_at: revoked, last_used_at: used, ...rest } = key
+    return { ...rest, mailboxes: mailboxes.map(presentHeld), ...(revoked ? { revoked_at: revoked } : {}), ...(used ? { last_used_at: used } : {}), live: !revoked && key.expires_at > now(), sends: key.scope === 'send' && keysSend }
+  }
+  const extension = extend?.({ users, calls, accountsByUser, journal, allMail, versions, emit, owner, present, indexedFolders, keys, keySends, presentKey }) ?? {}
   return {
     ...extension.methods,
-    calls, sessions, flows, accountsByUser, journal, recheck, policy,
+    calls, sessions, flows, accountsByUser, journal, recheck, policy, keys, keySends,
     /** The person ticks Show in IMAP for All Mail in Gmail's settings; the daemon notices at its next look at the folders. */
     showAllMail() { allMail.listed = true },
     /** New mail arriving in an account's inbox, as the engine would journal it. */
@@ -237,9 +255,12 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           ? { consented: true, consented_at: user.consent, current_version: policy.version, version: user.consentVersion }
           : { consented: false, current_version: policy.version })
       }
-      if (path === '/v1/me/apikeys' || path.startsWith('/v1/me/apikeys/')) return apiKeys()
-      // GET /v1/me/mcp (service.MCPAccess): whether /mcp is served, the same for every caller.
-      if (path === '/v1/me/mcp' && method === 'GET') { calls.mcp++; return json({ http: mcpHTTP }) }
+      if (personal && path === '/v1/workspaces' && method === 'GET') {
+        return json([{ id: personalOf(user), kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: user.created_at }])
+      }
+      if (path === '/v1/me/apikeys' || path.startsWith('/v1/me/apikeys/') || /^\/v1\/workspaces\/[^/]+\/apikeys(\/|$)/.test(path)) return apiKeys()
+      // GET /v1/me/mcp (service.MCPAccess): whether /mcp is served, and whether keys may send, the same for every caller.
+      if (path === '/v1/me/mcp' && method === 'GET') { calls.mcp++; return json({ http: mcpHTTP, keys_send: keysSend }) }
       // GET /v1/me/storage (service.Storage): the caller's mailboxes by address, what the index holds
       // for each, and the database's size for an owner. The index is the owner's to keep while sync
       // is on, whether or not the account works now: zeros only once sync is off, which deletes it.
@@ -403,34 +424,104 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         catch { entry.delivered = 0 /* The page went away, or cancelled the request, first. */ }
       }
 
-      /** internal/service mykeys.go: session only, own mailboxes, the current text, at most 20 live keys, revoke answers 204. */
+      /**
+       * internal/service workspacekeys.go: a workspace's keys are its owners'
+       * and admins', signed in; read only where the person giving it reads
+       * the mailbox, act with read and a scope that acts, send with the send
+       * scope on a server whose keys send; the current text; at most 20 live
+       * keys per workspace; the keys a person created are theirs to list and
+       * revoke; POST /v1/me/apikeys is refused.
+       */
       function apiKeys() {
-        const mineKeys = keysByUser.get(user.id) ?? []
-        keysByUser.set(user.id, mineKeys)
-        const live = mineKeys.filter(key => !key.revoked_at && key.expires_at > now())
-        if (path === '/v1/me/apikeys' && method === 'GET') return json(mineKeys)
-        if (path === '/v1/me/apikeys' && method === 'POST') {
-          const request_ = body()
-          calls.keys.push({ method, body: request_ })
-          if (request_.terms_version !== versions.keys) return fail(409, 'conflict')
-          if (!String(request_.name ?? '').trim() || !['read', 'write'].includes(request_.scope) || ![30, 90, 365].includes(request_.ttl_days)) return fail(400, 'bad_request')
-          const ids = request_.account_ids ?? []
-          if (!ids.every(id => mine.some(account => account.id === id))) return fail(404, 'not_found')
-          if (live.length >= 20) return fail(409, 'conflict')
-          const prefix = [...crypto.getRandomValues(new Uint8Array(8))].map(byte => byte.toString(16).padStart(2, '0')).join('')
-          const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url')
-          const key = { prefix, name: String(request_.name).trim(), scope: request_.scope, account_ids: ids, created_at: now(), expires_at: now() + request_.ttl_days * 86400, terms_version: request_.terms_version }
-          mineKeys.unshift(key)
-          calls.keys.at(-1).key = `${prefix}.${secret}`
-          return json({ ...key, key: `${prefix}.${secret}` }, 201)
-        }
-        const revoke = path.match(/^\/v1\/me\/apikeys\/([^/]+)$/)
-        if (revoke && method === 'DELETE') {
-          calls.keys.push({ method, prefix: revoke[1] })
-          const key = mineKeys.find(item => item.prefix === revoke[1])
+        const live = key => !key.revoked_at && key.expires_at > now()
+        const ordered = list => [...list].sort((a, b) => Number(live(b)) - Number(live(a)) || b.created_at - a.created_at)
+        const revoke = key => { key.revoked_at ||= now() }
+        if (path === '/v1/me/apikeys' && method === 'GET') return json(ordered(keys.filter(key => key.created_by === user.id)).map(presentKey))
+        if (path === '/v1/me/apikeys' && method === 'POST') return fail(400, 'bad_request')
+        const own = path.match(/^\/v1\/me\/apikeys\/([^/]+)$/)
+        if (own && method === 'DELETE') {
+          calls.keys.push({ method, path })
+          const key = keys.find(item => item.prefix === own[1] && item.created_by === user.id)
           if (!key) return fail(404, 'not_found')
-          key.revoked_at ||= now()
+          revoke(key)
           return route.fulfill({ status: 204 })
+        }
+        const match = path.match(/^\/v1\/workspaces\/([^/]+)\/apikeys(?:\/([^/]+)(?:\/(accounts|sends)(?:\/([^/]+))?)?)?$/)
+        if (!match) return fail(404, 'not_found')
+        const [, id, prefix, part, accountID] = match
+        const place = extension.keyWorkspace?.(user, id)
+          ?? (personal && id === personalOf(user) ? { admin: true, mailboxes: mine.map(account => ({ id: account.id, reads: true })) } : null)
+        if (!place) return fail(404, 'not_found')
+        if (!place.admin) return fail(403, 'not_authorized')
+        const inPlace = accountID_ => place.mailboxes.find(item => item.id === accountID_)
+        const acts = scope => scope === 'write' || scope === 'send'
+        /** What flags given to a key must be: one at least, act with read and a scope that acts, send with send where keys send. */
+        const refusal = (scope, flags) => {
+          if (!flags.read && !flags.act && !flags.send) return [400, 'bad_request']
+          if (flags.act && !flags.read) return [400, 'bad_request']
+          if (flags.send && !keysSend) return [403, 'not_authorized']
+          if ((flags.act && !acts(scope)) || (flags.send && scope !== 'send')) return [400, 'bad_request']
+          return null
+        }
+        if (!prefix && method === 'GET') return json(ordered(keys.filter(key => key.workspace_id === id)).map(presentKey))
+        if (!prefix && method === 'POST') {
+          const request_ = body()
+          calls.keys.push({ method, path, body: request_ })
+          if (request_.terms_version !== versions.keys) return fail(409, 'conflict')
+          if (!String(request_.name ?? '').trim() || ![30, 90, 365].includes(request_.ttl_days)) return fail(400, 'bad_request')
+          if (!['read', 'write', 'send'].includes(request_.scope) || (request_.scope === 'send' && !keysSend)) return fail(400, 'bad_request')
+          const given = request_.mailboxes ?? []
+          for (const item of given) {
+            const mailbox = inPlace(item.account_id)
+            if (!mailbox) return fail(404, 'not_found')
+            const refused = refusal(request_.scope, item)
+            if (refused) return fail(...refused)
+            if (item.read && !mailbox.reads) return fail(403, 'not_authorized')
+          }
+          if (keys.filter(key => key.workspace_id === id && live(key)).length >= 20) return fail(409, 'conflict')
+          const newPrefix = [...crypto.getRandomValues(new Uint8Array(8))].map(byte => byte.toString(16).padStart(2, '0')).join('')
+          const secret = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url')
+          const key = {
+            prefix: newPrefix, name: String(request_.name).trim(), scope: request_.scope, workspace_id: id,
+            mailboxes: given.map(item => ({ account_id: item.account_id, workspace_id: id, read: !!item.read, act: !!item.act, send: !!item.send, granted_by: user.id, updated_at: now() })),
+            created_by: user.id, created_at: now(), expires_at: now() + request_.ttl_days * 86400, terms_version: request_.terms_version,
+          }
+          keys.unshift(key)
+          calls.keys.at(-1).key = `${newPrefix}.${secret}`
+          return json({ ...presentKey(key), key: `${newPrefix}.${secret}` }, 201)
+        }
+        const key = keys.find(item => item.prefix === prefix && item.workspace_id === id)
+        if (!key) return fail(404, 'not_found')
+        if (!part && method === 'DELETE') {
+          calls.keys.push({ method, path })
+          revoke(key)
+          return route.fulfill({ status: 204 })
+        }
+        if (part === 'sends' && !accountID && method === 'GET') return json(keySends.get(prefix) ?? [])
+        if (part === 'accounts' && accountID) {
+          const mailbox = inPlace(accountID)
+          if (!mailbox) return fail(404, 'not_found')
+          const index = key.mailboxes.findIndex(item => item.account_id === accountID)
+          if (method === 'DELETE') {
+            calls.keys.push({ method, path })
+            if (index < 0) return fail(404, 'not_found')
+            key.mailboxes.splice(index, 1)
+            return route.fulfill({ status: 204 })
+          }
+          if (method === 'PUT') {
+            const flags = body()
+            calls.keys.push({ method, path, body: flags })
+            if (![flags.read, flags.act, flags.send].every(flag => typeof flag === 'boolean')) return fail(400, 'bad_request')
+            if (!live(key)) return fail(409, 'conflict')
+            const refused = refusal(key.scope, flags)
+            if (refused) return fail(...refused)
+            const before = key.mailboxes[index]
+            if (flags.read && !before?.read && !mailbox.reads) return fail(403, 'not_authorized')
+            const held = { account_id: accountID, workspace_id: id, read: flags.read, act: flags.act, send: flags.send, granted_by: user.id, updated_at: now() }
+            if (index < 0) key.mailboxes.push(held)
+            else key.mailboxes.splice(index, 1, held)
+            return json(presentHeld(held))
+          }
         }
         return fail(404, 'not_found')
       }

@@ -14,12 +14,14 @@ import (
 
 // Closing a person's account is two steps, as the privacy policy describes
 // them. First they are disabled, which ends every session and revokes every
-// key they hold, so nothing of theirs still gets in, and expires the invites
-// they made; the identities they sign in with through a provider stay, and
-// sign nobody in while they are off. Then they are deleted: the mailboxes of
-// their personal workspace and of every team they were alone in, those
-// mailboxes' credentials, their sessions, their keys, their invite, and their
-// identities with the keys pinned for them. The mailboxes belong to
+// API key they created, in any workspace, so nothing they set up still gets
+// in, and expires the invites they made; the identities they sign in with
+// through a provider stay, and sign nobody in while they are off. Then they
+// are deleted: the mailboxes of their personal workspace and of every team
+// they were alone in, those mailboxes' credentials and keys, their sessions,
+// their invite, and their identities with the keys pinned for them. A key
+// they created in a team that stays is the team's record, revoked and
+// without their name. The mailboxes belong to
 // internal/account, so the deletion is one transaction that package opens and
 // this one finishes (DeleteTx). A team mailbox of a team others are in is the
 // team's, and stays; only a consent to sync it still bound to the person
@@ -109,9 +111,9 @@ type Ended struct {
 }
 
 // Disable switches a person off and ends every way they had in: their status
-// becomes disabled, every live session is revoked, every live key issued for
-// them is revoked and every invite they made that is still waiting expires,
-// in one transaction. A disabled person still signed in somewhere, or
+// becomes disabled, every live session is revoked, every live key they
+// created is revoked, in whichever workspace, and every invite they made
+// that is still waiting expires, in one transaction. A disabled person still signed in somewhere, or
 // holding a key or an invite that would work again if they were switched
 // back on, would not be disabled. The mailboxes of their personal workspace
 // stop syncing, since they are no longer active; a team mailbox whose consent
@@ -155,8 +157,10 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		}
 		// Revoked rather than left to fail: switching the person back on
 		// must not bring a key back, any more than it brings a session back.
+		// A key stops when the person who created it is closed, whatever it
+		// holds: the key terms they agreed to say so.
 		out.Keys, err = execCount(ctx, tx,
-			`UPDATE api_keys SET revoked_at = ? WHERE user_id = ? AND revoked_at = 0`, now, id)
+			`UPDATE api_keys SET revoked_at = ? WHERE created_by = ? AND revoked_at = 0`, now, id)
 		if err != nil {
 			return fmt.Errorf("auth: revoke the user's keys: %w", err)
 		}
@@ -196,8 +200,9 @@ type Removed struct {
 }
 
 // DeleteTx deletes a person inside the caller's transaction: their sessions,
-// the keys issued for them together with those keys' account restrictions,
-// every invite for their address — the one they signed up with and any other,
+// the keys they created, revoked and without their name — those of their
+// personal workspace and of the teams they were alone in go with those
+// workspaces —, every invite for their address — the one they signed up with and any other,
 // used or not — the identities they signed in with through a provider and the
 // keys pinned for those identities, the team mailboxes whose consent to sync
 // was still bound to theirs (stopped, their index deleted), their personal
@@ -234,10 +239,14 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	if out.Sessions, err = execCount(ctx, tx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 		return Removed{}, fmt.Errorf("auth: delete the user's sessions: %w", err)
 	}
-	// Each key's restriction rows follow it: api_key_accounts cascades on
-	// the key.
-	if out.Keys, err = execCount(ctx, tx, `DELETE FROM api_keys WHERE user_id = ?`, id); err != nil {
-		return Removed{}, fmt.Errorf("auth: delete the user's keys: %w", err)
+	// A key they created stays where it belongs, revoked, until its
+	// workspace goes: their personal workspace's and the teams' they were
+	// alone in below, with what they held (both cascade on the workspace);
+	// another team's stays as the team's record, without their name.
+	if out.Keys, err = execCount(ctx, tx, `UPDATE api_keys
+		SET revoked_at = CASE revoked_at WHEN 0 THEN ? ELSE revoked_at END, created_by = ''
+		WHERE created_by = ?`, u.now().Unix(), id); err != nil {
+		return Removed{}, fmt.Errorf("auth: revoke the user's keys: %w", err)
 	}
 	if out.Invites, err = execCount(ctx, tx,
 		`DELETE FROM invites WHERE email = ? OR used_by = ?`, email, id); err != nil {

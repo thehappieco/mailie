@@ -15,10 +15,12 @@
 // agreement the upgrade carried over confirmed; the team's people, their
 // roles and invitations, the link shown once; creating a team; turning her
 // own sync off, which reaches her personal workspace's mailboxes; an
-// invitation opened signed in; and, signed in as a member, the team
-// mailboxes she holds a grant on, seen without their folders, messages,
-// access or sync switch, with a line saying who manages the team's people,
-// and no Members. On desktop and phone, light and dark, then in Portuguese
+// invitation opened signed in; the team's API keys, a key given Read only
+// where its owner reads and Send elsewhere, shown in that mailbox's access
+// and taken out of it there; and, signed in as a member, the team mailboxes
+// she holds a grant on, seen without their folders, messages, access or sync
+// switch, with a line saying who manages the team's people, access and keys,
+// and no Members or API keys. On desktop and phone, light and dark, then in Portuguese
 // and German. It fails on a page error, a CSP violation, horizontal
 // scrolling and any server message drawn on a screen.
 //
@@ -42,7 +44,7 @@ const browser = await playwright[engine].launch({
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 /** The open console's revisions, the daemon's defaults (src/open/versions.ts). */
-const VERSIONS = { sync: '2026-10-open-sync-3', actions: '2026-10-open-actions-2', keys: '2026-10-open-api-keys' }
+const VERSIONS = { sync: '2026-10-open-sync-3', actions: '2026-10-open-actions-3', keys: '2026-10-open-api-keys-2' }
 const ANA = 'usr_00000000000000a1'
 const BEA = 'usr_00000000000000c1'
 const CAROL = 'usr_00000000000000c2'
@@ -90,13 +92,13 @@ function daemon() {
     origin, versions: VERSIONS, consented: true,
     extend: core => {
       team = teamModel(core)
-      return { methods: { team }, route: request => team.route(request) }
+      return { methods: { team }, route: request => team.route(request), keyWorkspace: (user, id) => team.keyWorkspace(user, id) }
     },
   })
   return instance
 }
 
-function teamModel({ users, accountsByUser, present, calls }) {
+function teamModel({ users, accountsByUser, present, calls, keys }) {
   const at = now() - 86400 * 20
   users.set('bea@example.test', { id: BEA, email: 'bea@example.test', name: 'Bea Lima', role: 'member', created_at: at, password: PASSWORD, consent: 0 })
   users.set('carol@example.test', { id: CAROL, email: 'carol@example.test', name: 'Carol Dias', role: 'member', created_at: at, password: PASSWORD, consent: 0 })
@@ -179,8 +181,24 @@ function teamModel({ users, accountsByUser, present, calls }) {
   const endInvites = (workspaceID, userID) => { for (const invite of invites) if (invite.workspace_id === workspaceID && invite.created_by === userID) invite.used = true }
   /** Who would be left reading each mailbox of a team without this person: a mailbox someone reads keeps a reader. */
   const lastReaderAnywhere = (workspaceID, userID) => teamAccounts.some(account => account.workspace_id === workspaceID && readersOf(account).length === 1 && readersOf(account)[0] === userID)
+  /** The live API keys holding something on a team mailbox, as its access directory lists them (service.MailboxKey). */
+  const keysOn = account => keys.filter(key => key.workspace_id === account.workspace_id && !key.revoked_at && key.expires_at > now())
+    .flatMap(key => key.mailboxes.filter(item => item.account_id === account.id).map(item => ({
+      prefix: key.prefix, name: key.name, scope: key.scope, read: item.read, act: item.act, send: item.send,
+      created_by: key.created_by, granted_by: item.granted_by, updated_at: item.updated_at,
+    })))
   return {
     grants, members, invites, workspaces, teamAccounts,
+    /** A workspace whose API keys the core's key routes keep: its owners and admins administer them; Read is given where they read. */
+    keyWorkspace(user, id) {
+      const me = membership(id, user.id)
+      const workspace = workspaces.get(id)
+      if (!me || !workspace) return null
+      const mailboxes = workspace.kind === 'personal'
+        ? (accountsByUser.get(user.id) ?? []).map(account => ({ id: account.id, reads: true }))
+        : teamAccounts.filter(account => account.workspace_id === id).map(account => ({ id: account.id, reads: stored(account.id, user.id).read }))
+      return { admin: me.role === 'owner' || me.role === 'admin', mailboxes }
+    },
     route({ path, method, json, fail, body, user, url, route }) {
       const query = url.searchParams
       if (path === '/v1/workspaces' && method === 'GET') {
@@ -272,6 +290,7 @@ function teamModel({ users, accountsByUser, present, calls }) {
               account_id: account.id, email: account.email, provider: account.provider, state: account.state, linked_by: account.linked_by,
               readers, no_reader: readers === 0, sync: presentConsent(account),
               grants: [...(grants.get(account.id) ?? new Map()).entries()].map(([userID, held]) => ({ account_id: account.id, user_id: userID, ...held, granted_by: account.linked_by, updated_at: now() })),
+              keys: keysOn(account),
             }
           }))
         }
@@ -613,6 +632,43 @@ for (const { language, mobile, scheme, full: everything } of passes) {
       await page.locator('.member-list').nth(1).getByText('dan@example.test').waitFor()
     }
 
+    // --- the team's API keys ------------------------------------------------------
+    // Ana, its owner, creates a key: Read on a mailbox she reads, never on
+    // one she does not, where she gives Send alone; the key shows in that
+    // mailbox's access, and is taken out of it there.
+    await openSection(tr('API keys & MCP'))
+    assert.match(await page.locator('.console-breadcrumb').innerText(), /Atendimento/, 'the keys are the team’s: the header names it')
+    await page.locator('.keys-section .empty-card').getByRole('button', { name: tr('Create key'), exact: true }).click()
+    const create = page.getByRole('dialog', { name: tr('Create an API key') })
+    await create.getByText(tr('The key belongs to {team}: its owners and admins see it, choose which of the team’s mailboxes it reaches and what it may do in each, and can revoke it. It reads only the mailboxes given to it by someone who reads them, and keeps what it is given until an owner or an admin takes it away.', { team })).waitFor()
+    await create.locator('input[name=key-name]').fill('Helpdesk')
+    await create.locator('input[name=scope][value=send]').check()
+    await create.locator(`input[name=${SUPPORT}-read]`).check()
+    assert.equal(await create.locator(`input[name=${FINANCE}-read]`).isDisabled(), true, 'no Read on a mailbox she does not read')
+    await create.locator(`input[name=${FINANCE}-send]`).check()
+    await shot('team-key-create')
+    await create.locator('button[type=submit]').click()
+    const shown = page.getByRole('dialog', { name: tr('Your new API key') })
+    await shown.waitFor()
+    assert.deepEqual(fake.calls.keys.at(-1).body.mailboxes, [{ account_id: SUPPORT, read: true, act: false, send: false }, { account_id: FINANCE, read: false, act: false, send: true }])
+    await shown.getByRole('button', { name: tr('Done'), exact: true }).click()
+    await shown.waitFor({ state: 'detached' })
+    await page.locator('.key-card', { hasText: 'Helpdesk' }).waitFor()
+    await shot('team-keys')
+    await openSection(tr('Mailboxes'))
+    await openSheet('financeiro@atendimento.example')
+    const holder = sheet.locator('.access-keys li', { hasText: 'Helpdesk' })
+    await holder.waitFor()
+    assert.ok(plain(await holder.innerText()).includes(tr('Send|access')), 'the key’s Send shows in the mailbox’s access')
+    await holder.scrollIntoViewIfNeeded()
+    await shot('access-keys')
+    await holder.getByRole('button', { name: tr('Take out of the key…') }).click()
+    await holder.getByRole('button', { name: tr('Take out of the key'), exact: true }).click()
+    await sheet.getByText(tr('No API key holds anything on this mailbox.')).waitFor()
+    assert.equal(fake.calls.keys.at(-1).method, 'DELETE')
+    await closeSheet()
+    await openSection(tr('Members'))
+
     // --- the personal workspace: creating a team ---------------------------------
     if (everything) {
       await chooseWorkspace(PERSONAL[ANA])
@@ -679,9 +735,11 @@ for (const { language, mobile, scheme, full: everything } of passes) {
     for (const item of [sendOnly, manageOnly]) assert.equal(await item.getByText(cannotRead).count(), 1, 'a card without Read says so')
     if (everything) assert.ok(plain(await card('vendas@atendimento.example').innerText()).includes(`${tr('Your access')} ${tr('Read')}`), 'the Read Ana left her shows')
     else assert.equal(await card('vendas@atendimento.example').count(), 0, 'a mailbox she holds nothing on is not there')
-    await page.getByText(tr('The people of {team}, and who can use each of its mailboxes, are managed by its owners and admins.', { team })).first().waitFor()
+    await page.getByText(tr('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team })).first().waitFor()
     assert.equal(await page.getByRole('button', { name: new RegExp(`^${tr('Connect an email account')}$`) }).count(), 0, 'a member is offered no connecting into the team')
-    assert.ok(!(await navItems()).includes(tr('Members')), 'a member is offered no Members')
+    const memberNav = await navItems()
+    assert.ok(!memberNav.includes(tr('Members')), 'a member is offered no Members')
+    assert.ok(!memberNav.includes(tr('API keys & MCP')), 'nor the team’s API keys')
     if (mobile) await sendOnly.scrollIntoViewIfNeeded()
     await shot('member-mailboxes')
 

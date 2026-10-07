@@ -1,3 +1,4 @@
 {
-  "http": true
+  "http": true,
+  "keys_send": true
 }

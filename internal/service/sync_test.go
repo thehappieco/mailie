@@ -15,6 +15,7 @@ import (
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // fakeSync stands in for the sync engine: it records what the service asks
@@ -132,7 +133,7 @@ func TestNothingIsStoredBeforeConsent(t *testing.T) {
 		t.Errorf("consent before asking = %+v", consent)
 	}
 
-	// Not by a key acting as her, not to an older or missing text, and not
+	// Not by a key of her workspace, not to an older or missing text, and not
 	// by her mailbox's being authorised again.
 	if _, err := f.svc.GrantSyncConsent(t.Context(), byKey, service.DefaultSyncConsentVersion); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Errorf("a key consented for its person: %v", err)
@@ -196,7 +197,7 @@ func TestAMailboxNobodyOwnsSyncsOnlyWhenAnInstanceAdminSwitchesItOn(t *testing.T
 	// Switching sync on for one is the operator's: not a restricted key's,
 	// not a reader's, and not an owner of the instance, who does not even
 	// see the operator workspace's mailboxes.
-	restricted := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, AccountIDs: []string{shared}}
+	restricted := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, AccountIDs: []string{shared}, WorkspaceID: workspace.OperatorID}
 	for name, p := range map[string]service.Principal{"restricted key": restricted, "reader": reader()} {
 		if _, err := f.svc.SetMailboxSync(t.Context(), p, shared, switchSync(true)); service.CodeOf(err) != service.CodeNotAuthorized {
 			t.Errorf("%s switched sync on: %v", name, err)
@@ -569,15 +570,7 @@ func TestTriggeringASyncNeedsConsentWriteScopeAndARunningEngine(t *testing.T) {
 	if _, err := f.svc.GrantSyncConsent(t.Context(), ana, service.DefaultSyncConsentVersion); err != nil {
 		t.Fatal(err)
 	}
-	secret, _, err := f.keys.Issue(t.Context(), auth.NewKeyRequest{Name: "ro", Scope: auth.ScopeRead, UserID: ana.UserID,
-		TermsVersion: service.DefaultKeyTermsVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
-	readKey, err := f.svc.Authenticate(t.Context(), secret, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
+	readKey := keyOf(t, f, ana, auth.ScopeRead)
 	if err := f.svc.TriggerSync(t.Context(), readKey, anas); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Errorf("a read key asked for a pass: %v", err)
 	}

@@ -367,9 +367,9 @@ func TestMigrationFiveKeepsEveryKeyAndRecordsNoAgreementForThem(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed a phase 3b database: %v", err)
 	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate: %v", err)
-	}
+	// Up to 0011: migration 0012 moves people's keys into their workspace,
+	// and TestMigrationTwelve* hold what it does.
+	migrateTo(t, s, 11)
 	rows, err := s.Reader().QueryContext(ctx,
 		`SELECT prefix, scope, coalesce(user_id, ''), revoked_at, terms_version, created_by FROM api_keys ORDER BY prefix`)
 	if err != nil {

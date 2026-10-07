@@ -47,10 +47,10 @@ type ExternalSignIn struct {
 	UserAgent string
 	// TTL is how long the session lasts: more than nothing, at most
 	// auth.SessionTTL. Nothing extends it. It bounds the session, not what
-	// the person does with it: a personal key they create while signed in
-	// (CreateMyAPIKey) lasts what they chose for it, and until the provider
-	// can tell this server it closed someone, disabling the person here is
-	// what revokes their keys.
+	// the person does with it: a key they create in a workspace while signed
+	// in (CreateWorkspaceKey) lasts what they chose for it, and until the
+	// provider can tell this server it closed someone, disabling the person
+	// here is what revokes the keys they created.
 	TTL time.Duration
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // fetches counts the calls of one method the fake saw.
@@ -39,7 +40,7 @@ func TestDownloadsBeyondTheSpoolBudgetAreRefusedUntilOneEnds(t *testing.T) {
 		t.Fatalf("the first download: %v", err)
 	}
 	// Another caller, so only the bytes can be what refuses it.
-	other := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead}
+	other := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, WorkspaceID: workspace.OperatorID}
 	_, err = m.svc.GetRaw(t.Context(), other, msgID)
 	wantCode(t, "a download past the budget", err, service.CodeRateLimited)
 	if service.RetryAfterOf(err) <= 0 {
@@ -87,7 +88,7 @@ func TestOneCallerCannotTakeEveryDownloadPlace(t *testing.T) {
 	wantCode(t, "a third download in flight", err, service.CodeRateLimited)
 
 	// Somebody else is not held up by it.
-	other := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead}
+	other := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeRead, WorkspaceID: workspace.OperatorID}
 	theirs, err := m.svc.GetAttachment(t.Context(), other, msgID, "3")
 	if err != nil {
 		t.Fatalf("another caller's download: %v", err)
@@ -102,13 +103,14 @@ func TestOneCallerCannotTakeEveryDownloadPlace(t *testing.T) {
 	readAll(t, third)
 	readAll(t, first)
 
-	// A person's places are theirs, whichever of their credentials asks.
+	// A person's places are theirs, whichever of their sessions asks; a key
+	// acts as nobody, and has places of its own.
 	ana := m.person(t, "ana@example.com", auth.RoleMember)
 	anas, anaBox := m.fakeAccount(t, ana, "ana@mail.example")
 	anaUID := deliverReport(anaBox, time.Unix(1_790_000_000, 0))
 	m.index(t, anas, anaBox)
 	anaMsg := m.messageID(t, anas, "INBOX", anaUID)
-	anaKey := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeRead, UserID: ana.UserID, UserRole: ana.UserRole}
+	anaKey := keyOf(t, m.fixture, ana, auth.ScopeRead)
 	for range 2 {
 		dl, err := m.svc.GetRaw(t.Context(), ana, anaMsg)
 		if err != nil {
@@ -116,8 +118,17 @@ func TestOneCallerCannotTakeEveryDownloadPlace(t *testing.T) {
 		}
 		defer func() { _ = dl.Body.Close() }()
 	}
+	_, err = m.svc.GetRaw(t.Context(), ana, anaMsg)
+	wantCode(t, "a third download in her sessions", err, service.CodeRateLimited)
+	for range 2 {
+		dl, err := m.svc.GetRaw(t.Context(), anaKey, anaMsg)
+		if err != nil {
+			t.Fatalf("a key of her workspace, while she holds two: %v", err)
+		}
+		defer func() { _ = dl.Body.Close() }()
+	}
 	_, err = m.svc.GetRaw(t.Context(), anaKey, anaMsg)
-	wantCode(t, "the person's key, with two downloads open in their session", err, service.CodeRateLimited)
+	wantCode(t, "the key's own third download", err, service.CodeRateLimited)
 }
 
 func TestADownloadThatFailsGivesItsPlaceBack(t *testing.T) {

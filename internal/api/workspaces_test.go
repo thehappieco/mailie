@@ -309,53 +309,6 @@ func TestAnOwnerOrAdminSeesATeamMailboxsCardAndReadsNoneOfItOverREST(t *testing.
 	}
 }
 
-func TestAStreamWhoseKeyLostAMailboxEndsWithAConflictAndReconnects(t *testing.T) {
-	// Bea's key was made for the team's mailbox and her own. Losing read on
-	// the team's takes it out of the key, and the stream opened with the key
-	// as it was ends: not with unauthorized, which would tell her tool its
-	// key is dead, but with a conflict, after which the same key opens a
-	// stream of what it still names.
-	h := newHarnessWith(t, func(h *api.Handler) { h.EventPing = 30 * time.Millisecond }, serviceOptions{})
-	tm := newSupportTeam(t, h)
-	tm.grant(t, h, `{"read":true,"act":false,"send":false,"manage":false}`)
-	resp := h.do(t, http.MethodPost, "/v1/me/apikeys", tm.bea, fmt.Sprintf(
-		`{"name":"assistant","scope":"read","account_ids":[%q,%q],"terms_version":%q}`,
-		tm.shared, tm.own, service.DefaultKeyTermsVersion))
-	if resp.StatusCode != http.StatusCreated {
-		code, msg := decodeError(t, resp)
-		t.Fatalf("creating the key: %d %s %s", resp.StatusCode, code, msg)
-	}
-	var created struct {
-		Key string `json:"key"`
-	}
-	decodeInto(t, resp, &created)
-	held := h.openStream(t, "/v1/events", created.Key, "")
-	h.publish(t, mailEvent(t, tm.shared, "Refund"))
-	if f, ok := held.next(t); !ok || f.event != "message.new" {
-		t.Fatalf("before: %+v", f)
-	}
-
-	if resp := h.do(t, http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, ""); resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("revoking: %d", resp.StatusCode)
-	}
-	f, ok := held.next(t)
-	if !ok || f.event != "error" || !strings.Contains(f.data, `"code":"conflict"`) {
-		t.Fatalf("after the key lost the mailbox the stream sent %+v, want its end with a conflict", f)
-	}
-	if f, ok := held.next(t); ok {
-		t.Errorf("the stream went on: %+v", f)
-	}
-
-	again := h.openStream(t, "/v1/events", created.Key, "")
-	if again.resp.StatusCode != http.StatusOK {
-		t.Fatalf("reconnecting with the same key: %d", again.resp.StatusCode)
-	}
-	h.publish(t, mailEvent(t, tm.shared, "Second refund"), mailEvent(t, tm.own, "Her own"))
-	if f, ok := again.next(t); !ok || f.event != "message.new" || subjectOf(t, f) != "Her own" {
-		t.Errorf("the new stream: %+v", f)
-	}
-}
-
 func TestRemovingAMemberRemovesTheirGrantsAndStopsTheirEventStream(t *testing.T) {
 	h := newHarnessWith(t, func(h *api.Handler) { h.EventPing = 30 * time.Millisecond }, serviceOptions{})
 	tm := newSupportTeam(t, h)
@@ -498,13 +451,13 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 		t.Fatal(err)
 	}
 	accept := fmt.Sprintf(`{"invite":%q}`, fragment.Get("invite"))
-	status(http.MethodPost, "/v1/auth/invites/accept", authtest.NewKey(t, h.store, auth.ScopeAdmin, ""), accept,
+	status(http.MethodPost, "/v1/auth/invites/accept", authtest.NewKey(t, h.store, auth.ScopeAdmin), accept,
 		http.StatusForbidden)
 	status(http.MethodPost, "/v1/auth/invites/accept", tm.bea, accept, http.StatusForbidden)
 	status(http.MethodPost, "/v1/auth/invites/accept", carol, accept, http.StatusOK)
 
-	// Access: every flag is required, a flag list is checked, and a
-	// person's key administers nothing. Bea is an admin now, who manages by
+	// Access: every flag is required, a flag list is checked, and a key
+	// administers nothing. Bea is an admin now, who manages by
 	// her role: manage is stored for members only.
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, `{"read":true}`, http.StatusBadRequest)
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
@@ -518,8 +471,8 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	var created struct {
 		Key string `json:"key"`
 	}
-	decodeInto(t, status(http.MethodPost, "/v1/me/apikeys", tm.bea, fmt.Sprintf(`{"name":"assistant","scope":"write",`+
-		`"terms_version":%q}`, service.DefaultKeyTermsVersion), http.StatusCreated), &created)
+	decodeInto(t, status(http.MethodPost, "/v1/workspaces/"+tm.id+"/apikeys", tm.bea, fmt.Sprintf(`{"name":"assistant",`+
+		`"scope":"write","terms_version":%q}`, service.DefaultKeyTermsVersion), http.StatusCreated), &created)
 	beaKey := created.Key
 	status(http.MethodGet, "/v1/workspaces", beaKey, "", http.StatusOK)
 	status(http.MethodGet, "/v1/workspaces/"+tm.id+"/members", beaKey, "", http.StatusForbidden)

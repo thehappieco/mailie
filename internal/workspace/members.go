@@ -193,12 +193,12 @@ type MemberChange struct {
 // which the role gives (the schema's trigger); taking that role away ends the
 // consent attempts they started on the team's mailboxes, which they manage no
 // longer. Disabling a membership deletes the person's grants in the workspace
-// in the same transaction, drops those mailboxes from the restrictions of the
-// person's keys, ends the consent attempts they started on them and deletes
-// the team's invites still waiting for their address (leaveTx); enabling it
-// again restores the membership only. Refused: leaving the team without an
-// active owner (ErrLastOwner), and disabling the last reader of one of its
-// mailboxes (ErrLastReader).
+// in the same transaction, ends the consent attempts they started on its
+// mailboxes and deletes the team's invites still waiting for their address
+// (leaveTx); enabling it again restores the membership only. The keys they
+// created stay, as a demotion leaves them: they are the workspace's. Refused:
+// leaving the team without an active owner (ErrLastOwner), and disabling the
+// last reader of one of its mailboxes (ErrLastReader).
 func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, change MemberChange, check Check) (Member, error) {
 	if change.Role != nil {
 		if _, err := ParseRole(string(*change.Role)); err != nil {
@@ -277,12 +277,13 @@ func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, 
 }
 
 // RemoveMember removes a person from a team. Their grants there go with the
-// membership, those mailboxes leave the restrictions of their keys, the
-// consent attempts they started on them end, the team's invites still
-// waiting for their address are deleted, so a leftover invite cannot bring
-// them back, and the invites they created there expire, in the same
-// transaction. Refused for the last active owner (ErrLastOwner) and the last
-// reader of one of the team's mailboxes (ErrLastReader).
+// membership, the consent attempts they started on its mailboxes end, the
+// team's invites still waiting for their address are deleted, so a leftover
+// invite cannot bring them back, the invites they created there expire, and
+// the keys they created there are revoked (a key carried over from theirs
+// loses the team's mailboxes), in the same transaction. Refused for the last
+// active owner (ErrLastOwner) and the last reader of one of the team's
+// mailboxes (ErrLastReader).
 func (r *Repository) RemoveMember(ctx context.Context, workspaceID, userID string, check Check) error {
 	now := r.now().Unix()
 	return r.store.Write(ctx, func(tx *sql.Tx) error {
@@ -312,6 +313,9 @@ func (r *Repository) RemoveMember(ctx context.Context, workspaceID, userID strin
 		if err := expireInvitesByTx(ctx, tx, workspaceID, userID, now); err != nil {
 			return err
 		}
+		if _, err := revokeCreatedInTx(ctx, tx, workspaceID, userID, now); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, workspaceID, userID); err != nil {
 			return fmt.Errorf("workspace: remove member: %w", err)
@@ -334,19 +338,10 @@ func expireInvitesByTx(ctx context.Context, tx *sql.Tx, workspaceID, userID stri
 }
 
 // leaveTx is what a member losing their place in a workspace takes with it:
-// their grants there, those mailboxes in their keys' restrictions, the
-// consent attempts they started on them, and the team's invites still
-// waiting for their address. The last-reader rule is the caller's to have
-// checked.
+// their grants there, the consent attempts they started on its mailboxes,
+// and the team's invites still waiting for their address. The last-reader
+// rule is the caller's to have checked.
 func leaveTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error {
-	readable, err := listIDs(ctx, tx, `SELECT account_id FROM mailbox_access WHERE workspace_id = ? AND user_id = ? AND read = 1`,
-		workspaceID, userID)
-	if err != nil {
-		return err
-	}
-	if err := forgetInKeysTx(ctx, tx, userID, readable); err != nil {
-		return err
-	}
 	// Whatever consent attempt they started on a mailbox here ends: they
 	// manage none of them any more (dropAttemptsTx).
 	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
@@ -410,28 +405,4 @@ func listIDs(ctx context.Context, q querier, query string, args ...any) ([]strin
 		return nil, fmt.Errorf("workspace: list ids: %w", err)
 	}
 	return ids, nil
-}
-
-// forgetInKeysTx takes mailboxes a person can no longer read out of the
-// restrictions of that person's keys. A key made for those mailboxes alone is
-// left with no restriction rows and is revoked by the trigger of migration
-// 0005, as when a mailbox is removed: it does not wake up again if the person
-// is granted access later. A key with other mailboxes left keeps working for
-// those; a caller still holding what it authenticated as before — a stdio
-// session, a subscription, an event stream — is refused at its next re-check
-// (auth.Keys.Recheck), so it never reaches the mailbox again either.
-func forgetInKeysTx(ctx context.Context, tx *sql.Tx, userID string, accountIDs []string) error {
-	if len(accountIDs) == 0 {
-		return nil
-	}
-	list, err := json.Marshal(accountIDs)
-	if err != nil {
-		return fmt.Errorf("workspace: encode ids: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM api_key_accounts
-		WHERE account_id IN (SELECT value FROM json_each(?))
-		  AND key_prefix IN (SELECT prefix FROM api_keys WHERE user_id = ?)`, string(list), userID); err != nil {
-		return fmt.Errorf("workspace: take lost mailboxes out of keys: %w", err)
-	}
-	return nil
 }

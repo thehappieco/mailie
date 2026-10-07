@@ -640,11 +640,16 @@ func TestACheckOpensASessionWithTheKeyAndClosesIt(t *testing.T) {
 		t.Errorf("no key: %v", err)
 	}
 
-	// A key an administrator made for a person is not a tool's credential.
+	// A key nobody agreed to the key terms through is not a tool's
+	// credential.
 	ana := authtest.NewUser(t, m.store, "ana@example.com", auth.RoleMember)
-	madeForAna := authtest.NewKey(t, m.store, auth.ScopeRead, ana.ID)
-	if err := mcpbridge.Check(t.Context(), mcpbridge.Options{Endpoint: m.endpoint(), Key: madeForAna}); !errors.Is(err, mcpbridge.ErrKeyNotAllowed) {
-		t.Errorf("an administrator's key for a person: %v", err)
+	unagreed := authtest.NewWorkspaceKey(t, m.store, auth.ScopeRead, authtest.Personal(t, m.store, ana.ID), ana.ID)
+	if _, err := m.store.Writer().ExecContext(t.Context(), `UPDATE api_keys SET terms_version = '' WHERE prefix = ?`,
+		authtest.Prefix(unagreed)); err != nil {
+		t.Fatal(err)
+	}
+	if err := mcpbridge.Check(t.Context(), mcpbridge.Options{Endpoint: m.endpoint(), Key: unagreed}); !errors.Is(err, mcpbridge.ErrKeyNotAllowed) {
+		t.Errorf("a key nobody agreed to the terms of: %v", err)
 	}
 }
 

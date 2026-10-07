@@ -85,6 +85,15 @@ export function administers(workspace: Workspace | undefined): boolean {
   return workspace?.kind === 'team' && (workspace.role === 'owner' || workspace.role === 'admin') && workspace.status !== 'disabled'
 }
 
+/**
+ * Whether the caller sees, creates and revokes the workspace's API keys: an
+ * owner or an admin of a team, active in it, or the person of their personal
+ * workspace. A member of a team sees none; nobody's is the operator's.
+ */
+export function administersKeys(workspace: Workspace | undefined): boolean {
+  return (workspace?.kind === 'personal' && workspace.status !== 'disabled') || administers(workspace)
+}
+
 /** Whether the caller may link a mailbox into the workspace: their personal one, or a team they own or administer. */
 export function canLinkInto(workspace: Workspace | undefined): boolean {
   return workspace?.kind === 'personal' || administers(workspace)

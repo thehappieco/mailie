@@ -8,22 +8,24 @@
 // The handlers run with the daemon's default consent revisions, which are the
 // open console's texts (src/open/versions.ts). The fixtures of the routes the
 // open console never calls (messages, actions on them, sending) are checked
-// by the edition that reads them.
+// by the edition that reads them; a key's sends, which its workspace's owners
+// and admins list, are the console's.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EventStreamParser } from '../src/api/events'
 import {
-  isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isMailboxAccessList, isMe,
-  isMember, isMemberList, isMessageNew, isMcpAccess, isPersonalKeyList, isProviderList, isServerEvent, isSessionReply, isStorage, isSyncConsent,
-  isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceList, hasPassword,
+  isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
+  isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
+  isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
-  type MailboxAccess, type Me, type Member, type PersonalKey, type Provider, type ServerEvent, type SessionReply, type Storage, type SyncConsent,
-  type TeamInvite, type User, type WaitResult, type Workspace,
+  type KeyMailbox, type KeySend, type MailboxAccess, type McpAccess, type Me, type Member, type Provider, type ServerEvent, type SessionReply,
+  type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace, type WorkspaceKey,
 } from '../src/api/types'
 import { invitationLink } from '../src/api/workspaces'
 import { grantChange } from '../src/ui/access'
-import { listed } from '../src/api/apikeys'
+import { heldOn, listed } from '../src/api/apikeys'
+import { keyStanding, scopeActs } from '../src/ui/apikeys'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
 import { signupLink } from '../src/ui/signupLink'
 
@@ -61,8 +63,11 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['folders_indexed', value => Array.isArray(value) && value.every(item => isFolder(item, true))],
   ['actions_consent', value => isSyncConsent(value, true)],
   ['actions_consent_given', value => isSyncConsent(value, true)],
-  ['apikeys', value => isPersonalKeyList(value, true)],
+  ['apikeys', value => isWorkspaceKeyList(value, true)],
+  ['my_apikeys', value => isWorkspaceKeyList(value, true)],
   ['apikey_created', value => isCreatedKey(value, true)],
+  ['key_access', value => isKeyMailbox(value, true)],
+  ['key_sends', value => isKeySendList(value, true)],
   ['send_consent', value => isSyncConsent(value, true)],
   ['send_consent_given', value => isSyncConsent(value, true)],
   ['storage', value => isStorage(value, true)],
@@ -238,18 +243,88 @@ describe('the HTTP contract the Go handlers answer with', () => {
 
   it('hands a new key’s secret over once, under its own prefix, with the text it was created under, and never lists it', () => {
     const created = fixture('apikey_created') as CreatedKey
-    const list = fixture('apikeys') as PersonalKey[]
+    const lists = [fixture('apikeys'), fixture('my_apikeys')] as WorkspaceKey[][]
     expect(created.terms_version).toBe(KEY_TERMS_VERSION)
     expect(created.key.startsWith(`${created.prefix}.`)).toBe(true)
-    // The list the console keeps is exactly what the handler lists: nothing dropped, and no secret to drop.
-    expect(list.length).toBeGreaterThan(0)
-    for (const key of list) {
-      expect(key, key.prefix).not.toHaveProperty('key')
-      expect(listed(key), key.prefix).toEqual(key)
-      expect(JSON.stringify(key)).not.toContain(created.key.split('.')[1])
+    for (const list of lists) {
+      // The list the console keeps is exactly what the handler lists: nothing dropped, and no secret to drop.
+      expect(list.length).toBeGreaterThan(0)
+      for (const key of list) {
+        expect(key, key.prefix).not.toHaveProperty('key')
+        expect(listed(key), key.prefix).toEqual(key)
+        expect(JSON.stringify(key)).not.toContain(created.key.split('.')[1])
+      }
+      // Live keys first, then the ones revoked or expired, which stay listed.
+      const live = list.map(key => key.live)
+      expect(live).toEqual([...live].sort((a, b) => Number(b) - Number(a)))
+      expect(live).toContain(false)
+      for (const key of list) expect(key.live, key.prefix).toBe(keyStanding(key, 1_790_000_000_000) === 'live')
     }
-    // A person's keys read or act; sending is not a person's scope yet.
-    expect([created, ...list].every(key => key.scope === 'read' || key.scope === 'write')).toBe(true)
+  })
+
+  it('makes every key its workspace’s, holding only that workspace’s mailboxes, each flag within its scope', () => {
+    const keys = [fixture('apikey_created'), ...(fixture('apikeys') as WorkspaceKey[]), ...(fixture('my_apikeys') as WorkspaceKey[])] as WorkspaceKey[]
+    const workspaces = new Set((fixture('workspaces') as Workspace[]).map(item => item.id))
+    for (const key of keys) {
+      expect(key.carried_over, key.prefix).toBeUndefined()
+      expect(workspaces.has(key.workspace_id!), key.prefix).toBe(true)
+      for (const held of key.mailboxes) {
+        expect(held.workspace_id, key.prefix).toBe(key.workspace_id)
+        if (held.act) expect(scopeActs(key.scope) && held.read, key.prefix).toBe(true)
+        if (held.send) expect(key.scope, key.prefix).toBe('send')
+      }
+      // The daemon that writes the fixtures lets its keys send: only a key of the send scope can.
+      expect(key.sends, key.prefix).toBe(key.scope === 'send')
+    }
+    // A key carried over from before has no workspace, and only it counts the others.
+    const listedKey = (fixture('apikeys') as WorkspaceKey[])[0]!
+    const { workspace_id: _, ...carried } = listedKey
+    expect(isWorkspaceKeyList([{ ...carried, carried_over: true, other_workspaces: 2, mailboxes: [] }], true)).toBe(true)
+    expect(isWorkspaceKeyList([{ ...listedKey, other_workspaces: 2 }], true)).toBe(false)
+    expect(isWorkspaceKeyList([{ ...listedKey, carried_over: true }], true)).toBe(false)
+    // Never act without read, and never a mailbox held with nothing.
+    const held = listedKey.mailboxes[0]!
+    expect(isKeyMailbox({ ...held, read: false, act: true }, true)).toBe(false)
+    expect(isKeyMailbox({ ...held, read: false, act: false, send: false }, true)).toBe(false)
+  })
+
+  it('answers what a key holds on a mailbox with exactly the flags set, and who set them', () => {
+    const held = fixture('key_access') as KeyMailbox
+    expect(heldOn(held)).toEqual(held)
+    expect(held.act && held.read).toBe(true)
+    expect(held.granted_by).toMatch(/^usr_/)
+  })
+
+  it('lists a key’s sends as the record the server keeps: never who a message went to, its subject or its text', () => {
+    const sends = fixture('key_sends') as KeySend[]
+    expect(sends.length).toBeGreaterThan(0)
+    for (const send of sends) {
+      expect(Object.keys(send).sort()).toEqual(['account_id', 'attempts', 'created_at', 'idempotency_key', 'message_id', 'recipients', 'sent_at', 'sent_copy', 'state', 'updated_at'])
+      expect(send.recipients).toBeGreaterThan(0)
+    }
+  })
+
+  it('says whether this server’s keys may send, beside whether it serves MCP over HTTP', () => {
+    const access = fixture('mcp') as McpAccess
+    expect(access).toEqual({ http: true, keys_send: true })
+    // An older server says only the first: the running console reads that as keys that do not send.
+    expect(isMcpAccess({ http: true })).toBe(true)
+    expect(isMcpAccess({ http: true }, true)).toBe(false)
+  })
+
+  it('lists each mailbox’s live keys in the access directory, and never counts them as readers', () => {
+    const directory = fixture('access') as MailboxAccess[]
+    const keyed = directory.filter(entry => (entry.keys ?? []).length > 0)
+    expect(keyed.length).toBeGreaterThan(0)
+    for (const entry of directory) {
+      expect(entry.keys, entry.account_id).toBeDefined()
+      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => grant.read).length)
+      for (const key of entry.keys!) if (key.act) expect(scopeActs(key.scope) && key.read, key.prefix).toBe(true)
+    }
+    // Always listed, [] for none: a directory without them is not this daemon's.
+    const { keys: _, ...older } = directory[0]!
+    expect(isMailboxAccessList([older], true)).toBe(false)
+    expect(isMailboxAccessList([older])).toBe(true)
   })
 
   it('names the revision of a sending text the open console does not show, apart from the others', () => {

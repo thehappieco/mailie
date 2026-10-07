@@ -14,6 +14,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // actionsHarness is ana, signed in, with a mailbox on a fake server that
@@ -85,11 +86,8 @@ func actionResult(t *testing.T, resp *http.Response) service.ActionResult {
 func TestTheActionRoutesNeedTheWriteScope(t *testing.T) {
 	h := newActionsHarness(t)
 	h.allow(t)
-	readKey, _, err := h.keys.Issue(t.Context(), auth.NewKeyRequest{Name: "reader", Scope: auth.ScopeRead, UserID: h.userID,
-		TermsVersion: service.DefaultKeyTermsVersion})
-	if err != nil {
-		t.Fatal(err)
-	}
+	readKey := authtest.NewWorkspaceKey(t, h.store, auth.ScopeRead, authtest.Personal(t, h.store, h.userID), h.userID,
+		workspace.KeyGrant{AccountID: h.account, Flags: workspace.Flags{Read: true}})
 	for _, route := range []struct{ method, path, body string }{
 		{http.MethodPatch, fmt.Sprintf("/v1/messages/%d", h.msg), `{"seen":true}`},
 		{http.MethodPost, "/v1/messages/flags", fmt.Sprintf(`{"ids":[%d],"seen":true}`, h.msg)},
@@ -170,16 +168,14 @@ func TestAMoveTakesAFolderIDAsAStringOrANumberAndATrashIsItsOwnRoute(t *testing.
 
 func TestTheActionsConsentRoutesAreThePersonsLikeTheSyncConsents(t *testing.T) {
 	h := newActionsHarness(t)
-	personKey, _, err := h.keys.Issue(t.Context(), auth.NewKeyRequest{Name: "hers", Scope: auth.ScopeAdmin, UserID: h.userID,
-		TermsVersion: service.DefaultKeyTermsVersion})
-	if err != nil {
-		t.Fatal(err)
+	// A key of her workspace acts as nobody: it neither reads her consent
+	// nor gives it.
+	key := authtest.NewWorkspaceKey(t, h.store, auth.ScopeSend, authtest.Personal(t, h.store, h.userID), h.userID)
+	resp := h.do(t, http.MethodGet, "/v1/me/actions-consent", key, "")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a key of her workspace reading her consent: %d", resp.StatusCode)
 	}
-	resp := h.do(t, http.MethodGet, "/v1/me/actions-consent", personKey, "")
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("her key reading: %d", resp.StatusCode)
-	}
-	resp = h.do(t, http.MethodPost, "/v1/me/actions-consent", personKey, `{"version":"`+service.DefaultActionsConsentVersion+`"}`)
+	resp = h.do(t, http.MethodPost, "/v1/me/actions-consent", key, `{"version":"`+service.DefaultActionsConsentVersion+`"}`)
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("a key agreeing for her answered %d", resp.StatusCode)
 	}

@@ -66,21 +66,25 @@ folder listing the mail server refuses, removal (with the mailbox's id repeated 
 daemon requires), the account section and an expired session, on desktop and phone, light and dark,
 then in pt-BR and German; then sync (the consent card, the first sync over the event stream with
 `Last-Event-ID` on every reconnection, Sync now, folders from the index, turning it off, the text
-changing while the page is open, a revoked session), actions in the Account section (allowing them
-offers Read and act on a new key; a consent to an older text is paused), API keys and the MCP
-endpoint at this origin (the key shown once, copied, never kept), and Storage (a mailbox whose
-account needs authorizing again keeps its index; turning sync off reads the figures again), and API
-keys on a server with MCP over HTTP off (no address, no command). It fails on a page error, a CSP
+changing while the page is open, a revoked session), actions in the Account section (a consent to
+an older text is paused), the API keys of the personal workspace and the MCP endpoint at this
+origin (each scope; what a key holds ticked mailbox by mailbox; the key shown once, copied, never
+kept; a mailbox given to it from its sheet, its sends; revoked, and listed among the keys the
+person created in Account), API keys on a server with MCP over HTTP off (no address, no command)
+and on one whose keys do not send (no send scope), and Storage (a mailbox whose account needs
+authorizing again keeps its index; turning sync off reads the figures again). It fails on a page error, a CSP
 violation, horizontal scrolling, any legal link, byline or company name, and any request to the
 message or sending routes, which its fake daemon does not implement.
 `QA_ONLY=console|sync|actions|keys|storage` runs one group.
 
 The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and sessions, mailboxes
-and their OAuth flows, sync and the event stream, actions consent, API keys, `GET /v1/me/mcp`,
-storage) and the helpers the QA scripts share. Another edition's QA imports it and adds its own
-routes and state through `extend` (the cloud app's adds Mail and sending), so a change to the core's
-contract is made once. Without workspaces it answers `GET /v1/workspaces` with `404`, as a server
-older than them would, and every list is the person's whole.
+and their OAuth flows, sync and the event stream, actions consent, a workspace's API keys and the
+ones a person created, `GET /v1/me/mcp`, storage) and the helpers the QA scripts share. Another
+edition's QA imports it and adds its own routes and state through `extend` (the cloud app's adds
+Mail and sending), so a change to the core's contract is made once. Unless asked to list each
+person's personal workspace (`personal`, which the keys pass sets, as a server with workspaces
+does), it answers `GET /v1/workspaces` with `404`, as a server older than them would, and every
+list is the person's whole.
 
 `test/browser/teams.mjs` adds workspaces through the same `extend`: Ana's personal workspace, a team
 she owns whose mailboxes are the team's (one Bea linked and synced for the team, which Ana reads
@@ -94,8 +98,10 @@ said beforehand; a team mailbox's sync turned on for the team after its text, an
 agreement confirmed; the team's people (the last reader marked, a role changed and back, an
 invitation's link shown once, kept through Escape, copied and gone with its dialog); creating a
 team; turning her own sync off, which reaches her personal workspace's mailboxes; an invitation
-opened signed in; and then Carol, a member: her cards without folders, messages, access, sync switch
-or removal, a line saying who manages the team's people, and no Members. On desktop and phone,
+opened signed in; the team's API keys (a key given Read on the mailbox Ana reads and Send on one
+she does not, where she cannot give Read; the key in that mailbox's access, taken out of it there);
+and then Carol, a member: her cards without folders, messages, access, sync switch or removal, a
+line saying who manages the team's people, access and API keys, and no Members or API keys. On desktop and phone,
 light and dark, then in Portuguese and German, with the words each language expects read from the
 console's catalogs. It takes the same `QA_*` variables as `console.mjs`.
 

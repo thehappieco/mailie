@@ -6,6 +6,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func TestAnAPIKeyCannotUseTheSessionUseCases(t *testing.T) {
@@ -76,7 +77,7 @@ func TestARestrictedAdminKeyCannotMintAWiderKey(t *testing.T) {
 	f := newFixture(t)
 	a := f.mailbox(t, admin(), "a@mail.example")
 	b := f.mailbox(t, admin(), "b@mail.example")
-	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{a}}
+	restricted := service.Principal{KeyPrefix: "cccccccc", Scope: auth.ScopeAdmin, AccountIDs: []string{a}, WorkspaceID: workspace.OperatorID}
 
 	for name, ids := range map[string][]string{"every account": nil, "another account": {b}, "one more": {a, b}} {
 		_, err := f.svc.CreateAPIKey(t.Context(), restricted, service.CreateAPIKeyRequest{
@@ -101,7 +102,7 @@ func TestARestrictedAdminKeyCannotMintAWiderKey(t *testing.T) {
 	}
 
 	// Nor higher, and never from a person.
-	send := service.Principal{KeyPrefix: "eeeeeeee", Scope: auth.ScopeSend}
+	send := service.Principal{KeyPrefix: "eeeeeeee", Scope: auth.ScopeSend, WorkspaceID: workspace.OperatorID}
 	if _, err := f.svc.CreateAPIKey(t.Context(), send, service.CreateAPIKeyRequest{Name: "x", Scope: "admin"}); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Errorf("a send key minted an admin key: %v", err)
 	}

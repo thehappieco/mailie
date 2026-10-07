@@ -457,8 +457,9 @@ func (g *eventGate) allow(ev events.Event) bool {
 // mailbox's but one sender's record: several people may send from a shared
 // mailbox, and its key and outcome are theirs. It goes to exactly whoever may
 // read that record (SendStatus): the person who sent it, with the send scope
-// and the send flag on the mailbox now, read or not; an instance key's send,
-// to the instance keys with the send scope that reach the mailbox.
+// and the send flag on the mailbox now, read or not; a workspace key's send,
+// to that key, as long as it may send from the mailbox; an instance key's
+// send, to the instance keys with the send scope that reach the mailbox.
 func (g *eventGate) allowEvent(typ, accountID string, payload json.RawMessage) bool {
 	if typ == string(events.TypeSendFinished) {
 		return g.allowSendFinished(accountID, payload)
@@ -478,8 +479,8 @@ func (g *eventGate) allowSendFinished(accountID string, payload json.RawMessage)
 		return false
 	}
 	var sent store.SendFinished
-	if err := json.Unmarshal(payload, &sent); err != nil || sent.UserID != g.p.UserID {
-		// Another person's send, or, for a person, an instance key's.
+	if err := json.Unmarshal(payload, &sent); err != nil || !ownsSend(g.p, sent.UserID, sent.SentBy) {
+		// Another person's send, or another key's.
 		return false
 	}
 	return g.decide(accountID, true)

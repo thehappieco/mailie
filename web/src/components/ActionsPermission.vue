@@ -1,7 +1,9 @@
 <script setup lang="ts">
 // Actions on the person's messages in the account section, switched like
 // sync: on, after the edition's text of what actions change; off, after
-// saying that nothing is deleted and they stop. Allowed to an older text,
+// saying that nothing is deleted and they stop. What stops is what the
+// person asks for: a workspace's API key given Act acts under the key terms,
+// not under this switch, so nothing here says the mailboxes stop changing. Allowed to an older text,
 // they are paused (the server refuses them): the row says so and offers the
 // new text to agree to, or to turn them off.
 import { computed, inject, ref } from 'vue'
@@ -25,7 +27,7 @@ const summary = computed(() => {
   if (renewing.value) return text.changedSince(dayStamp(actionsConsent.consentedAt))
   return actionsConsent.consented
     ? t('Allowed since {date}. Mailie changes your mailbox only when you ask.', { date: dayStamp(actionsConsent.consentedAt) })
-    : t('Off. Mailie does not change anything in your mailboxes.')
+    : t('Off. Mailie does not change your mailboxes when you ask.')
 })
 const paused = computed(() => renewing.value ? { agree: t('Review and agree'), off: t('Turn off actions') } : null)
 const textChanged = computed(actionsTextOutdated)
@@ -46,7 +48,7 @@ async function change() {
   dialog.value = ''
   const done = turningOn
     ? () => t('Actions are on. Mailie changes your mailbox only when you ask.')
-    : () => t('Actions are off. Mailie no longer changes anything in your mailboxes.')
+    : () => t('Actions are off. Mailie no longer changes your mailboxes when you ask.')
   notice.show(done)
   announce(done())
 }

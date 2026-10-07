@@ -164,3 +164,54 @@ func TestATeamDeletedByAnyWayTakesTheInvitesStillWaitingToJoinIt(t *testing.T) {
 		t.Errorf("%d unused invites outlived their team", n)
 	}
 }
+
+func TestDeletingAPersonTakesTheirWorkspacesKeysAndLeavesATeamsRevokedWithoutTheirName(t *testing.T) {
+	// The keys of Ana's personal workspace go with it; the one she created
+	// in a team that stays is the team's record, revoked, without her name;
+	// what she gave a key someone else created stays, without her name.
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	authtest.NewUser(t, db, "owner@example.org", auth.RoleOwner)
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
+	bea := authtest.NewUser(t, db, "bea@example.org", auth.RoleMember)
+	team := teamOf(t, db, bea.ID)
+	ws := workspace.NewRepository(db, nil)
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		return ws.AddMemberTx(t.Context(), tx, team.ID, ana.ID, workspace.RoleAdmin, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const shared = "acc_00000000000000aa"
+	linkMailbox(t, db, shared, team.ID, bea.ID, "support@mail.example")
+	if _, err := ws.SetGrant(t.Context(), shared, ana.ID, workspace.Flags{Read: true}, bea.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	own := authtest.Prefix(authtest.NewWorkspaceKey(t, db, auth.ScopeRead, authtest.Personal(t, db, ana.ID), ana.ID))
+	teams := authtest.Prefix(authtest.NewWorkspaceKey(t, db, auth.ScopeRead, team.ID, ana.ID))
+	beas := authtest.Prefix(authtest.NewWorkspaceKey(t, db, auth.ScopeRead, team.ID, bea.ID))
+	if _, err := ws.SetKeyAccess(t.Context(), beas, shared, workspace.Flags{Read: true}, ana.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		_, err := users.DeleteTx(t.Context(), tx, ana.ID, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM api_keys WHERE prefix = ?`, own).Scan(&n); err != nil || n != 0 {
+		t.Errorf("the key of Ana's personal workspace is still there (%d, %v)", n, err)
+	}
+	var revoked int64
+	var by string
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT revoked_at, created_by FROM api_keys WHERE prefix = ?`,
+		teams).Scan(&revoked, &by); err != nil || revoked == 0 || by != "" {
+		t.Errorf("the key Ana created in the team: revoked at %d, created by %q (%v)", revoked, by, err)
+	}
+	var given string
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT granted_by FROM key_access WHERE key_prefix = ?`,
+		beas).Scan(&given); err != nil || given != "" {
+		t.Errorf("what Ana gave Bea's key names %q (%v)", given, err)
+	}
+}

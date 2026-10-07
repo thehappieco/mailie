@@ -328,8 +328,8 @@ container, cannot reach: on a server they serve only the command line's `account
 
 ## MCP clients
 
-MCP is served at `<MAIL_PUBLIC_URL>/mcp` through the same proxy, with the personal API keys people
-create in the console. From the machine an MCP client runs on:
+MCP is served at `<MAIL_PUBLIC_URL>/mcp` through the same proxy, with the API keys the owners and
+admins of a workspace create in the console. From the machine an MCP client runs on:
 
 ```sh
 mailserver mcp install --client claude-desktop --url https://mail.example.org
@@ -444,6 +444,59 @@ back is that copy.
   to its team's owners and admins, including those they do not read, with `access.read` false:
   check `access.read` before searching or reading one, or it answers `403`. `POST
   /v1/users/disable|delete` add `team_syncs_stopped` to their answer.
+
+### API keys belong to their workspace (migration 0012)
+
+The release that makes every API key its workspace's ([`workspaces.md`](workspaces.md#api-keys))
+changes who creates keys and what an existing one reaches. **Back up first**, as above.
+
+- **Who creates keys.** Only an owner or an admin of a workspace, signed in to the console, creates
+  its keys, lists them (every key of the workspace, whoever created it) and revokes them; in a
+  personal workspace that is its person. **A member of a team no longer creates keys**: an owner or
+  an admin creates one for them, holding what they decide. `POST /v1/me/apikeys` is gone: it answers
+  `400` and says keys are created in a workspace (`POST /v1/workspaces/{id}/apikeys`).
+  `GET /v1/me/apikeys` lists the keys a person created, in every workspace, and
+  `DELETE /v1/me/apikeys/{prefix}` still revokes one of them.
+- **What a key reaches.** A key acts as nobody now: it reaches exactly the mailboxes it holds
+  (`read`, `act`, `send`), given by an owner or an admin — `read` only by one who reads the mailbox —
+  and keeps them whoever gave them, until an owner or an admin takes them out or revokes it. It
+  stops when the person who created it leaves the workspace or is disabled or deleted; demoting
+  them keeps it.
+- **Existing keys are carried over**, each with what it reached at the upgrade and nothing more:
+  a key made for chosen mailboxes keeps those its person still reads; **a key made for every mailbox
+  of its person now lists the mailboxes its person read at the upgrade, and gets none linked later**
+  — an owner or an admin who reads a new mailbox adds it to the key. A key is `write` where it acted
+  before (its person held `act`), and sends nothing. It goes into the workspace those mailboxes are
+  in. A key whose mailboxes spanned several workspaces is **carried over** frozen: it keeps exactly
+  those, gains nothing, expires within a year at most, is revoked when its last mailbox goes, and
+  each workspace it reaches lists it; the daemon says at start how many are live. A team may hold
+  more than 20 live keys this way: those moved in do not count toward its limit of 20, and expire
+  on their own. A key nobody agreed to the key terms through — one an administrator made for a
+  person, refused everywhere since keys had terms — is revoked, holding nothing, and stays listed
+  in its person's personal workspace only, going with it when that person is deleted. Instance
+  keys are unchanged.
+- **Keys may send.** A key with the `send` scope sends from the mailboxes it holds `send` on, every
+  send with `confirm: true`, at most 100 a day, under the address alone. `MAIL_KEYS_MAY_SEND=false`
+  turns that off for every workspace key, for a console whose key terms do not cover sending. **A
+  server that sets `MAIL_CONSENT_VERSION_KEYS` to its own terms must now set `MAIL_KEYS_MAY_SEND`
+  and `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` too** (`true` or `false`, as those terms say), or the
+  daemon refuses to start. A send without an
+  `Idempotency-Key` is now keyed by the message, the key and the minute: another key sending the
+  same message from the same mailbox in the same minute sends it, where it was refused before.
+- **Texts.** The open console's key terms are now `2026-10-open-api-keys-2`: a new key needs them;
+  keys created under the earlier text keep working under it, never send, and, as that text said,
+  act only while the person who created them allows actions. Its actions text is now
+  `2026-10-open-actions-3`, which says that a key created from now on acts under the key terms,
+  not under anyone's choice about actions: turning actions off no longer stops it, taking Act away
+  from it or revoking it does. Everyone is asked about actions again, and their actions are refused
+  until they agree. A server that sets `MAIL_CONSENT_VERSION_KEYS` or
+  `MAIL_CONSENT_VERSION_ACTIONS` keeps its own.
+- **API changes** for scripts: the key routes are `/v1/workspaces/{id}/apikeys` (list, create,
+  revoke, `…/accounts/{account_id}` to give or take a mailbox, `…/sends`); the access directory
+  lists each mailbox's keys; `/v1/apikeys` (the operator's) lists every key with its
+  `workspace_id`, and `mailserver apikey list` shows it. A key reading its own consent
+  (`GET /v1/me/*-consent`) is `403`: it has no person. `send.finished` names a key's send with
+  `sent_by`.
 
 ```sh
 # Compose, from deploy/:

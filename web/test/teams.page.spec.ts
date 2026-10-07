@@ -16,7 +16,7 @@ import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { check, click, fill, find, fire, flush, keydown, page, submit, words } from './dom'
 import { mount, type Mounted } from './mount'
-import type { MailboxAccess, Member, Workspace } from '../src/api/types'
+import type { MailboxAccess, MailboxKey, Member, Workspace } from '../src/api/types'
 import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import AddAccountDialog from '../src/components/AddAccountDialog.vue'
@@ -118,13 +118,14 @@ describe('the console’s frame in a team', () => {
   const intro = () => words(find('.console-section-intro p')!)
   const open = (label: string) => click(find('.console-sidebar .console-nav-item', label))
 
-  it('names the workspace shown on its own sections, and none on the person’s: their account and their API keys', async () => {
+  it('names the workspace shown on its own sections, its API keys included, and none on the person’s account', async () => {
     await consoleIn('admin')
     expect(crumb()).toBe('Console / Support / Mailboxes')
     await open('Account')
     expect(crumb()).toBe('Console / Account')
     await open('API keys & MCP')
-    expect(crumb()).toBe('Console / API keys & MCP')
+    expect(crumb()).toBe('Console / Support / API keys & MCP')
+    expect(intro()).toBe('The keys of Support for its tools, such as an AI assistant, and how to connect them to this server over MCP. A key reaches only the mailboxes it is given, and every owner and admin of the team sees it and can revoke it.')
     await open('Storage')
     expect(crumb()).toBe('Console / Support / Storage')
     await open('Members')
@@ -134,10 +135,12 @@ describe('the console’s frame in a team', () => {
     expect(crumb()).toBe('Console / Account')
   })
 
-  it('offers Members to a team’s owners and admins only, and tells a member who manages its people, never asking for them', async () => {
+  it('offers Members and API keys to a team’s owners and admins only, and tells a member who manages them, never asking for them', async () => {
     await consoleIn('member')
     expect(page.querySelectorAll('.console-sidebar .console-nav-item').map(item => words(item))).not.toContain('Members')
-    expect(words()).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+    expect(page.querySelectorAll('.console-sidebar .console-nav-item').map(item => words(item))).not.toContain('API keys & MCP')
+    expect(sent('GET', `/v1/workspaces/${TEAM}/apikeys`)).toEqual([])
+    expect(words()).toContain('The people of Support, who can use each of its mailboxes, and its API keys are managed by its owners and admins.')
     // A member is shown none of the team's people or directory, and the server is not asked for them.
     expect(sent('GET', `/v1/workspaces/${TEAM}/members`)).toEqual([])
     expect(sent('GET', `/v1/workspaces/${TEAM}/access`)).toEqual([])
@@ -404,14 +407,16 @@ describe('who can use a mailbox', () => {
   const directory = (): MailboxAccess[] => {
     const listed = grants.map(([userID, flags]) => ({ account_id: shared.id, user_id: userID, ...flags, updated_at: 1 }))
     const readers = listed.filter(grant => grant.read).length
-    return [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, readers, no_reader: readers === 0, sync: { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true }, grants: listed }]
+    return [{ account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', linked_by: BEA, readers, no_reader: readers === 0, sync: { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true }, grants: listed, keys }]
   }
   let grants: [string, typeof full][] = []
+  let keys: MailboxKey[] = []
   const reader = { read: true, act: true, send: true, manage: false }
 
   /** Ana administers Support and reads a mailbox Bea reads too; Carol holds nothing yet. */
   async function panel(route: Route = () => failure('not_found', 404)) {
     grants = [[BEA, reader], [ana.id, reader]]
+    keys = []
     await signedIn('admin', request => {
       const { path, method } = request
       if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: 'admin' }), member(BEA, { name: 'Bea Lima' }), member(CAROL, { name: 'Carol Dias' })])
@@ -505,6 +510,32 @@ describe('who can use a mailbox', () => {
     await check(box(BEA, 'read'), false)
     await click(find(`li[data-user="${BEA}"] button`, 'Save access'))
     expect(words(find(`li[data-user="${BEA}"] .alert`)!)).toBe('This is the only person who can read this mailbox: give someone else Read on it first.')
+  })
+
+  it('lists the keys holding the mailbox, never as readers, and takes it out of one only after asking', async () => {
+    const prefix = '3f9a0c1d2e4b5a6c'
+    await panel(({ path, method }) => {
+      if (path === `/v1/workspaces/${TEAM}/apikeys/${prefix}/accounts/${shared.id}` && method === 'DELETE') {
+        keys = []
+        return new Response(null, { status: 204 })
+      }
+      return failure('not_found', 404)
+    })
+    keys = [{ prefix, name: 'Helpdesk', scope: 'send', read: true, act: false, send: true, created_by: BEA, granted_by: ana.id, updated_at: 1_790_000_000 }]
+    await loadDirectory()
+    await flush()
+    const holder = () => find(`li[data-key="${prefix}"]`)
+    expect(words(holder()!)).toContain('Helpdesk')
+    expect(words(holder()!)).toContain('Read, Send')
+    expect(words(holder()!)).toContain('Created by Bea Lima')
+    expect(words()).toContain('Keys never count as readers.')
+    await click(find(`li[data-key="${prefix}"] button`, 'Take out of the key'))
+    expect(words(holder()!)).toContain('Helpdesk loses everything it holds on this mailbox.')
+    expect(sent('DELETE', `/v1/workspaces/${TEAM}/apikeys/${prefix}/accounts/${shared.id}`)).toEqual([])
+    await click(find(`li[data-key="${prefix}"] button.danger`, 'Take out of the key'))
+    expect(sent('DELETE', `/v1/workspaces/${TEAM}/apikeys/${prefix}/accounts/${shared.id}`)).toHaveLength(1)
+    await vi.waitFor(() => expect(holder()).toBeNull())
+    expect(words()).toContain('No API key holds anything on this mailbox.')
   })
 
   it('offers no take-over and names no linker', async () => {
@@ -644,7 +675,7 @@ describe('the people of a team', () => {
     await vi.waitFor(() => expect(find('.team-actions button', 'Invite someone')).toBeNull())
     expect(find('.team-actions button', 'Rename…')).toBeNull()
     expect(find('li[data-user]')).toBeNull()
-    expect(words()).toContain('The people of Support, and who can use each of its mailboxes, are managed by its owners and admins.')
+    expect(words()).toContain('The people of Support, who can use each of its mailboxes, and its API keys are managed by its owners and admins.')
   })
 
   it('lets an owner leave while another owner remains, after saying what goes, and shows them another of their workspaces', async () => {

@@ -1,6 +1,6 @@
 // Whether this server answers MCP over HTTP at /mcp, so the API keys section
-// shows that address only where a tool can reach it. The server decides
-// (internal/service); this file only asks.
+// shows that address only where a tool can reach it, and whether its keys may
+// send email. The server decides (internal/service); this file only asks.
 
 import { checked, request } from './http'
 import { isMcpAccess, type McpAccess } from './types'

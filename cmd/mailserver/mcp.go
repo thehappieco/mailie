@@ -80,7 +80,8 @@ func mcpConnect(ctx context.Context, args []string) error {
 	key := strings.TrimSpace(os.Getenv(keyVariable))
 	if key == "" {
 		return errors.New("mcp connect: " + keyVariable + " is not set: the API key comes from that environment " +
-			"variable, never from an argument; create one in the console's API keys & MCP section")
+			"variable, never from an argument; an owner or an admin of a workspace creates one in the console, under " +
+			"the workspace's API keys")
 	}
 	if _, _, ok := auth.SplitKey(key); !ok {
 		return errors.New("mcp connect: " + keyVariable + " does not hold an API key (one looks like " +
@@ -99,9 +100,9 @@ func mcpConnect(ctx context.Context, args []string) error {
 func keyHint(err error) string {
 	switch {
 	case errors.Is(err, mcpbridge.ErrKeyRefused):
-		return "; create a key in the console's API keys & MCP section"
+		return "; an owner or an admin of a workspace creates a key in the console, under the workspace's API keys"
 	case errors.Is(err, mcpbridge.ErrKeyNotAllowed):
-		return "; use a key you created yourself in the console's API keys & MCP section"
+		return "; use a key an owner or an admin of a workspace created in the console, under the workspace's API keys"
 	}
 	return ""
 }

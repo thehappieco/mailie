@@ -1,7 +1,8 @@
 # MCP
 
 The daemon speaks the Model Context Protocol, so an AI assistant (Claude Code, for one) or any other
-MCP client can search and read a person's mailboxes and, with a write key, act on them. It is the
+MCP client can search and read the mailboxes a key of their workspace holds and, with a write key,
+act on them. It is the
 same service as the REST API: the same rules about who sees what, the same search of the index, the
 same bodies fetched from the mail server on request and never stored, the same actions behind the
 same consent. No authorization rule lives in `internal/mcp`.
@@ -18,29 +19,30 @@ same consent. No authorization rule lives in `internal/mcp`.
 
 - **Keys only.** `/mcp` refuses a console session token (`401`): a session is a person in a
   browser, and copying it into an assistant's configuration must not work.
-- **A person's key.** A tool reaches a person's mailboxes only with a key that person created in
-  the console (**API keys & MCP**), for the mailboxes, scope and lifetime they chose. Creating it is
-  their agreement to what a tool holding it can do, and the key records the revision of the text
-  they saw (`terms_version`). A key an administrator issued for a person, with no such agreement, is
-  refused here and over REST (`403`).
-- **What a person's key reaches** is what its person can, at each call: the mailboxes of the
-  workspaces they are an active member of on which they hold `read` (`docs/workspaces.md`), within
-  the key's own restriction. A grant revoked, or a membership ended, takes the mailbox away from
-  the very next call, and out of the key's restriction for good: a key made for that mailbox alone
-  is revoked. Every account a tool lists carries its `workspace_id` and the caller's `access`.
-- **A key that lost a mailbox it was opened with.** What holds the key as it was when it
-  authenticated — a `serve --mcp-stdio` session, and the resource subscriptions of any session —
-  stops reaching that mailbox at once, even once `read` is granted back. A stdio session is refused
-  at every call with `conflict: this key no longer reaches a mailbox it was authenticated with`:
-  restart it (the client relaunches the daemon), and the new session goes on with what the key
-  still names. Over HTTP each request authenticates afresh, so calls go on; the session's
-  subscriptions stop, and a new session subscribes again. A key that no longer works at all is
-  `unauthorized` instead.
+- **A workspace's key.** A tool reaches mail only with a key of the mailbox's workspace, which an
+  owner or an admin of it created in the console, under the workspace's API keys (in a personal
+  workspace, its person), with the scope and lifetime they chose. Creating it is their agreement to
+  the key terms, which say what a tool holding it can do, and the key records the revision of the
+  text they saw (`terms_version`). A key nobody agreed to the terms through is refused here and over
+  REST (`403`); the upgrade to workspace keys (migration 0012) revoked every one.
+- **What a key reaches** is exactly what it holds, read at each call: the mailboxes of its
+  workspace it was given, each with `read`, `act` or `send` (`docs/workspaces.md`, "API keys").
+  `read` is given only by an owner or an admin who reads the mailbox, so a key never reads more
+  than someone who reads it decided; what it holds stands on its own, whoever gave it. A mailbox
+  taken out of the key, or the key revoked, is gone from the very next call, also for what holds
+  the key for long — a `serve --mcp-stdio` session, the resource subscriptions of any session —
+  and a mailbox given to it is there at the next call. Every account a tool lists carries its
+  `workspace_id` and what the key may do with it (`access`). Every owner and admin of the workspace
+  sees the key and may revoke it; it also stops when the person who created it leaves the
+  workspace or is disabled or deleted.
 - **Instance keys** (the operator's, from `mailserver apikey create`) reach only the operator
-  workspace's mailboxes, here and over REST alike, never a person's.
+  workspace's mailboxes, here and over REST alike, never a workspace's. One restricted to some of
+  them that loses one it was opened with is refused at every call of a stdio session with
+  `conflict: this key no longer reaches a mailbox it was authenticated with`: restart it.
 - **Scopes:** `read` searches and reads; `write` also marks read, stars, moves, archives and
-  trashes. Actions still need the `act` flag on the mailbox and the key's person's own permission
-  for actions in the console, checked before every command that changes the mailbox, as over REST.
+  trashes. Actions still need the `act` flag the key holds on the mailbox, checked before every
+  command that changes the mailbox, as over REST; the key terms cover them, and no person's own
+  permission is asked. A key with the `send` scope sends over REST; there is no send tool yet.
 - **Every request and every tool checks the key again.** Each HTTP request is authenticated in full,
   through the same rate limiter as REST. Each tool reads the key again before it starts and before
   it answers, so a key revoked mid-call never sees its result, and a revoked key loses its session
@@ -108,9 +110,10 @@ would let an intermediary keep a response and serve it to someone else, and this
 
 ## Connect a client
 
-A client needs two things: the server's address, and an API key. A person creates theirs in the
-console's **API keys & MCP** section, for the mailboxes, scope and lifetime they choose; the operator's
-instance keys come from `mailserver apikey create`. The key is the only credential: whoever holds it
+A client needs two things: the server's address, and an API key. An owner or an admin of a
+workspace creates one in the console, under the workspace's API keys, for the mailboxes, scope and
+lifetime they choose (in a personal workspace, its person does); the operator's instance keys come
+from `mailserver apikey create`. The key is the only credential: whoever holds it
 reaches what it reaches, so it goes where only its owner can read it, never into a command line
 someone else can see, an address or a log.
 
@@ -137,8 +140,8 @@ claude mcp add --transport http --scope user mailie https://mail.example.com/mcp
   --header "Authorization: Bearer <your key>"
 ```
 
-The console's **API keys & MCP** section shows this command with the server's own address, and a new
-key's dialog copies it with the key in it, whenever the server answers MCP over HTTP.
+The console shows this command with the server's own address beside a workspace's API keys, and a
+new key's dialog copies it with the key in it, whenever the server answers MCP over HTTP.
 `mailserver mcp install --client claude-code --url https://mail.example.com` checks that the address
 answers MCP and prints the same command with `<your key>` where the key goes, and writes nothing:
 Claude Code keeps its servers in `~/.claude.json`, its own state file, which it rewrites while it runs
@@ -189,8 +192,8 @@ whole daemon).
   never a message's content and never the key.
 - **It ends** when the client closes standard input (exit 0), and with a line on standard error and a
   non-zero exit when the server refuses the key (`401`: wrong, expired or revoked — at the start, or at
-  the first request after it was revoked), refuses it MCP (`403`: a key an administrator made for a
-  person), has no MCP endpoint at that address (`404`: not a Mailie server, or `MAIL_MCP_HTTP=false`
+  the first request after it was revoked), refuses it MCP (`403`: a key nobody agreed to the key
+  terms through), has no MCP endpoint at that address (`404`: not a Mailie server, or `MAIL_MCP_HTTP=false`
   there) or answers with a redirect — also when the client, told of it, closes standard input at
   once. A client shows that line in its log of the server.
 
@@ -255,7 +258,8 @@ again. Restart the client after a change.
 
 The key sits in the client's file (Cursor's, Claude Desktop's, readable only by you after `mcp
 install`) or in Claude Code's. Removing the entry does not make the key stop working: revoking it does.
-A person revokes theirs in the console's **API keys & MCP** section, the operator an instance key with
+An owner or an admin of its workspace revokes it in the console, under the workspace's API keys, and
+the person who created it under their own keys in their account; the operator revokes any key with
 `mailserver apikey revoke PREFIX`. A revoked key stops at its next request — over HTTP the client gets
 `401`, and `mcp connect` ends with a line saying so — and `mcp install --uninstall` then clears the
 entry.
@@ -323,7 +327,7 @@ bridge relays the negotiation, `server/discover` included, on a connection of it
 | `search_messages` | 20 per page by default, up to 100 |
 | Actions | 1 to 100 messages of one mailbox per call |
 | Rate limit | the REST API's, through the same limiter: per address, and failures per key prefix |
-| Keys per person | 20 alive; 30, 90 or 365 days |
+| Keys per workspace | 20 alive; 30, 90 or 365 days |
 
 ## What is kept, and what is logged
 

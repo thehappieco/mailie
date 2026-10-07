@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -116,16 +117,60 @@ func (h *harness) allowActions(pp person) {
 	}
 }
 
-// key creates a key the way a person does in the console.
+// key creates a key the way an owner or an admin does in the console: a key
+// of the workspace the accounts named are in — the person's personal
+// workspace when none is named, for every mailbox of it they read —, holding
+// read on each, and act and send where the scope allows and they hold them.
 func (h *harness) key(pp person, scope string, accounts ...string) string {
 	h.t.Helper()
-	created, err := h.svc.CreateMyAPIKey(h.t.Context(), pp.session, service.PersonalKeyRequest{
-		Name: "assistant", Scope: scope, AccountIDs: accounts, TermsVersion: service.DefaultKeyTermsVersion,
-	})
+	ws, err := workspace.NewRepository(h.store, nil).PersonalOf(h.t.Context(), pp.user.ID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	workspaceID := ws.ID
+	if len(accounts) > 0 {
+		a, err := account.NewRepository(h.store, nil).Get(h.t.Context(), accounts[0])
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		workspaceID = a.WorkspaceID
+	}
+	listed, err := h.svc.ListAccounts(h.t.Context(), pp.session, workspaceID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	req := service.WorkspaceKeyRequest{Name: "assistant", Scope: scope, TermsVersion: service.DefaultKeyTermsVersion}
+	write, send := scope == "write" || scope == "send", scope == "send"
+	for _, a := range listed {
+		if !a.Access.Read || (len(accounts) > 0 && !slices.Contains(accounts, a.ID)) {
+			continue
+		}
+		req.Mailboxes = append(req.Mailboxes, service.KeyMailboxRequest{
+			AccountID: a.ID, Read: true, Act: write && a.Access.Act, Send: send && a.Access.Send,
+		})
+	}
+	created, err := h.svc.CreateWorkspaceKey(h.t.Context(), pp.session, workspaceID, req)
 	if err != nil {
 		h.t.Fatalf("create key: %v", err)
 	}
 	return created.Key
+}
+
+// unagreedKey is a key of the person's personal workspace that nobody agreed
+// to the key terms through: what migration 0012 revoked, should one ever be
+// live.
+func (h *harness) unagreedKey(pp person) string {
+	h.t.Helper()
+	ws, err := workspace.NewRepository(h.store, nil).PersonalOf(h.t.Context(), pp.user.ID)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	key := authtest.NewWorkspaceKey(h.t, h.store, auth.ScopeRead, ws.ID, pp.user.ID)
+	if _, err := h.store.Writer().ExecContext(h.t.Context(), `UPDATE api_keys SET terms_version = '' WHERE prefix = ?`,
+		authtest.Prefix(key)); err != nil {
+		h.t.Fatal(err)
+	}
+	return key
 }
 
 // mailbox registers an active mailbox on a fake mail server: owned by

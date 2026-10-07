@@ -203,11 +203,12 @@ func printInvite(link, email, role string, expires time.Time) {
 // Closing a person's account, when they ask for it, is two steps, each run
 // through the daemon with an admin key, or with --bootstrap while the daemon
 // is stopped: `user disable --email ADDRESS` first, which ends every session,
-// revokes every key they hold and expires the invites they made, at once; and
-// then `user delete --email ADDRESS`, which removes the mailboxes of their
-// personal workspace with those mailboxes' credentials and everything indexed
-// for them, their sessions, their keys, their invites, their personal
-// workspace and every team they were alone in, in one transaction. A team
+// revokes every API key they created and expires the invites they made, at
+// once; and then `user delete --email ADDRESS`, which removes the mailboxes
+// of their personal workspace with those mailboxes' credentials and
+// everything indexed for them, their sessions, their name on the keys they
+// created, their invites, their personal workspace and every team they were
+// alone in, in one transaction. A team
 // mailbox of a team others are in is the team's, and stays. Disabling or
 // deleting the last active owner needs --force: nobody would be left to
 // invite people from the console. So does someone their teams depend on — a
@@ -585,7 +586,7 @@ func asOperator(ctx context.Context, cfg config.Config, run func(*service.Servic
 		Accounts: registry, Keys: auth.NewKeys(db), Users: auth.NewUsers(db), Store: db,
 		Log: obs.LoggerFrom(ctx), PublicURL: cfg.PublicURL, ConsentVersions: cfg.Consent,
 	})
-	return run(svc, service.Principal{Kind: auth.KindKey, Scope: auth.ScopeAdmin})
+	return run(svc, service.Principal{Kind: auth.KindKey, Scope: auth.ScopeAdmin, WorkspaceID: workspace.OperatorID})
 }
 
 // adminCall posts a request to the daemon and decodes its answer into out.

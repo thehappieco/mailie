@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/thehappieco/mailie/internal/events"
@@ -76,7 +77,7 @@ type Send struct {
 	Recipients int
 	SentCopy   string
 	// CreatedBy is who asked: a person's id, or "key:<prefix>". UserID is the
-	// person, whichever credential they used; empty for an instance key.
+	// person signed in who asked; empty for a key, which acts as no person.
 	CreatedBy string
 	UserID    string
 	CreatedAt int64
@@ -88,7 +89,8 @@ type Send struct {
 var (
 	// ErrNoSend is a key the account has no record of.
 	ErrNoSend = errors.New("store: no such send")
-	// ErrSendQuota is a person who has reached their daily number of sends.
+	// ErrSendQuota is a person, or a key, that has reached its daily number
+	// of sends.
 	ErrSendQuota = errors.New("store: the daily send limit is reached")
 )
 
@@ -101,9 +103,10 @@ type SendReservation struct {
 	Recipients  int
 	CreatedBy   string
 	UserID      string
-	// DailyLimit is how many sends one person may start in a day; zero is no
-	// limit. It is counted in the transaction that reserves, so two sends at
-	// once cannot both take the last one.
+	// DailyLimit is how many sends one sender may start in a day — the
+	// person (UserID), or else the key (CreatedBy) —; zero is no limit. It is
+	// counted in the transaction that reserves, so two sends at once cannot
+	// both take the last one.
 	DailyLimit int
 }
 
@@ -134,11 +137,15 @@ func (s *Store) ReserveSend(ctx context.Context, r SendReservation) (Send, bool,
 			out = existing
 			return nil
 		}
-		if r.DailyLimit > 0 && r.UserID != "" {
+		if r.DailyLimit > 0 && (r.UserID != "" || r.CreatedBy != "") {
+			column, who := "user_id", r.UserID
+			if who == "" {
+				column, who = "created_by", r.CreatedBy
+			}
 			var n int
 			if err := tx.QueryRowContext(ctx,
-				`SELECT count(*) FROM sends WHERE user_id = ? AND created_at > ?`,
-				r.UserID, now-int64((24*time.Hour).Seconds())).Scan(&n); err != nil {
+				`SELECT count(*) FROM sends WHERE `+column+` = ? AND created_at > ?`,
+				who, now-int64((24*time.Hour).Seconds())).Scan(&n); err != nil {
 				return fmt.Errorf("store: count sends: %w", err)
 			}
 			if n >= r.DailyLimit {
@@ -227,7 +234,8 @@ func (s *Store) FinishSend(ctx context.Context, o SendOutcome) (Send, []events.E
 			state, reason, o.Attempts, sentAt, copyState, now.Unix(), o.AccountID, o.Key); err != nil {
 			return fmt.Errorf("store: finish a send: %w", err)
 		}
-		if evs, err = journalSendFinished(ctx, s, tx, now, []sendKey{{o.AccountID, o.Key, state, current.UserID}}); err != nil {
+		if evs, err = journalSendFinished(ctx, s, tx, now, []sendKey{{o.AccountID, o.Key, state, current.UserID,
+			keySender(current.CreatedBy)}}); err != nil {
 			return err
 		}
 		out, _, err = sendTx(ctx, tx, o.AccountID, o.Key)
@@ -276,7 +284,7 @@ func (s *Store) InterruptSends(ctx context.Context) (int, error) {
 	err := s.Write(ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx,
 			`UPDATE sends SET state = 'unknown', error = ?, updated_at = ? WHERE state = 'sending'
-			 RETURNING account_id, idempotency_key, user_id`, ReasonInterrupted, now.Unix())
+			 RETURNING account_id, idempotency_key, user_id, created_by`, ReasonInterrupted, now.Unix())
 		if err != nil {
 			return fmt.Errorf("store: interrupt sends: %w", err)
 		}
@@ -284,9 +292,11 @@ func (s *Store) InterruptSends(ctx context.Context) (int, error) {
 		defer func() { _ = rows.Close() }()
 		for rows.Next() {
 			k := sendKey{state: SendUnknown}
-			if err := rows.Scan(&k.accountID, &k.key, &k.userID); err != nil {
+			var createdBy string
+			if err := rows.Scan(&k.accountID, &k.key, &k.userID, &createdBy); err != nil {
 				return fmt.Errorf("store: interrupt sends: %w", err)
 			}
+			k.sentBy = keySender(createdBy)
 			changed = append(changed, k)
 		}
 		if err := rows.Err(); err != nil {
@@ -375,7 +385,7 @@ func reconcileSendsTx(ctx context.Context, tx *sql.Tx, accountID, messageID stri
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE sends SET state = 'sent', error = '', sent_at = ?, updated_at = ?
 		  WHERE account_id = ? AND message_id_hdr = ? AND state = 'unknown'
-		  RETURNING idempotency_key, user_id`, now.Unix(), now.Unix(), accountID, messageID)
+		  RETURNING idempotency_key, user_id, created_by`, now.Unix(), now.Unix(), accountID, messageID)
 	if err != nil {
 		return nil, fmt.Errorf("store: reconcile sends: %w", err)
 	}
@@ -383,12 +393,12 @@ func reconcileSendsTx(ctx context.Context, tx *sql.Tx, accountID, messageID stri
 	defer func() { _ = rows.Close() }()
 	var out []events.Event
 	for rows.Next() {
-		var key, userID string
-		if err := rows.Scan(&key, &userID); err != nil {
+		var key, userID, createdBy string
+		if err := rows.Scan(&key, &userID, &createdBy); err != nil {
 			return nil, fmt.Errorf("store: reconcile sends: %w", err)
 		}
 		ev, err := events.New(events.TypeSendFinished, accountID, now, SendFinished{
-			AccountID: accountID, Key: key, State: SendSent, UserID: userID,
+			AccountID: accountID, Key: key, State: SendSent, UserID: userID, SentBy: keySender(createdBy),
 		})
 		if err != nil {
 			return nil, err
@@ -422,15 +432,57 @@ type sendKey struct {
 	accountID string
 	key       string
 	state     string
-	// userID is the sender, "" for an instance key.
+	// userID is the person who sent it, "" for a key.
 	userID string
+	// sentBy is "key:<prefix>" for a key's send, "" for a person's.
+	sentBy string
+}
+
+// keySender is who a send.finished names as having sent it with a key: the
+// key ("key:<prefix>"), or "" for a person's send.
+func keySender(createdBy string) string {
+	if strings.HasPrefix(createdBy, "key:") {
+		return createdBy
+	}
+	return ""
+}
+
+// SendsBy lists the send records of one sender ("key:<prefix>"), newest
+// first, at most limit: every one, or with workspaceID those from that
+// workspace's mailboxes.
+func (s *Store) SendsBy(ctx context.Context, createdBy, workspaceID string, limit int) ([]Send, error) {
+	rows, err := s.r.QueryContext(ctx,
+		`SELECT s.account_id, s.idempotency_key, s.compose_hash, s.message_id_hdr, s.state, s.error, s.attempts,
+		        s.recipients, s.sent_copy_state, s.created_by, s.user_id, s.created_at, s.updated_at, s.sent_at
+		   FROM sends s JOIN accounts a ON a.id = s.account_id
+		  WHERE s.created_by = ?1 AND (?2 = '' OR a.workspace_id = ?2)
+		  ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?3`, createdBy, workspaceID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("store: list sends: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	var out []Send
+	for rows.Next() {
+		var row Send
+		if err := rows.Scan(&row.AccountID, &row.Key, &row.ComposeHash, &row.MessageID, &row.State, &row.Reason,
+			&row.Attempts, &row.Recipients, &row.SentCopy, &row.CreatedBy, &row.UserID, &row.CreatedAt,
+			&row.UpdatedAt, &row.SentAt); err != nil {
+			return nil, fmt.Errorf("store: list sends: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list sends: %w", err)
+	}
+	return out, nil
 }
 
 func journalSendFinished(ctx context.Context, s *Store, tx *sql.Tx, now time.Time, keys []sendKey) ([]events.Event, error) {
 	evs := make([]events.Event, 0, len(keys))
 	for _, k := range keys {
 		ev, err := events.New(events.TypeSendFinished, k.accountID, now, SendFinished{
-			AccountID: k.accountID, Key: k.key, State: k.state, UserID: k.userID,
+			AccountID: k.accountID, Key: k.key, State: k.state, UserID: k.userID, SentBy: k.sentBy,
 		})
 		if err != nil {
 			return nil, err

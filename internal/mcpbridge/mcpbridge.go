@@ -65,7 +65,7 @@ var (
 	// ErrKeyRefused is the server's 401: the key is wrong, expired or revoked.
 	ErrKeyRefused = errors.New("mcpbridge: the server refused the key; it is wrong, expired or revoked")
 	// ErrKeyNotAllowed is the server's 403: the key exists but may not use
-	// MCP, such as a key an administrator made for a person.
+	// MCP, such as a key nobody agreed to the key terms through.
 	ErrKeyNotAllowed = errors.New("mcpbridge: the server does not let this key use MCP")
 	// ErrNoMCP is a 404 before any session: no MCP endpoint at the address.
 	ErrNoMCP = errors.New("mcpbridge: no MCP endpoint at this address: the address is not a Mailie server's, " +

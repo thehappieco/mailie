@@ -83,8 +83,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger = obs.NewLoggerTo(os.Stderr, cfg.Log.Level, cfg.Log.Format)
 		ctx = obs.WithLogger(ctx, logger)
 		if cfg.MCPKey == "" {
-			return errors.New("serve --mcp-stdio needs MAIL_MCP_KEY: an API key created in the console " +
-				"(API keys & MCP) for the client that launches the daemon to act with")
+			return errors.New("serve --mcp-stdio needs MAIL_MCP_KEY: an API key for the client that launches the " +
+				"daemon to act with, which an owner or an admin of a workspace creates in the console, or an instance key")
 		}
 	}
 
@@ -237,7 +237,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		Workspaces: workspaces,
 		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
-		ExternalSignInOnly: opts.ExternalSignInOnly,
+		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
+		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent,
 	})
 
 	// One limiter for REST and MCP: a key has one budget whichever way it
@@ -323,6 +324,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	keyCount, err := keys.Count(ctx)
 	if err != nil {
 		return err
+	}
+	if carried, err := keys.CarriedOverLive(ctx); err != nil {
+		return err
+	} else if carried > 0 {
+		// Migration 0012 found people's keys reaching mailboxes of several
+		// workspaces: they work on exactly those until they expire, within
+		// a year, or lose their last one.
+		logger.Info("api keys carried over from before keys belonged to a workspace are still live; each "+
+			"workspace they reach lists them to its owners and admins, and the person who created each to them",
+			"keys", carried)
 	}
 	if keyCount == 0 {
 		// --bootstrap refuses to run beside a live daemon, so the hint has to

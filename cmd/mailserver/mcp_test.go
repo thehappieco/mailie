@@ -839,7 +839,7 @@ func TestConnectWithAWrongKeyEndsSayingSoWithoutRepeatingIt(t *testing.T) {
 	_, stderr := mcpOutput(t)
 	_, done, _ := connectClient(t, base)
 	err := <-done
-	if !errors.Is(err, mcpbridge.ErrKeyRefused) || !strings.Contains(err.Error(), "create a key") {
+	if !errors.Is(err, mcpbridge.ErrKeyRefused) || !strings.Contains(err.Error(), "creates a key") {
 		t.Errorf("mcp connect ended with %v", err)
 	}
 	if strings.Contains(err.Error()+stderr.String(), secretOf(wrong)) {

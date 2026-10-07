@@ -8,9 +8,11 @@ import (
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 )
 
-func TestEveryCallerIsToldWhetherThisServerAnswersMCPOverHTTP(t *testing.T) {
+func TestEveryCallerIsToldWhetherThisServerAnswersMCPOverHTTPAndWhetherItsKeysSend(t *testing.T) {
 	for _, served := range []bool{true, false} {
-		h := newHarnessWith(t, nil, serviceOptions{mcpHTTP: served})
+		// Each answer of the one with the other: keys sending wherever MCP
+		// over HTTP is served, and not where it is not.
+		h := newHarnessWith(t, nil, serviceOptions{mcpHTTP: served, keysMayNotSend: !served})
 		authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
 		session := authtest.SignIn(t, h.users, "ana@example.com")
 		for name, token := range map[string]string{"a session": session, "a read key": h.key(t, auth.ScopeRead)} {
@@ -21,7 +23,7 @@ func TestEveryCallerIsToldWhetherThisServerAnswersMCPOverHTTP(t *testing.T) {
 			}
 			var body map[string]any
 			decodeInto(t, resp, &body)
-			if len(body) != 1 || body["http"] != served {
+			if len(body) != 2 || body["http"] != served || body["keys_send"] != served {
 				t.Errorf("served=%t, %s: %v", served, name, body)
 			}
 		}

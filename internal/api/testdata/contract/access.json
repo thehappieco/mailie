@@ -24,6 +24,19 @@
         "user_id": "usr_0000000000000003"
       }
     ],
+    "keys": [
+      {
+        "act": true,
+        "created_by": "usr_0000000000000001",
+        "granted_by": "usr_0000000000000001",
+        "name": "Support bot",
+        "prefix": "0a0b0c04",
+        "read": true,
+        "scope": "write",
+        "send": false,
+        "updated_at": 1790000000
+      }
+    ],
     "linked_by": "usr_0000000000000001",
     "no_reader": false,
     "provider": "imap",
@@ -52,6 +65,7 @@
         "user_id": "usr_0000000000000001"
       }
     ],
+    "keys": [],
     "linked_by": "usr_0000000000000001",
     "no_reader": false,
     "provider": "imap",

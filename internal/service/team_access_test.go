@@ -16,6 +16,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
@@ -99,7 +100,10 @@ func TestStorageCountsOnlyTheMailboxesTheCallerMayRead(t *testing.T) {
 	if _, err := m.svc.GetAccount(t.Context(), tm.bea, shared); err != nil {
 		t.Fatalf("Bea does not see the mailbox she may send from: %v", err)
 	}
-	for name, p := range map[string]service.Principal{"her session": tm.bea, "her key": keyOf(tm.bea, auth.ScopeRead)} {
+	// A key Ana gives send alone: what it may send from, it does not read.
+	sender := m.authenticate(t, authtest.NewWorkspaceKey(t, m.db, auth.ScopeSend, tm.id, tm.ana.UserID,
+		workspace.KeyGrant{AccountID: shared, Flags: workspace.Flags{Send: true}}))
+	for name, p := range map[string]service.Principal{"her session": tm.bea, "a key holding send alone": sender} {
 		st, err := m.svc.Storage(t.Context(), p, "")
 		if err != nil {
 			t.Fatal(err)
@@ -283,8 +287,11 @@ func TestASendFinishedReachesOnlyItsSender(t *testing.T) {
 		t.Cleanup(st.Close)
 		return st
 	}
+	readKey := keyOf(t, f, tm.ana, auth.ScopeRead, tm.id)
+	sendKey := keyOf(t, f, tm.ana, auth.ScopeSend, tm.id)
 	streams := map[string]*service.Stream{
-		"Ana": open(tm.ana), "Bea": open(tm.bea), "Cid": open(cid), "Ana's read key": open(keyOf(tm.ana, auth.ScopeRead)),
+		"Ana": open(tm.ana), "Bea": open(tm.bea), "Cid": open(cid), "a read key": open(readKey),
+		"a send key": open(sendKey),
 	}
 	// sendsBefore reads a stream up to the marker published last, and
 	// returns the sends it heard of, as "key by user".
@@ -328,12 +335,16 @@ func TestASendFinishedReachesOnlyItsSender(t *testing.T) {
 	if _, err := b.send(t, cid, "cid-key", b.compose("other@example.org")); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := b.send(t, sendKey, "by-key", b.compose("third@example.org")); err != nil {
+		t.Fatal(err)
+	}
 	markers("first")
 	for name, want := range map[string][]string{
-		"Ana":            {"ana-key by " + tm.ana.UserID},
-		"Bea":            nil,
-		"Cid":            {"cid-key by " + cid.UserID},
-		"Ana's read key": nil, // a key that may not read her send records
+		"Ana":        {"ana-key by " + tm.ana.UserID},
+		"Bea":        nil,
+		"Cid":        {"cid-key by " + cid.UserID},
+		"a read key": nil,            // neither a person's sends nor another key's
+		"a send key": {"by-key by "}, // its own, which names no person
 	} {
 		if got := sendsBefore(name, "first"); !slices.Equal(got, want) {
 			t.Errorf("%s heard of the sends %v, want %v", name, got, want)

@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -215,11 +216,29 @@ func TestAKeyIsTakenOnceAndAFailedOneCanBeTakenAgain(t *testing.T) {
 	if !errors.Is(err, store.ErrSendQuota) {
 		t.Fatalf("the fourth send of a day with a limit of three: %v", err)
 	}
-	// An instance key has no person, and no daily limit.
+	// A key has no person: its own sends are what its limit counts, the
+	// person's none of them.
+	for i := range 3 {
+		key := fmt.Sprintf("key-%d", i)
+		if _, reserved, err := f.db.ReserveSend(context.Background(), store.SendReservation{
+			AccountID: "acc_1", Key: key, ComposeHash: "h", MessageID: key + "@example.com", CreatedBy: "key:cccccccc",
+			DailyLimit: 3,
+		}); err != nil || !reserved {
+			t.Fatalf("a key's send %d: %t, %v", i, reserved, err)
+		}
+	}
+	if _, _, err := f.db.ReserveSend(context.Background(), store.SendReservation{
+		AccountID: "acc_1", Key: "key-3", ComposeHash: "h", MessageID: "key-3@example.com", CreatedBy: "key:cccccccc",
+		DailyLimit: 3,
+	}); !errors.Is(err, store.ErrSendQuota) {
+		t.Fatalf("a key's fourth send of a day with a limit of three: %v", err)
+	}
+	// Without a limit — an instance key's, the operator's — nothing is
+	// counted.
 	if _, reserved, err := f.db.ReserveSend(context.Background(), store.SendReservation{
-		AccountID: "acc_1", Key: "k5", ComposeHash: "h", MessageID: "k5@example.com", CreatedBy: "key:cccccccc", DailyLimit: 3,
+		AccountID: "acc_1", Key: "k5", ComposeHash: "h", MessageID: "k5@example.com", CreatedBy: "key:cccccccc",
 	}); err != nil || !reserved {
-		t.Fatalf("an instance key's send: %t, %v", reserved, err)
+		t.Fatalf("a send without a limit: %t, %v", reserved, err)
 	}
 }
 

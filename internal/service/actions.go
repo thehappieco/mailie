@@ -421,10 +421,15 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 // A person changes a mailbox when they hold the act flag on it and their own
 // consent to actions names the current policy: the policy promises Mailie
 // changes a mailbox only when the person acting asks. Who linked the mailbox
-// does not matter, nor does anybody's role. A mailbox of the operator
-// workspace is changed with an instance key, the only credential that sees
-// it. It is asked when an action is accepted (actionTargets), and again
-// before each command that changes the mailbox (stillMayAct).
+// does not matter, nor does anybody's role. A workspace key changes a mailbox
+// when it holds the act flag on it, with the write scope, while it is live:
+// the key terms its creator agreed to cover what it does, and no person's
+// consent is asked — but for a person's key the upgrade to workspace keys
+// carried over, which acts, as its terms said, only while the person who
+// created it allows actions. A mailbox of the operator workspace is changed
+// with an instance key, the only credential that sees it. It is asked when an
+// action is accepted (actionTargets), and again before each command that
+// changes the mailbox (stillMayAct).
 func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) error {
 	operator := a.WorkspaceID == workspace.OperatorID
 	if p.IsInstance() || operator {
@@ -442,7 +447,17 @@ func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) er
 	if !held[a.ID].Act {
 		return errNoAct
 	}
-	c, err := s.store.ActionsConsentOf(ctx, p.UserID)
+	consenting := p.UserID
+	if p.IsWorkspaceKey() {
+		if err := s.keyStillLive(ctx, p); err != nil {
+			return err
+		}
+		if !earlierKey(p) && !s.keysActUnderCreator {
+			return nil
+		}
+		consenting = p.CreatedBy
+	}
+	c, err := s.store.ActionsConsentOf(ctx, consenting)
 	switch {
 	case errors.Is(err, store.ErrNoSuchUser):
 		return errActionsOff

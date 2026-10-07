@@ -35,7 +35,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/secrets` — a versioned AES-256-GCM envelope (`v1||keyid||nonce||ct||tag`) with AAD
   binding account and field; rotation by key id.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
-  restriction to accounts, expiry, revocation. Also the console's people: users (Argon2id password
+  expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
+  (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
+  (`read`/`write`/`send`, holding its mailboxes in `key_access`, `internal/workspace/keys.go`);
+  `Principal.IsInstance` means the operator workspace's. Also the console's people: users (Argon2id password
   on the server, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as
   SHA-256, 14 days at most, never extended) and single-use invites, to the instance or into a team.
   External identities (issuer + subject, linked only to the new person a first sign-in with a
@@ -154,9 +157,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `internal/service`; all authorization lives there. `depguard` stops a transport from importing
   `store`, `sync`, `provider`, `account` or `workspace` (access is decided in the service). If a rule
   appears on both sides, it is in the wrong place.
-- **Sending needs confirmation.** `confirm: true` is required on every send; the two-step
-  draft → send path is the planned alternative for MCP. Never relax this in a test or behind a
-  flag. Idempotency is reserved in the database **before** dialing SMTP, and a connection that
+- **Sending needs confirmation.** `confirm: true` is required on every send, a person's or a
+  key's; the two-step draft → send path is the planned alternative for MCP. Never relax this in a
+  test or behind a flag. A workspace key sends through the same path, only from a mailbox it holds
+  `send` on, with the `send` scope, while `MAIL_KEYS_MAY_SEND` allows (default true only under the
+  open key terms: a server naming other key terms must set it), under the address alone, at most
+  `DailyKeySendLimit` a day; its records and `send.finished` name the key. Idempotency is reserved
+  in the database **before** dialing SMTP (a key-less send's key is the message, the sender and the
+  minute), and a connection that
   drops or goes silent after the body started becomes `unknown`, which is never retried
   automatically (Exchange delivers both copies). A 4xx/5xx answer at the end of `DATA` is a refusal
   (RFC 5321): `failed` (`provider.ErrAfterData`), also never retried. Who may send is asked again by
@@ -199,7 +207,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `forbidden`; listing filters in SQL with the same rule as fetching one. No role reads, acts or
   sends: `read` passes only from an owner or an admin who reads the mailbox now, `act` and `send`
   from any owner or admin (`act` to a reader), stored `manage` to members only. A team mailbox
-  someone reads always keeps a reader (keys and roles never count).
+  someone reads always keeps a reader (keys and roles never count). An API key belongs to its
+  workspace: only its owners and admins, signed in, create, list and revoke keys (a key never
+  mints one); a key reaches exactly what it holds in `key_access`, read live — `read` given only by
+  an owner or an admin who reads that mailbox then, `act` and `send` by any of them — and keeps it
+  whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
+  leaves the workspace or is disabled or deleted (not on a demotion).
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -221,7 +234,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   nobody can read is never switched on. Closing a person without force is refused for the last
   reader of a team that outlives them (any other member, whatever their status), the same test as
   whether the team goes with them. Actions and sending have their own consents, the actor's own,
-  checked again right before the mail server is touched. The revisions come from
+  checked again right before the mail server is touched; a workspace key's are the key terms its
+  creator agreed to (recorded on the key), with the key, its flag and its scope checked again
+  instead, so no text says a person's own switch stops a key created since 0012. The revisions come
+  from
   `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts
   (`web/src/open/versions.ts`).
 - **Errors.** Sentinels `errors.New("pkg: ...")`, always `errors.Is`/`errors.As`. The API answers

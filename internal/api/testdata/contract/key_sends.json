@@ -1,0 +1,14 @@
+[
+  {
+    "account_id": "acc_0000000000000004",
+    "attempts": 1,
+    "created_at": 1790000000,
+    "idempotency_key": "5c4d3e2f-1a0b-4c9d-8e7f-6a5b4c3d2e1f",
+    "message_id": "00000000-0000-4000-8000-000000000001@work.example",
+    "recipients": 1,
+    "sent_at": 1790000000,
+    "sent_copy": "appended",
+    "state": "sent",
+    "updated_at": 1790000000
+  }
+]

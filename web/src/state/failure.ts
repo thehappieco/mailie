@@ -18,7 +18,7 @@ export interface Operations {
   'start-auth': true; 'wait-auth': true; 'complete-auth': true; 'remove-account': true; 'folders': true
   'sync-consent': true; 'grant-sync': true; 'withdraw-sync': true; 'sync-now': true
   'actions-consent': true; 'grant-actions': true; 'withdraw-actions': true
-  'load-keys': true; 'create-key': true; 'revoke-key': true
+  'load-keys': true; 'create-key': true; 'revoke-key': true; 'change-key-access': true; 'load-key-sends': true; 'load-my-keys': true
   'load-storage': true
   'load-workspaces': true; 'create-team': true; 'rename-team': true; 'accept-invite': true
   'load-members': true; 'change-member': true; 'remove-member': true; 'leave-team': true
@@ -31,8 +31,8 @@ export type Operation = keyof Operations
  * Beyond the transport's codes, the ones only the console can know: the
  * consent window closed, the account left pending for a failed state, the
  * server offered a flow a browser cannot finish, or the provider's redirect
- * came back malformed or too late; a new key refused because the person
- * holds as many as they may, or because the text they were shown is no
+ * came back malformed or too late; a new key refused because the workspace
+ * holds as many as it may, or because the text they were shown is no
  * longer the one the server asks about (a 409 on creating a key is either,
  * and state/apikeys.ts reads the list again to tell which).
  */

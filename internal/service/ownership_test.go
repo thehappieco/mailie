@@ -8,6 +8,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // person makes a user and returns the principal their browser session is.
@@ -122,25 +123,28 @@ func TestNobodySeesTheOperatorsMailboxesButAnInstanceKeyAndAnInstanceKeyNobodyEl
 	}
 }
 
-func TestAKeyActingAsAUserSeesOnlyWhatThatUserOwns(t *testing.T) {
+func TestAKeySeesOnlyTheMailboxesItHolds(t *testing.T) {
 	f := newFixture(t)
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	anas := f.mailbox(t, ana, "ana@mail.example")
+	f.mailbox(t, ana, "ana@other.example")
 	f.mailbox(t, admin(), "cli@mail.example")
 
-	secret, _, err := f.keys.Issue(t.Context(), auth.NewKeyRequest{Name: "agent", Scope: auth.ScopeRead, UserID: ana.UserID,
-		TermsVersion: service.DefaultKeyTermsVersion})
-	if err != nil {
-		t.Fatal(err)
+	key := keyOf(t, f, ana, auth.ScopeRead)
+	if got := ids(t, f, key); len(got) != 2 {
+		t.Errorf("a key holding both of ana's mailboxes lists %v", got)
 	}
-	key, err := f.svc.Authenticate(t.Context(), secret, nil)
-	if err != nil {
-		t.Fatal(err)
+	one := f.authenticate(t, authtest.NewWorkspaceKey(t, f.db, auth.ScopeRead, authtest.Personal(t, f.db, ana.UserID),
+		ana.UserID, workspace.KeyGrant{AccountID: anas, Flags: workspace.Flags{Read: true}}))
+	if got := ids(t, f, one); !slices.Equal(got, []string{anas}) {
+		t.Errorf("a key holding one of ana's mailboxes lists %v, want only it", got)
 	}
-	if got := ids(t, f, key); !slices.Equal(got, []string{anas}) {
-		t.Errorf("ana's key lists %v, want only her account", got)
+	none := f.authenticate(t, authtest.NewWorkspaceKey(t, f.db, auth.ScopeRead, authtest.Personal(t, f.db, ana.UserID),
+		ana.UserID))
+	if got := ids(t, f, none); len(got) != 0 {
+		t.Errorf("a key holding nothing lists %v", got)
 	}
-	// Still a key: it may not act as ana at a keyboard.
+	// Still a key: it is nobody at a keyboard.
 	if _, err := f.svc.Me(t.Context(), key); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Errorf("a key reached a session-only use case: %v", err)
 	}
@@ -266,12 +270,12 @@ func TestTheConsoleConnectsGmailWithGoogleSignInOnly(t *testing.T) {
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("a session added Gmail with a password: %v", err)
 	}
-	// Nor a key acting as that person: it is the same person, elsewhere.
-	agent := service.Principal{KeyPrefix: "dddddddd", Scope: auth.ScopeAdmin, UserID: session.UserID, UserRole: session.UserRole}
+	// Nor a key of her workspace, which links no mailbox at all.
+	agent := keyOf(t, f, session, auth.ScopeAdmin)
 	if _, err := f.svc.AddAccount(t.Context(), agent, service.AddAccountRequest{
 		Email: "ana@gmail.com", Password: "app-password",
-	}); service.CodeOf(err) != service.CodeBadRequest {
-		t.Fatalf("a key acting as a person added Gmail with a password: %v", err)
+	}); service.CodeOf(err) != service.CodeNotAuthorized {
+		t.Fatalf("a key of her workspace added Gmail with a password: %v", err)
 	}
 	// The CLI keeps app passwords. The servers are overridden only because
 	// the password is tried before the account is stored, and a unit test

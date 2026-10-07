@@ -35,6 +35,7 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store/storetest"
 	syncengine "github.com/thehappieco/mailie/internal/sync"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
@@ -106,7 +107,7 @@ func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
 	}, ""); err != nil {
 		t.Fatal(err)
 	}
-	operator := service.Principal{KeyPrefix: "aaaaaaaa", Scope: auth.ScopeAdmin}
+	operator := service.Principal{KeyPrefix: "aaaaaaaa", Scope: auth.ScopeAdmin, WorkspaceID: workspace.OperatorID}
 	if _, err := svc.SetMailboxSync(t.Context(), operator, id, switchSync(true)); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +127,7 @@ func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
 	mux.Handle("/mcp", mcp.New(svc, logger, "it").HTTPHandler(mcp.HTTPOptions{}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	cs, err := connectHTTP(t, srv, authtest.NewKey(t, db, auth.ScopeRead, ""), "2025-11-25")
+	cs, err := connectHTTP(t, srv, authtest.NewKey(t, db, auth.ScopeRead), "2025-11-25")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,17 +42,23 @@ func (f *fixture) count(t *testing.T, query string, args ...any) int {
 	return n
 }
 
-// issue makes a key and returns its prefix and its presented form.
+// issue makes a key and returns its prefix and its presented form: with a
+// person, a key of their personal workspace they created, agreeing to the key
+// terms, holding read on the accounts named, mailboxes of that workspace;
+// without, an instance key restricted to them.
 func (f *fixture) issue(t *testing.T, userID string, accounts ...string) (string, string) {
 	t.Helper()
-	// A key acting as a person is one they created, agreeing to the key terms.
-	terms := ""
+	req := auth.NewKeyRequest{Name: "closure test", Scope: auth.ScopeRead, AccountIDs: accounts}
 	if userID != "" {
-		terms = service.DefaultKeyTermsVersion
+		req = auth.NewKeyRequest{
+			Name: "closure test", Scope: auth.ScopeRead, WorkspaceID: authtest.Personal(t, f.db, userID),
+			CreatedBy: userID, TermsVersion: service.DefaultKeyTermsVersion,
+		}
+		for _, id := range accounts {
+			req.Mailboxes = append(req.Mailboxes, workspace.KeyGrant{AccountID: id, Flags: workspace.Flags{Read: true}})
+		}
 	}
-	secret, key, err := f.keys.Issue(t.Context(), auth.NewKeyRequest{
-		Name: "closure test", Scope: auth.ScopeRead, UserID: userID, AccountIDs: accounts, TermsVersion: terms,
-	})
+	secret, key, err := f.keys.Issue(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
 	}

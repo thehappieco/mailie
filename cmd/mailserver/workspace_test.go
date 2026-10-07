@@ -52,7 +52,7 @@ func realDaemon(t *testing.T) (config.Config, *store.Store) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return config.Config{
-		HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: authtest.NewKey(t, db, auth.ScopeAdmin, ""),
+		HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: authtest.NewKey(t, db, auth.ScopeAdmin),
 	}, db
 }
 

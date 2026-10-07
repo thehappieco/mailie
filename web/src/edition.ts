@@ -39,7 +39,12 @@ export interface Edition {
   sync: PermissionText
   /** What actions on messages change: agreed to before any is made. */
   actions: PermissionText
-  /** What a tool holding a new API key can do: agreed to by creating the key. Takes a `write` prop. */
+  /**
+   * What a tool holding a new API key can do: agreed to by creating the key.
+   * Takes `write` (the scope acts), `send` (the scope sends) and `team` (the
+   * name of the team the key is created in; empty in a personal workspace)
+   * props.
+   */
   keyTerms: AgreementText
   /** What the frame (components/ConsoleShell.vue) calls what it holds. Translated, or a name, which never is. */
   shell: {
@@ -71,8 +76,8 @@ export interface Edition {
    * source): creating a team, inviting into it and administering its
    * members, and accepting a team invitation while signed in. An edition
    * whose workspaces come from elsewhere leaves it out: an invitation link
-   * then only ever creates an account. Mailboxes, grants and taking a link
-   * over are the core's either way.
+   * then only ever creates an account. Mailboxes, their grants, their sync
+   * and a workspace's API keys are the core's either way.
    */
   teams?: boolean
   /**

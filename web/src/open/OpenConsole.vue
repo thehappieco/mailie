@@ -10,8 +10,11 @@
 // changed here: the personal workspace, where teams are made, or a team made
 // on this server, for its owners and admins (a member of a team sees no
 // Members, and its mailboxes say who manages them). Teams mirrored from
-// elsewhere are changed there. API keys and the account are the person's
-// own, the same in every workspace: the header names no workspace on them.
+// elsewhere are changed there. API keys are the workspace's: here for the
+// owners and admins of the team shown, or the person of their personal
+// workspace (a member of a team sees none, and its mailboxes say who manages
+// them). The account is the person's own, the same in every workspace: the
+// header names no workspace on it.
 import { computed } from 'vue'
 import AccountsPanel from '../components/AccountsPanel.vue'
 import ConsoleShell, { type ConsoleSection } from '../components/ConsoleShell.vue'
@@ -19,7 +22,7 @@ import KeysPanel from '../components/KeysPanel.vue'
 import StoragePanel from '../components/StoragePanel.vue'
 import { accounts } from '../state/accounts'
 import { currentWorkspace, workspaces } from '../state/workspaces'
-import { administers, changeableTeam, teamsCreatedHere, workspaceName } from '../ui/access'
+import { administers, administersKeys, changeableTeam, teamsCreatedHere, workspaceName } from '../ui/access'
 import { t } from '../ui/i18n'
 import OpenAccount from './OpenAccount.vue'
 import OpenMembers from './OpenMembers.vue'
@@ -27,6 +30,7 @@ import OpenMembers from './OpenMembers.vue'
 const shown = computed(currentWorkspace)
 const members = computed(() => workspaces.supported
   && ((changeableTeam(shown.value) && administers(shown.value)) || (shown.value?.kind === 'personal' && teamsCreatedHere(workspaces.list))))
+const keys = computed(() => workspaces.supported && administersKeys(shown.value))
 
 const sections = computed<ConsoleSection[]>(() => [
   {
@@ -44,10 +48,12 @@ const sections = computed<ConsoleSection[]>(() => [
       ? t('Teams let people on this server share mailboxes: each person uses only the mailboxes they are given access to.')
       : t('Who is in {team}, their roles, and the invitations to join it.', { team: workspaceName(shown.value) }),
   }] : []),
-  {
-    id: 'keys', label: t('API keys & MCP'), icon: 'key', component: KeysPanel, scope: 'person',
-    description: t('Create keys for your own tools, such as an AI assistant, and connect them to this server over MCP. A key reaches only the mailboxes you choose, and you can revoke it at any time.'),
-  },
+  ...(keys.value ? [{
+    id: 'keys', label: t('API keys & MCP'), icon: 'key' as const, component: KeysPanel,
+    description: shown.value?.kind !== 'team'
+      ? t('Create keys for your own tools, such as an AI assistant, and connect them to this server over MCP. A key reaches only the mailboxes you give it, and you can revoke it at any time.')
+      : t('The keys of {team} for its tools, such as an AI assistant, and how to connect them to this server over MCP. A key reaches only the mailboxes it is given, and every owner and admin of the team sees it and can revoke it.', { team: workspaceName(shown.value) }),
+  }] : []),
   {
     id: 'storage', label: t('Storage'), icon: 'server', component: StoragePanel,
     description: t('What the mailboxes you can read take up in this server’s index.'),
