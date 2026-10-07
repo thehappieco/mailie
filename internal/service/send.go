@@ -546,8 +546,8 @@ func (s *Service) finishSend(ctx context.Context, row store.Send, o store.SendOu
 
 // afterSend is what follows a message the server took: the copy in Sent for
 // an account whose provider does not file one, the replied message marked
-// answered when its owner allows changes, and a pass so the index sees the
-// copy. None of it changes that the message was sent, so failures are logged
+// answered when the sender may act there (markAnswered), and a pass so the
+// index sees the copy. None of it changes that the message was sent, so failures are logged
 // and the result stands.
 func (s *Service) afterSend(ctx context.Context, p Principal, a account.Account, row store.Send,
 	out provider.Outgoing, sent provider.SendResult, msg *checkedCompose, fileCopy bool,
@@ -664,10 +664,14 @@ func (s *Service) sentFolder(ctx context.Context, a account.Account, sess provid
 }
 
 // markAnswered sets \Answered on the message a reply answers, when the caller
-// may change that mailbox and its owner allows it; otherwise nothing, and
+// may change that mailbox (mayAct: their act flag and their own actions
+// consent, or a key's) and its index can follow; otherwise nothing, and
 // nobody is told: the reply was what was asked for.
 func (s *Service) markAnswered(ctx context.Context, p Principal, a account.Account, parent store.MessageRow) {
 	if err := s.mayAct(ctx, p, a); err != nil {
+		return
+	}
+	if err := s.indexFollows(ctx, a); err != nil {
 		return
 	}
 	row, err := s.store.Message(ctx, parent.ID)

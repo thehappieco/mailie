@@ -49,7 +49,9 @@ import (
 //     says where it went. A command sent is seen to its answer even when the
 //     caller has left, so that what the server did is recorded; one whose
 //     answer never came leaves the index to the passes, which the action
-//     asks for.
+//     asks for. A mailbox whose index can no longer follow — one that is not
+//     syncing while its index stays, as a team mailbox migration 0011 kept
+//     stopped does for its readers — is not changed at all (indexFollows).
 //   - Nothing is logged about a message but its account, its id and its
 //     folder's id: never a subject, an address or a folder's name.
 
@@ -130,6 +132,12 @@ var (
 		"Gmail's All Mail is hidden from IMAP; show it in Gmail's settings (Labels) to archive from Mailie", nil)
 	errCannotReturn = E(CodeConflict,
 		"that message can no longer be moved back from here; find it in your mail app", nil)
+	errNotSyncing = E(CodeConflict,
+		"this mailbox is not syncing, so Mailie's index could not follow an action; nothing was changed on the mail server", nil)
+	// errStoppedSyncing is errNotSyncing once a command has gone out.
+	errStoppedSyncing = E(CodeConflict,
+		"this mailbox stopped syncing while the action ran: the mail server may have made the change, or part of it, "+
+			"which Mailie's index can no longer follow", nil)
 )
 
 // SetFlags marks messages read or unread, starred or not, on their mail
@@ -412,7 +420,33 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 	if err := readyToRead(a); err != nil {
 		return account.Account{}, nil, err
 	}
+	if err := s.indexFollows(ctx, a); err != nil {
+		return account.Account{}, nil, err
+	}
 	return a, targets, nil
+}
+
+// indexFollows refuses an action on a mailbox whose index may no longer be
+// written: one that is not eligible to sync (store.SyncEligible). Some keep
+// their index all the same — a team mailbox migration 0011 kept stopped for
+// its readers, or one nobody reads any more that a key still holds — but no
+// row of it can change (store.RequireSyncEligibleTx). An action there would
+// change the server, fail to record what it did, and leave the index
+// contradicting the server with no pass to set it right, so the server is not
+// touched.
+//
+// It is asked when an action is accepted, and again on the connection before
+// each command that changes the mailbox (stillMayAct). What is left is the
+// moment between that and the recording, which actionFailed answers.
+func (s *Service) indexFollows(ctx context.Context, a account.Account) error {
+	eligible, err := s.store.SyncEligible(ctx, a.ID)
+	switch {
+	case err != nil:
+		return E(CodeInternal, "reading whether the mailbox syncs failed", err)
+	case !eligible:
+		return errNotSyncing
+	}
+	return nil
 }
 
 // mayAct decides whether the caller may change this account's mailbox, once
@@ -737,10 +771,15 @@ func (x *act) send(ctx context.Context, fn func(context.Context) error) error {
 
 // failed renders an action's failure. Once a command that changes the
 // mailbox has gone out, the server has changed, or may have, whatever the
-// error: a pass is asked for, so the index learns what it did.
+// error: a pass is asked for, so the index learns what it did, and a mailbox
+// that stopped syncing before a later folder's commands is not said to be
+// unchanged.
 func (x *act) failed(ctx context.Context, what string, err error) error {
 	if x.sent {
 		x.s.afterAction(ctx, x.a.ID)
+		if errors.Is(err, errNotSyncing) {
+			return errStoppedSyncing
+		}
 	}
 	return x.s.actionFailed(ctx, x.a, what, err)
 }
@@ -748,7 +787,8 @@ func (x *act) failed(ctx context.Context, what string, err error) error {
 // stillMayAct asks again, on the connection and before a command that
 // changes the mailbox, what actionTargets asked when the action was
 // accepted: the account is still one the caller may read, and they may still
-// change it — the scope, the act flag, their consent.
+// change it — the scope, the act flag, their consent or their key — and it
+// is still usable, and its index can still follow.
 func (s *Service) stillMayAct(ctx context.Context, p Principal, a account.Account) error {
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return err
@@ -760,7 +800,13 @@ func (s *Service) stillMayAct(ctx context.Context, p Principal, a account.Accoun
 	case err != nil:
 		return E(CodeInternal, "reading the account failed", err)
 	}
-	return s.mayAct(ctx, p, now)
+	if err := s.mayAct(ctx, p, now); err != nil {
+		return err
+	}
+	if err := readyToRead(now); err != nil {
+		return err
+	}
+	return s.indexFollows(ctx, now)
 }
 
 // moveRows moves indexed rows of one folder and has the index follow them.
@@ -1184,7 +1230,9 @@ func (s *Service) actionFailed(ctx context.Context, a account.Account, what stri
 	case errors.As(err, &known):
 		return err
 	case errors.Is(err, store.ErrNotEligible):
-		return E(CodeConflict, "sync was turned off for this account while the action ran", err)
+		// Only the recording refuses this, after the server answered: the
+		// mailbox stopped syncing between the last check and the write.
+		return E(CodeConflict, errStoppedSyncing.Message, err)
 	case errors.Is(err, store.ErrUIDValidityMismatch), errors.Is(err, provider.ErrUIDValidityChanged):
 		return E(CodeConflict, errMessageBusy.Message, err)
 	case errors.Is(err, provider.ErrMessageGone):

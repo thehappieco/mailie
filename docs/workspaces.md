@@ -281,6 +281,12 @@ the invites whose creator could no longer make them.
   for the team, or off, or removes it; deleting the linker deletes that index, and disabling them
   again changes nothing. The daemon lists these at start; one only the disabled linker read is
   listed as read by nobody instead, and can only be removed or turned off.
+- **An index that stays while its mailbox does not sync is read, never acted on**: kept stopped, or
+  read by nobody but a key that holds it. No row of it can change, so an action there would change
+  the server and leave the index contradicting it; it is refused with `409` before the server is
+  touched, when it is accepted and again on the connection before each command. Sending writes
+  nothing to the index and still works, but a reply leaves the message it answers without
+  `\Answered`.
 - The From name is the **sender's** profile name (`fromName` reads the caller), so an account's
   `send.from_name` is per caller. A key, instance or workspace, sends under the address alone.
 
@@ -294,7 +300,7 @@ the invites whose creator could no longer make them.
 | folders, search, read, originals, attachments, events, storage | `read` | `read` | operator mailbox, `read` scope |
 | ask for a sync pass | `read`, `write` scope | `read`, `write` scope | operator mailbox, `write` scope |
 | switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent); a personal one: never (its person's own consent decides) | never | operator mailbox, unrestricted admin key |
-| act | `act`, actions consent | `act`, `write` scope (under its key terms; no person's consent) | operator mailbox, `write` scope |
+| act | `act`, actions consent, the mailbox syncing | `act`, `write` scope (under its key terms; its creator's actions consent only as the Consents table says), the mailbox syncing | operator mailbox, `write` scope, the mailbox syncing |
 | send, read own send records | `send`, send consent | `send`, `send` scope, `MAIL_KEYS_MAY_SEND` (under its key terms; no person's consent) | operator mailbox, `send` scope |
 | re-authorize | manage (owner or admin, or a member holding `manage`) | never | operator mailbox, `admin` scope |
 | remove (repeating its id) | a team's: its owners and admins; a personal one: its person | never | operator mailbox, `admin` scope |
@@ -354,7 +360,10 @@ included: these routes take a session or the operator's key.
    or the operator workspace.
 4. **Revoking** any flag is an owner's, an admin's or the operator's, under the
    [last-reader rule](#protections); an owner or an admin drops their own flags, a member does not.
-5. The grant records `granted_by` (`usr_…`, `key:<prefix>`, `cli`, or `migration`).
+5. The grant records `granted_by`: `usr_…` for a person signed in (the linker's own grant
+   included), `key:<prefix>` for the operator, whose command line goes through the daemon with an
+   instance admin key, or `migration` for a grant migration 0008 made; empty once the person who
+   granted it is deleted. Nothing writes `cli`, which 0008's column comment still lists.
 
 ### Instance administration
 
@@ -538,9 +547,9 @@ The event gate (`internal/service/events.go`) today remembers per account whethe
 see it, assuming that never changes. With grants it does:
 
 - The service keeps an **access epoch**, a counter it advances after every commit that can give or
-  take `read` from someone: a grant set or revoked, a membership disabled or removed, a mailbox
-  linked or removed, a person disabled or deleted, a key created, given or taken a mailbox, or
-  revoked. A role never gives `read`, so a role change
+  take `read` from someone: a grant set or revoked, a membership disabled, enabled again or
+  removed, a mailbox linked or removed, a person disabled or deleted, a key created, given or taken
+  a mailbox, or revoked. A role never gives `read`, so a role change
   moves nothing a stream carries; an owner's or an admin's stream carries a team mailbox's events
   only while they hold `read` on it. Switching a team mailbox's sync off deletes its events with
   its index; nothing journals the switch itself. One daemon writes the database (the lock),
@@ -1101,6 +1110,9 @@ Test names state the guarantee. At least:
 - Consent attempts: `TestAConsentFinishingAfterItsStarterStoppedManagingTheMailboxStoresNoGrant`;
   `TestLosingManageOfAMailboxEndsTheConsentAttemptsStartedOnIt`.
 - Use: `TestActingNeedsTheActorsConsentAndTheActFlag`;
+  `TestAMailboxKeptStoppedWithItsIndexIsNotChangedByARefusedAction`;
+  `TestAnActionCutShortWhenItsMailboxStopsSyncingNeverSaysTheServerIsUnchanged`;
+  `TestAWorkspaceKeyNeverChangesAMailboxWhoseIndexCannotFollowIt`;
   `TestSendingNeedsTheSendersConsentAndTheSendFlag`;
   `TestAMessageFromASharedMailboxGoesOutUnderTheSendersName`;
   `TestASendKeyIsNeverReplayedToAnotherPerson`;

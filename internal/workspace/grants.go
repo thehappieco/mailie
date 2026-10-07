@@ -71,8 +71,10 @@ type Grant struct {
 	WorkspaceID string
 	UserID      string
 	Flags
-	// GrantedBy is "usr_…", "key:<prefix>", "cli" or "migration"; empty once
-	// the person who granted it is deleted.
+	// GrantedBy is "usr_…" (a person signed in, or the linker's own grant),
+	// "key:<prefix>" (the operator: the command line goes through the daemon
+	// with its instance admin key) or "migration"; empty once the person who
+	// granted it is deleted.
 	GrantedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time

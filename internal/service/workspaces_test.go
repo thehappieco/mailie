@@ -1,15 +1,20 @@
 package service_test
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/emersion/go-imap/v2"
+
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
@@ -635,6 +640,200 @@ func TestActingNeedsTheActorsConsentAndTheActFlag(t *testing.T) {
 	wantCode(t, "Bea once act is gone", mark(tm.bea), service.CodeNotAuthorized)
 	if err := mark(tm.ana); err != nil {
 		t.Errorf("Ana: %v", err)
+	}
+}
+
+// refusedUntouched fails unless err is the refusal of an action on a mailbox
+// that is not syncing, and no command that changes a mailbox reached box.
+func refusedUntouched(t *testing.T, box *providertest.FakeMailbox, what string, err error) {
+	t.Helper()
+	wantCode(t, what, err, service.CodeConflict)
+	if msg := service.MessageOf(err); !strings.Contains(msg, "nothing was changed on the mail server") {
+		t.Errorf("%s: message = %q", what, msg)
+	}
+	for _, c := range box.Calls() {
+		switch c.Method {
+		case providertest.MethodStoreFlags, providertest.MethodMove, providertest.MethodCopy:
+			t.Fatalf("%s: %s reached the server", what, c.Method)
+		}
+	}
+}
+
+func TestAMailboxKeptStoppedWithItsIndexIsNotChangedByARefusedAction(t *testing.T) {
+	// Bea reads the team's mailbox and may act on it. It stops syncing and
+	// keeps its index for its readers, as migration 0011 left a mailbox whose
+	// linker it found disabled: no row of that index can change any more. An
+	// action is refused before the server is touched — on the connection when
+	// the mailbox stops while the action waits for it, and when it is accepted
+	// afterwards.
+	m := newMailFixture(t)
+	tm := newSupportTeam(t, m.fixture)
+	shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
+	box.CreateFolder("Trash", imap.MailboxAttrTrash)
+	box.CreateFolder("Work")
+	box.Deliver("INBOX", message("a", "Refund for order 4471"))
+	m.index(t, shared, box)
+	tm.grant(t, shared, workspace.Flags{Read: true, Act: true})
+	b := &actionBox{m: m, owner: tm.bea, id: shared, box: box}
+	b.allow(t)
+	row, inbox, work := b.row(t, "INBOX", "a"), b.folder(t, "INBOX"), b.folder(t, "Work")
+	acts := []struct {
+		name string
+		act  func(context.Context) error
+	}{
+		{"marking read", func(ctx context.Context) error {
+			_, err := m.svc.SetFlags(ctx, tm.bea, service.SetFlagsRequest{IDs: []int64{row}, Seen: yes()})
+			return err
+		}},
+		{"moving", func(ctx context.Context) error {
+			_, err := m.svc.MoveMessages(ctx, tm.bea, service.MoveRequest{IDs: []int64{row}, To: strconv.FormatInt(work, 10)})
+			return err
+		}},
+		{"trashing", func(ctx context.Context) error {
+			_, err := m.svc.TrashMessages(ctx, tm.bea, service.TrashRequest{IDs: []int64{row}})
+			return err
+		}},
+	}
+
+	h := hold(box, func(c providertest.Call) bool {
+		return c.Method == providertest.MethodSelect && c.Role == provider.RoleInteractive
+	})
+	done := make(chan error, 1)
+	go func() { done <- acts[0].act(t.Context()) }()
+	<-h.entered
+	keepStopped(t, m, tm, shared)
+	close(h.released)
+	err := <-done
+	box.OnCall(nil)
+	refusedUntouched(t, box, acts[0].name+" while the mailbox stopped", err)
+
+	opened := box.Opens(provider.RoleInteractive)
+	for _, tc := range acts {
+		box.ResetCalls()
+		refusedUntouched(t, box, tc.name+" once it is kept stopped", tc.act(t.Context()))
+	}
+	if n := box.Opens(provider.RoleInteractive) - opened; n != 0 {
+		t.Errorf("the refused actions opened %d connections", n)
+	}
+	if seen(box.Flags("INBOX", b.serverUID("INBOX", "a"))) ||
+		!b.on("INBOX", "a") || b.on("Work", "a") || b.on("Trash", "a") {
+		t.Fatal("the mail server changed")
+	}
+	if n := m.count(t, `SELECT count(*) FROM messages WHERE id = ? AND folder_id = ? AND seen = 0`, row, inbox); n != 1 {
+		t.Fatal("the index changed")
+	}
+}
+
+func TestAnActionCutShortWhenItsMailboxStopsSyncingNeverSaysTheServerIsUnchanged(t *testing.T) {
+	// Bea marks read two messages of the team's mailbox, in two folders. Ana,
+	// its owner, turns the team's sync off once the first folder is done:
+	// before the second folder's command, which is then not sent, or between
+	// that command and its recording. The server has changed either way, and
+	// the answer says it may have.
+	for _, tc := range []struct {
+		name string
+		// at is the second folder's call the sync is turned off during.
+		at providertest.Method
+		// sent is whether the second folder's command goes out.
+		sent bool
+	}{
+		{"before the second folder's command", providertest.MethodSelect, false},
+		{"between the second folder's command and its recording", providertest.MethodStoreFlags, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMailFixture(t)
+			tm := newSupportTeam(t, m.fixture)
+			shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
+			box.CreateFolder("Work")
+			inboxUID := box.Deliver("INBOX", message("a", "Refund for order 4471"))
+			workUID := box.Deliver("Work", message("b", "Rota for October"))
+			m.index(t, shared, box)
+			tm.grant(t, shared, workspace.Flags{Read: true, Act: true})
+			b := &actionBox{m: m, owner: tm.bea, id: shared, box: box}
+			b.allow(t)
+			ids := []int64{b.row(t, "INBOX", "a"), b.row(t, "Work", "b")}
+
+			h := hold(box, func(c providertest.Call) bool {
+				return c.Method == tc.at && c.Role == provider.RoleInteractive && c.Folder == "Work"
+			})
+			done := make(chan error, 1)
+			go func() {
+				_, err := m.svc.SetFlags(t.Context(), tm.bea, service.SetFlagsRequest{IDs: ids, Seen: yes()})
+				done <- err
+			}()
+			<-h.entered
+			off := false
+			if _, err := m.svc.SetMailboxSync(t.Context(), tm.ana, shared, service.MailboxSyncRequest{Enabled: &off}); err != nil {
+				t.Fatal(err)
+			}
+			close(h.released)
+			err := <-done
+			box.OnCall(nil)
+			wantCode(t, "marking read across the switch", err, service.CodeConflict)
+			if msg := service.MessageOf(err); !strings.Contains(msg, "may have made the change") {
+				t.Errorf("message = %q", msg)
+			}
+			if !seen(box.Flags("INBOX", inboxUID)) {
+				t.Fatal("the first folder, done before the switch, was not changed")
+			}
+			if got := seen(box.Flags("Work", workUID)); got != tc.sent {
+				t.Fatalf("the second folder marked read: %v, want %v", got, tc.sent)
+			}
+		})
+	}
+}
+
+func TestAWorkspaceKeyNeverChangesAMailboxWhoseIndexCannotFollowIt(t *testing.T) {
+	// A key Ana gave read and act on the team's mailbox acts under its key
+	// terms, with nobody's consent asked. Where the mailbox stopped syncing
+	// and kept its index — kept stopped since the upgrade, or read by no
+	// person any more, which a key never counts as — it is refused like
+	// anyone, before the server is touched.
+	for _, tc := range []struct {
+		name string
+		stop func(t *testing.T, m *mailFixture, tm supportTeam, accountID string)
+	}{
+		{"kept stopped since the upgrade", keepStopped},
+		{"read by nobody", func(t *testing.T, m *mailFixture, tm supportTeam, accountID string) {
+			// Bea reads it, so Ana may drop her own flags; Bea is then
+			// disabled anyway, and the key, which is not hers, stays.
+			ctx := t.Context()
+			tm.grant(t, accountID, workspace.Flags{Read: true})
+			if err := m.svc.RevokeAccess(ctx, tm.ana, accountID, tm.ana.UserID, workspace.Flags{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := m.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com", Force: true}); err != nil {
+				t.Fatal(err)
+			}
+			_, unread, err := m.db.TeamSyncNotices(ctx)
+			if err != nil || !slices.Contains(unread, accountID) || m.eligible(t, accountID) || indexed(t, m.fixture, accountID) == 0 {
+				t.Fatalf("not read by nobody with its index: %v (%v)", unread, err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMailFixture(t)
+			tm := newSupportTeam(t, m.fixture)
+			shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
+			uid := box.Deliver("INBOX", message("a", "Refund for order 4471"))
+			m.index(t, shared, box)
+			row := m.messageID(t, shared, "INBOX", uid)
+			key := m.authenticate(t, authtest.NewWorkspaceKey(t, m.db, auth.ScopeWrite, tm.id, tm.ana.UserID,
+				workspace.KeyGrant{AccountID: shared, Flags: workspace.Flags{Read: true, Act: true}}))
+			tc.stop(t, m, tm, shared)
+
+			_, err := m.svc.SetFlags(t.Context(), key, service.SetFlagsRequest{IDs: []int64{row}, Seen: yes()})
+			refusedUntouched(t, box, "the key marking read", err)
+			if n := box.Opens(provider.RoleInteractive); n != 0 {
+				t.Errorf("the refused action opened %d connections", n)
+			}
+			if seen(box.Flags("INBOX", uid)) {
+				t.Fatal("the mail server changed")
+			}
+			if n := m.count(t, `SELECT count(*) FROM messages WHERE id = ? AND seen = 0`, row); n != 1 {
+				t.Fatal("the index changed")
+			}
+		})
 	}
 }
 

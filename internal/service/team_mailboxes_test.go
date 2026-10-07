@@ -24,6 +24,21 @@ func migrated(t *testing.T, f *fixture, accountID, linker string) {
 		sync_enabled_via = 'migration', linked_by = ? WHERE id = ?`, linker, linker, accountID)
 }
 
+// keepStopped gives a team mailbox what migration 0011 leaves when it finds
+// its linker, Eve, disabled: no consent, bound to her, its index kept for
+// whoever reads it.
+func keepStopped(t *testing.T, m *mailFixture, tm supportTeam, accountID string) {
+	t.Helper()
+	eve := tm.join(t, m.fixture, "eve@example.com", workspace.RoleAdmin)
+	m.exec(t, `UPDATE users SET status = 'disabled' WHERE id = ?`, eve.UserID)
+	m.exec(t, `UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = ?, sync_consent_version = '',
+		sync_enabled_via = 'migration' WHERE id = ?`, eve.UserID, accountID)
+	kept, _, err := m.db.TeamSyncNotices(t.Context())
+	if err != nil || !slices.Contains(kept, accountID) || m.eligible(t, accountID) || indexed(t, m.fixture, accountID) == 0 {
+		t.Fatalf("not kept stopped with its index: kept %v (%v)", kept, err)
+	}
+}
+
 func TestRemovingAMailboxNeedsItsIdRepeated(t *testing.T) {
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)

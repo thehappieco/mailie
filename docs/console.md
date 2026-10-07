@@ -216,7 +216,9 @@ says the person is, and answers its page with the `Session` that comes back, exa
   it identifies**: the schema refuses to delete a pin while its identity is linked, and deleting the
   person (`user delete`, the second step of closing an account) removes their identities and then
   their pins in the same transaction. Disabling the person, the first step, keeps both, as it keeps
-  their password: a person switched back on signs in as before, and the pin must still hold then.
+  their password: a person switched back on would sign in as before, and the pin must still hold
+  then. No route or command switches a person back on yet (only `auth.Users.SetDisabled`, which
+  tests use).
   An extension pins a key before the sign-in that links its identity; when that sign-in is
   refused (an address not verified, an address somebody here has already), the pin signs nobody
   in, and the hourly retention sweep deletes it once it is ten minutes old
@@ -912,7 +914,8 @@ Changing a mailbox is a new use of it, so actions have their **own** consent, se
 acts as nobody). `POST {"version": …}` and `DELETE` are the person's, signed in. Withdrawing
 deletes nothing and stops actions at once: every action checks the consent before connecting and
 again, on the connection, before each command that changes the mailbox. `ActionsConsent` has the
-shape of `SyncConsent`. Without sync there is no index, and without an index no message to act on.
+shape of `SyncConsent`. Without sync there is no index, and without an index no message to act on;
+an index that stays while sync is stopped is not acted on either (point 6 below).
 
 ### Who may act
 
@@ -929,6 +932,12 @@ Decided in `internal/service`, before any connection, in this order:
    otherwise). Asked again, the key still live, before each command.
 4. **A mailbox of the operator workspace**: an instance key with `write`.
 5. The account must be usable: `needs_reauth`, `pending_auth` and `disabled` are `409`.
+6. The mailbox must be syncing, so that the index can follow what the server does. A team mailbox
+   kept stopped since migration 0011 keeps its index for its readers, and one nobody reads any more
+   keeps it for a key that holds it, but no row of it can change: an action there is `409` before
+   the server is touched. Asked again, with the rest, on the connection before each command; when
+   sync stops between that and the recording (an owner or an admin turning the team's sync off,
+   say), the answer is `409` too, and says the server may have made the change.
 
 ### Routes
 
