@@ -343,12 +343,42 @@ func (v Visibility) clause() (string, []any) {
 // links it. It names its person (OwnerUserID) exactly when that workspace is
 // personal.
 func (r *Repository) Create(ctx context.Context, a Account, linker string) (Account, error) {
-	return r.create(ctx, a, linker, nil)
+	return r.create(ctx, a, linker, nil, nil)
 }
 
-// create is Create with a check run first in its transaction; nil checks
-// nothing.
-func (r *Repository) create(ctx context.Context, a Account, linker string, also func(*sql.Tx) error) (Account, error) {
+// createWithPassword is Create for a password account whose login has been
+// proved: the password is sealed first, and the account, its password and
+// its move to active are then one transaction. A sealer that cannot seal (a
+// key service not reached, throttled or refusing the call) leaves nothing
+// behind, and the same add can be tried again; a write that fails leaves no
+// account without its password, which no route could give it afterwards.
+func (r *Repository) createWithPassword(ctx context.Context, a Account, linker string, also func(*sql.Tx) error, password string) (Account, error) {
+	// Sealed outside the transaction: a call to a key service must not hold
+	// the database's one writer. The id is the account's before it exists.
+	sealed, err := r.sealer.Seal(ctx, secrets.Credential(a.ID, "password"), []byte(password))
+	if err != nil {
+		return Account{}, fmt.Errorf("account: seal password: %w", err)
+	}
+	a.State = StatePendingAuth
+	return r.create(ctx, a, linker, also, func(tx *sql.Tx, at time.Time) ([]events.Event, error) {
+		if err := r.putCredential(ctx, tx, a.ID, "password", sealed, at.Unix()); err != nil {
+			return nil, err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE accounts SET state = ?, state_reason = '', state_changed_at = ?, updated_at = ?
+			  WHERE id = ?`, string(StateActive), at.Unix(), at.Unix(), a.ID); err != nil {
+			return nil, fmt.Errorf("account: set state: %w", err)
+		}
+		return r.journalState(ctx, tx, a.ID, StatePendingAuth, StateActive, "", at)
+	})
+}
+
+// create is Create with a check run first in its transaction, and then
+// after the account's insert, both in that transaction; nil runs nothing.
+// What then journals is published after the commit, and the account it
+// returns is in the state then left it in.
+func (r *Repository) create(ctx context.Context, a Account, linker string, also func(*sql.Tx) error,
+	then func(tx *sql.Tx, at time.Time) ([]events.Event, error)) (Account, error) {
 	now := r.now().UTC().Truncate(time.Second)
 	a.CreatedAt, a.UpdatedAt = now, now
 	if a.State == "" {
@@ -371,6 +401,7 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, also 
 		return Account{}, fmt.Errorf("account: encode folder overrides: %w", err)
 	}
 
+	var evs []events.Event
 	err = r.store.Write(ctx, func(tx *sql.Tx) error {
 		if also != nil {
 			if err := also(tx); err != nil {
@@ -412,15 +443,25 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, also 
 		if err != nil {
 			return fmt.Errorf("account: insert: %w", err)
 		}
-		if linker == "" {
+		if linker != "" {
+			if err := workspace.GrantLinkTx(ctx, tx, a.ID, a.WorkspaceID, linker, now); err != nil {
+				return err
+			}
+		}
+		if then == nil {
 			return nil
 		}
-		return workspace.GrantLinkTx(ctx, tx, a.ID, a.WorkspaceID, linker, now)
+		evs, err = then(tx, now)
+		if err != nil {
+			return err
+		}
+		a.State, err = currentStateTx(ctx, tx, a.ID)
+		return err
 	})
 	if err != nil {
 		return Account{}, err
 	}
-	r.committed(nil, a.ID)
+	r.committed(evs, a.ID)
 	return a, nil
 }
 
@@ -945,6 +986,14 @@ func (r *Repository) credential(ctx context.Context, id, field string) ([]byte, 
 		return nil, fmt.Errorf("account: read %s: %w", field, err)
 	}
 	plaintext, err := r.sealer.Open(ctx, secrets.Credential(id, field), ciphertext)
+	if errors.Is(err, secrets.ErrSealedElsewhere) {
+		// Of the KMS key's own kind: no key given beside it opens this, and
+		// no rewrap moves it. What does is the settings that sealed it.
+		return nil, fmt.Errorf("account: the stored %s for %s does not open with %s: it was sealed under "+
+			"another MAIL_CREDENTIAL_KMS_KEY_ARN or another MAIL_ENV; set both back to the values that sealed it "+
+			"(rewrap-credentials cannot move it), or authorize the mailbox again if that key is lost for good: %w",
+			field, id, r.sealer.Describe(), err)
+	}
 	if secrets.DoesNotOpen(err) {
 		// The most likely cause by far is a key that is not configured, and
 		// saying so saves a long hunt.

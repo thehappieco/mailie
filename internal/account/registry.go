@@ -467,20 +467,21 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 
 	// The login check above can take seconds; the person may have been
 	// switched off meanwhile.
-	created, err := r.repo.create(ctx, a, req.LinkerID, both(r.ownerStillActive(ctx, req.LinkerID), req.Check))
-	if err != nil {
-		return Account{}, nil, err
+	check := both(r.ownerStillActive(ctx, req.LinkerID), req.Check)
+	if a.AuthKind == "password" {
+		// Sealed before anything is written, and written whole: a key
+		// service that cannot seal it leaves no account behind, which a retry
+		// would find a duplicate and nothing could give its password.
+		created, err := r.repo.createWithPassword(ctx, a, req.LinkerID, check, req.Password)
+		if err != nil {
+			return Account{}, nil, err
+		}
+		return created, nil, nil
 	}
 
-	if created.AuthKind == "password" {
-		if err := r.repo.SavePassword(ctx, created.ID, req.Password); err != nil {
-			return Account{}, nil, err
-		}
-		if err := r.repo.SetState(ctx, created.ID, StateActive, ""); err != nil {
-			return Account{}, nil, err
-		}
-		created.State = StateActive
-		return created, nil, nil
+	created, err := r.repo.create(ctx, a, req.LinkerID, check, nil)
+	if err != nil {
+		return Account{}, nil, err
 	}
 
 	flow, err := r.StartAuth(ctx, created.ID, req.Flow, req.LinkerID)

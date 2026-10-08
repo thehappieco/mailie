@@ -22,8 +22,10 @@ layers build on the emersion projects (go-imap, go-message, go-sasl, go-smtp;
 MIT), SMTP submission on github.com/wneessen/go-mail (MIT), the Model Context
 Protocol server on github.com/modelcontextprotocol/go-sdk (Apache-2.0, with
 earlier contributions under MIT), storage on modernc.org/sqlite
-(BSD-3-Clause), which embeds SQLite (public domain), and backups on the AWS
-SDK for Go v2 (Apache-2.0). The console's build bundles Vue (MIT).
+(BSD-3-Clause), which embeds SQLite (public domain), backups and the
+credentials under AWS KMS on the AWS SDK for Go v2 (Apache-2.0), and the
+envelope of those credentials on The Happie Co kit (Apache-2.0). The
+console's build bundles Vue (MIT).
 
 The following Apache-2.0 dependencies are compiled into the binary and carry
 NOTICE files, reproduced here as section 4(d) of their licence asks:
@@ -84,3 +86,18 @@ github.com/prometheus/procfs (Linux builds):
 
   This product includes software developed at
   SoundCloud Ltd. (http://soundcloud.com/).
+
+github.com/thehappieco/kit (thcseal, kms and kms/awskms; the parts of its
+NOTICE that pertain to them):
+
+  The Happie Co kit
+  Copyright 2026 The Happie Co and contributors.
+
+  THCSEAL v1 and its key wrappers (thcseal, kms, kms/awskms and kms/localkek)
+  were taken from the platform (The Happie Co platform,
+  github.com/thehappieco/platform, Apache-2.0) at commit
+  d32b6632a45f1fc5a1884bb4fbe02d8ec8c74371: internal/seal and internal/kms,
+  with the tests of commit d3e8c6d6cdf886b02f135a7067a3de02a576528e, which
+  replace the platform's AWS identifiers with AWS's documentation
+  placeholders. The platform's handoff of 2026-10-08 places them under the
+  kit's license.

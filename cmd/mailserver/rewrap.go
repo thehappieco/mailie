@@ -107,10 +107,12 @@ func staleCredentials(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) ([
 
 // replaceSendHashRoot puts a new send-hash root in place of one no configured
 // key opens any more, and touches nothing else: a credential sealed under a
-// lost key stays as it is until its mailbox is authorized again.
-func replaceSendHashRoot(ctx context.Context, db *store.Store, sealer secrets.Sealer) error {
+// lost key stays as it is until its mailbox is authorized again. A root of
+// the configured KMS key's own kind that it does not unwrap is replaced only
+// with kmsKeyLost (store.ReplaceSendHashRootTx).
+func replaceSendHashRoot(ctx context.Context, db *store.Store, sealer secrets.Sealer, kmsKeyLost bool) error {
 	return db.Write(ctx, func(tx *sql.Tx) error {
-		if err := store.ReplaceSendHashRootTx(ctx, tx, sealer); err != nil {
+		if err := store.ReplaceSendHashRootTx(ctx, tx, sealer, kmsKeyLost); err != nil {
 			return fmt.Errorf("rewrap: %w", err)
 		}
 		return nil

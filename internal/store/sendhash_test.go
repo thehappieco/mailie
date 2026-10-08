@@ -122,7 +122,7 @@ func TestAReplacedSendHashRootIsANewOneAndOnlyWhenTheOldCannotBeOpened(t *testin
 		t.Fatal(err)
 	}
 	replace := func(kr secrets.Sealer) error {
-		return db.Write(t.Context(), func(tx *sql.Tx) error { return store.ReplaceSendHashRootTx(t.Context(), tx, kr) })
+		return db.Write(t.Context(), func(tx *sql.Tx) error { return store.ReplaceSendHashRootTx(t.Context(), tx, kr, false) })
 	}
 
 	if err := replace(lost); !errors.Is(err, store.ErrSendHashRootOpens) {
@@ -151,7 +151,7 @@ func TestARootTheSealerCouldNotTryToOpenIsNeitherLostNorReplaced(t *testing.T) {
 	}
 	kept := storedRoot(t, db)
 	replace := func(s secrets.Sealer) error {
-		return db.Write(t.Context(), func(tx *sql.Tx) error { return store.ReplaceSendHashRootTx(t.Context(), tx, s) })
+		return db.Write(t.Context(), func(tx *sql.Tx) error { return store.ReplaceSendHashRootTx(t.Context(), tx, s, false) })
 	}
 
 	for name, failure := range map[string]error{

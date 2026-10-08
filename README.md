@@ -349,7 +349,10 @@ optional, and designed so that the host can create backups but never read or del
   `0600` temporary file that is removed when the response ends.
 - **Who can read it.** Whoever has both the database and `MAIL_CREDENTIAL_KEY_HEX` can reach the
   mailboxes; whoever runs the server can read the index. The key lives in the environment, which
-  protects copies and backups of the database, not against code running as the daemon's user.
+  protects copies and backups of the database, not against code running as the daemon's user. On
+  EC2 an AWS KMS key can seal the credentials instead (`MAIL_CREDENTIAL_KMS_KEY_ARN`, a data key
+  per credential): no key is then in the environment, and every unwrapping is a call KMS's policy
+  allows and CloudTrail records ([`docs/self-hosting.md`](docs/self-hosting.md#credentials-under-aws-kms)).
 - **Who sees what.** For other people, owners included, a person's mailbox does not exist: it is
   `not_found`, never `forbidden`. Instance keys belong to the operator: over REST they see every
   mailbox but never change a person's messages or send from a person's mailbox, and over MCP they

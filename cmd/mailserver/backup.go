@@ -146,12 +146,21 @@ func backupRestore(ctx context.Context, args []string) error {
 	}
 	fmt.Printf("restored %s (env %s) to %s\n  %d bytes, schema version %d, %s\n", res.Object, res.Env, *out,
 		res.PlaintextBytes, res.SchemaVersion, strings.Join(counts, ", "))
-	fmt.Println("The mailbox credentials inside are still sealed with the MAIL_CREDENTIAL_KEY_HEX of the server it came from.")
+	fmt.Println(restoredCredentials)
 	fmt.Println("It is the database in clear: keep it only where your data-protection rules allow, " +
 		"and delete it as soon as it has served.")
 	fmt.Println(restoredLacks)
 	return nil
 }
+
+// restoredCredentials says how the credentials of a restored database are
+// sealed: as they were on the server it came from, which a restore never
+// changes, under its MAIL_CREDENTIAL_KEY_HEX or under its credentials' KMS key
+// and MAIL_ENV, which open only where that key's policy lets them.
+const restoredCredentials = "The mailbox credentials inside are still sealed as they were on the server it came from: " +
+	"under its MAIL_CREDENTIAL_KEY_HEX, or, if it sealed them with AWS KMS, under its credentials' KMS key and its " +
+	"MAIL_ENV, which open them only on a host that key's policy lets decrypt, with the same MAIL_ENV " +
+	"(docs/self-hosting.md, \"Credentials under AWS KMS\")."
 
 // restoredLacks is the last line a restore prints. It says what docs/backup.md
 // says, and points at the section that says it: a restored database is the

@@ -16,6 +16,7 @@ is in [`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example syste
 - [MCP clients](#mcp-clients)
 - [Health, metrics and logs](#health-metrics-and-logs)
 - [Backups](#backups)
+- [Credentials under AWS KMS](#credentials-under-aws-kms)
 - [Upgrades](#upgrades)
 - [A forgotten password](#a-forgotten-password)
 
@@ -45,7 +46,7 @@ A server needs at least these:
 
 | Variable | On a server |
 |---|---|
-| `MAIL_CREDENTIAL_KEY_HEX` | Required. `openssl rand -hex 32`. It encrypts every stored refresh token and password, and the send-hash root. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
+| `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, and the send-hash root. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
 | `MAIL_PUBLIC_URL` | The `https://` origin people reach the console at, such as `https://mail.example.org`: no path, no trailing slash. Invite links and the web OAuth redirect (`<MAIL_PUBLIC_URL>/oauth/return`) are built from it, never from a request's `Host`. |
 | `MAIL_ENV` | `prod`: logs in JSON, and refuses an `http://` `MAIL_PUBLIC_URL` and the settings that would leak a token. |
 | `MAIL_TRUSTED_PROXIES` | The address the daemon sees your reverse proxy connect from (see [below](#the-proxys-address)). Without it every client shares one rate limit. |
@@ -370,7 +371,126 @@ Without AWS, stop the daemon and copy the data directory (`mail.db`, and `mail.d
 `mail.db-shm` if they exist), as for an upgrade below; a copy of a running daemon's files can be
 inconsistent. Either way, a backup holds the people, the index and the credentials encrypted under
 `MAIL_CREDENTIAL_KEY_HEX`, which is not in it: keep the key apart, and the copy as private as the
-data directory.
+data directory. Under a KMS key ([below](#credentials-under-aws-kms)) the credentials of a backup
+open only where that key's policy lets the daemon decrypt, with the same `MAIL_ENV`.
+
+## Credentials under AWS KMS
+
+Optional, for a server on an EC2 instance. By default the credentials and the send-hash root are
+sealed under `MAIL_CREDENTIAL_KEY_HEX`, a key in the server's environment. With
+`MAIL_CREDENTIAL_KMS_KEY_ARN` each is sealed instead under a data key of its own, which an AWS KMS
+key wraps (a `THCSEAL` envelope), and the key never leaves KMS: the database, its backups and the
+server's environment open nothing without a call to KMS that the key policy allows and CloudTrail
+records. Every call carries the encryption context `{service: mailie, env: <MAIL_ENV>, purpose,
+ref}`: the purpose is `credential/oauth-token`, `credential/password` or `send/hash-root`, and the
+ref is the mailbox's id (random, never derived from an address) or the meta row of the root. An
+envelope opens only for its own context, so one moved to another mailbox, field or env does not.
+
+- **The key.** A symmetric KMS key (`SYMMETRIC_DEFAULT`, `ENCRYPT_DECRYPT`). Give the daemon its
+  full ARN, `arn:aws:kms:<region>:<account>:key/<id>`, never an alias, which whoever may update
+  aliases could point at another key; the daemon talks to KMS in the key's region.
+- **`MAIL_ENV` set.** It is part of every envelope's context, so the daemon refuses a KMS key
+  without it (`prod` on a server), and an envelope sealed under one env does not open under the
+  other.
+- **The instance's role, and nothing else.** The daemon reaches KMS with the EC2 instance role's
+  credentials, through IMDSv2 only: never `AWS_*` variables, `~/.aws` files, profiles, endpoint
+  overrides or proxies. `mailserver backup`, which uses the SDK's default chain, is the other way
+  round. In a container the instance metadata's hop limit must be 2 or more. At start the daemon
+  calls `DescribeKey`, and stops, naming the key and the cause, unless KMS shows that exact ARN,
+  enabled and symmetric; so do `rewrap-credentials` and `user disable|delete --bootstrap`, which
+  run on the same instance.
+- **The key policy, in brief.** Let the instance role call `kms:DescribeKey`, and
+  `kms:GenerateDataKey` and `kms:Decrypt` only under Mailie's context; nothing else (no `Encrypt`,
+  `ReEncrypt*` or grants), and nobody else decrypts:
+
+  ```json
+  {
+    "Sid": "TheServerSealsAndOpensItsCredentials",
+    "Effect": "Allow",
+    "Principal": { "AWS": "arn:aws:iam::<account>:role/<the instance's role>" },
+    "Action": ["kms:GenerateDataKey", "kms:Decrypt"],
+    "Resource": "*",
+    "Condition": {
+      "StringEquals": {
+        "kms:EncryptionContext:service": "mailie",
+        "kms:EncryptionContext:env": "prod",
+        "kms:EncryptionContext:purpose": ["credential/oauth-token", "credential/password", "send/hash-root"]
+      },
+      "Null": { "kms:EncryptionContext:ref": "false" }
+    }
+  }
+  ```
+
+  Give the credentials a key of their own, not the backups' key, on which the server must never be
+  allowed to decrypt ([`backup.md`](backup.md)).
+
+A KMS error that says nothing about an envelope (KMS not reached, throttling, a denied call, a
+disabled key) stops the start too, but it is never taken for a lost key: nothing tells you to
+replace the send-hash root, which opens again once KMS answers. Only an envelope KMS refuses to
+unwrap for its context, or one of another key provider, is one the configured keys do not open.
+
+To move a server to KMS, keep the hex key until every row is re-sealed:
+
+1. Create the key and its policy, and add `MAIL_CREDENTIAL_KMS_KEY_ARN` (and `MAIL_ENV`, at the
+   value the server will keep: it is part of every envelope's context) to the environment, keeping
+   `MAIL_CREDENTIAL_KEY_HEX`, `MAIL_CREDENTIAL_KEY_ID` and `MAIL_CREDENTIAL_PREVIOUS_KEYS` as they
+   are.
+2. Restart the daemon. Its start log says `credential_sealer=aws-kms`: it seals under KMS from now
+   on, and still opens with the hex key what it sealed before. **From this start on, rows move
+   under KMS without a rewrap**: every token the daemon refreshes (a Gmail mailbox's within the
+   hour) and every mailbox linked or authorized again is sealed under the KMS key, which alone
+   opens it. Removing `MAIL_CREDENTIAL_KMS_KEY_ARN` is no longer the way back; the way back is
+   [below](#going-back-to-the-hex-key).
+3. Stop it, and run `mailserver rewrap-credentials`. It re-seals every credential and the send-hash
+   root under KMS in one transaction (each credential's `keyid` becomes 0, which no hex key has),
+   or changes nothing if a row does not open; run again, it finds nothing to do.
+4. Remove `MAIL_CREDENTIAL_KEY_HEX`, `MAIL_CREDENTIAL_KEY_ID` and `MAIL_CREDENTIAL_PREVIOUS_KEYS`
+   from the environment, and start the daemon.
+
+```sh
+# systemd, with the helper above:
+sudo systemctl restart mailie        # after step 1
+sudo systemctl stop mailie
+mailie-admin rewrap-credentials
+sudoedit /etc/mailie/mailie.env      # remove the three MAIL_CREDENTIAL_KEY* variables
+sudo systemctl start mailie
+
+# Compose, from deploy/ (the instance's hop limit at 2 or more):
+docker compose up -d                 # after step 1
+docker compose stop mailie
+docker compose run --rm mailie rewrap-credentials
+docker compose up -d                 # after removing the three variables from deploy/.env
+```
+
+Keep the hex key elsewhere for as long as a backup taken before the move is kept: a backup's
+credentials stay sealed as they were on its day, and putting one into service needs that key in
+the environment again, beside the KMS key, until `rewrap-credentials` has run on it.
+
+KMS's own rotation of the key keeps its ARN and opens every envelope it ever wrapped: it needs
+nothing here. Moving to another KMS key, or to another `MAIL_ENV`, is not a rewrap: an envelope's
+header names neither, so the daemon, given the new one, does not open what the old one sealed, and
+no key given beside it can. It stops at start and says so, naming what sealed the send-hash root:
+put `MAIL_CREDENTIAL_KMS_KEY_ARN` and `MAIL_ENV` back to those values, and everything opens again.
+`rewrap-credentials` refuses too, rather than report everything as already sealed, and
+`rewrap-credentials --new-send-hash-root` does not replace such a root (which would forget every
+send record of a root that still opens) unless `--kms-key-lost` says that the key that sealed it
+is lost for good; every mailbox then has to be authorized again.
+
+### Going back to the hex key
+
+Without `MAIL_CREDENTIAL_KMS_KEY_ARN` the daemon opens no `THCSEAL` envelope, so leaving KMS takes a
+rewrap too, while KMS still answers:
+
+1. Set `MAIL_CREDENTIAL_SEALER=keyring` beside `MAIL_CREDENTIAL_KMS_KEY_ARN` and `MAIL_ENV`, with
+   `MAIL_CREDENTIAL_KEY_HEX` (and `MAIL_CREDENTIAL_KEY_ID`) given: the hex key that sealed before
+   the move, or a new one. The start log says `credential_sealer=keyring,opens:aws-kms`: the hex
+   key seals, and the KMS key, still checked at start, only opens what it sealed.
+2. Stop the daemon, and run `mailserver rewrap-credentials`. It re-seals every row the KMS key
+   sealed under the hex key, in one transaction.
+3. Remove `MAIL_CREDENTIAL_KMS_KEY_ARN` and `MAIL_CREDENTIAL_SEALER`, and start the daemon.
+
+Keep the KMS key, and the policy that lets a host decrypt with it, for as long as a backup taken
+while it sealed is kept.
 
 ## Upgrades
 

@@ -114,6 +114,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Info("removed message sections a previous run left in the spool directory", "files", n)
 	}
 
+	// Built before the database is opened: a KMS key the daemon cannot use
+	// (DescribeKey refused, the instance role not reached) stops it here,
+	// having changed nothing.
+	sealer, err := NewSealer(ctx, cfg)
+	if err != nil {
+		return err
+	}
+
 	db, err := store.Open(ctx, cfg.DatabasePath(), store.Options{})
 	if err != nil {
 		return err
@@ -133,10 +141,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Warn("sends were interrupted by the last stop; their outcome is unknown", "sends", n)
 	}
 
-	sealer, err := NewSealer(ctx, cfg)
-	if err != nil {
-		return err
-	}
 	// What a send record keeps of a message is a hash under this root, so
 	// the database, a backup or the log alone cannot confirm a guess of it.
 	// It is opened before anything runs.

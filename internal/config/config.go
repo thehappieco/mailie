@@ -155,16 +155,54 @@ type Config struct {
 	IMAPDebug bool
 }
 
-// Credentials is the keyring that wraps stored account credentials.
+// Credentials says what seals the stored account credentials and the
+// send-hash root: the keyring of MAIL_CREDENTIAL_KEY_HEX, the self-hosted
+// default, or an AWS KMS key (MAIL_CREDENTIAL_KMS_KEY_ARN).
 //
 // Keys are numbered because the envelope carries the id that sealed it: adding
 // a new key and rewrapping rows is then a background job rather than a flag
 // day, and a daemon can read rows written under keys it no longer encrypts
-// with.
+// with. With a KMS key the keyring seals nothing: the keys given only open
+// what they sealed before, until `rewrap-credentials` has moved it. The way
+// back is the other way round (KMSOpensOnly): the keyring seals, and the KMS
+// key only opens what it sealed, until a rewrap has moved that.
 type Credentials struct {
+	// ActiveKeyID is MAIL_CREDENTIAL_KEY_ID, the id of MAIL_CREDENTIAL_KEY_HEX.
 	ActiveKeyID uint8
 	// Keys maps key id to a 32-byte AES-256 key, including the active one.
+	// With a KMS key it may be empty.
 	Keys map[uint8][]byte
+	// KMSKeyARN is MAIL_CREDENTIAL_KMS_KEY_ARN: when set, the AWS KMS key
+	// under whose data keys every credential and the send-hash root are
+	// sealed (THCSEAL envelopes, a data key each, under an encryption
+	// context that names the deployment, MAIL_ENV). Always a key's ARN,
+	// never an alias, which whoever may update aliases could point at
+	// another key.
+	KMSKeyARN string
+	// KMSRegion is the region of KMSKeyARN, taken from it: a KMS key answers
+	// only in its own region.
+	KMSRegion string
+	// KMSOpensOnly is MAIL_CREDENTIAL_SEALER=keyring beside a KMS key: the
+	// way back from it. The keyring of MAIL_CREDENTIAL_KEY_HEX seals, and the
+	// KMS key, still checked at start, only opens what it sealed, until
+	// `rewrap-credentials` has moved every row back under the keyring and
+	// MAIL_CREDENTIAL_KMS_KEY_ARN can go.
+	KMSOpensOnly bool
+}
+
+// The sealers Credentials.Sealer names, and MAIL_CREDENTIAL_SEALER takes.
+const (
+	SealerKeyring = "keyring"
+	SealerAWSKMS  = "aws-kms"
+)
+
+// Sealer names what seals: SealerAWSKMS with a KMS key, unless it only
+// opens, and SealerKeyring otherwise.
+func (c Credentials) Sealer() string {
+	if c.KMSKeyARN != "" && !c.KMSOpensOnly {
+		return SealerAWSKMS
+	}
+	return SealerKeyring
 }
 
 // OAuthClient is a client registration. For the installed clients the Google
@@ -520,9 +558,44 @@ func dataDir(errs *[]error) string {
 	return filepath.Join(base, "mailserver")
 }
 
-// credentials builds the keyring from the active key and any previous ones.
+// credentials reads what seals the credentials: the KMS key, if any, and the
+// keyring's active key and previous ones. Without a KMS key the active key is
+// required; with one every keyring key is optional, and only opens, unless
+// MAIL_CREDENTIAL_SEALER=keyring has the keyring seal again and the KMS key
+// only open (the way back), which needs the active key as well.
 func credentials(errs *[]error) Credentials {
 	out := Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{}}
+
+	underKMS := str("MAIL_CREDENTIAL_KMS_KEY_ARN", "") != ""
+	switch sealer := str("MAIL_CREDENTIAL_SEALER", ""); sealer {
+	case "":
+	case SealerAWSKMS:
+		if !underKMS {
+			*errs = append(*errs, errors.New("MAIL_CREDENTIAL_SEALER=aws-kms needs MAIL_CREDENTIAL_KMS_KEY_ARN"))
+		}
+	case SealerKeyring:
+		// Beside a KMS key, the way back from it; without one, the default.
+		out.KMSOpensOnly = underKMS
+	default:
+		*errs = append(*errs, fmt.Errorf("MAIL_CREDENTIAL_SEALER: want %q or %q, got %q",
+			SealerKeyring, SealerAWSKMS, sealer))
+	}
+	if underKMS {
+		arn := str("MAIL_CREDENTIAL_KMS_KEY_ARN", "")
+		if region, err := KMSKeyRegion(arn); err != nil {
+			*errs = append(*errs, fmt.Errorf("MAIL_CREDENTIAL_KMS_KEY_ARN: %w", err))
+		} else {
+			out.KMSKeyARN, out.KMSRegion = arn, region
+		}
+		// The env is part of every envelope's encryption context: one sealed
+		// under dev does not open under prod. A default would choose it for
+		// the operator, and change under them the day they set it.
+		if str("MAIL_ENV", "") == "" {
+			*errs = append(*errs, fmt.Errorf("MAIL_ENV is required with MAIL_CREDENTIAL_KMS_KEY_ARN: it is part "+
+				"of every envelope's encryption context (%q or %q), and an envelope sealed under one does not "+
+				"open under the other", EnvDev, EnvProd))
+		}
+	}
 
 	if v := str("MAIL_CREDENTIAL_KEY_ID", ""); v != "" {
 		id, err := strconv.ParseUint(v, 10, 8)
@@ -535,10 +608,15 @@ func credentials(errs *[]error) Credentials {
 
 	raw := str("MAIL_CREDENTIAL_KEY_HEX", "")
 	switch key, err := decodeKey(raw); {
+	case raw == "" && out.KMSOpensOnly:
+		*errs = append(*errs, errors.New("MAIL_CREDENTIAL_KEY_HEX is required with MAIL_CREDENTIAL_SEALER=keyring: "+
+			"it seals every credential again, while MAIL_CREDENTIAL_KMS_KEY_ARN only opens what the KMS key sealed"))
+	case raw == "" && underKMS:
 	case raw == "":
 		*errs = append(*errs, errors.New("MAIL_CREDENTIAL_KEY_HEX is required: "+
 			"it encrypts every stored refresh token and IMAP password "+
-			"(generate one with `openssl rand -hex 32`)"))
+			"(generate one with `openssl rand -hex 32`), unless MAIL_CREDENTIAL_KMS_KEY_ARN names an AWS KMS key "+
+			"to seal them with"))
 	case err != nil:
 		*errs = append(*errs, fmt.Errorf("MAIL_CREDENTIAL_KEY_HEX: %w", err))
 	default:
@@ -547,7 +625,10 @@ func credentials(errs *[]error) Credentials {
 
 	// Previous keys are needed while a rewrap is in flight, and after a
 	// restore from a backup taken before a rotation: they decrypt rows that
-	// have not been re-sealed under the active key yet.
+	// have not been re-sealed under the active key yet. Under a KMS key
+	// without MAIL_CREDENTIAL_KEY_HEX, no id is taken: every keyring key is a
+	// previous one.
+	activeTaken := raw != "" || !underKMS
 	for _, part := range strings.Split(str("MAIL_CREDENTIAL_PREVIOUS_KEYS", ""), ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -568,7 +649,7 @@ func credentials(errs *[]error) Credentials {
 			*errs = append(*errs, fmt.Errorf("MAIL_CREDENTIAL_PREVIOUS_KEYS: key %d: %w", id, err))
 			continue
 		}
-		if uint8(id) == out.ActiveKeyID {
+		if uint8(id) == out.ActiveKeyID && activeTaken {
 			*errs = append(*errs, fmt.Errorf("MAIL_CREDENTIAL_PREVIOUS_KEYS: key id %d is also the active key id", id))
 			continue
 		}
@@ -604,24 +685,41 @@ func (c Config) AttachmentDir() string { return filepath.Join(c.DataDir, "att") 
 // is ever handed to an HTTP client.
 func (c Config) SpoolDir() string { return filepath.Join(c.DataDir, "tmp") }
 
+// describeSealer is what seals, and whether a KMS key only opens beside it.
+func (c Credentials) describeSealer() string {
+	if c.KMSOpensOnly && c.KMSKeyARN != "" {
+		return SealerKeyring + ",opens:" + SealerAWSKMS
+	}
+	return c.Sealer()
+}
+
 // String renders the configuration for startup logs with every secret removed.
+// What seals the credentials is named by its kind (credential_sealer), and a
+// KMS key not by its ARN, as Backup.String keeps the account id out of log
+// aggregators; the keyring's keys by their ids, the one that seals marked.
 func (c Config) String() string {
-	keys := make([]string, 0, len(c.Credentials.Keys))
+	ids := make([]int, 0, len(c.Credentials.Keys))
 	for id := range c.Credentials.Keys {
+		ids = append(ids, int(id))
+	}
+	slices.Sort(ids)
+	keys := make([]string, 0, len(ids))
+	for _, id := range ids {
 		mark := ""
-		if id == c.Credentials.ActiveKeyID {
+		// Under a KMS key that seals, no keyring key does.
+		if id == int(c.Credentials.ActiveKeyID) && c.Credentials.Sealer() == SealerKeyring {
 			mark = "*"
 		}
-		keys = append(keys, strconv.Itoa(int(id))+mark)
+		keys = append(keys, strconv.Itoa(id)+mark)
 	}
 	return fmt.Sprintf(
-		"env=%s http=%s metrics=%s data=%s credential_keys=%s google=%s microsoft=%s/%s "+
+		"env=%s http=%s metrics=%s data=%s credential_sealer=%s credential_keys=%s google=%s microsoft=%s/%s "+
 			"google_web=%s microsoft_web=%s public_url=%s web=%s account_allow_private=%t "+
 			"microsoft_device_code=%t admin_api=%t mcp_http=%t mcp_key=%s keys_may_send=%t "+
 			"consent_versions=sync:%s,actions:%s,send:%s,keys:%s "+
 			"download_spool=%dMiB log=%s/%s",
 		c.Env, c.HTTPAddr, orDefault(c.MetricsAddr, "inline"), c.DataDir,
-		orDefault(strings.Join(keys, ","), "none"),
+		c.Credentials.describeSealer(), orDefault(strings.Join(keys, ","), "none"),
 		configured(c.Google.Configured()), configured(c.Microsoft.Configured()), c.Microsoft.Tenant,
 		configured(c.GoogleWeb.Configured()), configured(c.MicrosoftWeb.Configured()),
 		orDefault(c.PublicURL, "unset"), orDefault(c.WebDir, "off"), c.AccountAllowPrivate,

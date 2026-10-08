@@ -77,6 +77,19 @@ var (
 	// ErrDecrypt means authentication failed: wrong key, tampered ciphertext,
 	// or an envelope moved to a different account or field.
 	ErrDecrypt = errors.New("secrets: decryption failed")
+	// ErrSealedElsewhere is ErrDecrypt from a sealer whose envelopes do not
+	// name what they were sealed under (a key service's: neither the KMS key
+	// nor the deployment, MAIL_ENV, is in the header), for an envelope of its
+	// own kind and key provider that its key would not open for the binding.
+	// Most likely the settings that sealed it have changed since, another
+	// KMS key or another MAIL_ENV, and putting them back opens it; it may
+	// also have been moved to another row or altered. A sealer that returns
+	// it wraps ErrDecrypt with it. Unlike a key that is not given, nothing
+	// can be added beside the sealer to open it, a rewrap cannot move it (it
+	// reads as current), and only an operator who knows that key is lost for
+	// good may have what it holds replaced.
+	ErrSealedElsewhere = errors.New("secrets: sealed under another KMS key or MAIL_ENV than the configured " +
+		"ones, or moved or altered")
 	// ErrBinding is a binding no sealer seals or opens for (Binding.Validate):
 	// without a purpose or a ref, which would bind an envelope to less than
 	// the row it belongs to, or with one no key service would take.

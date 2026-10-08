@@ -244,8 +244,14 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	fs := flag.NewFlagSet("rewrap-credentials", flag.ContinueOnError)
 	newRoot := fs.Bool("new-send-hash-root", false,
 		"replace a send-hash root no configured key opens (its key is lost) with a new one, and re-seal nothing")
+	kmsKeyLost := fs.Bool("kms-key-lost", false,
+		"with --new-send-hash-root: also replace a root of the configured KMS key's kind that it does not unwrap, "+
+			"which the KMS key and MAIL_ENV that sealed it would still open; only when that key is lost for good")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *kmsKeyLost && !*newRoot {
+		return errors.New("rewrap-credentials: --kms-key-lost goes only with --new-send-hash-root")
 	}
 
 	sealer, err := app.NewSealer(ctx, cfg)
@@ -259,8 +265,8 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	defer release()
 
 	if *newRoot {
-		if err := replaceSendHashRoot(ctx, db, sealer); err != nil {
-			return err
+		if err := replaceSendHashRoot(ctx, db, sealer, *kmsKeyLost); err != nil {
+			return app.ExplainSealed(err, sealer)
 		}
 		fmt.Println("replaced the send-hash root, sealed with", sealer.Describe())
 		fmt.Fprintln(os.Stderr, "A send repeated from before the replacement is not recognised: one without "+
@@ -271,7 +277,7 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 
 	done, err := rewrapCredentials(ctx, db, sealer)
 	if err != nil {
-		return err
+		return app.ExplainSealed(err, sealer)
 	}
 	switch {
 	case done.credentials == 0 && !done.root:
@@ -282,8 +288,19 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 			what += " and the send-hash root"
 		}
 		fmt.Printf("re-sealed %s with %s\n", what, sealer.Describe())
-		fmt.Fprintln(os.Stderr,
-			"The previous key can now be removed from MAIL_CREDENTIAL_PREVIOUS_KEYS.")
+		switch {
+		case cfg.Credentials.Sealer() == config.SealerAWSKMS:
+			fmt.Fprintln(os.Stderr, "Nothing is sealed under a credential key any more: MAIL_CREDENTIAL_KEY_HEX, "+
+				"MAIL_CREDENTIAL_KEY_ID and MAIL_CREDENTIAL_PREVIOUS_KEYS can now be removed from the environment. "+
+				"Keep them elsewhere for as long as a backup taken before this rewrap is kept.")
+		case cfg.Credentials.KMSOpensOnly:
+			fmt.Fprintln(os.Stderr, "Nothing is sealed under the KMS key any more: MAIL_CREDENTIAL_KMS_KEY_ARN and "+
+				"MAIL_CREDENTIAL_SEALER can now be removed from the environment. Keep the KMS key, and its policy, "+
+				"for as long as a backup taken before this rewrap is kept.")
+		default:
+			fmt.Fprintln(os.Stderr,
+				"The previous key can now be removed from MAIL_CREDENTIAL_PREVIOUS_KEYS.")
+		}
 	}
 	return nil
 }

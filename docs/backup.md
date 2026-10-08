@@ -75,7 +75,9 @@ nor destroy the backups it made:
   sealed under it is kept: `rewrap-credentials` re-seals the live database, never a backup. Without
   the key a restored database has the people and the index, but the daemon refuses to start until
   `mailserver rewrap-credentials --new-send-hash-root` has replaced the root, and every mailbox has
-  to be authorized again.
+  to be authorized again. Under `MAIL_CREDENTIAL_KMS_KEY_ARN` they are sealed under data keys of
+  the credentials' own KMS key instead, which open only on a server that key's policy lets decrypt,
+  with the same `MAIL_ENV` ([`self-hosting.md`](self-hosting.md#credentials-under-aws-kms)).
 
 Do not use SSE-KMS under the backup key: S3's own call to KMS adds the context `aws:s3:arn`, which
 a key policy that admits only the four keys above refuses.

@@ -46,6 +46,22 @@ linters:
               desc: only internal/provider/imap may drive an IMAP connection
             - pkg: github.com/wneessen/go-mail
               desc: only internal/provider/imap may build and submit SMTP messages
+        # The credentials' KMS client is made in one place, app.NewSealer, with
+        # the instance role's credentials and nothing else; everything else
+        # sees a kms.Wrapper. The kit's local key-encryption key is for
+        # development and never ships: tests use secretstest.Wrapper.
+        kms-client-in-one-place:
+          list-mode: lax
+          files:
+            - "!**/internal/app/sealer.go"
+          deny:
+            - pkg: github.com/thehappieco/kit/kms/awskms
+              desc: only app.NewSealer makes the credentials' KMS client
+        no-development-key-provider:
+          list-mode: lax
+          deny:
+            - pkg: github.com/thehappieco/kit/kms/localkek
+              desc: a development key provider, which never ships; tests use secretstest.Wrapper
         # The transports are adapters. If one of them reaches into the store or
         # the sync engine, REST and MCP start to diverge, which is the single
         # thing this project promises not to do.

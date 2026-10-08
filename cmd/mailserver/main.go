@@ -161,8 +161,10 @@ Usage:
                                           (daemon stopped; typed twice at a terminal, or one line piped)
   mailserver migrate [--dry-run]          Apply pending schema migrations
   mailserver rewrap-credentials           Re-seal the credentials and the send-hash root under the active key
-  mailserver rewrap-credentials --new-send-hash-root
-                                          Replace a send-hash root no configured key opens (its key is lost)
+                                          (the KMS key, when MAIL_CREDENTIAL_KMS_KEY_ARN names one)
+  mailserver rewrap-credentials --new-send-hash-root [--kms-key-lost]
+                                          Replace a send-hash root no configured key opens (its key is lost);
+                                          --kms-key-lost confirms the KMS key that sealed it is lost, not moved
   mailserver mcp connect --url URL        Run a local stdio MCP server relaying to the Mailie server at URL,
                                           with the key in MAILIE_API_KEY (for a client that launches one)
   mailserver mcp install --client CLIENT --url URL [--name mailie] [--force]
@@ -178,8 +180,10 @@ Usage:
   mailserver version                      Print the version
 
 Configuration comes from the environment, optionally seeded by a .env file in
-the working directory. MAIL_CREDENTIAL_KEY_HEX is required: it encrypts every
-stored refresh token and IMAP password. Generate one with:
+the working directory. MAIL_CREDENTIAL_KEY_HEX is required, unless
+MAIL_CREDENTIAL_KMS_KEY_ARN names an AWS KMS key to seal with instead: one or
+the other encrypts every stored refresh token and IMAP password. Generate the
+hex key with:
 
   openssl rand -hex 32
 

@@ -24,6 +24,13 @@ const (
 	// MetaSendHashRoot is the meta row that keeps the root: the base64 of
 	// its envelope.
 	MetaSendHashRoot = "send_hash_root"
+	// MetaSendHashRootSealedWith is the meta row that says, in words, what
+	// sealed the root (the sealer's Describe when it did: a credential key's
+	// id, or a KMS key's ARN and the env). Nothing authenticates it, so it
+	// only ever goes into a message, and decides nothing: when the root does
+	// not open, it names what did seal it, which an envelope under a key
+	// service does not.
+	MetaSendHashRootSealedWith = "send_hash_root_sealed_with"
 	// SendHashRootLen is the root's size.
 	SendHashRootLen = 32
 )
@@ -44,6 +51,14 @@ var ErrSendHashRoot = errors.New("store: the send-hash root does not open with t
 // sealer opens, which nothing needs and which would forget every send record.
 var ErrSendHashRootOpens = errors.New("store: the send-hash root opens with the configured keys; it is not replaced")
 
+// ErrSendHashRootMayOpen is a replacement asked, without saying the key is
+// lost, for a root that is of the configured sealer's own kind and does not
+// open (secrets.ErrSealedElsewhere): sealed under another KMS key or another
+// MAIL_ENV, it opens again once they are put back, and replacing it would
+// forget every send record.
+var ErrSendHashRootMayOpen = errors.New("store: the send-hash root may open under the KMS key and MAIL_ENV " +
+	"that sealed it; it is not replaced unless that key is lost for good")
+
 // SendHashRoot opens the database's send-hash root, and reports whether it
 // made it now: the first time a database without one is opened. A root the
 // configured keys do not open is ErrSendHashRoot, never replaced: that would
@@ -56,6 +71,9 @@ func (s *Store) SendHashRoot(ctx context.Context, sealer secrets.Sealer) ([]byte
 	}
 	if stored != "" {
 		root, err := openSendHashRoot(ctx, sealer, stored)
+		if errors.Is(err, ErrSendHashRoot) {
+			err = sealedWith(err, s.metaOrEmpty(ctx, MetaSendHashRootSealedWith))
+		}
 		return root, false, err
 	}
 
@@ -77,6 +95,11 @@ func (s *Store) SendHashRoot(ctx context.Context, sealer secrets.Sealer) ([]byte
 			return fmt.Errorf("store: keep the send-hash root: %w", err)
 		}
 		created = n == 1
+		if created {
+			if err := recordSealedWithTx(ctx, tx, sealer); err != nil {
+				return err
+			}
+		}
 		return tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
 	})
 	if err != nil {
@@ -90,6 +113,11 @@ func (s *Store) SendHashRoot(ctx context.Context, sealer secrets.Sealer) ([]byte
 // its envelope is not what that writes now, opening it with whichever sealer
 // knows it, and reports whether it did. A database without a root has nothing
 // to re-seal: its daemon's next start makes one.
+//
+// A root that is current is opened all the same, and one that does not open
+// is an error, never "already sealed": under a key service the header names
+// neither the key nor the env, so a root sealed under another KMS key or
+// another MAIL_ENV reads as current and opens only once they are put back.
 func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) (bool, error) {
 	var stored string
 	err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
@@ -101,16 +129,21 @@ func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer
 	}
 	envelope, err := base64.StdEncoding.DecodeString(stored)
 	if err != nil {
-		return false, fmt.Errorf("%w: %w", ErrSendHashRoot, secrets.ErrMalformed)
-	}
-	if sealer.Current(envelope) {
-		return false, nil
+		return false, sealedWith(fmt.Errorf("%w: %w", ErrSendHashRoot, secrets.ErrMalformed),
+			sealedWithTx(ctx, tx))
 	}
 	// Opened as a root, its size checked, before it is sealed again: a row
 	// that holds something else is refused, not carried over.
 	root, err := openSendHashRoot(ctx, sealer, stored)
+	if errors.Is(err, ErrSendHashRoot) {
+		return false, sealedWith(err, sealedWithTx(ctx, tx))
+	}
 	if err != nil {
 		return false, err
+	}
+	if sealer.Current(envelope) {
+		clear(root)
+		return false, nil
 	}
 	resealed, err := sealer.Seal(ctx, SendHashRootBinding, root)
 	clear(root)
@@ -121,6 +154,9 @@ func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer
 		base64.StdEncoding.EncodeToString(resealed), MetaSendHashRoot); err != nil {
 		return false, fmt.Errorf("store: keep the send-hash root: %w", err)
 	}
+	if err := recordSealedWithTx(ctx, tx, sealer); err != nil {
+		return false, err
+	}
 	return true, nil
 }
 
@@ -130,10 +166,16 @@ func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer
 // nothing when the sealer could not try to open it: a key service not
 // reached, or that refuses to decrypt while it still seals, says nothing
 // about the root, and replacing a root that would still open forgets every
-// send record. A send record made under the old root is no longer
-// recognised: a key-less send repeated after the replacement is sent again,
-// and one repeated with its idempotency key is refused as that key reused.
-func ReplaceSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) error {
+// send record. A root of the configured key service's own kind that it does
+// not unwrap (secrets.ErrSealedElsewhere) is most likely under another KMS
+// key or MAIL_ENV, which putting back opens: it is replaced only with
+// kmsKeyLost, the operator's word that the key that sealed it is lost for
+// good, and is otherwise ErrSendHashRootMayOpen.
+//
+// A send record made under the old root is no longer recognised: a key-less
+// send repeated after the replacement is sent again, and one repeated with
+// its idempotency key is refused as that key reused.
+func ReplaceSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer, kmsKeyLost bool) error {
 	var stored string
 	err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
 	switch {
@@ -149,6 +191,9 @@ func ReplaceSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Seale
 		if !errors.Is(err, ErrSendHashRoot) {
 			return err
 		}
+		if errors.Is(err, secrets.ErrSealedElsewhere) && !kmsKeyLost {
+			return fmt.Errorf("%w: %w", ErrSendHashRootMayOpen, sealedWith(err, sealedWithTx(ctx, tx)))
+		}
 	}
 	fresh, err := sealSendHashRoot(ctx, sealer)
 	if err != nil {
@@ -159,7 +204,47 @@ func ReplaceSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Seale
 		MetaSendHashRoot, fresh); err != nil {
 		return fmt.Errorf("store: keep the send-hash root: %w", err)
 	}
+	return recordSealedWithTx(ctx, tx, sealer)
+}
+
+// recordSealedWithTx keeps, beside the root just sealed, what sealed it.
+func recordSealedWithTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) error {
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+		MetaSendHashRootSealedWith, sealer.Describe()); err != nil {
+		return fmt.Errorf("store: record what sealed the send-hash root: %w", err)
+	}
 	return nil
+}
+
+// sealedWithTx is what the meta row says sealed the root, or "" when no row
+// says it (a root made before the row was kept) or it cannot be read: it is
+// only ever for a message.
+func sealedWithTx(ctx context.Context, tx *sql.Tx) string {
+	var v string
+	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRootSealedWith).Scan(&v); err != nil {
+		return ""
+	}
+	return v
+}
+
+// metaOrEmpty is Meta for a message: "" for a row that is missing or cannot
+// be read.
+func (s *Store) metaOrEmpty(ctx context.Context, key string) string {
+	v, err := s.Meta(ctx, key)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// sealedWith adds to a root that does not open what sealed it, when the meta
+// row says so.
+func sealedWith(err error, recorded string) error {
+	if recorded == "" {
+		return err
+	}
+	return fmt.Errorf("%w (it was sealed with %s)", err, recorded)
 }
 
 // sealSendHashRoot makes a new root and seals it, as the meta row keeps it.

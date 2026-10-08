@@ -26,7 +26,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   through a provider with `Service.SignInExternal`/`PinIdentityKey`; `Options.ExternalSignInOnly`
   (never set by `serve`) has the service refuse every password and invitation route.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
-  `String()` redacts secrets.
+  `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
 - `internal/lockfile` — the data directory's lock: two daemons on one database corrupt the index.
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
@@ -38,11 +38,16 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `Knows`/`Current` read only the header) and a `Composite` that seals with its active sealer and
   opens what any of its sealers knows. An envelope that does not open is only `ErrDecrypt`,
   `ErrUnknownKey` or `ErrMalformed` (`DoesNotOpen`); any other error is a sealer that could not
-  try. The `Keyring` is the one implementation and the self-hosted default: a versioned AES-256-GCM
-  envelope (`v1||keyid||nonce||ct||tag`) with AAD binding the ref and the purpose's label (a
-  credential's field, which never changes), rotation by key id, id 0 reserved for an envelope no
-  keyring key sealed (`THCSEAL`, under a key service's data key). `app.NewSealer` builds the
-  configured one for the daemon and every command; `secretstest` has a second sealer for tests.
+  try. `ErrSealedElsewhere` (with `ErrDecrypt`) is a KMS envelope of the configured key's kind that
+  does not unwrap: another KMS key or `MAIL_ENV`, to put back, never a key to add or a rewrap. The `Keyring` is the self-hosted default: a versioned AES-256-GCM envelope
+  (`v1||keyid||nonce||ct||tag`) with AAD binding the ref and the purpose's label (a credential's
+  field, which never changes), rotation by key id, id 0 reserved for an envelope no keyring key
+  sealed (`THCSEAL`, under a key service's data key). `kmssealer` is the other: the kit's `thcseal`
+  over a `kms.Wrapper`, a data key per envelope under the context `{service: mailie, env:
+  MAIL_ENV, purpose, ref}`, with no AWS SDK; its `Current` reads only the provider byte (the KMS
+  key and the env are not in the header). `app.NewSealer` builds the configured one for the daemon
+  and every command, and is the only place the kit's `awskms` client is made (depguard);
+  `secretstest` has a second sealer and a fake `kms.Wrapper` for tests, never the kit's `localkek`.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
   expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
@@ -201,8 +206,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. What must be
   opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
   credentials, and the send-hash root (`meta.send_hash_root`, random, made at the first start, never
-  derived from a key), which the daemon refuses to start without opening. `rewrap-credentials`
-  re-seals both with the active sealer. Only an envelope that does not open (`secrets.DoesNotOpen`)
+  derived from a key), which the daemon refuses to start without opening. The sealer is the keyring
+  (`MAIL_CREDENTIAL_KEY_HEX`) or AWS KMS (`MAIL_CREDENTIAL_KMS_KEY_ARN`, a key's full ARN, never an
+  alias, with `MAIL_ENV` set; the keyring's keys then only open, and `MAIL_CREDENTIAL_SEALER=keyring`
+  beside it is the way back, the KMS key only opening). The KMS provider takes the EC2 instance
+  role's credentials through IMDSv2 only, unlike the backup's SDK default chain, and checks the key
+  with `DescribeKey` before anything opens. `rewrap-credentials` opens the root and re-seals both
+  with the active sealer; `--new-send-hash-root` replaces a root under another KMS key or
+  `MAIL_ENV` only with `--kms-key-lost`. Only an envelope that does not open (`secrets.DoesNotOpen`)
   is a lost key: nothing replaces, or tells the operator to replace, what a sealer could not try. TLS
   is mandatory for IMAP/SMTP; `AllowInsecureAuth` is set only by tests.
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and

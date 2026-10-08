@@ -1,7 +1,9 @@
 // Package secretstest has a second secrets.Sealer, for the tests that prove a
 // caller works with any sealer rather than with the keyring alone: a
 // composite that opens both kinds, a rewrap from one kind to the other, a
-// credentials row whose key id is 0.
+// credentials row whose key id is 0. It also has a kms.Wrapper (Wrapper), for
+// the tests of the sealer under a key service (kmssealer), which then run
+// with no key service and no build tag.
 //
 // It lives in its own package, as storetest does, so that nothing in the
 // daemon can import it by accident.
