@@ -32,8 +32,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
   `PRAGMA user_version`, FTS5.
-- `internal/secrets` — a versioned AES-256-GCM envelope (`v1||keyid||nonce||ct||tag`) with AAD
-  binding account and field; rotation by key id.
+- `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
+  three purposes, `credential/oauth-token`, `credential/password` and `send/hash-root`, and a ref,
+  a credential's account id, both held to a key service's encryption-context rule by every sealer;
+  `Knows`/`Current` read only the header) and a `Composite` that seals with its active sealer and
+  opens what any of its sealers knows. An envelope that does not open is only `ErrDecrypt`,
+  `ErrUnknownKey` or `ErrMalformed` (`DoesNotOpen`); any other error is a sealer that could not
+  try. The `Keyring` is the one implementation and the self-hosted default: a versioned AES-256-GCM
+  envelope (`v1||keyid||nonce||ct||tag`) with AAD binding the ref and the purpose's label (a
+  credential's field, which never changes), rotation by key id, id 0 reserved for an envelope no
+  keyring key sealed (`THCSEAL`, under a key service's data key). `app.NewSealer` builds the
+  configured one for the daemon and every command; `secretstest` has a second sealer for tests.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
   expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
@@ -189,8 +198,13 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   never mutate (`get_message` does not mark a message read).
 - **Events.** Journal and state change in the same transaction; publish only after the commit.
   Replay always comes from the `events` table — there is no history in memory.
-- **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. TLS is
-  mandatory for IMAP/SMTP; `AllowInsecureAuth` is set only by tests.
+- **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. What must be
+  opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
+  credentials, and the send-hash root (`meta.send_hash_root`, random, made at the first start, never
+  derived from a key), which the daemon refuses to start without opening. `rewrap-credentials`
+  re-seals both with the active sealer. Only an envelope that does not open (`secrets.DoesNotOpen`)
+  is a lost key: nothing replaces, or tells the operator to replace, what a sealer could not try. TLS
+  is mandatory for IMAP/SMTP; `AllowInsecureAuth` is set only by tests.
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and
   API keys are told apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API
   keys.

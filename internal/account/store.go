@@ -153,7 +153,7 @@ var (
 // mailbox.
 type Repository struct {
 	store   *store.Store
-	keyring *secrets.Keyring
+	sealer  secrets.Sealer
 	now     func() time.Time
 	journal *events.Journal
 
@@ -162,9 +162,10 @@ type Repository struct {
 	onChange []func(accountID string)
 }
 
-// NewRepository builds the repository.
-func NewRepository(s *store.Store, keyring *secrets.Keyring) *Repository {
-	return &Repository{store: s, keyring: keyring, now: s.Now, journal: events.NewJournal(s)}
+// NewRepository builds the repository. sealer seals and opens the
+// credentials, each bound to its account and field.
+func NewRepository(s *store.Store, sealer secrets.Sealer) *Repository {
+	return &Repository{store: s, sealer: sealer, now: s.Now, journal: events.NewJournal(s)}
 }
 
 // PublishTo sends the account.state events the repository journals to bus,
@@ -876,8 +877,10 @@ func (r *Repository) SaveToken(ctx context.Context, id string, token *oauth2.Tok
 	return r.saveCredential(ctx, id, "oauth_token", encoded)
 }
 
+// saveCredential seals a credential under ctx, which bounds the sealer's
+// call as well as the write, and stores it.
 func (r *Repository) saveCredential(ctx context.Context, id, field string, plaintext []byte) error {
-	sealed, err := r.keyring.Seal(id, field, plaintext)
+	sealed, err := r.sealer.Seal(ctx, secrets.Credential(id, field), plaintext)
 	if err != nil {
 		return fmt.Errorf("account: seal %s: %w", field, err)
 	}
@@ -887,13 +890,19 @@ func (r *Repository) saveCredential(ctx context.Context, id, field string, plain
 	})
 }
 
+// putCredential stores a sealed credential, with the key id its envelope
+// names beside it: 0 for one no keyring key sealed.
 func (r *Repository) putCredential(ctx context.Context, tx *sql.Tx, id, field string, sealed []byte, now int64) error {
-	_, err := tx.ExecContext(ctx,
+	keyID, err := secrets.KeyID(sealed)
+	if err != nil {
+		return fmt.Errorf("account: store %s: %w", field, err)
+	}
+	_, err = tx.ExecContext(ctx,
 		`INSERT INTO credentials(account_id, field, keyid, ciphertext, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT(account_id, field) DO UPDATE SET
 		   keyid = excluded.keyid, ciphertext = excluded.ciphertext, updated_at = excluded.updated_at`,
-		id, field, r.keyring.ActiveKeyID(), sealed, now)
+		id, field, keyID, sealed, now)
 	if store.IsForeignKey(err) {
 		return ErrNotFound
 	}
@@ -935,12 +944,16 @@ func (r *Repository) credential(ctx context.Context, id, field string) ([]byte, 
 	if err != nil {
 		return nil, fmt.Errorf("account: read %s: %w", field, err)
 	}
-	plaintext, err := r.keyring.Open(id, field, ciphertext)
+	plaintext, err := r.sealer.Open(ctx, secrets.Credential(id, field), ciphertext)
+	if secrets.DoesNotOpen(err) {
+		// The most likely cause by far is a key that is not configured, and
+		// saying so saves a long hunt.
+		return nil, fmt.Errorf("account: the stored %s for %s does not open with the configured keys "+
+			"(sealing with %s; is the key it was sealed with among them?): %w", field, id, r.sealer.Describe(), err)
+	}
 	if err != nil {
-		// The most likely cause by far is the wrong key in the environment,
-		// and saying so saves a long hunt.
-		return nil, fmt.Errorf("account: cannot decrypt the stored %s for %s "+
-			"(is MAIL_CREDENTIAL_KEY_HEX the key this was sealed with?): %w", field, id, err)
+		// The sealer could not try, which says nothing about the key.
+		return nil, fmt.Errorf("account: open the stored %s for %s: %w", field, id, err)
 	}
 	return plaintext, nil
 }
@@ -1103,7 +1116,7 @@ func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Tok
 	if err != nil {
 		return fmt.Errorf("account: encode token: %w", err)
 	}
-	sealed, err := r.keyring.Seal(id, "oauth_token", encoded)
+	sealed, err := r.sealer.Seal(ctx, secrets.Credential(id, "oauth_token"), encoded)
 	if err != nil {
 		return fmt.Errorf("account: seal oauth_token: %w", err)
 	}

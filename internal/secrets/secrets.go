@@ -1,13 +1,24 @@
-// Package secrets seals the credentials this server must be able to open again.
+// Package secrets seals the secrets this server must be able to open again:
+// the credentials of every mailbox, and the send-hash root.
 //
 // Unlike an archive that only ever accepts content, a mail client has to
 // authenticate to somebody else's IMAP and SMTP servers, so it needs the
 // plaintext of a refresh token every time it reconnects. There is no design in
-// which the key is absent; what there is instead is a key that lives in the
-// environment, never on disk beside the database, and an envelope that says
-// which key sealed it so the key can be replaced without a flag day.
+// which the key is absent; what there is instead is a key that lives outside
+// the database, and an envelope that says what sealed it so the key can be
+// replaced without a flag day.
 //
-// Envelope layout, stored as a BLOB:
+// Whatever seals is a Sealer: it seals for a Binding (what the secret is, and
+// what it belongs to) and opens only for the same one, says without opening
+// an envelope whether it can open it and whether it is what it would write
+// now, and takes a context, because a sealer may call a key service for every
+// envelope. A Composite seals with one sealer and opens what any of several
+// sealed, which is what lets the kind of key change without a flag day too.
+// The Keyring, the key in the environment, is the one implementation here and
+// the self-hosted default; an envelope under a key service's data key starts
+// with MagicTHCSEAL instead of Version1.
+//
+// The keyring's envelope layout, stored as a BLOB:
 //
 //	version(1) || keyID(1) || nonce(12) || ciphertext || tag(16)
 //
@@ -17,25 +28,27 @@
 // it; authenticating it makes every such edit a decryption failure instead.
 //
 // The rest of the additional data binds the ciphertext to the row it belongs
-// to: account id and field name. A refresh token lifted from one account's row
-// and pasted into another's therefore does not decrypt, so a database editor
-// cannot make account A authenticate with account B's token.
+// to: the binding's ref and its purpose's label, for a credential its account
+// id and field name (keyringLabels). A refresh token lifted from one account's
+// row and pasted into another's therefore does not decrypt, so a database
+// editor cannot make account A authenticate with account B's token.
 package secrets
 
 import (
+	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hkdf"
 	"crypto/rand"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
 )
 
 const (
-	// Version1 is the only envelope version. A second version would change
-	// the cipher; the byte exists so that change does not require guessing.
+	// Version1 is the only keyring envelope version. A second version would
+	// change the cipher; the byte exists so that change does not require
+	// guessing.
 	Version1 byte = 1
 
 	headerLen = 2
@@ -52,8 +65,6 @@ const (
 	// envelope: it never follows the module's name, and changing it makes every
 	// stored credential undecryptable (TestTheEnvelopeLabelsNeverChange).
 	aadPrefix = "mailserver/cred/v1/"
-	// deriveInfoPrefix does the same for derived keys, under the same rule.
-	deriveInfoPrefix = "mailserver/derive/v1/"
 )
 
 var (
@@ -66,19 +77,24 @@ var (
 	// ErrDecrypt means authentication failed: wrong key, tampered ciphertext,
 	// or an envelope moved to a different account or field.
 	ErrDecrypt = errors.New("secrets: decryption failed")
+	// ErrBinding is a binding no sealer seals or opens for (Binding.Validate):
+	// without a purpose or a ref, which would bind an envelope to less than
+	// the row it belongs to, or with one no key service would take.
+	ErrBinding = errors.New("secrets: invalid binding")
 )
 
 // Keyring holds the active key plus any previous keys still needed to read
-// rows that have not been rewrapped.
+// rows that have not been rewrapped. It is a Sealer.
 type Keyring struct {
 	activeID uint8
 	ciphers  map[uint8]cipher.AEAD
-	// derivable is the active key's material, for DeriveKey.
-	derivable []byte
 }
 
+var _ Sealer = (*Keyring)(nil)
+
 // NewKeyring builds a keyring. keys maps key id to a 32-byte key and must
-// contain activeID.
+// contain activeID. Key id 0 is reserved: the credentials table records it
+// for an envelope no keyring key sealed (KeyID).
 func NewKeyring(activeID uint8, keys map[uint8][]byte) (*Keyring, error) {
 	if activeID == 0 {
 		return nil, errors.New("secrets: key id 0 is reserved")
@@ -86,10 +102,7 @@ func NewKeyring(activeID uint8, keys map[uint8][]byte) (*Keyring, error) {
 	if len(keys[activeID]) == 0 {
 		return nil, fmt.Errorf("secrets: no key material for the active key id %d", activeID)
 	}
-	kr := &Keyring{
-		activeID: activeID, ciphers: make(map[uint8]cipher.AEAD, len(keys)),
-		derivable: append([]byte(nil), keys[activeID]...),
-	}
+	kr := &Keyring{activeID: activeID, ciphers: make(map[uint8]cipher.AEAD, len(keys))}
 	for id, key := range keys {
 		if id == 0 {
 			return nil, errors.New("secrets: key id 0 is reserved")
@@ -110,24 +123,6 @@ func NewKeyring(activeID uint8, keys map[uint8][]byte) (*Keyring, error) {
 	return kr, nil
 }
 
-// DeriveKey is a key for purpose, derived from the active key with
-// HKDF-SHA256: for a keyed hash that must not be recomputable from the
-// database alone, which is exactly what the credential key is kept apart
-// from. Purposes never share a key, and no derived key opens an envelope.
-//
-// It follows the active key: after a rotation it is another key, and what
-// was made under the old one no longer matches.
-func (k *Keyring) DeriveKey(purpose string) ([]byte, error) {
-	if purpose == "" {
-		return nil, errors.New("secrets: a derived key needs a purpose")
-	}
-	key, err := hkdf.Key(sha256.New, k.derivable, nil, deriveInfoPrefix+purpose, KeyLen)
-	if err != nil {
-		return nil, fmt.Errorf("secrets: derive a key: %w", err)
-	}
-	return key, nil
-}
-
 // ActiveKeyID is the id new envelopes are sealed under. Rows carrying a
 // different id are what `rewrap-credentials` looks for.
 func (k *Keyring) ActiveKeyID() uint8 { return k.activeID }
@@ -142,8 +137,15 @@ func (k *Keyring) KeyIDs() []uint8 {
 	return out
 }
 
-// Seal encrypts plaintext for one field of one account under the active key.
-func (k *Keyring) Seal(accountID, field string, plaintext []byte) ([]byte, error) {
+// Describe names the active key by its id.
+func (k *Keyring) Describe() string { return fmt.Sprintf("credential key %d", k.activeID) }
+
+// Seal encrypts plaintext for b under the active key. The keyring calls
+// nothing, so it has no use for the context.
+func (k *Keyring) Seal(_ context.Context, b Binding, plaintext []byte) ([]byte, error) {
+	if err := b.Validate(); err != nil {
+		return nil, err
+	}
 	aead := k.ciphers[k.activeID]
 	if aead == nil {
 		return nil, ErrUnknownKey
@@ -159,12 +161,19 @@ func (k *Keyring) Seal(accountID, field string, plaintext []byte) ([]byte, error
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("secrets: read random: %w", err)
 	}
-	return aead.Seal(out, nonce, plaintext, aad(out[:headerLen], accountID, field)), nil
+	return aead.Seal(out, nonce, plaintext, aad(out[:headerLen], b)), nil
 }
 
 // Open decrypts an envelope. It fails if the envelope was sealed for a
-// different account or field, under an unknown key, or has been altered.
-func (k *Keyring) Open(accountID, field string, envelope []byte) ([]byte, error) {
+// different binding (another account, another field), under an unknown key,
+// or has been altered.
+func (k *Keyring) Open(_ context.Context, b Binding, envelope []byte) ([]byte, error) {
+	if err := b.Validate(); err != nil {
+		return nil, err
+	}
+	if isTHCSEAL(envelope) {
+		return nil, unknownEnvelope(envelope)
+	}
 	if len(envelope) < Overhead {
 		return nil, ErrMalformed
 	}
@@ -176,7 +185,7 @@ func (k *Keyring) Open(accountID, field string, envelope []byte) ([]byte, error)
 		return nil, fmt.Errorf("%w: %d", ErrUnknownKey, envelope[1])
 	}
 	nonce := envelope[headerLen : headerLen+nonceLen]
-	plaintext, err := aead.Open(nil, nonce, envelope[headerLen+nonceLen:], aad(envelope[:headerLen], accountID, field))
+	plaintext, err := aead.Open(nil, nonce, envelope[headerLen+nonceLen:], aad(envelope[:headerLen], b))
 	if err != nil {
 		// The cause is deliberately not reported: wrong key, wrong account and
 		// tampered ciphertext are indistinguishable to the caller, so nothing
@@ -186,10 +195,25 @@ func (k *Keyring) Open(accountID, field string, envelope []byte) ([]byte, error)
 	return plaintext, nil
 }
 
-// KeyID reports which key sealed an envelope, without opening it. The column
-// beside the blob carries the same value so a rewrap can select rows in SQL;
-// this is what verifies that column.
+// Knows reports whether envelope is a v1 envelope under a key the keyring
+// holds, the active one or a previous one.
+func (k *Keyring) Knows(envelope []byte) bool {
+	return len(envelope) >= headerLen && envelope[0] == Version1 && k.ciphers[envelope[1]] != nil
+}
+
+// Current reports whether envelope is a v1 envelope under the active key.
+func (k *Keyring) Current(envelope []byte) bool {
+	return len(envelope) >= headerLen && envelope[0] == Version1 && envelope[1] == k.activeID
+}
+
+// KeyID reports which keyring key sealed an envelope, without opening it: 0,
+// which no keyring key may have, for a THCSEAL envelope, which no keyring key
+// sealed. The column beside a credential carries the same value, so a person
+// reading the table sees which key each row still needs.
 func KeyID(envelope []byte) (uint8, error) {
+	if isTHCSEAL(envelope) {
+		return 0, nil
+	}
 	if len(envelope) < headerLen {
 		return 0, ErrMalformed
 	}
@@ -199,36 +223,35 @@ func KeyID(envelope []byte) (uint8, error) {
 	return envelope[1], nil
 }
 
-// NeedsRewrap reports whether an envelope is sealed under something other than
-// the active key.
-func (k *Keyring) NeedsRewrap(envelope []byte) bool {
-	id, err := KeyID(envelope)
-	return err != nil || id != k.activeID
+// isTHCSEAL reports whether an envelope starts with MagicTHCSEAL.
+func isTHCSEAL(envelope []byte) bool { return bytes.HasPrefix(envelope, []byte(MagicTHCSEAL)) }
+
+// keyringLabels are what a keyring envelope's additional data says for a
+// credential's purpose: the credentials row's field, as it did before
+// purposes had names. Every stored credential was sealed with them, so they
+// never change (TestTheEnvelopeLabelsNeverChange); a purpose not listed, the
+// send-hash root's, is its own label.
+//
+//nolint:gosec // G101: field names, not credentials
+var keyringLabels = map[string]string{
+	PurposeOAuthToken: "oauth_token",
+	PurposePassword:   "password",
 }
 
-// Rewrap opens an envelope with whichever key sealed it and re-seals it under
-// the active key. The plaintext never leaves this function.
-func (k *Keyring) Rewrap(accountID, field string, envelope []byte) ([]byte, error) {
-	plaintext, err := k.Open(accountID, field, envelope)
-	if err != nil {
-		return nil, err
+// aad binds a keyring envelope to its header and its binding: the header,
+// aadPrefix, the ref, '/' and the purpose's label. For a credential that is
+// the account id and the field, byte for byte what every stored credential
+// was sealed with.
+func aad(header []byte, b Binding) []byte {
+	label, ok := keyringLabels[b.Purpose]
+	if !ok {
+		label = b.Purpose
 	}
-	sealed, err := k.Seal(accountID, field, plaintext)
-	// Best effort: Go cannot guarantee the copy is gone, but leaving the
-	// buffer readable in the heap for the rest of the process is worse.
-	for i := range plaintext {
-		plaintext[i] = 0
-	}
-	return sealed, err
-}
-
-// aad binds an envelope to its header, its account and its field.
-func aad(header []byte, accountID, field string) []byte {
-	out := make([]byte, 0, len(header)+len(aadPrefix)+len(accountID)+1+len(field))
+	out := make([]byte, 0, len(header)+len(aadPrefix)+len(b.Ref)+1+len(label))
 	out = append(out, header...)
 	out = append(out, aadPrefix...)
-	out = append(out, accountID...)
+	out = append(out, b.Ref...)
 	out = append(out, '/')
-	out = append(out, field...)
+	out = append(out, label...)
 	return out
 }

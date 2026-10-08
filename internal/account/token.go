@@ -78,7 +78,9 @@ func newTokenSource(ctx context.Context, accountID string, config *oauth2.Config
 	return s
 }
 
-// persistTimeout bounds writing a refreshed token down.
+// persistTimeout bounds writing a refreshed token down: sealing it, which a
+// sealer may do by calling a key service, and the write itself. The context
+// SaveToken gets is the one the sealer sees.
 const persistTimeout = 10 * time.Second
 
 // Token returns a valid access token, refreshing and persisting as needed.

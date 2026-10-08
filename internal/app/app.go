@@ -1,8 +1,8 @@
 // Package app assembles the daemon and runs it until its context ends: the
-// data directory's lock, the store, the keyring, the account registry and the
-// sync engine, the service, REST, MCP over Streamable HTTP and stdio, the
-// console, metrics, the listeners, the startup hints, the sweeps that enforce
-// retention, and a bounded shutdown.
+// data directory's lock, the store, the sealer and the send-hash root, the
+// account registry and the sync engine, the service, REST, MCP over
+// Streamable HTTP and stdio, the console, metrics, the listeners, the startup
+// hints, the sweeps that enforce retention, and a bounded shutdown.
 //
 // `mailserver serve` is a thin caller of Run. Another binary that must run
 // exactly the same server calls Run too, and adds what is its own through
@@ -36,7 +36,6 @@ import (
 	"github.com/thehappieco/mailie/internal/mcp"
 	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/ratelimit"
-	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	syncengine "github.com/thehappieco/mailie/internal/sync"
@@ -134,9 +133,23 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Warn("sends were interrupted by the last stop; their outcome is unknown", "sends", n)
 	}
 
-	keyring, err := secrets.NewKeyring(cfg.Credentials.ActiveKeyID, cfg.Credentials.Keys)
+	sealer, err := NewSealer(ctx, cfg)
 	if err != nil {
 		return err
+	}
+	// What a send record keeps of a message is a hash under this root, so
+	// the database, a backup or the log alone cannot confirm a guess of it.
+	// It is opened before anything runs.
+	sendHashKey, created, err := openSendHashRoot(ctx, db, sealer)
+	if err != nil {
+		return err
+	}
+	if created {
+		// The first start of this database, or the first of a version that
+		// keeps the root on a database whose send hashes were derived from
+		// the credential key: a send made before it and repeated now is not
+		// recognised.
+		logger.Info("created the send-hash root", "sealed_with", sealer.Describe())
 	}
 
 	metrics := obs.NewMetrics()
@@ -151,7 +164,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	}
 	// Every account state change is journaled as account.state in its own
 	// transaction; the bus hears it once that has committed.
-	repo := account.NewRepository(db, keyring)
+	repo := account.NewRepository(db, sealer)
 	repo.PublishTo(bus)
 	// The registry holds one token source per account for as long as the
 	// daemon runs: oauth2 reuses the context it was given for every later
@@ -200,12 +213,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		<-engineDone
 	}()
 
-	// What a send record keeps of a message is a hash under this key, so the
-	// database, a backup or the log alone cannot confirm a guess of it.
-	sendHashKey, err := keyring.DeriveKey("send-compose-hash")
-	if err != nil {
-		return err
-	}
 	workspaces := workspace.NewRepository(db, opts.WorkspaceSource)
 	if made, err := workspaces.RepairPersonal(ctx); err != nil {
 		return err

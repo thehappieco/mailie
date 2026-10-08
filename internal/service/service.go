@@ -121,10 +121,11 @@ type Deps struct {
 	SendSpoolBytes int64
 	// SendHashKey keys the hash a send record keeps of what was composed,
 	// so that neither the record nor a log line holding a key made from it
-	// can confirm a guess of the message without it. The daemon derives it
-	// from the credential key, which never sits beside the database. Empty
-	// is a random key for this process: a record is then recognised only
-	// until it restarts.
+	// can confirm a guess of the message without it. The daemon gives it
+	// the send-hash root, made once and kept in the database sealed like a
+	// credential (store.SendHashRoot), so it opens only with a key that
+	// never sits beside the database. Empty is a random key for this
+	// process: a record is then recognised only until it restarts.
 	SendHashKey []byte
 	// ConsentVersions are the revisions of the texts a person agrees to
 	// (MAIL_CONSENT_VERSION_*); an empty one is its default.

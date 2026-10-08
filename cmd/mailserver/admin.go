@@ -16,10 +16,10 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/thehappieco/mailie/internal/app"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/lockfile"
-	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -242,11 +242,13 @@ func migrateCommand(ctx context.Context, cfg config.Config, args []string) error
 
 func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("rewrap-credentials", flag.ContinueOnError)
+	newRoot := fs.Bool("new-send-hash-root", false,
+		"replace a send-hash root no configured key opens (its key is lost) with a new one, and re-seal nothing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	keyring, err := secrets.NewKeyring(cfg.Credentials.ActiveKeyID, cfg.Credentials.Keys)
+	sealer, err := app.NewSealer(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -256,15 +258,30 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	}
 	defer release()
 
-	n, err := rewrapCredentials(ctx, db, keyring)
+	if *newRoot {
+		if err := replaceSendHashRoot(ctx, db, sealer); err != nil {
+			return err
+		}
+		fmt.Println("replaced the send-hash root, sealed with", sealer.Describe())
+		fmt.Fprintln(os.Stderr, "A send repeated from before the replacement is not recognised: one without "+
+			"an idempotency key is sent again. Credentials no configured key opens stay as they are: "+
+			"authorize their mailboxes again.")
+		return nil
+	}
+
+	done, err := rewrapCredentials(ctx, db, sealer)
 	if err != nil {
 		return err
 	}
-	switch n {
-	case 0:
-		fmt.Println("every credential is already sealed under key", keyring.ActiveKeyID())
+	switch {
+	case done.credentials == 0 && !done.root:
+		fmt.Println("every credential and the send-hash root are already sealed with", sealer.Describe())
 	default:
-		fmt.Printf("re-encrypted %d credential(s) under key %d\n", n, keyring.ActiveKeyID())
+		what := plural(done.credentials, "credential")
+		if done.root {
+			what += " and the send-hash root"
+		}
+		fmt.Printf("re-sealed %s with %s\n", what, sealer.Describe())
 		fmt.Fprintln(os.Stderr,
 			"The previous key can now be removed from MAIL_CREDENTIAL_PREVIOUS_KEYS.")
 	}

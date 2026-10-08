@@ -15,6 +15,8 @@ password, database or message: describe them instead.
 
 - One OAuth refresh token or password per mailbox, encrypted at rest with AES-256-GCM under
   `MAIL_CREDENTIAL_KEY_HEX`, with additional data that binds each value to its account and field.
+- The send-hash root, the random key of the hashes a send record keeps of the message it sent,
+  sealed the same way: without it the database cannot confirm a guess of a message.
 - For synced mailboxes, an index of metadata: senders and recipients, subjects, dates, sizes,
   folders, flags and the names and types of parts. Message bodies and attachments are fetched on
   request and never stored.

@@ -18,10 +18,10 @@ import (
 	"golang.org/x/term"
 
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/app"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/obs"
-	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -564,7 +564,7 @@ func readTerminalLine(r io.Reader) ([]byte, error) {
 // transaction included: --bootstrap must not be a second implementation that
 // could drift from the first.
 func asOperator(ctx context.Context, cfg config.Config, run func(*service.Service, service.Principal) error) error {
-	keyring, err := secrets.NewKeyring(cfg.Credentials.ActiveKeyID, cfg.Credentials.Keys)
+	sealer, err := app.NewSealer(ctx, cfg)
 	if err != nil {
 		return err
 	}
@@ -574,7 +574,7 @@ func asOperator(ctx context.Context, cfg config.Config, run func(*service.Servic
 	}
 	defer release()
 
-	registry := account.NewRegistry(ctx, account.NewRepository(db, keyring), account.RegistryOptions{
+	registry := account.NewRegistry(ctx, account.NewRepository(db, sealer), account.RegistryOptions{
 		SpoolDir: cfg.SpoolDir(),
 	})
 	//nolint:contextcheck // shutdown makes its own bounded context

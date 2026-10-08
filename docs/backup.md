@@ -68,12 +68,14 @@ nor destroy the backups it made:
   `Decrypt` with the backup's `ref`.
 - **Retention is the bucket's.** A lifecycle rule on `db/` expires backups. With no versioning,
   Object Lock or replication, nothing keeps a copy after that.
-- **The credentials inside stay encrypted** under the credential key in use when the backup was
-  taken (`MAIL_CREDENTIAL_KEY_HEX`, or a key of `MAIL_CREDENTIAL_PREVIOUS_KEYS` whose rows had not
-  been rewrapped yet), which is not in the backup. Keep those keys apart, and keep a key retired by
-  a rotation for as long as any backup sealed under it is kept: `rewrap-credentials` re-seals the
-  live database, never a backup. Without the key a restored database has the people and the
-  index, but every mailbox has to be authorized again.
+- **The credentials inside stay encrypted**, with the send-hash root, under the credential key in
+  use when the backup was taken (`MAIL_CREDENTIAL_KEY_HEX`, or a key of
+  `MAIL_CREDENTIAL_PREVIOUS_KEYS` whose rows had not been rewrapped yet), which is not in the
+  backup. Keep those keys apart, and keep a key retired by a rotation for as long as any backup
+  sealed under it is kept: `rewrap-credentials` re-seals the live database, never a backup. Without
+  the key a restored database has the people and the index, but the daemon refuses to start until
+  `mailserver rewrap-credentials --new-send-hash-root` has replaced the root, and every mailbox has
+  to be authorized again.
 
 Do not use SSE-KMS under the backup key: S3's own call to KMS adds the context `aws:s3:arn`, which
 a key policy that admits only the four keys above refuses.
@@ -115,7 +117,7 @@ put the restored file in place as `mail.db` (mode 0600, owned by the daemon's us
 daemon the credential keys that were in use when the backup was taken. With no rotation since, that
 is the same `MAIL_CREDENTIAL_KEY_HEX`. After a rotation, keep the current key and id and add each
 older key the backup needs to `MAIL_CREDENTIAL_PREVIOUS_KEYS`, with its id (`<id>:<hex>`): a
-credential sealed under a key id the daemon is not given cannot be opened. Then run
-`mailserver rewrap-credentials` while the daemon is still stopped, so the restored credentials are
-sealed under the current key and the older one can leave the environment again, and start the
+credential sealed under a key id the daemon is not given cannot be opened, and the daemon refuses
+to start while the send-hash root is one of them. Then run `mailserver rewrap-credentials` while
+the daemon is still stopped, so the restored credentials and root are sealed under the current key and the older one can leave the environment again, and start the
 daemon, then the timer.

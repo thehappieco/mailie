@@ -160,7 +160,9 @@ Usage:
                                           Set a forgotten console password and end every session
                                           (daemon stopped; typed twice at a terminal, or one line piped)
   mailserver migrate [--dry-run]          Apply pending schema migrations
-  mailserver rewrap-credentials           Re-encrypt credentials under the active key
+  mailserver rewrap-credentials           Re-seal the credentials and the send-hash root under the active key
+  mailserver rewrap-credentials --new-send-hash-root
+                                          Replace a send-hash root no configured key opens (its key is lost)
   mailserver mcp connect --url URL        Run a local stdio MCP server relaying to the Mailie server at URL,
                                           with the key in MAILIE_API_KEY (for a client that launches one)
   mailserver mcp install --client CLIENT --url URL [--name mailie] [--force]

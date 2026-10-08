@@ -45,7 +45,7 @@ A server needs at least these:
 
 | Variable | On a server |
 |---|---|
-| `MAIL_CREDENTIAL_KEY_HEX` | Required. `openssl rand -hex 32`. It encrypts every stored refresh token and password. **Keep a copy with your other secrets: losing it means authorizing every mailbox again.** |
+| `MAIL_CREDENTIAL_KEY_HEX` | Required. `openssl rand -hex 32`. It encrypts every stored refresh token and password, and the send-hash root. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
 | `MAIL_PUBLIC_URL` | The `https://` origin people reach the console at, such as `https://mail.example.org`: no path, no trailing slash. Invite links and the web OAuth redirect (`<MAIL_PUBLIC_URL>/oauth/return`) are built from it, never from a request's `Host`. |
 | `MAIL_ENV` | `prod`: logs in JSON, and refuses an `http://` `MAIL_PUBLIC_URL` and the settings that would leak a token. |
 | `MAIL_TRUSTED_PROXIES` | The address the daemon sees your reverse proxy connect from (see [below](#the-proxys-address)). Without it every client shares one rate limit. |
@@ -497,6 +497,29 @@ changes who creates keys and what an existing one reaches. **Back up first**, as
   `workspace_id`, and `mailserver apikey list` shows it. A key reading its own consent
   (`GET /v1/me/*-consent`) is `403`: it has no person. `send.finished` names a key's send with
   `sent_by`.
+
+### The send-hash root is kept in the database
+
+The release that keeps the send-hash root in the database needs nothing configured. A send record
+keeps a keyed hash of the message it sent, which recognises a send repeated with the same
+`Idempotency-Key`, and a send without one is keyed by that hash and the minute. The key of those
+hashes used to be derived from `MAIL_CREDENTIAL_KEY_HEX`. It is now a random root that the first
+start of the new version makes and keeps in the database, sealed under the credential key as a
+credential is, so a rotation of the key no longer changes it.
+
+- **The root changes once, at the upgrade.** A send record made before it is no longer recognised:
+  a send without an idempotency key that a client repeats across the upgrade, within the minute,
+  is sent again rather than answered from its record, and one repeated with the same
+  `Idempotency-Key` is refused as that key reused for another message (`409`) rather than
+  replayed. Upgrade when nothing is sending. Nothing else changes, the credentials included.
+- **The daemon refuses to start without the key that sealed it.** A daemon whose environment lacks
+  that key (a previous key taken out of `MAIL_CREDENTIAL_PREVIOUS_KEYS` before
+  `rewrap-credentials` ran, a restored backup without its key, a mistyped key) says so at start,
+  where it used to start and fail on each mailbox. Give it the key. If that key is lost for good,
+  `mailserver rewrap-credentials --new-send-hash-root`, with the daemon stopped, puts a new root in
+  place and touches nothing else; every mailbox then has to be authorized again, as before. It
+  replaces only a root no configured key opens, and refuses one that opens.
+- **`rewrap-credentials` re-seals the root** with the credentials, under the active key.
 
 ```sh
 # Compose, from deploy/:

@@ -322,8 +322,10 @@ with the first owner, OAuth clients, backups, upgrades and a forgotten password.
   migrations; the daemon also applies them when it starts.
 - To rotate `MAIL_CREDENTIAL_KEY_HEX`, set the new key with a new `MAIL_CREDENTIAL_KEY_ID`, keep the
   old one in `MAIL_CREDENTIAL_PREVIOUS_KEYS` (`<id>:<hex>`), and run
-  `mailserver rewrap-credentials` with the daemon stopped. The daemon then no longer needs the old
-  key, but do not destroy it: `rewrap-credentials` re-seals the live database only, so every backup
+  `mailserver rewrap-credentials` with the daemon stopped: it re-seals the credentials and the
+  send-hash root (the key of a send record's hashes) under the new key. The daemon then no longer
+  needs the old key (it refuses to start while the root needs one it is not given), but do not
+  destroy it: `rewrap-credentials` re-seals the live database only, so every backup
   taken before the rotation still holds credentials sealed under the old key. Keep each retired
   key, with its id, beside your other secrets for as long as any backup sealed under it is kept
   ([`docs/backup.md`](docs/backup.md#putting-a-restored-database-into-service)).
@@ -340,7 +342,8 @@ optional, and designed so that the host can create backups but never read or del
 ## Security model
 
 - **What the server holds.** One OAuth refresh token or password per mailbox, encrypted with
-  AES-256-GCM under `MAIL_CREDENTIAL_KEY_HEX` and bound to its account and field; the index of
+  AES-256-GCM under `MAIL_CREDENTIAL_KEY_HEX` and bound to its account and field, and the send-hash
+  root, sealed the same way; the index of
   metadata of synced mailboxes; Argon2id hashes of passwords and keys; SHA-256 hashes of session
   tokens. Message bodies and attachments are never stored: while one is being served it sits in a
   `0600` temporary file that is removed when the response ends.

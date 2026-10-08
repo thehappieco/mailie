@@ -16,6 +16,7 @@ import (
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
+	"github.com/thehappieco/mailie/internal/secrets/secretstest"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
 )
@@ -140,8 +141,11 @@ func TestDecryptingWithTheWrongKeySaysWhatToCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = account.NewRepository(db, wrong).Password(t.Context(), a.ID)
-	if err == nil || !strings.Contains(err.Error(), "MAIL_CREDENTIAL_KEY_HEX") {
-		t.Fatalf("the error should name the key to check, got %v", err)
+	// Named by what the sealer says it seals with, whatever its kind.
+	for _, says := range []string{wrong.Describe(), "is the key it was sealed with"} {
+		if err == nil || !strings.Contains(err.Error(), says) {
+			t.Fatalf("the error should name the key to check (%q), got %v", says, err)
+		}
 	}
 }
 
@@ -533,6 +537,69 @@ func TestTheTokenSourceOutlivesTheRequestThatBuiltIt(t *testing.T) {
 	cancel() // the request that happened to trigger the first refresh is over
 	if _, err := source.Token(requestCtx); err != nil {
 		t.Fatalf("a refresh must not depend on the request context: %v", err)
+	}
+}
+
+func TestARefreshedTokenIsSealedEvenWhenTheRequestThatAskedForItIsCancelled(t *testing.T) {
+	// A sealer may call a key service, under the context it is given. By the
+	// time a refreshed token is sealed the provider has rotated it, and the
+	// old refresh token is spent: the request's cancellation must not reach
+	// that call, which runs under the persist's own deadline.
+	db := storetest.New(t)
+	kms := secretstest.New("kms")
+	repo := account.NewRepository(db, kms)
+	a := seed(t, repo, "person@example.com", provider.KindMicrosoft)
+	idp := newFakeIDP(t)
+	expired := &oauth2.Token{
+		AccessToken: "old", RefreshToken: "refresh-0",
+		TokenType: "Bearer", Expiry: time.Now().Add(-time.Hour),
+	}
+	if err := repo.SaveToken(t.Context(), a.ID, expired); err != nil {
+		t.Fatal(err)
+	}
+	source := account.NewTokenSourceForTest(t.Context(), a.ID, idp.config(), expired, repo)
+
+	requestCtx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := source.Token(requestCtx); err != nil {
+		t.Fatalf("the refreshed token was not persisted: %v", err)
+	}
+	stored, err := repo.Token(t.Context(), a.ID)
+	if err != nil || stored.RefreshToken != "refresh-1" {
+		t.Fatalf("stored %+v, %v; want the rotated refresh token", stored, err)
+	}
+	// An envelope no keyring key sealed is kept under key id 0.
+	var keyID int
+	if err := db.Reader().QueryRowContext(t.Context(),
+		`SELECT keyid FROM credentials WHERE account_id = ?`, a.ID).Scan(&keyID); err != nil || keyID != 0 {
+		t.Fatalf("keyid = %d (%v), want 0", keyID, err)
+	}
+}
+
+func TestOnlyACredentialThatDoesNotOpenAsksWhetherItsKeyIsConfigured(t *testing.T) {
+	// The hint sends the operator after a key; a key service that did not
+	// answer is no reason to, and the hint names the sealer, whatever kind.
+	db := storetest.New(t)
+	kms := secretstest.New("kms")
+	repo := account.NewRepository(db, kms)
+	a := seed(t, repo, "person@example.com", provider.KindIMAP)
+	if err := repo.SavePassword(t.Context(), a.ID, "hunter2"); err != nil {
+		t.Fatal(err)
+	}
+
+	unreachable := errors.New("kms: the key service did not answer")
+	kms.FailOpens(unreachable)
+	_, err := repo.Password(t.Context(), a.ID)
+	if !errors.Is(err, unreachable) || secrets.DoesNotOpen(err) || strings.Contains(err.Error(), "configured keys") {
+		t.Fatalf("an unreachable key service: %v", err)
+	}
+	kms.FailOpens(nil)
+
+	other := account.NewRepository(db, secretstest.New("another"))
+	_, err = other.Password(t.Context(), a.ID)
+	if !secrets.DoesNotOpen(err) || !strings.Contains(err.Error(), "configured keys") ||
+		!strings.Contains(err.Error(), "test sealer another") {
+		t.Fatalf("a password no configured key opens: %v", err)
 	}
 }
 
