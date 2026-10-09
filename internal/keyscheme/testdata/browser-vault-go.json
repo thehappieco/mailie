@@ -1,0 +1,73 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "browser_account",
+  "profile": "mailie",
+  "generated_by": {
+    "lang": "go",
+    "source": "github.com/thehappieco/mailie internal/keyscheme",
+    "toolchain": "go1.27.2",
+    "randomness": "none",
+    "generator": "internal/keyscheme/vectors_test.go (go test ./internal/keyscheme -run TestTheVectorsAreWhatTheProfileWrites -update)"
+  },
+  "note": "The browser vault (docs/key-scheme.md section 7): the kit's key at rest in the browser under Mailie's tag, bound to the person's seal id. Its AES key is generated non-extractable and cannot be vectored; its additional data is, and web/test/keyscheme.spec.ts seals and opens records with it.",
+  "cases": [
+    {
+      "id": "mailie/browser-vault/profile",
+      "op": "mailie.browser_vault_profile",
+      "in": {},
+      "out": {
+        "tag": "mailie/browser-account-key",
+        "version": 1
+      }
+    },
+    {
+      "id": "mailie/browser-vault/aad/alice",
+      "op": "mailie.browser_vault_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYnJvd3Nlci1hY2NvdW50LWtleSIsMSwiYjhjYmM4YTgtMGM5MC00OGFjLTkyMzMtZmJkYWNlOWQ3YmY0IiwiM3UvN0k5RVVUckhKVzVtWUZwUEdxK0FJVEl6azZ3Nk1WWXRFdUMzUFFSTT0iXQ=="
+      }
+    },
+    {
+      "id": "mailie/browser-vault/aad/bob",
+      "op": "mailie.browser_vault_aad",
+      "in": {
+        "account_public_key_b64": "TTFz6AmlE6kyI5HhCrDYKggERNNVV8qAhCIbIscFADU=",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYnJvd3Nlci1hY2NvdW50LWtleSIsMSwiY2IzNjdmOTItNzhkMS00OThjLThiMDktNDQ5YzcwOWViNTJhIiwiVFRGejZBbWxFNmt5STVIaENyRFlLZ2dFUk5OVlY4cUFoQ0liSXNjRkFEVT0iXQ=="
+      }
+    },
+    {
+      "id": "mailie/browser-vault/aad/refuses/seal-id-in-upper-case",
+      "op": "mailie.browser_vault_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "B8CBC8A8-0C90-48AC-9233-FBDACE9D7BF4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/browser-vault/aad/refuses/seal-id-a-uuidv7",
+      "op": "mailie.browser_vault_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/browser-vault/aad/refuses/public-key-of-31-bytes",
+      "op": "mailie.browser_vault_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQQ==",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    }
+  ]
+}

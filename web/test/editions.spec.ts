@@ -47,14 +47,27 @@ afterEach(() => {
 
 describe('the core and the editions', () => {
   it('never imports from outside src/, nor through an alias: another edition imports the core, never the other way round', () => {
+    // A scoped name is an alias unless it is a package the console depends
+    // on (package.json's dependencies: the kit, @thehappieco/kit), which
+    // every edition resolves the same way from node_modules.
+    const dependencies = Object.keys((JSON.parse(readFileSync(join(web, 'package.json'), 'utf8')) as { dependencies: Record<string, string> }).dependencies)
+    const dependency = (specifier: string) => dependencies.some(name => specifier === name || specifier.startsWith(`${name}/`))
     const offenders: string[] = []
     for (const file of sourceFiles(src)) {
       for (const [, specifier] of readFileSync(file, 'utf8').matchAll(/(?:from|import)\s*\(?\s*'([^']+)'/g)) {
         const target = specifier!.startsWith('.') ? relative(src, resolve(dirname(file), specifier!)) : specifier!
-        if (target.startsWith('..') || target.startsWith('@')) offenders.push(`${relative(src, file)} → ${specifier}`)
+        if (target.startsWith('..') || (target.startsWith('@') && !dependency(target))) offenders.push(`${relative(src, file)} → ${specifier}`)
       }
     }
     expect(offenders).toEqual([])
+  })
+
+  it('sets aside only the quoted package name of an import of the kit, never the company’s name anywhere else', () => {
+    expect(hostedName(`import { seal } from '@thehappieco/kit/seal'`)).toBe('')
+    expect(hostedName(`export { x } from '@thehappieco/kit'`)).toBe('')
+    expect(hostedName(`const kit = '@thehappieco/kit'`)).toBe('happie')
+    expect(hostedName(`import { seal } from '@thehappieco/kit/seal' // by The Happie Co`)).toBe('Happie')
+    expect(hostedName(`import x from '@thehappieco/kitchen'`)).toBe('happie')
   })
 
   it('names no hosted service, company, policy or cloud text revision in any source, catalog, icon or the page itself', () => {

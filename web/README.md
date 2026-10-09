@@ -44,11 +44,20 @@ same way (`freshModules` in `test/support.ts`). `test/support.ts`, `test/dom.ts`
 `test/i18nGuard.ts` is the translation guard every edition runs: every literal `t('…')` translated
 in all four languages with the same placeholders, each key in exactly one catalog, no unused key in
 the project's own catalogs. `test/editions.spec.ts` holds the core to never importing from outside
-`src/` or through an alias, the open texts to naming no company and linking no policy, and every
+`src/` or through an alias (a scoped name is allowed only when it is one of `package.json`'s
+`dependencies`), the open texts to naming no company and linking no policy, and every
 file under `src/` and `public/`, and `index.html`, to naming none of the hosted service's names
 (`test/hosted.ts`: the company, the hosted addresses, the policy and terms in each language, the
-cloud's `2026-09-` revisions). `npm run build` fails on an output file that has one
-(`vite.config.ts`), whatever brought it in.
+cloud's `2026-09-` revisions). The one spelling of the company it sets aside is the quoted package
+name in an import of the kit, `@thehappieco/kit`, which is code and never reaches a screen.
+`npm run build` fails on an output file that has one (`vite.config.ts`), whatever brought it in.
+
+`src/crypto/mailie.ts` is Mailie's profile of the kit's key scheme (`../docs/key-scheme.md`), not
+yet called by any screen. `test/keyscheme.spec.ts` holds it to the golden vectors the Go side writes
+(`../internal/keyscheme/testdata`, `go test ./internal/keyscheme -run
+TestTheVectorsAreWhatTheProfileWrites -update`), including every case that must fail; as with the
+contract fixtures, a missing file is a failure, never something to create from here. The kit is
+installed from its release tarball, pinned by integrity in `package-lock.json`.
 
 `test/contract.spec.ts` reads `../internal/api/testdata/contract/*.json`, written by the Go side
 (`go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`), and holds the open

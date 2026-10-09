@@ -1,0 +1,1310 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "seal",
+  "profile": "mailie",
+  "generated_by": {
+    "lang": "go",
+    "source": "github.com/thehappieco/mailie internal/keyscheme",
+    "toolchain": "go1.27.2",
+    "randomness": "each mailie.grant_seal, and the two other envelopes the refusals open, ran under testing/cryptotest.SetGlobalRandom with its case's seed, replayed only on the recorded toolchain; TypeScript opens them",
+    "generator": "internal/keyscheme/vectors_test.go (go test ./internal/keyscheme -run TestTheVectorsAreWhatTheProfileWrites -update)"
+  },
+  "note": "Mailie's grants (docs/key-scheme.md sections 4, 9 and 10): the seal domain and kinds, the server's check of a public key, the grant's row, info and additional data, 88-byte grants of a mailbox's private key sealed to an account key, sealed by Go for TypeScript to open, and what must not open or be sealed. Errors are the kit's seal codes and Mailie's binding, shape and public_key.",
+  "keys": {
+    "alice": {
+      "private_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+      "public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM="
+    },
+    "bob": {
+      "private_key_b64": "1MbRDdR5qE79S2GkwVmbnqhvR+p0iv0w9rgUKqPPpS8=",
+      "public_key_b64": "TTFz6AmlE6kyI5HhCrDYKggERNNVV8qAhCIbIscFADU="
+    },
+    "mailbox-1": {
+      "private_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+      "public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY="
+    },
+    "mailbox-2": {
+      "private_key_b64": "d5PMGmveoDj0uMOreH+BI5jv2cnOk6de4a6QdO+/cYE=",
+      "public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I="
+    }
+  },
+  "cases": [
+    {
+      "id": "mailie/seal/profile",
+      "op": "mailie.seal_profile",
+      "in": {},
+      "out": {
+        "content_key_kind": 6,
+        "grant_kind": 7,
+        "grant_len": 88,
+        "label": "mlv1",
+        "magic_b64": "TUw=",
+        "max_epoch": 65535,
+        "min_epoch": 1
+      }
+    },
+    {
+      "id": "seal/kind-name/0x0",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 0
+      },
+      "out": {
+        "name": "kind(0x0)"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x1",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 1
+      },
+      "out": {
+        "name": "headers"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x2",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 2
+      },
+      "out": {
+        "name": "snippet"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x3",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 3
+      },
+      "out": {
+        "name": "body"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x4",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 4
+      },
+      "out": {
+        "name": "attachment_key"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x5",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 5
+      },
+      "out": {
+        "name": "search_index"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x6",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 6
+      },
+      "out": {
+        "name": "content_key"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x7",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 7
+      },
+      "out": {
+        "name": "mailbox_grant"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x8",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 8
+      },
+      "out": {
+        "name": "user_wrap"
+      }
+    },
+    {
+      "id": "seal/kind-name/0x9",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 9
+      },
+      "out": {
+        "name": "folder_name"
+      }
+    },
+    {
+      "id": "seal/kind-name/0xa",
+      "op": "seal.kind_name",
+      "in": {
+        "kind": 10
+      },
+      "out": {
+        "name": "draft"
+      }
+    },
+    {
+      "id": "mailie/public-key-check/alice",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/public-key-check/mailbox-1",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/public-key-check/refuses/31-bytes",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQQ=="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/33-bytes",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRMA"
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/bit-255-set",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQZM="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/empty",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": ""
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/zero",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/one",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/order-8-a",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuAA="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/order-8-b",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVc="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/p-minus-1",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "7P///////////////////////////////////////38="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/p",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "7f///////////////////////////////////////38="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/p-plus-1",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "7v///////////////////////////////////////38="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/public-key-check/refuses/low-order/zero-bit-255",
+      "op": "mailie.public_key_check",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA="
+      },
+      "error": "public_key"
+    },
+    {
+      "id": "mailie/grant-row/alice/epoch-1",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "row": "50332cbe-c6a5-5cc5-97ce-af2ace03df8b"
+      }
+    },
+    {
+      "id": "mailie/grant-aad/alice/epoch-1",
+      "op": "mailie.grant_aad",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "bWx2MQedA18rgdBCDpDiuxbpUEl7UDMsvsalXMWXzq8qzgPfi01MAQEBAAEA"
+      }
+    },
+    {
+      "id": "mailie/grant-row/alice/epoch-2",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 2,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "row": "a61220b9-7101-50fa-9814-bd50f436ec92"
+      }
+    },
+    {
+      "id": "mailie/grant-aad/alice/epoch-2",
+      "op": "mailie.grant_aad",
+      "in": {
+        "epoch": 2,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "bWx2MQedA18rgdBCDpDiuxbpUEl7phIguXEBUPqYFL1Q9Dbskk1MAQEBAAIA"
+      }
+    },
+    {
+      "id": "mailie/grant-row/bob/epoch-1",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a"
+      },
+      "out": {
+        "row": "249435bc-8df0-5102-bce7-73bb89087b9a"
+      }
+    },
+    {
+      "id": "mailie/grant-aad/bob/epoch-1",
+      "op": "mailie.grant_aad",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a"
+      },
+      "out": {
+        "aad_b64": "bWx2MQedA18rgdBCDpDiuxbpUEl7JJQ1vI3wUQK853O7iQh7mk1MAQEBAAEA"
+      }
+    },
+    {
+      "id": "mailie/grant-row/alice/other-mailbox/epoch-1",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "124817e2-61b1-4013-9647-d8b58b2c8fa8",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "row": "43553cee-f686-5fcb-9ca3-de0fdf331276"
+      }
+    },
+    {
+      "id": "mailie/grant-aad/alice/other-mailbox/epoch-1",
+      "op": "mailie.grant_aad",
+      "in": {
+        "epoch": 1,
+        "namespace": "124817e2-61b1-4013-9647-d8b58b2c8fa8",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "bWx2MQcSSBfiYbFAE5ZH2LWLLI+oQ1U87vaGX8uco94P3zMSdk1MAQEBAAEA"
+      }
+    },
+    {
+      "id": "mailie/grant-row/alice/epoch-65535",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 65535,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "row": "a333efef-a71a-55ea-a243-17c09c1c32a0"
+      }
+    },
+    {
+      "id": "mailie/grant-aad/alice/epoch-65535",
+      "op": "mailie.grant_aad",
+      "in": {
+        "epoch": 65535,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "bWx2MQedA18rgdBCDpDiuxbpUEl7ozPv76caVeqiQxfAnBwyoE1MAQEB//8A"
+      }
+    },
+    {
+      "id": "mailie/grant-row/refuses/epoch-0",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 0,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-row/refuses/epoch-65536",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 65536,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-row/refuses/namespace-in-upper-case",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "9D035F2B-81D0-420E-90E2-BB16E950497B",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-row/refuses/namespace-a-uuidv7",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-row/refuses/namespace-the-nil-uuid",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "00000000-0000-0000-0000-000000000000",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-row/refuses/seal-id-in-upper-case",
+      "op": "mailie.grant_row",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "B8CBC8A8-0C90-48AC-9233-FBDACE9D7BF4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-info/epoch-1",
+      "op": "mailie.grant_info",
+      "in": {
+        "epoch": 1,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b"
+      },
+      "out": {
+        "info": "mlv1/mailbox_grant/9d035f2b-81d0-420e-90e2-bb16e950497b/1",
+        "info_b64": "bWx2MS9tYWlsYm94X2dyYW50LzlkMDM1ZjJiLTgxZDAtNDIwZS05MGUyLWJiMTZlOTUwNDk3Yi8x"
+      }
+    },
+    {
+      "id": "mailie/grant-info/epoch-2",
+      "op": "mailie.grant_info",
+      "in": {
+        "epoch": 2,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b"
+      },
+      "out": {
+        "info": "mlv1/mailbox_grant/9d035f2b-81d0-420e-90e2-bb16e950497b/2",
+        "info_b64": "bWx2MS9tYWlsYm94X2dyYW50LzlkMDM1ZjJiLTgxZDAtNDIwZS05MGUyLWJiMTZlOTUwNDk3Yi8y"
+      }
+    },
+    {
+      "id": "mailie/grant-info/epoch-65535",
+      "op": "mailie.grant_info",
+      "in": {
+        "epoch": 65535,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b"
+      },
+      "out": {
+        "info": "mlv1/mailbox_grant/9d035f2b-81d0-420e-90e2-bb16e950497b/65535",
+        "info_b64": "bWx2MS9tYWlsYm94X2dyYW50LzlkMDM1ZjJiLTgxZDAtNDIwZS05MGUyLWJiMTZlOTUwNDk3Yi82NTUzNQ=="
+      }
+    },
+    {
+      "id": "mailie/grant-info/refuses/epoch-0",
+      "op": "mailie.grant_info",
+      "in": {
+        "epoch": 0,
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant/alice/epoch-1",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient": "alice",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2001
+      },
+      "out": {
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY="
+      }
+    },
+    {
+      "id": "mailie/grant/bob/epoch-1",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient": "bob",
+        "recipient_public_key_b64": "TTFz6AmlE6kyI5HhCrDYKggERNNVV8qAhCIbIscFADU=",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a",
+        "seed": 2002
+      },
+      "out": {
+        "grant_b64": "TUwBAQEAAQB29RIgItQ9sgGVs2xF7CXotnDAbEkL4D2TCwOtJusLHml2wMumrUyE09t/NNd3syZP15gMqcyiQkjxI1wfgdK35jANeZoL9e2nLhrI9MrqeA==",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY="
+      }
+    },
+    {
+      "id": "mailie/grant/alice/epoch-2",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 2,
+        "mailbox_key_b64": "d5PMGmveoDj0uMOreH+BI5jv2cnOk6de4a6QdO+/cYE=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient": "alice",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2003
+      },
+      "out": {
+        "grant_b64": "TUwBAQEAAgAbvKzGjMiJ0ETA4Tl1qVetOz5o9BkPelDz30eH/qWKMicf9xigRabpmkvh1K+pV0TvOlXKet4sRlCgR8OrrCK/Ahg7HiqbADVOgP60xiCEgw==",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I="
+      }
+    },
+    {
+      "id": "mailie/grant/alice/epoch-65535",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 65535,
+        "mailbox_key_b64": "d5PMGmveoDj0uMOreH+BI5jv2cnOk6de4a6QdO+/cYE=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient": "alice",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2004
+      },
+      "out": {
+        "grant_b64": "TUwBAQH//wCRnSZzMvjKuTjeiToTItPbAl+iCqDGBFj2YtcOcxTVPCxjnfZflrqT9pnz8C26pYjecG/cWo/980jnBJVJd8IsTiZ2WD8I40Gtgxaxn9ACiA==",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I="
+      }
+    },
+    {
+      "id": "mailie/grant/alice/epoch-1/a-key-the-sealer-chose",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "fNlbs/KlLFYXi8nbzi2E6bO4Q56kzNwtaK48AEyNyEE=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient": "alice",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2005
+      },
+      "out": {
+        "grant_b64": "TUwBAQEAAQD9qoMjnPGFXguFEVhXcszMg398/gHHltKVdJ3cyOcLBXXda+jsyRm4K5li6huhBLT+7Xex+FH1Kk3XdDAwSYcrXARD9gLGSgjVF0ZSMU7jpA==",
+        "mailbox_public_key_b64": "PF8eLnptu0iChUmKGXbUPQXDIvHw5Ty/W9NLaYeh3Cc="
+      }
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/zero",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/one",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/order-8-a",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "4Ot6fDtBuK4WVuP68Z/EatoJjeucMrH9hmIFFl9JuAA=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/order-8-b",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "X5yVvKNQjCSx0LFVnIPvWwREXMRYHI6G2CJO3dCfEVc=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/p-minus-1",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "7P///////////////////////////////////////38=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/p",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "7f///////////////////////////////////////38=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/p-plus-1",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "7v///////////////////////////////////////38=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/low-order-recipient/zero-bit-255",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/recipient-key-of-31-bytes",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQQ==",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "invalid_key"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/epoch-0",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 0,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/epoch-65536",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 65536,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/mailbox-key-of-31-bytes",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRA==",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-seal/refuses/namespace-a-uuidv7",
+      "op": "mailie.grant_seal",
+      "in": {
+        "epoch": 1,
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ=",
+        "namespace": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608",
+        "recipient_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-open/alice/epoch-1",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ="
+      }
+    },
+    {
+      "id": "mailie/grant-open/bob/epoch-1",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQB29RIgItQ9sgGVs2xF7CXotnDAbEkL4D2TCwOtJusLHml2wMumrUyE09t/NNd3syZP15gMqcyiQkjxI1wfgdK35jANeZoL9e2nLhrI9MrqeA==",
+        "key": "bob",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a"
+      },
+      "out": {
+        "mailbox_key_b64": "z4u451J+8gurB4xpE/zAr2oLVA0m4LCetPLtkgSTRAQ="
+      }
+    },
+    {
+      "id": "mailie/grant-open/alice/epoch-2",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 2,
+        "grant_b64": "TUwBAQEAAgAbvKzGjMiJ0ETA4Tl1qVetOz5o9BkPelDz30eH/qWKMicf9xigRabpmkvh1K+pV0TvOlXKet4sRlCgR8OrrCK/Ahg7HiqbADVOgP60xiCEgw==",
+        "key": "alice",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "mailbox_key_b64": "d5PMGmveoDj0uMOreH+BI5jv2cnOk6de4a6QdO+/cYE="
+      }
+    },
+    {
+      "id": "mailie/grant-open/alice/epoch-65535",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 65535,
+        "grant_b64": "TUwBAQH//wCRnSZzMvjKuTjeiToTItPbAl+iCqDGBFj2YtcOcxTVPCxjnfZflrqT9pnz8C26pYjecG/cWo/980jnBJVJd8IsTiZ2WD8I40Gtgxaxn9ACiA==",
+        "key": "alice",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "mailbox_key_b64": "d5PMGmveoDj0uMOreH+BI5jv2cnOk6de4a6QdO+/cYE="
+      }
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-user",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-persons-key",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "bob",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/bobs-grant-as-alices",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQB29RIgItQ9sgGVs2xF7CXotnDAbEkL4D2TCwOtJusLHml2wMumrUyE09t/NNd3syZP15gMqcyiQkjxI1wfgdK35jANeZoL9e2nLhrI9MrqeA==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-namespace",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "124817e2-61b1-4013-9647-d8b58b2c8fa8",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-epoch",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 2,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/the-epoch-2-grant-at-epoch-1",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAgAbvKzGjMiJ0ETA4Tl1qVetOz5o9BkPelDz30eH/qWKMicf9xigRabpmkvh1K+pV0TvOlXKet4sRlCgR8OrrCK/Ahg7HiqbADVOgP60xiCEgw==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/the-epoch-1-grant-at-epoch-2",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 2,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/header-epoch-rewritten",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAgC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/reserved-byte-set",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQG9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-kind-content-key",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQDofgMVmDnxH37xiiFwYG+JdFrk/pdHytXcN7iZ23VAB+CqmS1oWYO0zestYfC4C+g9Y0OmN5VjBzZ0Pch6AX0W1UN/9czzD9ihHaGiUSZnrQ==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2006
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/a-key-the-sealer-chose",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQD9qoMjnPGFXguFEVhXcszMg398/gHHltKVdJ3cyOcLBXXda+jsyRm4K5li6huhBLT+7Xex+FH1Kk3XdDAwSYcrXARD9gLGSgjVF0ZSMU7jpA==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/another-mailboxs-public-key",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "luyBUfyBlrILYnEFEQydO3s0VrYOeb+eLBqX/kIBe0I=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/flipped-encapsulated-key",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy7H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/flipped-ciphertext",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TftNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/flipped-tag",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWw==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/truncated-to-87-bytes",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdI",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/extended-to-89-bytes",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWgA=",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "authentication"
+    },
+    {
+      "id": "mailie/grant-open/refuses/truncated-to-55-bytes",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAew==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "short"
+    },
+    {
+      "id": "mailie/grant-open/refuses/truncated-to-7-bytes",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQ==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "short"
+    },
+    {
+      "id": "mailie/grant-open/refuses/wappies-magic",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "V1MBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "magic"
+    },
+    {
+      "id": "mailie/grant-open/refuses/a-wappie-device-grant-of-the-same-binding",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "V1MBAQEAAQCCJmIwbwp0gO3Qn07SyPjgA3jOtkO3bSvHU9KXZiwfWCBN81DZJfTRhtBECzFWA8Pb480rZ98YpADY633cCk/y6TyiQ/nb+JvnLXuvcfgx7w==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 2007
+      },
+      "error": "magic"
+    },
+    {
+      "id": "mailie/grant-open/refuses/version-2",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwCAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "version"
+    },
+    {
+      "id": "mailie/grant-open/refuses/suite-2",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAgEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "suite"
+    },
+    {
+      "id": "mailie/grant-open/refuses/batch-mode",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQIAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "mode"
+    },
+    {
+      "id": "mailie/grant-open/refuses/mode-3",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQMAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "mode"
+    },
+    {
+      "id": "mailie/grant-open/refuses/seal-id-in-upper-case",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "B8CBC8A8-0C90-48AC-9233-FBDACE9D7BF4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-open/refuses/epoch-0",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 0,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7DhY=",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-open/refuses/mailbox-public-key-of-31-bytes",
+      "op": "mailie.grant_open",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg==",
+        "key": "alice",
+        "mailbox_public_key_b64": "0emSmNrEk5Jba7KbnfuKTiIwXVSIyoO8muTvNtV7Dg==",
+        "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/grant-shape/epoch-1",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/grant-shape/epoch-2",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 2,
+        "grant_b64": "TUwBAQEAAgAbvKzGjMiJ0ETA4Tl1qVetOz5o9BkPelDz30eH/qWKMicf9xigRabpmkvh1K+pV0TvOlXKet4sRlCgR8OrrCK/Ahg7HiqbADVOgP60xiCEgw=="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/grant-shape/refuses/87-bytes",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdI"
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/89-bytes",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWgA="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/batch-mode",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQIAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/empty",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": ""
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/not-the-current-epoch",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 2,
+        "grant_b64": "TUwBAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/reserved-byte-set",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAQEAAQG9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/suite-2",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwBAgEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/version-2",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "TUwCAQEAAQC9Xy/H190JP/926QwEy6Kp3zto96FjpIl7iwz9e1IFJo0kQm/BnU1Yj3TetNxAe9pC5ik5hmQFe87S3bwp/cCaY6p4TqRYv+rQuiwcfjdIWg=="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/grant-shape/refuses/wappies-magic",
+      "op": "mailie.grant_shape",
+      "in": {
+        "epoch": 1,
+        "grant_b64": "V1MBAQEAAQCCJmIwbwp0gO3Qn07SyPjgA3jOtkO3bSvHU9KXZiwfWCBN81DZJfTRhtBECzFWA8Pb480rZ98YpADY633cCk/y6TyiQ/nb+JvnLXuvcfgx7w=="
+      },
+      "error": "shape"
+    }
+  ]
+}

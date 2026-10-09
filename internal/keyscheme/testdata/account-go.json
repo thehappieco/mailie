@@ -1,0 +1,1297 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "account",
+  "profile": "mailie",
+  "generated_by": {
+    "lang": "go",
+    "source": "github.com/thehappieco/mailie internal/keyscheme",
+    "toolchain": "go1.27.2",
+    "randomness": "each mailie.account_wrap ran under testing/cryptotest.SetGlobalRandom with its case's seed; nonce_b64 is the nonce it drew, which TypeScript injects to replay it",
+    "generator": "internal/keyscheme/vectors_test.go (go test ./internal/keyscheme -run TestTheVectorsAreWhatTheProfileWrites -update)"
+  },
+  "note": "Mailie's account scheme (docs/key-scheme.md section 5): its profile, an address as the server stores it, the server's salt, derivations at the profile's floor, the recovery code in the platform's canonical form, the 61-byte password and recovery wraps of an account key with their additional data, and what must not open. Errors are the kit's account codes with their reasons, the platform's recovery_code, and Mailie's binding and shape.",
+  "cases": [
+    {
+      "id": "mailie/account/profile",
+      "op": "mailie.account_profile",
+      "in": {},
+      "out": {
+        "auth_label": "mailie/v1/password/auth",
+        "bounds": {
+          "max": {
+            "m": 262144,
+            "p": 4,
+            "t": 10
+          },
+          "max_cost": 1048576,
+          "max_salt_len": 16,
+          "min": {
+            "m": 65536,
+            "p": 1,
+            "t": 3
+          },
+          "min_salt_len": 16
+        },
+        "encoding": "base64url",
+        "kdf": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "legacy_v1": false,
+        "password_preparation": "thehappie-password/v1",
+        "recovery_key_label": "mailie/v1/recovery/wrap",
+        "recovery_normalisation": "platform-canonical",
+        "recovery_proof_label": "mailie/v1/recovery/auth",
+        "salt_label": "mailie/v1/kdf-salt",
+        "wrap_aad_tag": "mailie/account-wrap",
+        "wrap_aad_version": 1,
+        "wrap_header_b64": "Ag==",
+        "wrap_kinds": [
+          "password",
+          "recovery"
+        ],
+        "wrap_label": "mailie/v1/password/wrap",
+        "wrap_len": 61
+      }
+    },
+    {
+      "id": "mailie/normalise-address/a-capital-i-with-a-dot-is-an-i",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "İlker@example.com"
+      },
+      "out": {
+        "address": "ilker@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/a-kelvin-sign-is-a-k",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "Kna@example.com"
+      },
+      "out": {
+        "address": "kna@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/a-latin-capital",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "Änne@Example.com"
+      },
+      "out": {
+        "address": "änne@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/already-normal",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "ana@example.com"
+      },
+      "out": {
+        "address": "ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/ascii-capitals",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "Ana@Example.COM"
+      },
+      "out": {
+        "address": "ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/capital-sigmas-are-each-sigma",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "ΣΣ@example.com"
+      },
+      "out": {
+        "address": "σσ@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/inner-white-space-is-kept",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "ana @example.com"
+      },
+      "out": {
+        "address": "ana @example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/next-line-is-white-space",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "ana@example.com"
+      },
+      "out": {
+        "address": "ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/no-break-and-ideographic-spaces",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": " ana@example.com　"
+      },
+      "out": {
+        "address": "ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/surrounding-white-space",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": " \tana@example.com\r\n"
+      },
+      "out": {
+        "address": "ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/normalise-address/zero-width-no-break-space-is-not",
+      "op": "mailie.normalise_address",
+      "in": {
+        "address": "﻿ana@example.com"
+      },
+      "out": {
+        "address": "﻿ana@example.com"
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/plain",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "ana@example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/spaces",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "  ana@example.com\t",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/upper-case",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "Ana@Example.COM",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/non-ascii/a-latin-capital",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "Änne@Example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "gDLiZyOS4dZmIIZsc5cojA=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/non-ascii/stored",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "änne@example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "gDLiZyOS4dZmIIZsc5cojA=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/kelvin/a-kelvin-sign",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "Kna@example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "Fb17Oe86m3W4IHLxiIMlqw=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/kelvin/the-letter-k",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "kna@example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "Fb17Oe86m3W4IHLxiIMlqw=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/another-address",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "bo@example.com",
+        "key_b64": "xnZ387/xXGbTC2HOTDVFZza9X4/+eVKqPhXk1jpXjYY="
+      },
+      "out": {
+        "salt_b64": "jitxMthus7EXV7TTqdmHWg=="
+      }
+    },
+    {
+      "id": "mailie/decoy-salt/another-server",
+      "op": "mailie.decoy_salt",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "address": "ana@example.com",
+        "key_b64": "SKtH2xBigiDQFd9kY8Uh9T1HsZXZVFcHh3j50Vm0mdA="
+      },
+      "out": {
+        "salt_b64": "//JXnlgJ/vpMBXVkLSogSQ=="
+      }
+    },
+    {
+      "id": "account/derive/ascii",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "out": {
+        "auth_b64": "aUAj+G3PlQKQsYsCecTgB9OJy1xEDXNi0WPTMHxG9nE=",
+        "auth_key": "aUAj-G3PlQKQsYsCecTgB9OJy1xEDXNi0WPTMHxG9nE",
+        "wrap_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      }
+    },
+    {
+      "id": "account/derive/nfc",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "Pão de açúcar à noite",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "out": {
+        "auth_b64": "e0FmxWca+LQcEZjNFIiq47iW+zfeBCinckB+wiVnRu8=",
+        "auth_key": "e0FmxWca-LQcEZjNFIiq47iW-zfeBCinckB-wiVnRu8",
+        "wrap_b64": "T28f574Kh57Navm5ZPee6TO2wV+AuD8IwFPVK33KnmM="
+      }
+    },
+    {
+      "id": "account/derive/nfd-with-no-break-spaces",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "Pão de açúcar à noite",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "out": {
+        "auth_b64": "e0FmxWca+LQcEZjNFIiq47iW+zfeBCinckB+wiVnRu8=",
+        "auth_key": "e0FmxWca-LQcEZjNFIiq47iW-zfeBCinckB-wiVnRu8",
+        "wrap_b64": "T28f574Kh57Navm5ZPee6TO2wV+AuD8IwFPVK33KnmM="
+      }
+    },
+    {
+      "id": "account/derive/refuses/control-character",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse\u0007battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "password",
+      "reason": "rejected"
+    },
+    {
+      "id": "account/derive/refuses/257-code-points",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "password",
+      "reason": "rejected"
+    },
+    {
+      "id": "account/derive/refuses/m-32768",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 32768,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "account/derive/refuses/t-2",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 2
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "account/derive/refuses/p-5",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 5,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "account/derive/refuses/m-times-t-over-the-cap",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 262144,
+          "p": 1,
+          "t": 5
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "account/derive/refuses/argon2i",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2i",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q=="
+      },
+      "error": "kdf",
+      "reason": "unsupported_alg"
+    },
+    {
+      "id": "account/derive/refuses/salt-15",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY"
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "account/derive/refuses/salt-17",
+      "op": "account.derive",
+      "in": {
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0QA="
+      },
+      "error": "kdf",
+      "reason": "out_of_bounds"
+    },
+    {
+      "id": "mailie/recovery-code/counting",
+      "op": "mailie.recovery_code",
+      "in": {
+        "bytes_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwd"
+      },
+      "out": {
+        "code": "0123456789ABCDEFGHJKMNPQRSTVWX",
+        "display": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      }
+    },
+    {
+      "id": "mailie/recovery-code/all-ff",
+      "op": "mailie.recovery_code",
+      "in": {
+        "bytes_b64": "////////////////////////////////////////"
+      },
+      "out": {
+        "code": "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+        "display": "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"
+      }
+    },
+    {
+      "id": "account/normalise/display",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "out": {
+        "code": "0123456789ABCDEFGHJKMNPQRSTVWX"
+      }
+    },
+    {
+      "id": "account/normalise/i-and-l",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "0IL34-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "out": {
+        "code": "0113456789ABCDEFGHJKMNPQRSTVWX"
+      }
+    },
+    {
+      "id": "account/normalise/typed-back",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "o1234 56789 abcde fghjk mnpqr stvwx"
+      },
+      "out": {
+        "code": "0123456789ABCDEFGHJKMNPQRSTVWX"
+      }
+    },
+    {
+      "id": "account/normalise/refuses/29-characters",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVW"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/31-characters",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX0"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-dotless-i",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "0ı234-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-full-width-a",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-ＡBCDE-FGHJK-MNPQR-STVWX"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-no-break-space",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234 56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-plus-separator",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234+56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-u",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWU"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/a-vertical-tab",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234\u000b56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/an-empty-string",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": ""
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/normalise/refuses/lower-case-u-also",
+      "op": "account.normalise_recovery_code",
+      "in": {
+        "code": "01234-56789-abcde-fghjk-mnpqr-stvwu"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/recovery-key/display",
+      "op": "account.recovery_key",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "out": {
+        "key_b64": "NMg8LY3L0GI34eyNKPGVcrZlgc/MndDDtfvhvPNSuU4="
+      }
+    },
+    {
+      "id": "account/recovery-proof/display",
+      "op": "account.recovery_proof",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX"
+      },
+      "out": {
+        "proof": "PiF9WQGa5yIu59HXu6ata6TUOcFdG4698K-PaicsyiU"
+      }
+    },
+    {
+      "id": "account/recovery-key/typed-back",
+      "op": "account.recovery_key",
+      "in": {
+        "code": "o1234 56789 abcde fghjk mnpqr stvwx"
+      },
+      "out": {
+        "key_b64": "NMg8LY3L0GI34eyNKPGVcrZlgc/MndDDtfvhvPNSuU4="
+      }
+    },
+    {
+      "id": "account/recovery-proof/typed-back",
+      "op": "account.recovery_proof",
+      "in": {
+        "code": "o1234 56789 abcde fghjk mnpqr stvwx"
+      },
+      "out": {
+        "proof": "PiF9WQGa5yIu59HXu6ata6TUOcFdG4698K-PaicsyiU"
+      }
+    },
+    {
+      "id": "account/recovery-key/refuses/a-u",
+      "op": "account.recovery_key",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWU"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "account/recovery-proof/refuses/29-characters",
+      "op": "account.recovery_proof",
+      "in": {
+        "code": "01234-56789-ABCDE-FGHJK-MNPQR-STVW"
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "mailie/account-wrap-aad/password",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYWNjb3VudC13cmFwIiwxLCJwYXNzd29yZCIsImI4Y2JjOGE4LTBjOTAtNDhhYy05MjMzLWZiZGFjZTlkN2JmNCIsIjN1XzdJOUVVVHJISlc1bVlGcFBHcS1BSVRJems2dzZNVll0RXVDM1BRUk0iXQ=="
+      }
+    },
+    {
+      "id": "mailie/account-wrap-aad/recovery",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "recovery",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYWNjb3VudC13cmFwIiwxLCJyZWNvdmVyeSIsImI4Y2JjOGE4LTBjOTAtNDhhYy05MjMzLWZiZGFjZTlkN2JmNCIsIjN1XzdJOUVVVHJISlc1bVlGcFBHcS1BSVRJems2dzZNVll0RXVDM1BRUk0iXQ=="
+      }
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/kind-passkey",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "passkey",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/kind-in-upper-case",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "PASSWORD",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-in-upper-case",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "B8CBC8A8-0C90-48AC-9233-FBDACE9D7BF4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-a-uuidv7",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-the-nil-uuid",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "00000000-0000-0000-0000-000000000000"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-in-braces",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "{b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4}"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-with-a-urn-prefix",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "urn:uuid:b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/seal-id-an-address",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "ana@example.com"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap-aad/refuses/public-key-of-31-bytes",
+      "op": "mailie.account_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQQ==",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap/password",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "kind": "password",
+        "nonce_b64": "mAWPgdn2S03r3f5c",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 1001,
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYWNjb3VudC13cmFwIiwxLCJwYXNzd29yZCIsImI4Y2JjOGE4LTBjOTAtNDhhYy05MjMzLWZiZGFjZTlkN2JmNCIsIjN1XzdJOUVVVHJISlc1bVlGcFBHcS1BSVRJems2dzZNVll0RXVDM1BRUk0iXQ==",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g=="
+      }
+    },
+    {
+      "id": "mailie/account-wrap/recovery",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "kind": "recovery",
+        "nonce_b64": "1ZaylWtJZdQVN4Ky",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "seed": 1002,
+        "wrap_key_b64": "NMg8LY3L0GI34eyNKPGVcrZlgc/MndDDtfvhvPNSuU4="
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYWNjb3VudC13cmFwIiwxLCJyZWNvdmVyeSIsImI4Y2JjOGE4LTBjOTAtNDhhYy05MjMzLWZiZGFjZTlkN2JmNCIsIjN1XzdJOUVVVHJISlc1bVlGcFBHcS1BSVRJems2dzZNVll0RXVDM1BRUk0iXQ==",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg=="
+      }
+    },
+    {
+      "id": "mailie/account-wrap/account-key-with-a-zero-first-byte",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "ABCtY4WIFk+p7djEoN+rm7k5k0wEqVa3gguxlO9BTjY=",
+        "kind": "password",
+        "nonce_b64": "w5bExC+QXq6eqp/J",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a",
+        "seed": 1003,
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvYWNjb3VudC13cmFwIiwxLCJwYXNzd29yZCIsImNiMzY3ZjkyLTc4ZDEtNDk4Yy04YjA5LTQ0OWM3MDllYjUyYSIsIlRTZkEzWXltaTBCdWlpc1l3LUFNb2kzejRyTzBIcjh4aEdHMmwzNzQzazgiXQ==",
+        "account_public_key_b64": "TSfA3Yymi0BuiisYw+AMoi3z4rO0Hr8xhGG2l3743k8=",
+        "wrap_b64": "AsOWxMQvkF6unqqfyWPk08GnRXKTq1sjf1gaNJHJgITZVx9cKyZHIxy7T749Ax6E635XE40BQ5hrHSn9Gg=="
+      }
+    },
+    {
+      "id": "mailie/account-wrap/refuses/account-key-of-31-bytes",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQA==",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap/refuses/seal-id-a-uuidv7",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "kind": "password",
+        "seal_id": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-wrap/refuses/kind-platform",
+      "op": "mailie.account_wrap",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "kind": "platform",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-unwrap/password/with-the-wrap-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/account-unwrap/password/with-the-password",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "params": {
+          "alg": "argon2id",
+          "m": 65536,
+          "p": 1,
+          "t": 3
+        },
+        "password": "correct horse battery staple",
+        "salt_b64": "1TKkuxhQN7cidGB08hZY0Q==",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g=="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/account-unwrap/recovery/with-the-code-typed-back",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "recovery",
+        "recovery_code": "o1234 56789 abcde fghjk mnpqr stvwx",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg=="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/account-unwrap/recovery/with-the-recovery-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "recovery",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg==",
+        "wrap_key_b64": "NMg8LY3L0GI34eyNKPGVcrZlgc/MndDDtfvhvPNSuU4="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/another-seal-id",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "cb367f92-78d1-498c-8b09-449c709eb52a",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/another-account-public-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "TTFz6AmlE6kyI5HhCrDYKggERNNVV8qAhCIbIscFADU=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/another-wrap-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "8EI6SvFkGUG/fPZI1Nv/PiqEmhdA0F9UdMt5V0Flpgo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/another-passwords-wrap-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "T28f574Kh57Navm5ZPee6TO2wV+AuD8IwFPVK33KnmM="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/the-password-wrap-opened-as-the-recovery-wrap",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "recovery",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/the-recovery-wrap-opened-as-the-password-wrap",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "recovery_code": "o1234 56789 abcde fghjk mnpqr stvwx",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg=="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/the-recovery-wrap-in-the-password-column",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/the-password-wrap-with-the-recovery-code",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "recovery_code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWX",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g=="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/header-0x03-the-platform-wraps",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A5gFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/header-0x01",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AZgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/header-0x00",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AJgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/flipped-nonce",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApkFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/flipped-ciphertext",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZPS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/flipped-tag",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90w==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/extended-to-62-bytes",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90gA=",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/truncated-to-60-bytes",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v9",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "truncated"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/truncated-to-the-header",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "Ag==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "truncated"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/empty",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "truncated"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/opens-to-another-accounts-key",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "An68iDTd7mjN92l+3sg2U4H0wD0xETFgDvkNWUYDsFPfZ9KQ2N+2FTF2MXg1DjBziSG13mmbWCRiuhqPZw==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "wrap",
+      "reason": "wrong_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/wrap-key-of-31-bytes",
+      "op": "mailie.account_unwrap",
+      "langs": [
+        "go"
+      ],
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdQ=="
+      },
+      "error": "wrap",
+      "reason": "bad_key"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/seal-id-in-upper-case",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "password",
+        "seal_id": "B8CBC8A8-0C90-48AC-9233-FBDACE9D7BF4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/public-key-of-31-bytes",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQQ==",
+        "kind": "password",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g==",
+        "wrap_key_b64": "hi9eDrf+tUNKtMhQz7CHt0NBsmuG8UeThMNVnn8TdWo="
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/account-unwrap/refuses/a-code-with-a-u",
+      "op": "mailie.account_unwrap",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "kind": "recovery",
+        "recovery_code": "01234-56789-ABCDE-FGHJK-MNPQR-STVWU",
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg=="
+      },
+      "error": "recovery_code"
+    },
+    {
+      "id": "mailie/account-wrap-shape/password",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g=="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/account-wrap-shape/recovery",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": "AtWWspVrSWXUFTeCsjIVATY0iSDC1rVj7q9hYiEpaIu5gYJPCeDmZC5x8X4XPG++2dIak7BYp0cursz+pg=="
+      },
+      "out": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "mailie/account-wrap-shape/refuses/60-bytes",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v9"
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/account-wrap-shape/refuses/62-bytes",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": "ApgFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90gA="
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/account-wrap-shape/refuses/empty",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": ""
+      },
+      "error": "shape"
+    },
+    {
+      "id": "mailie/account-wrap-shape/refuses/header-0x03",
+      "op": "mailie.account_wrap_shape",
+      "in": {
+        "wrap_b64": "A5gFj4HZ9ktN693+XPLJktnTpXZOS0mI0WDPwotgm85mnZ72yvJ41W/ZgwaH61lMl0CxrT9YptmJr+v90g=="
+      },
+      "error": "shape"
+    }
+  ]
+}

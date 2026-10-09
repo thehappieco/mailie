@@ -79,10 +79,12 @@ one expires, is refused or ends in another tab; an edition may navigate away the
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
-imports from outside it or through an alias, and the open console names nothing of the hosted
-service (`web/test/editions.spec.ts` reads every file under `web/src` and `web/public`, and
-`web/index.html`, for the names in `web/test/hosted.ts`; the build fails on an output file that
-has one). Keep both in mind when you change the core: an edition you cannot see builds on it.
+imports from outside it or through an alias (a package of the console's `dependencies`, such as
+the kit `web/src/crypto/mailie.ts` builds the key scheme on, is not an alias), and the open console
+names nothing of the hosted service (`web/test/editions.spec.ts` reads every file under `web/src`
+and `web/public`, and `web/index.html`, for the names in `web/test/hosted.ts`, setting aside only
+the kit's package name in an import; the build fails on an output file that has one). Keep both in
+mind when you change the core: an edition you cannot see builds on it.
 
 ## People and credentials
 

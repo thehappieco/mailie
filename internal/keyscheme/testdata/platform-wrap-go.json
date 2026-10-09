@@ -1,0 +1,432 @@
+{
+  "format": "thehappieco-kit-vectors/1",
+  "module": "platformwrap",
+  "profile": "mailie",
+  "generated_by": {
+    "lang": "go",
+    "source": "github.com/thehappieco/mailie internal/keyscheme",
+    "toolchain": "go1.27.2",
+    "randomness": "none: every nonce is in its case",
+    "generator": "internal/keyscheme/vectors_test.go (go test ./internal/keyscheme -run TestTheVectorsAreWhatTheProfileWrites -update)"
+  },
+  "note": "Mailie's wrap of the account key under the product key sk_p (docs/key-scheme.md section 6): the kit's platform wrap under the kit's Mailie profile, bound to the person's seal id as the product's user id, never the sub. The kit's own vectors of the construction (vectors/mailie/golden/platform-wrap-go.json) are not repeated: the Go tests run them through this package's profile. Every refusal is platform_wrap, but for Mailie's binding helper, which refuses with binding.",
+  "cases": [
+    {
+      "id": "mailie/product-key/epoch-1",
+      "op": "mailie.product_key",
+      "in": {
+        "epoch": 1,
+        "root_b64": "ew5T4ZC/WUVhIteTFu+zUN/d56bNMcuP9rCnt6Pc8aY="
+      },
+      "out": {
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "product_public_key_b64": "BvFDz1EcH0Nh8DzXalRtqCgJl3bmp6oYQr9GJmCe0lc="
+      }
+    },
+    {
+      "id": "mailie/product-key/epoch-2",
+      "op": "mailie.product_key",
+      "in": {
+        "epoch": 2,
+        "root_b64": "ew5T4ZC/WUVhIteTFu+zUN/d56bNMcuP9rCnt6Pc8aY="
+      },
+      "out": {
+        "product_key_b64": "212L1wrxnMTiqlVrQhKDbx8a95xCljxCAM5TxzWuY2Y=",
+        "product_key_id": "mailie:2",
+        "product_public_key_b64": "K7Efm9E9ob5KTIdzuCvl36WeidmrNxM5GMNcYOuu8Xc="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap-binding/epoch-1",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 1,
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607"
+      },
+      "out": {
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      }
+    },
+    {
+      "id": "mailie/platform-wrap-binding/epoch-2",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 2,
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607"
+      },
+      "out": {
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      }
+    },
+    {
+      "id": "mailie/platform-wrap-binding/refuses/seal-id-a-uuidv7",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 1,
+        "seal_id": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f608",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/platform-wrap-binding/a-uuidv4-sub",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 1,
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "sub": "09dd3919-8222-451d-83a5-39690f059faf"
+      },
+      "out": {
+        "product_key_id": "mailie:1",
+        "sub": "09dd3919-8222-451d-83a5-39690f059faf",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      }
+    },
+    {
+      "id": "mailie/platform-wrap-binding/refuses/seal-id-the-sub",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 1,
+        "seal_id": "09dd3919-8222-451d-83a5-39690f059faf",
+        "sub": "09dd3919-8222-451d-83a5-39690f059faf"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/platform-wrap-binding/refuses/epoch-0",
+      "op": "mailie.platform_wrap_binding",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_epoch": 0,
+        "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607"
+      },
+      "error": "binding"
+    },
+    {
+      "id": "mailie/platform-wrap/info/epoch-1",
+      "op": "mailie.platform_wrap_info",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "info_b64": "WyJtYWlsaWUvcGxhdGZvcm0td3JhcCIsMSwiYjhjYmM4YTgtMGM5MC00OGFjLTkyMzMtZmJkYWNlOWQ3YmY0IiwiMDE5YThiMmMtM2Q0ZS03ZjYwLThhNzEtYjJjM2Q0ZTVmNjA3IiwibWFpbGllOjEiXQ=="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/aad/epoch-1",
+      "op": "mailie.platform_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvcGxhdGZvcm0td3JhcCIsMSwiYjhjYmM4YTgtMGM5MC00OGFjLTkyMzMtZmJkYWNlOWQ3YmY0IiwiMDE5YThiMmMtM2Q0ZS03ZjYwLThhNzEtYjJjM2Q0ZTVmNjA3IiwibWFpbGllOjEiLCIzdV83STlFVVRySEpXNW1ZRnBQR3EtQUlUSXprNnc2TVZZdEV1QzNQUVJNIl0="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/seal/epoch-1",
+      "op": "mailie.platform_wrap_seal",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "nonce_b64": "WhQKp7rLsNQK2WsL",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "k_pw_b64": "Tx4t6pQ0pX+eqfpqxFdWSLXNUS1vu5k6NgZ+8AsVG7E=",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/open/epoch-1",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/info/epoch-2",
+      "op": "mailie.platform_wrap_info",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "info_b64": "WyJtYWlsaWUvcGxhdGZvcm0td3JhcCIsMSwiYjhjYmM4YTgtMGM5MC00OGFjLTkyMzMtZmJkYWNlOWQ3YmY0IiwiMDE5YThiMmMtM2Q0ZS03ZjYwLThhNzEtYjJjM2Q0ZTVmNjA3IiwibWFpbGllOjIiXQ=="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/aad/epoch-2",
+      "op": "mailie.platform_wrap_aad",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "aad_b64": "WyJtYWlsaWUvcGxhdGZvcm0td3JhcCIsMSwiYjhjYmM4YTgtMGM5MC00OGFjLTkyMzMtZmJkYWNlOWQ3YmY0IiwiMDE5YThiMmMtM2Q0ZS03ZjYwLThhNzEtYjJjM2Q0ZTVmNjA3IiwibWFpbGllOjIiLCIzdV83STlFVVRySEpXNW1ZRnBQR3EtQUlUSXprNnc2TVZZdEV1QzNQUVJNIl0="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/seal/epoch-2",
+      "op": "mailie.platform_wrap_seal",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "nonce_b64": "XE4jg9SXqsrPVYuI",
+        "product_key_b64": "212L1wrxnMTiqlVrQhKDbx8a95xCljxCAM5TxzWuY2Y=",
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "out": {
+        "k_pw_b64": "2u3enUuvv77NrhsxzGZX+Fc67evz3kwY1zj6opaCdXU=",
+        "wrap_b64": "A1xOI4PUl6rKz1WLiHXQMInHj9mTEHiqtUCSAl6o4Kf5+F1rGi7fuYP+3nTSVhtxiba1tv2whEVWZ9QxtA=="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/open/epoch-2",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "212L1wrxnMTiqlVrQhKDbx8a95xCljxCAM5TxzWuY2Y=",
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1xOI4PUl6rKz1WLiHXQMInHj9mTEHiqtUCSAl6o4Kf5+F1rGi7fuYP+3nTSVhtxiba1tv2whEVWZ9QxtA=="
+      },
+      "out": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE="
+      }
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/the-same-persons-wappie-wrap",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "WZaKQth3U1aOPqvKDiBKnp5sBU8iIDbszESy2Qa/sHg=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A8BnIk0wiwFxzW7ZEYxPg4qxdx2u/qt2cBPxBw087OwhDmZqAz+9uZjqJWMM6BS9GxOFWRJLyj8oziOz+w=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/a-wappie-wrap-under-the-same-key-bytes",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A8BnIk0wiwFxzW7ZEeJCySApHE7ISGJZRph8okZK6lKM4WcZ+cidiza+DFZMiiWo5hd8f/KTmirYA/TjsQ=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/a-wappie-wrap-with-its-own-binding",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "WZaKQth3U1aOPqvKDiBKnp5sBU8iIDbszESy2Qa/sHg=",
+        "product_key_id": "wappie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A8BnIk0wiwFxzW7ZEYxPg4qxdx2u/qt2cBPxBw087OwhDmZqAz+9uZjqJWMM6BS9GxOFWRJLyj8oziOz+w=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/another-seal-id",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "cb367f92-78d1-498c-8b09-449c709eb52a",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/the-sub-as-the-user-id",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/another-sub",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f609",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/another-epoch",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:2",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/the-epoch-2-wrap",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1xOI4PUl6rKz1WLiHXQMInHj9mTEHiqtUCSAl6o4Kf5+F1rGi7fuYP+3nTSVhtxiba1tv2whEVWZ9QxtA=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/another-account-public-key",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "TTFz6AmlE6kyI5HhCrDYKggERNNVV8qAhCIbIscFADU=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/another-product-key",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "212L1wrxnMTiqlVrQhKDbx8a95xCljxCAM5TxzWuY2Y=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/header-0x02-an-account-wrap",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "AloUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/Q=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/flipped-tag",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb/A=="
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/open/refuses/length-60",
+      "op": "mailie.platform_wrap_open",
+      "in": {
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4",
+        "wrap_b64": "A1oUCqe6y7DUCtlrCxgso35vFBdSrlBTV3/Wt7qK6dFEqEBaVr9JfczzJ8SnLXXsGVhQGgQFKTSpqDeb"
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/seal/refuses/a-wappie-product-key-id",
+      "op": "mailie.platform_wrap_seal",
+      "in": {
+        "account_key_b64": "WgAtSLNROfrE2EV8MMORgKzyBY7q9gYLWv92TqQuQBE=",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "nonce_b64": "wGciTTCLAXHNbtkR",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "wappie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "platform_wrap"
+    },
+    {
+      "id": "mailie/platform-wrap/seal/refuses/account-key-not-the-public-keys",
+      "op": "mailie.platform_wrap_seal",
+      "in": {
+        "account_key_b64": "1MbRDdR5qE79S2GkwVmbnqhvR+p0iv0w9rgUKqPPpS8=",
+        "account_public_key_b64": "3u/7I9EUTrHJW5mYFpPGq+AITIzk6w6MVYtEuC3PQRM=",
+        "nonce_b64": "wGciTTCLAXHNbtkR",
+        "product_key_b64": "ullO7axQ+pht0TIwKIMLL1U4/BrdCxtYnP+ayuj9Pgk=",
+        "product_key_id": "mailie:1",
+        "sub": "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607",
+        "user_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4"
+      },
+      "error": "platform_wrap"
+    }
+  ]
+}
