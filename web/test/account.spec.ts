@@ -9,7 +9,7 @@ import { generateAccountKeys } from '@thehappieco/kit/account'
 import { IDBObjectStore } from 'fake-indexeddb'
 import { deriveKeys, enrol, openWrap, recoveryKeys, type Enrolled } from '../src/crypto/account'
 import { accountServer, DEFAULT_KDF, saltOf, targetOf, type Stored } from './accountServer'
-import { failure, freshModules, now, stubPage } from './support'
+import { failure, freshModules, json, now, stubPage } from './support'
 
 const PASSWORD = 'correct horse battery staple'
 const ANA = 'ana@example.test'
@@ -220,6 +220,40 @@ describe('the upgrade of an account made before the key scheme', { timeout: 30_0
     expect(sentPassword(server)).toBe(false)
   })
 
+  it('remembers the address as soon as the server accepts the enrolment, even when its answer names another key or the vault refuses the key', async () => {
+    for (const afterwards of ['names another key', 'the vault refuses the key'] as const) {
+      stubPage()
+      const s = await load()
+      const server = accountServer()
+      server.people.set(ANA, legacy())
+      let refusing: { mockRestore(): void } | undefined
+      if (afterwards === 'names another key') {
+        // A session for Ana with a public key the enrolment did not make: refused, and its session ended.
+        server.refuseNext.set('/v1/auth/upgrade/enrol', () => json({
+          token: toBase64URL(crypto.getRandomValues(new Uint8Array(32))), expires_at: now() + 3600, authenticated_at: now(),
+          user: { id: 'usr_00000000000000a1', email: ANA, name: 'Ana', role: 'member', created_at: 1_790_000_000, has_password: true, seal_id: ANA_SEAL, public_key: offTarget.enrolment.public_key },
+        }))
+      } else {
+        // The server enrolled Ana; this browser then cannot seal the key it made at rest.
+        server.inFlight.set('/v1/auth/upgrade/enrol', () => {
+          refusing = vi.spyOn(crypto.subtle, 'generateKey').mockRejectedValue(new Error('the vault refuses'))
+        })
+      }
+      const failed = await s.signIn(ANA, 'my old password').then(() => null, (error: unknown) => error)
+      refusing?.mockRestore()
+      expect(failed, afterwards).not.toBeNull()
+      expect(server.paths().slice(0, 3), afterwards).toEqual(['/v1/auth/challenge', '/v1/auth/upgrade/login', '/v1/auth/upgrade/enrol'])
+      expect(s.session.phase, afterwards).not.toBe('ready')
+      expect(await s.vault.rememberedEnrolled(ANA), afterwards).toBe(true)
+
+      // The next page, to a server that asks for the upgrade again: the password does not go.
+      server.people.set(ANA, legacy())
+      const next = await load()
+      await expect(next.signIn(' ana@EXAMPLE.test', 'my old password'), afterwards).rejects.toMatchObject({ code: 'upgrade_refused' })
+      expect(server.paths().filter(path => path === '/v1/auth/upgrade/login'), afterwards).toHaveLength(1)
+    }
+  })
+
   it('asks for a new password when the old one cannot be used as it is', async () => {
     const s = await load()
     const server = accountServer()
@@ -242,6 +276,11 @@ describe('recovering an account', { timeout: 30_000 }, () => {
     await s.recover({ email: ANA, code: atTarget.recoveryCode.toLowerCase(), password: 'my brand new password' })
     expect(server.paths()).toEqual(['/v1/auth/recover/open', '/v1/auth/recover/finish', '/v1/auth/login'])
     expect(sentPassword(server, 'my brand new password') || sentPassword(server, atTarget.recoveryCode)).toBe(false)
+    // The ticket finishes only with the proof that opened the recovery, which the answer carrying it never held.
+    const finish = server.calls[1]!.body
+    expect(Object.keys(finish).sort()).toEqual(['auth_key', 'current_recovery_proof', 'kdf', 'password_wrap', 'recovery_proof', 'recovery_wrap', 'ticket'])
+    expect(finish.current_recovery_proof).toBe(atTarget.enrolment.recovery_proof)
+    expect(finish.recovery_proof).not.toBe(atTarget.enrolment.recovery_proof)
     const person = server.people.get(ANA)!
     expect(person.publicKey).toBe(atTarget.enrolment.public_key)
     expect(s.session.phase).toBe('ready')

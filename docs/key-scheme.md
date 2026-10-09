@@ -735,8 +735,9 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    (`salt(normalise(email))`, the salt the browser derived with, since `salt` normalises), that
    seal id and `zk_enrolled_at` set. The answer carries the session, whose step-up time is now
    (section 11), the seal id and the public key.
-4. The browser shows the recovery code once, keeps the account key in the vault, and records the
-   address as enrolled (section 12.7).
+4. The browser records the address as enrolled as soon as this answers, before it checks that the
+   answer names the public key it made (section 12.7, step 2), keeps the account key in the vault,
+   and shows the recovery code once.
 
 ### 12.2 Signing in (self-hosted)
 
@@ -791,13 +792,19 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
 1. `recover/open {email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf,
    ticket}`, for `normalise(email)` and only against the stored proof (a dummy for every other
    case); `salt` and `kdf` are the account's target (section 5.3); `ticket` is single use,
-   10 minutes, stored as SHA-256. The browser records the address as enrolled once this answers
-   (section 12.7).
+   10 minutes, bound to the person and to the recovery proof just verified, of which it keeps
+   SHA-256 of the 32 bytes, and stored as SHA-256. The browser records the address as enrolled
+   once this answers (section 12.7).
 2. The browser opens the recovery wrap with `K_rwrap` (section 5.6), prepares a new password as
    new, checks the target's parameters and salt, derives under them, wraps the same account key
    under the new `K_wrap`, makes a **new** recovery code and wraps the account key under it.
-3. `recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}`. The
-   server checks that `kdf` is its current default and stores the target with the rest. The
+3. `recover/finish {ticket, current_recovery_proof, auth_key, kdf, password_wrap, recovery_wrap,
+   recovery_proof}`, where `current_recovery_proof` is the proof of step 1, sent again, and
+   `recovery_proof` the new code's. The server refuses, before any hash and leaving the ticket
+   unused, a `current_recovery_proof` whose SHA-256 is not the one kept with the ticket: the
+   ticket rides in the same answer as the recovery wrap, and whoever saw only that answer (a
+   proxy's log) must not set a password and a code of their own with it (threat model, section
+   5.12). It checks that `kdf` is its current default and stores the target with the rest. The
    account key is unchanged, so every grant still opens. Every session ends, and the person signs
    in with the new password (section 12.2). The browser shows the new code once. A sign-in after
    it that fails (the account's rate limit, the network) leaves the recovery done: the browser
@@ -877,7 +884,12 @@ password reaches the server **one last time**:
 3. The server checks the password against the old hash, under the old rules and rate limits, and
    answers a single-use enrolment ticket (10 minutes, bound to the person, stored as SHA-256), the
    person's seal id, and the target the ticket carries (the salt of step 1 and the default
-   parameters), not a session.
+   parameters), not a session. Unlike the tickets of sections 12.2 to 12.4, it is bound to no
+   secret: binding it to the password would send the password a second time, and whoever logs
+   this answer in front of the server most likely logs its request too, with the password in
+   clear. Whoever saw only the answer could enrol the account under a password of their own
+   before the person's browser uses the ticket; a residual for the one release the route exists
+   (threat model, section 5.12).
 4. The browser prepares the same password as a presented one (no new minimum). If the profile
    refuses it (a control character, more than 256 code points, section 5.1), the person chooses a
    new one, prepared as new. It derives under the target of step 3, makes the account key and a
@@ -886,8 +898,9 @@ password reaches the server **one last time**:
 5. In one transaction the server stores section 5.7's columns, sets `zk_enrolled_at` (one way: the
    schema refuses setting it back), **clears the old password hash**, ends the person's other
    sessions and opens one, whose step-up time is now (section 11).
-6. The browser records the address as enrolled, shows the recovery code, and keeps the account key
-   in the vault.
+6. The browser records the address as enrolled as soon as this answers, before it checks that the
+   answer names the public key it made (step 2), keeps the account key in the vault, and shows the
+   recovery code.
 
 From then on the server refuses a password in clear for the person, answering as for a wrong one,
 and the browser never sends one to an address it remembers. The legacy route and `upgrade` exist in
@@ -1278,3 +1291,16 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     records an address as enrolled as soon as the server accepts a proof (section 12.7), not once
     the whole ceremony has succeeded, and a recovery whose sign-in after it fails is reported
     done. Section 7 now says what a browser closed while signed in keeps. No byte changed.
+  - **A recovery's ticket finishes only with the recovery proof that opened it** (section 12.4),
+    where the first text named `recover/finish {ticket, auth_key, kdf, password_wrap,
+    recovery_wrap, recovery_proof}`. Found in review: the ticket rides in `recover/open`'s answer,
+    so whoever saw only that answer (a proxy's log) could finish the recovery with a password and
+    a code of their own, sign in as the person for good and lock them out. The server keeps
+    SHA-256 of the proof it verified with the ticket (`auth_tickets.proof`, as for sections 12.2
+    and 12.3), and `recover/finish` carries that proof again as `current_recovery_proof`; another
+    is refused before any hash, and leaves the ticket unused. The console sends the proof it
+    derived from the code typed. The upgrade's enrolment ticket (section 12.7, step 3) stays bound
+    to no secret, a residual for the one release the route exists, now said there and in the
+    threat model (section 5.12). An enrolment's answer (sections 12.1, 12.6 and 12.7) records the
+    address before the console checks the key it names or keeps the account key, as section 12.7,
+    step 2, says of every ceremony. No byte changed.

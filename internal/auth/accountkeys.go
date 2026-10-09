@@ -555,7 +555,8 @@ func (u *Users) FinishPasswordChange(ctx context.Context, userID, sessionID stri
 
 // Recovery is what opening a recovery answers: the recovery wrap, answered
 // only to the recovery proof verified in the same request, the account's
-// target, and the ticket that finishes it.
+// target, and the ticket that finishes it, only with that proof presented
+// again.
 type Recovery struct {
 	Target
 	SealID       string
@@ -565,8 +566,8 @@ type Recovery struct {
 }
 
 // OpenRecovery checks a recovery proof for an address and answers what a
-// recovery needs (docs/key-scheme.md section 12.4). Every way of failing is
-// ErrBadCredentials after the same work.
+// recovery needs (docs/key-scheme.md section 12.4), with a ticket bound to
+// that proof. Every way of failing is ErrBadCredentials after the same work.
 func (u *Users) OpenRecovery(ctx context.Context, email, proof string) (Recovery, error) {
 	if err := checkSecretText(proof); err != nil {
 		return Recovery{}, err
@@ -602,8 +603,11 @@ func (u *Users) OpenRecovery(ctx context.Context, email, proof string) (Recovery
 		if err := requireVerifierTx(ctx, tx, r.user.ID, recoveryVerifier, r.recovery); err != nil {
 			return asRefusal(err, ErrBadCredentials)
 		}
+		// Bound to the proof just verified, which finishing presents
+		// again: whoever saw only this answer (a proxy's log) must not set
+		// a password and a code of their own with its ticket.
 		var err error
-		out.Ticket, err = issueTicketTx(ctx, tx, r.user.ID, "", ticketRecover, target, u.now(), nil)
+		out.Ticket, err = issueTicketTx(ctx, tx, r.user.ID, "", ticketRecover, target, u.now(), ticketProof(proof))
 		return err
 	})
 	if err != nil {
@@ -613,21 +617,33 @@ func (u *Users) OpenRecovery(ctx context.Context, email, proof string) (Recovery
 }
 
 // RecoveryFinish is the second half of a recovery: a new password and a new
-// recovery code over the same account key.
+// recovery code over the same account key, and the recovery proof the
+// ticket was issued to.
 type RecoveryFinish struct {
-	Ticket        string
-	AuthKey       string
-	KDF           KDF
-	PasswordWrap  []byte
-	RecoveryWrap  []byte
+	Ticket string
+	// CurrentRecoveryProof is the proof OpenRecovery verified, presented
+	// again: whoever saw only the answer that carried the ticket does not
+	// have it.
+	CurrentRecoveryProof string
+	AuthKey              string
+	KDF                  KDF
+	PasswordWrap         []byte
+	RecoveryWrap         []byte
+	// RecoveryProof is the new recovery code's proof.
 	RecoveryProof string
 }
 
 // FinishRecovery stores a new password and recovery code for the ticket's
-// person, under the target the ticket carries. The account key is unchanged,
-// so every grant still opens. Every session of the person ends, and every
-// other ticket; the person signs in with the new password.
+// person, under the target the ticket carries. The ticket finishes only with
+// the recovery proof it was issued to (CurrentRecoveryProof); anything else is
+// ErrTicketInvalid, refused before any hash, and leaves the ticket unused.
+// The account key is unchanged, so every grant still opens. Every session of
+// the person ends, and every other ticket; the person signs in with the new
+// password.
 func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
+	if err := checkSecretText(in.CurrentRecoveryProof); err != nil {
+		return err
+	}
 	if err := checkSecretText(in.AuthKey); err != nil {
 		return err
 	}
@@ -645,8 +661,10 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 		return ErrTicketInvalid
 	}
 	// Checked before the hashes as well as inside the transaction: a ticket
-	// that is not one should cost no Argon2id to refuse.
-	if err := u.requireTicket(ctx, ticketHash, "", "", nil, ticketRecover); err != nil {
+	// that is not one, or presented with another proof, should cost no
+	// Argon2id to refuse.
+	proof := ticketProof(in.CurrentRecoveryProof)
+	if err := u.requireTicket(ctx, ticketHash, "", "", proof, ticketRecover); err != nil {
 		return err
 	}
 	hashed, err := hashVerifiers(ctx, in.AuthKey, in.RecoveryProof)
@@ -655,7 +673,7 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 	}
 	return u.store.Write(ctx, func(tx *sql.Tx) error {
 		now := u.now()
-		t, err := consumeTicketTx(ctx, tx, ticketHash, now, "", "", nil, ticketRecover)
+		t, err := consumeTicketTx(ctx, tx, ticketHash, now, "", "", proof, ticketRecover)
 		if err != nil {
 			return err
 		}
@@ -926,6 +944,12 @@ func (u *Users) LegacySignIn(ctx context.Context, email, password string) (Upgra
 		if standing != userActive || current != hash || zk != 0 {
 			return ErrBadCredentials
 		}
+		// Bound to no secret, unlike the other tickets an answer carries:
+		// binding it to the password would send the password a second time,
+		// and a log in front of the server that holds this answer most
+		// likely holds its request too, with the password in it. A residual
+		// of the one release the upgrade exists in
+		// (docs/key-scheme-threat-model.md section 5.12).
 		var err error
 		out.Ticket, err = issueTicketTx(ctx, tx, id, "", ticketEnrol, target, u.now(), nil)
 		return err
@@ -1280,7 +1304,8 @@ type ticketRow struct {
 	session string
 	purpose string
 	target  Target
-	// proof is SHA-256 of the auth key the ticket was issued to, or nil.
+	// proof is SHA-256 of the secret the ticket was issued to (an auth key, or
+	// a recovery proof), or nil.
 	proof []byte
 }
 
@@ -1296,7 +1321,7 @@ func scanTicket(row interface{ Scan(...any) error }) (ticketRow, error) {
 
 // fits reports whether a ticket is one of purposes and, when userID is not
 // empty, that person's; bound to sessionID (none when ""); and issued to the
-// auth key whose ticketProof is proof (to none when nil).
+// secret whose ticketProof is proof (to none when nil).
 func (t ticketRow) fits(userID, sessionID string, proof []byte, purposes ...string) bool {
 	known := false
 	for _, p := range purposes {
@@ -1306,12 +1331,12 @@ func (t ticketRow) fits(userID, sessionID string, proof []byte, purposes ...stri
 		subtle.ConstantTimeCompare(t.proof, proof) == 1
 }
 
-// ticketProof is what a ticket issued to a verified auth key keeps of it:
-// SHA-256 of its 32 bytes. The key was checked (checkSecretText) and
-// verified before; an auth key is the output of Argon2id, so its hash gives
-// nothing to guess at.
-func ticketProof(authKey string) []byte {
-	raw, err := platform.DecodeB64(authKey, secretTextBytes)
+// ticketProof is what a ticket issued to a verified secret keeps of it:
+// SHA-256 of its 32 bytes. The secret was checked (checkSecretText) and
+// verified before. An auth key is the output of Argon2id and a recovery
+// proof of HKDF over a 150-bit code, so the hash gives nothing to guess at.
+func ticketProof(secret string) []byte {
+	raw, err := platform.DecodeB64(secret, secretTextBytes)
 	if err != nil {
 		return nil
 	}
@@ -1322,7 +1347,7 @@ func ticketProof(authKey string) []byte {
 
 // issueTicketTx makes a ticket inside the caller's transaction and returns
 // the only copy of it. sessionID is "" for a ticket bound to no session, and
-// proof (ticketProof) nil for one bound to no auth key.
+// proof (ticketProof) nil for one bound to no secret.
 func issueTicketTx(ctx context.Context, tx *sql.Tx, userID, sessionID, purpose string, target Target, now time.Time,
 	proof []byte,
 ) (string, error) {
@@ -1366,8 +1391,8 @@ func (u *Users) requireTicket(ctx context.Context, hash []byte, userID, sessionI
 }
 
 // consumeTicketTx uses a ticket once, inside the caller's transaction: one of
-// purposes, not expired, bound to sessionID (none when "") and to the auth
-// key whose ticketProof is proof (none when nil), and, when userID is not
+// purposes, not expired, bound to sessionID (none when "") and to the secret
+// whose ticketProof is proof (none when nil), and, when userID is not
 // empty, userID's. A ticket that is anything else is ErrTicketInvalid, and
 // stays unused.
 func consumeTicketTx(ctx context.Context, tx *sql.Tx, hash []byte, now time.Time, userID, sessionID string, proof []byte,
@@ -1382,7 +1407,7 @@ func consumeTicketTx(ctx context.Context, tx *sql.Tx, hash []byte, now time.Time
 		return ticketRow{}, fmt.Errorf("auth: use ticket: %w", err)
 	}
 	// Returning rolls the DELETE back: a ticket presented by somebody else,
-	// to the wrong ceremony or with another key, is still its own.
+	// to the wrong ceremony or with another secret, is still its own.
 	if !t.fits(userID, sessionID, proof, purposes...) {
 		return ticketRow{}, ErrTicketInvalid
 	}

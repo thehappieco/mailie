@@ -153,12 +153,17 @@ async function finishEnrolment(email: string, password: string, ticket: UpgradeT
   }
 }
 
-/** startEnrolled signs in the person an enrolment made, keeps their account key, and shows the recovery code once. */
+/**
+ * startEnrolled signs in the person an enrolment made, keeps their account
+ * key, and shows the recovery code once. The address is remembered first:
+ * the server has accepted the enrolment, whatever fails next (an answer that
+ * names another key, a vault that refuses the key; section 12.7, step 2).
+ */
 async function startEnrolled(email: string, reply: SessionReply, made: Enrolled, sealID: string): Promise<void> {
+  await rememberEnrolled(email)
   if (!sameKey(reply.user, sealID, made.enrolment.public_key)) refuse(reply)
   await keepAccountKey(made.accountKey, made.publicKey, sealID)
   await beginSession(reply, true)
-  await rememberEnrolled(email)
   showRecoveryCode(made.recoveryCode, 'new-account')
 }
 
@@ -228,7 +233,10 @@ export async function recover(input: { email: string; code: string; password: st
   try {
     const next = await rewrap(input.password, opened, 'new', accountKey, opened.seal_id)
     const recovery = await newRecovery(accountKey, opened.seal_id)
-    await auth.finishRecovery({ ticket: opened.ticket, ...next, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof })
+    // The ticket finishes only with the proof that opened it, which the answer carrying it never held.
+    await auth.finishRecovery({
+      ticket: opened.ticket, current_recovery_proof: keys.proof, ...next, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof,
+    })
     // Shown even if the sign-in below fails: the old code is gone.
     showRecoveryCode(recovery.code, 'recovered')
     // The new password, under the target the recovery stored: its auth key is the one just sent.

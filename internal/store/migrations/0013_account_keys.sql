@@ -38,10 +38,11 @@
 --     11): when the page started a step-up on this session, valid ten
 --     minutes and used once; 0 is none.
 --   - auth_tickets: the single-use tickets of the ceremonies (section 12),
---     ten minutes each, stored as SHA-256, bound to the person and, for a
+--     ten minutes each, stored as SHA-256, bound to the person; for a
 --     password change and a sign-in's re-derivation, to the session and to
---     the auth key verified when it was issued (SHA-256 of it); each carries
---     the target the browser derives under.
+--     the auth key verified when it was issued, and for a recovery to the
+--     recovery proof verified when it was opened (SHA-256 of either); each
+--     carries the target the browser derives under.
 --   - reset_invites: the reset invitations `user password --bootstrap`
 --     prints (section 12.6), seven days, stored as SHA-256, used once.
 --   - invites.seal_id: the seal id of the person an invitation signs up,
@@ -141,15 +142,16 @@ CREATE TABLE auth_tickets (
   kdf_m      INTEGER NOT NULL,
   kdf_t      INTEGER NOT NULL,
   kdf_p      INTEGER NOT NULL,
-  -- SHA-256 of the auth key a password change's first step or a sign-in
-  -- verified when it issued the ticket: finishing presents that key again,
-  -- so whoever saw only the answer that carried the ticket sets nothing.
-  -- NULL for a recovery and the upgrade's enrolment.
+  -- SHA-256 of the secret verified when the ticket was issued: the auth key
+  -- of a password change's first step or of a sign-in, the recovery proof
+  -- of a recovery's opening. Finishing presents that secret again, so
+  -- whoever saw only the answer that carried the ticket sets nothing. NULL
+  -- for the upgrade's enrolment, whose request carried the password itself.
   proof      BLOB CHECK (proof IS NULL OR (typeof(proof) = 'blob' AND length(proof) = 32)),
   created_at INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,                                         -- created_at + 10 minutes
   CHECK ((purpose IN ('password','rederive')) = (session_id IS NOT NULL)),
-  CHECK ((purpose IN ('password','rederive')) = (proof IS NOT NULL))
+  CHECK ((purpose IN ('password','rederive','recover')) = (proof IS NOT NULL))
 );
 CREATE INDEX auth_tickets_user ON auth_tickets(user_id);
 CREATE INDEX auth_tickets_session ON auth_tickets(session_id);

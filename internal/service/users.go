@@ -205,14 +205,17 @@ type RecoverOpen struct {
 }
 
 // RecoverFinishRequest stores a new password and a new recovery code over
-// the same account key.
+// the same account key. CurrentRecoveryProof is the proof that opened the
+// recovery (RecoverOpenRequest's recovery_proof), presented again: the
+// ticket finishes with no other. RecoveryProof is the new code's.
 type RecoverFinishRequest struct {
-	Ticket        string `json:"ticket"`
-	AuthKey       string `json:"auth_key"`
-	KDF           KDF    `json:"kdf"`
-	PasswordWrap  string `json:"password_wrap"`
-	RecoveryWrap  string `json:"recovery_wrap"`
-	RecoveryProof string `json:"recovery_proof"`
+	Ticket               string `json:"ticket"`
+	CurrentRecoveryProof string `json:"current_recovery_proof"`
+	AuthKey              string `json:"auth_key"`
+	KDF                  KDF    `json:"kdf"`
+	PasswordWrap         string `json:"password_wrap"`
+	RecoveryWrap         string `json:"recovery_wrap"`
+	RecoveryProof        string `json:"recovery_proof"`
 }
 
 // RecoveryRequest replaces the recovery code: the current auth key, which
@@ -447,8 +450,8 @@ func (s *Service) OpenRecovery(ctx context.Context, req RecoverOpenRequest) (Rec
 }
 
 // FinishRecovery stores a new password and a new recovery code over the same
-// account key. Every session of the person ends; they sign in with the new
-// password.
+// account key, with the recovery proof that opened it presented again. Every
+// session of the person ends; they sign in with the new password.
 func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) error {
 	if err := s.passwordsInUse(); err != nil {
 		return err
@@ -458,8 +461,8 @@ func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) 
 		return err
 	}
 	if err := s.users.FinishRecovery(ctx, auth.RecoveryFinish{
-		Ticket: req.Ticket, AuthKey: req.AuthKey, KDF: kdfOf(req.KDF), PasswordWrap: wraps[0], RecoveryWrap: wraps[1],
-		RecoveryProof: req.RecoveryProof,
+		Ticket: req.Ticket, CurrentRecoveryProof: req.CurrentRecoveryProof, AuthKey: req.AuthKey, KDF: kdfOf(req.KDF),
+		PasswordWrap: wraps[0], RecoveryWrap: wraps[1], RecoveryProof: req.RecoveryProof,
 	}); err != nil {
 		return fromUsers(err, "finishing the recovery failed")
 	}

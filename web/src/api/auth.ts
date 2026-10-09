@@ -55,8 +55,13 @@ export async function openRecovery(email: string, recoveryProof: string): Promis
   return checked(await request('/v1/auth/recover/open', { body: { email, recovery_proof: recoveryProof } }), isRecoverOpen)
 }
 
-/** Every session of the person ends; they sign in with the new password. */
-export async function finishRecovery(input: { ticket: string } & Omit<Enrolment, 'public_key'>): Promise<void> {
+/**
+ * Stores a new password and recovery code. current_recovery_proof is the
+ * proof that opened the recovery (openRecovery's), sent again: the server
+ * finishes the ticket with no other. Every session of the person ends; they
+ * sign in with the new password.
+ */
+export async function finishRecovery(input: { ticket: string; current_recovery_proof: string } & Omit<Enrolment, 'public_key'>): Promise<void> {
   await request<void>('/v1/auth/recover/finish', { body: input })
 }
 

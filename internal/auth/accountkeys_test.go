@@ -375,8 +375,8 @@ func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testi
 	made := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
 	recover := func(ticket string) error {
 		return users.FinishRecovery(t.Context(), auth.RecoveryFinish{
-			Ticket: ticket, AuthKey: secretOf("x"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
-			RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
+			Ticket: ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: secretOf("x"), KDF: auth.DefaultKDF,
+			PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
 		})
 	}
 	enrol := func(ticket string) error {
@@ -403,6 +403,56 @@ func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testi
 	}
 	if err := enrol(upgrade.Ticket); err != nil {
 		t.Errorf("the enrolment's own ticket: %v", err)
+	}
+}
+
+func TestARecoveryTicketFinishesOnlyWithTheProofThatEarnedIt(t *testing.T) {
+	// The ticket rides in recover/open's answer, beside the recovery wrap:
+	// whoever saw only that answer (a proxy's log) holds the ticket, not the
+	// proof the request carried. With it alone, they must set no password
+	// and no code of their own.
+	derivations := countedKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	opened, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := userRow(t, db, ana.ID)
+	finish := auth.RecoveryFinish{
+		Ticket: opened.Ticket, AuthKey: secretOf("the proxy's own"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+		RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("the proxy's code"),
+	}
+	for name, current := range map[string]string{
+		"another proof":         secretOf("guess"),
+		"the new code's proof":  finish.RecoveryProof,
+		"the person's auth key": authtest.AuthKey,
+		"no proof at all":       "",
+	} {
+		finish.CurrentRecoveryProof = current
+		derivations.Store(0)
+		err := users.FinishRecovery(t.Context(), finish)
+		if current == "" {
+			if !errors.Is(err, auth.ErrMalformedSecret) {
+				t.Errorf("a recovery with no current proof: %v", err)
+			}
+		} else if !errors.Is(err, auth.ErrTicketInvalid) {
+			t.Errorf("a recovery finished with %s: %v", name, err)
+		}
+		if n := derivations.Load(); n != 0 {
+			t.Errorf("a recovery refused with %s after %d derivations, want none", name, n)
+		}
+	}
+	if userRow(t, db, ana.ID) != before {
+		t.Fatal("a refused recovery stored something")
+	}
+	// The ticket stays its own: the browser that opened the recovery finishes.
+	finish.CurrentRecoveryProof = authtest.RecoveryProof
+	if err := users.FinishRecovery(t.Context(), finish); err != nil {
+		t.Fatalf("a recovery with the proof that opened it: %v", err)
+	}
+	if _, err := users.Login(t.Context(), "ana@example.com", finish.AuthKey, "test"); err != nil {
+		t.Errorf("the new password after the recovery: %v", err)
 	}
 }
 
@@ -496,8 +546,8 @@ func TestATicketWorksOnceForItsPersonCeremonyAndTenMinutesOnly(t *testing.T) {
 	// Nor does it outlive its ten minutes.
 	*clock = clock.Add(auth.TicketTTL + time.Second)
 	if err := users.FinishRecovery(t.Context(), auth.RecoveryFinish{
-		Ticket: opened.Ticket, AuthKey: secretOf("x"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
-		RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
+		Ticket: opened.Ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: secretOf("x"), KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
 	}); !errors.Is(err, auth.ErrTicketInvalid) {
 		t.Errorf("an expired ticket finished a recovery: %v", err)
 	}
@@ -534,8 +584,8 @@ func TestARecoveryKeepsTheAccountKeyAndEndsEverySession(t *testing.T) {
 	}
 	newKey, newProof := secretOf("after recovery"), secretOf("new code")
 	if err := users.FinishRecovery(t.Context(), auth.RecoveryFinish{
-		Ticket: opened.Ticket, AuthKey: newKey, KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
-		RecoveryWrap: authtest.Wrap(t), RecoveryProof: newProof,
+		Ticket: opened.Ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: newKey, KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: newProof,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -662,8 +712,8 @@ func TestReplacingTheRecoveryCodeEndsARecoveryOpenedWithTheOldOne(t *testing.T) 
 	}
 	before := userRow(t, db, ana.ID)
 	err = users.FinishRecovery(t.Context(), auth.RecoveryFinish{
-		Ticket: opened.Ticket, AuthKey: secretOf("taken over"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
-		RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("theirs"),
+		Ticket: opened.Ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: secretOf("taken over"),
+		KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("theirs"),
 	})
 	if !errors.Is(err, auth.ErrTicketInvalid) {
 		t.Fatalf("a recovery opened with the replaced code finished: %v", err)

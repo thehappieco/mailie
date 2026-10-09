@@ -158,10 +158,29 @@ func TestARecoveryOverRESTKeepsTheAccountKeyAndEndsEverySession(t *testing.T) {
 	}
 	wrap := func() string { return base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)) }
 	newKey := secret("recovered")
-	resp = h.do(t, http.MethodPost, "/v1/auth/recover/finish", "", jsonOf(t, map[string]any{
+	finish := map[string]any{
 		"ticket": opened.Ticket, "auth_key": newKey, "kdf": defaultKDF(), "password_wrap": wrap(),
 		"recovery_wrap": wrap(), "recovery_proof": secret("new code"),
-	}))
+	}
+	// The ticket finishes only with the proof that opened the recovery, which
+	// the answer carrying it never held.
+	for name, c := range map[string]struct {
+		current any
+		status  int
+		code    string
+	}{
+		"another proof":  {secret("guess"), http.StatusForbidden, "not_authorized"},
+		"the new code's": {finish["recovery_proof"], http.StatusForbidden, "not_authorized"},
+		"none":           {nil, http.StatusBadRequest, "bad_request"},
+	} {
+		finish["current_recovery_proof"] = c.current
+		resp = h.do(t, http.MethodPost, "/v1/auth/recover/finish", "", jsonOf(t, finish))
+		if code, _ := decodeError(t, resp); resp.StatusCode != c.status || code != c.code {
+			t.Errorf("recover/finish with %s: %d %s, want %d %s", name, resp.StatusCode, code, c.status, c.code)
+		}
+	}
+	finish["current_recovery_proof"] = authtest.RecoveryProof
+	resp = h.do(t, http.MethodPost, "/v1/auth/recover/finish", "", jsonOf(t, finish))
 	if resp.StatusCode != http.StatusNoContent {
 		code, message := decodeError(t, resp)
 		t.Fatalf("recover/finish: %d %s %s", resp.StatusCode, code, message)

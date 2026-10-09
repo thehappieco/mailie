@@ -324,7 +324,8 @@ in between for the upgrade, and their browsers refuse; each then needs a reset i
 §12.6), which the operator's documentation says before it offers that way back. Until the legacy
 route is removed, a challenge also says to anyone that an address has an active account not yet
 upgraded (a disabled one is answered as an unknown address): the `upgrade` answer is an enumeration
-oracle for those accounts, under the sign-in rate limits. Both end when the route is removed in a
+oracle for those accounts, under the sign-in rate limits. And the enrolment ticket the upgrade's
+answer carries is bound to no secret (section 5.12). All three end when the route is removed in a
 later release (spec §17).
 
 ### 5.6 Offline guessing from a copy
@@ -399,6 +400,19 @@ when id. says the person authenticated (`auth_time`), so a silent sign-in from i
 none. Not counting a sign-in as a step-up would close the window at the cost of a second password
 prompt after every sign-in that keys mailboxes.
 
+The same log may hold the tickets other answers carry, and they are bound the same way. A
+recovery's, in `recover/open`'s answer beside the recovery wrap, finishes only with the recovery
+proof that opened it, sent again (spec §12.4): whoever saw only that answer cannot set a password
+and a recovery code of their own, sign in as the person and lock them out. The upgrade's enrolment
+ticket, in `upgrade/login`'s answer, is bound to no secret (spec §12.7, step 3): whoever saw that
+answer could, within its 10 minutes and before the person's browser uses it (at once, or once the
+person has chosen a new password when the old one cannot be used as it is), enrol the account
+under a password and an account key of their own and hold it for good; the person's browser would
+then see its enrolment refused. Binding the ticket to the password would send the password a
+second time (section 5.5), and a log in front of the server that holds this answer most likely
+holds its request too, with the password in clear, which already gives the account away. A
+residual of the one release the upgrade exists in.
+
 ## 6. Where each defence is tested
 
 | Defence | Vectors | Tests |
@@ -421,26 +435,25 @@ The guarantees that need the server or the console's ceremonies are tested with 
 enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
 `internal/auth/accountkeys_test.go` (the step-up and its window, a step-up as another person or
 another id. identity, a silent sign-in, the current auth key a new recovery code needs, a ticket
-that finishes only with the auth key that earned it, a ticket that is not one refused before any
-hash, a recovery opened while its code is replaced, the upgrade's one-way flag, written-once
-columns, the targets of salts and parameters, the reset and its last-reader guard),
-`internal/auth/users_test.go` (an invitation's address matched byte for byte, never folded),
-`internal/api/accountkeys_test.go`
-(no route answers a wrap to a session alone, nor lets one set a recovery code right after its
-sign-in, the challenge, the ceremonies over REST and their limits) and
-`internal/store/migrate_thirteen_test.go`. The console's half is tested in
-`web/test/account.spec.ts`, with the real derivation and wraps: no password in any request but
-the upgrade's one, and never for an address the browser saw enrol, under any spelling, nor in a
-page that saw it enrol in a browser that refuses storage; the step-up judged by the server's
-clock, not the browser's; a wrap
-that does not open after an accepted auth key, and parameters outside the bounds, refused as
-security errors; every enrolment bound to the seal id the server answered; the re-derivation, the
-reset's target, the two-step password change, recovery, the password before a new recovery code;
-an address remembered as soon as the server accepts a proof, a recovery or a change that fails
-after that included; and the vault, opened only for the person named, wiped at sign-out and when
-no session is valid, and kept for the page when the browser refuses its write. The sign-in form
-never says a password is not sent while the upgrade may send it (`web/test/signIn.page.spec.ts`).
-The rest comes in the next step of phase 3: that the step-up guards every key written, the first
-key of a keyless mailbox included; who may give "read" and supply the key; the deletion of
-grants. The specification's sections 11 and 12 are what those tests hold the server and the
-console to.
+that finishes only with the auth key that earned it, a recovery's only with the recovery proof that
+opened it, a ticket that is not one refused before any hash, a recovery opened while its code is
+replaced, the upgrade's one-way flag, written-once columns, the targets of salts and parameters, the
+reset and its last-reader guard), `internal/auth/users_test.go` (an invitation's address matched
+byte for byte, never folded), `internal/api/accountkeys_test.go` (no route answers a wrap to a
+session alone, nor lets one set a recovery code right after its sign-in, the challenge, the
+ceremonies over REST and their limits) and `internal/store/migrate_thirteen_test.go`. The console's
+half is tested in `web/test/account.spec.ts`, with the real derivation and wraps: no password in any
+request but the upgrade's one, and never for an address the browser saw enrol, under any spelling,
+nor in a page that saw it enrol in a browser that refuses storage; the step-up judged by the
+server's clock, not the browser's; a wrap that does not open after an accepted auth key, and
+parameters outside the bounds, refused as security errors; every enrolment bound to the seal id the
+server answered; the re-derivation, the reset's target, the two-step password change, recovery
+finished with the proof that opened it, the password before a new recovery code; an address
+remembered as soon as the server accepts a proof, a recovery or a change that fails after that
+included, and an enrolment whose answer names another key or whose key the vault refuses; and the
+vault, opened only for the person named, wiped at sign-out and when no session is valid, and kept
+for the page when the browser refuses its write. The sign-in form never says a password is not sent
+while the upgrade may send it (`web/test/signIn.page.spec.ts`). The rest comes in the next step of
+phase 3: that the step-up guards every key written, the first key of a keyless mailbox included; who
+may give "read" and supply the key; the deletion of grants. The specification's sections 11 and 12
+are what those tests hold the server and the console to.

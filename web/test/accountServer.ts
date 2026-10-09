@@ -40,8 +40,12 @@ export interface Stored {
   legacyPassword?: string
 }
 
-/** A ticket: a password change's and a re-derivation's are bound to a session (token) and to the auth key that earned it (authKey). */
-interface Ticket { purpose: 'password' | 'rederive' | 'recover' | 'enrol'; userID: string; token?: string; authKey?: string; salt: string }
+/**
+ * A ticket: a password change's and a re-derivation's are bound to a session
+ * (token) and to the auth key that earned it, a recovery's to the recovery
+ * proof that opened it (proof); the upgrade's enrolment to neither.
+ */
+interface Ticket { purpose: 'password' | 'rederive' | 'recover' | 'enrol'; userID: string; token?: string; proof?: string; salt: string }
 interface Session { userID: string; authenticatedAt: number; ended?: boolean }
 
 export interface Call { path: string; body: Record<string, unknown>; token: string }
@@ -120,7 +124,7 @@ export function accountServer() {
         if (!person || person.legacyPassword || body.auth_key !== person.authKey) return failure('unauthorized', 401)
         const reply = open(person)
         const target = targetOf(person.email)
-        const rederive = person.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: person.id, token: reply.token, authKey: person.authKey, salt: target }) }
+        const rederive = person.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: person.id, token: reply.token, proof: person.authKey, salt: target }) }
         return json({ ...reply, password_wrap: person.passwordWrap, ...(rederive ? { rederive } : {}) })
       }
       case '/v1/auth/signup/open': {
@@ -156,9 +160,11 @@ export function accountServer() {
         if (!person || person.legacyPassword || body.recovery_proof !== person.recoveryProof) return failure('unauthorized', 401)
         return json({
           seal_id: person.sealID, public_key: person.publicKey, recovery_wrap: person.recoveryWrap, salt: targetOf(person.email), kdf: DEFAULT_KDF,
-          ticket: ticket({ purpose: 'recover', userID: person.id, salt: targetOf(person.email) }),
+          ticket: ticket({ purpose: 'recover', userID: person.id, proof: person.recoveryProof, salt: targetOf(person.email) }),
         })
       case '/v1/auth/recover/finish': {
+        // Only with the proof that opened the recovery, and the ticket stays its own otherwise.
+        if (tickets.get(String(body.ticket))?.proof !== body.current_recovery_proof) return failure('not_authorized', 403)
         const t = take(body.ticket, 'recover')
         if (!t) return failure('not_authorized', 403)
         const p = byID(t.userID)
@@ -187,11 +193,11 @@ export function accountServer() {
         return new Response(null, { status: 204 })
       case '/v1/auth/password/begin':
         if (body.current_auth_key !== signedIn.authKey) return failure('not_authorized', 403)
-        return json({ password_wrap: signedIn.passwordWrap, salt: targetOf(signedIn.email), kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'password', userID: signedIn.id, token, authKey: signedIn.authKey, salt: targetOf(signedIn.email) }) })
+        return json({ password_wrap: signedIn.passwordWrap, salt: targetOf(signedIn.email), kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'password', userID: signedIn.id, token, proof: signedIn.authKey, salt: targetOf(signedIn.email) }) })
       case '/v1/auth/password/finish': {
         // The ticket finishes only with the auth key that earned it, and stays its own otherwise.
         const held = tickets.get(String(body.ticket))
-        if (!held || held.token !== token || held.authKey !== body.current_auth_key) return failure('not_authorized', 403)
+        if (!held || held.token !== token || held.proof !== body.current_auth_key) return failure('not_authorized', 403)
         const t = take(body.ticket, 'password', 'rederive')
         if (!t) return failure('not_authorized', 403)
         Object.assign(signedIn, { salt: t.salt, authKey: body.auth_key, passwordWrap: body.password_wrap })

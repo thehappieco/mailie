@@ -150,12 +150,13 @@ presented has no minimum.
   one to prove, and the console does not offer the change (`user.has_password` is `false`).
 - **Recovery.** `POST /v1/auth/recover/open {email, recovery_proof}` answers the recovery wrap, the
   seal id, the public key, the target and a ticket, only to the proof verified in that request;
-  `POST /v1/auth/recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap,
-  recovery_proof}` stores a new password and a new recovery code over the same account key, and
-  ends every session. The console then signs in with the new password; when that sign-in fails
-  (too many attempts, the network), the recovery is done all the same, and the form says so and
-  asks for the new password rather than for another recovery, which would only replace the code
-  it just showed.
+  `POST /v1/auth/recover/finish {ticket, current_recovery_proof, auth_key, kdf, password_wrap,
+  recovery_wrap, recovery_proof}`, with the proof that opened the recovery sent again
+  (`current_recovery_proof`; `recovery_proof` is the new code's), stores a new password and a new
+  recovery code over the same account key, and ends every session. The console then signs in with
+  the new password; when that sign-in fails (too many attempts, the network), the recovery is done
+  all the same, and the form says so and asks for the new password rather than for another
+  recovery, which would only replace the code it just showed.
 - **Replacing the recovery code.** `POST /v1/auth/recovery {current_auth_key, recovery_wrap,
   recovery_proof}` replaces the recovery code of a signed-in person, with their current auth key
   verified in that request under the account's sign-in limit, as `password/begin` is: a session
@@ -171,13 +172,16 @@ presented has no minimum.
   flag alone. `GET /v1/auth/me` reports the session's `authenticated_at` (0: none), so the console
   can ask for the password again before it calls such a route rather than after a refusal.
 - **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
-  minutes, stored as SHA-256 and bound to the person (and, for a password change and a
-  re-derivation, the session and the auth key that earned the ticket, kept as SHA-256: whoever saw
-  only the answer that carried the ticket cannot finish it). A ticket that is not one costs no
-  Argon2id to refuse, and a refused one stays its own. A ceremony that changes the password (a change, a re-derivation, a
-  recovery, a reset, an enrolment) spends every other ticket of the person; replacing the recovery
-  code spends only the recoveries opened with the old code, and a password change or re-derivation
-  in flight goes on, since the password it proved has not changed.
+  minutes, stored as SHA-256 and bound to the person; for a password change and a re-derivation,
+  to the session and the auth key that earned the ticket, and for a recovery to the recovery proof
+  that opened it, each kept as SHA-256: whoever saw only the answer that carried the ticket cannot
+  finish it. The upgrade's enrolment ticket is bound to no secret, a residual of this release
+  ([`key-scheme-threat-model.md`](key-scheme-threat-model.md) section 5.12). A ticket that is not
+  one costs no Argon2id to refuse, and a refused one stays its own. A ceremony that changes the
+  password (a change, a re-derivation, a recovery, a reset, an enrolment) spends every other ticket
+  of the person; replacing the recovery code spends only the recoveries opened with the old code,
+  and a password change or re-derivation in flight goes on, since the password it proved has not
+  changed.
 - **The upgrade, in this release only.** A person who signed up before the key scheme has a
   password hashed on the server and no account key; their challenge adds `upgrade: true`. Their
   browser sends the password in clear **one last time**, `POST /v1/auth/upgrade/login {email,
@@ -247,8 +251,9 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
 - **The upgrade.** The console remembers, per origin and per address as the server stores it, every
   address that enrolled or proved an auth key or a recovery code in this browser, as soon as the
-  server accepts the proof, whatever fails after it (not wiped at sign-out; in the page's own memory
-  too, so a browser that refuses IndexedDB remembers until a reload). For a remembered
+  server accepts the proof or the enrolment, whatever fails after it (an answer that names another
+  key, a vault that refuses the key). The memory is not wiped at sign-out, and the page keeps its
+  own copy too, so a browser that refuses IndexedDB remembers until a reload. For a remembered
   address it refuses the challenge's `upgrade` and sends nothing, and tells the person to tell the
   server's administrator, who can send a reset link if the server was put back from an older copy;
   otherwise the password goes once to `upgrade/login`, and the same password, derived, to
@@ -617,7 +622,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/auth/reset/open` | anyone | `{reset, email}` → `{salt, kdf, seal_id}`, the account's target, which the reset stores, and the person's seal id; nothing changes |
 | `POST /v1/auth/reset` | anyone | `{reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; a new account key, every session and grant of the old one ends |
 | `POST /v1/auth/recover/open` | anyone | `{email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf, ticket}` |
-| `POST /v1/auth/recover/finish` | anyone | `{ticket, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends |
+| `POST /v1/auth/recover/finish` | anyone | `{ticket, current_recovery_proof, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends; `current_recovery_proof` is the proof that opened the recovery (`recover/open`'s), `recovery_proof` the new code's |
 | `POST /v1/auth/upgrade/login` | anyone | `{email, password}` → `{ticket, seal_id, salt, kdf}`; in this release only |
 | `POST /v1/auth/upgrade/enrol` | anyone | `{ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; in this release only |
 | `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension; `user.seal_id`, `user.public_key`, `session.authenticated_at` |

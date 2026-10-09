@@ -195,11 +195,12 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     Object.assign(user, await enrolment(user.password, user.salt, user.seal_id))
     return user
   }
-  const ticketOf = (purpose, user, salt, sessionToken, authKey) => {
+  const ticketOf = (purpose, user, salt, sessionToken, proof) => {
     // As the daemon's: base64url of 32 random bytes; a password change's is
-    // bound to the session and to the auth key that earned it.
+    // bound to the session and to the auth key that earned it, a recovery's
+    // to the recovery proof that opened it.
     const value = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url')
-    tickets.set(value, { purpose, user, salt, token: sessionToken, authKey })
+    tickets.set(value, { purpose, user, salt, token: sessionToken, proof })
     return value
   }
   const takeTicket = (value, ...purposes) => {
@@ -305,9 +306,12 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       if (path === '/v1/auth/recover/open' && method === 'POST') {
         if (!named?.recoveryProof || body().recovery_proof !== named.recoveryProof) return fail(401, 'unauthorized')
         const salt = targetOf(named.email)
-        return json({ seal_id: named.seal_id, public_key: named.publicKey, recovery_wrap: named.recoveryWrap, salt, kdf: KDF, ticket: ticketOf('recover', named, salt) })
+        return json({ seal_id: named.seal_id, public_key: named.publicKey, recovery_wrap: named.recoveryWrap, salt, kdf: KDF, ticket: ticketOf('recover', named, salt, undefined, named.recoveryProof) })
       }
       if (path === '/v1/auth/recover/finish' && method === 'POST') {
+        // Only with the proof that opened the recovery, which stays its own otherwise.
+        const held = tickets.get(body().ticket)
+        if (!held?.proof || held.proof !== body().current_recovery_proof) return fail(403, 'not_authorized')
         const ticket = takeTicket(body().ticket, 'recover')
         if (!ticket) return fail(403, 'not_authorized')
         store(ticket.user, body(), ticket.salt)
@@ -338,7 +342,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       if (path === '/v1/auth/password/finish' && method === 'POST') {
         // Only with the auth key that earned the ticket, which stays its own otherwise.
         const held = tickets.get(body().ticket)
-        if (!held || held.token !== header.replace(/^Bearer /, '') || held.authKey !== body().current_auth_key) return fail(403, 'not_authorized')
+        if (!held || held.token !== header.replace(/^Bearer /, '') || held.proof !== body().current_auth_key) return fail(403, 'not_authorized')
         const ticket = takeTicket(body().ticket, 'password', 'rederive')
         if (!ticket) return fail(403, 'not_authorized')
         store(user, body(), ticket.salt)
