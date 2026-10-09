@@ -70,23 +70,23 @@ failure, never something to create from here. The fixtures of routes the open co
 `test/browser/console.mjs` opens the open console in a real Chromium with every `/v1` call answered
 by an in-memory fake daemon and the Google and Microsoft pages intercepted. It walks sign-in and
 sign-up by invitation with the key scheme (no password ever in a request; the recovery code shown
-once; a password change; the step-up before replacing the recovery code), the one-time upgrade of
-an account made before it (and its refusal for an address that enrolled here), recovery with the
-code and a reset link, an IMAP mailbox, iCloud (a refused password, an app-specific one, a custom
-domain), the loopback and web OAuth flows, a Gmail consent that came back without the mailbox, a
-folder listing the mail server refuses, removal (with the mailbox's id repeated in `confirm`, as the
-daemon requires), the account section and an expired session, on desktop and phone, light and dark,
-then in pt-BR and German; then sync (the consent card, the first sync over the event stream with
-`Last-Event-ID` on every reconnection, Sync now, folders from the index, turning it off, the text
-changing while the page is open, a revoked session), actions in the Account section (a consent to
-an older text is paused), the API keys of the personal workspace and the MCP endpoint at this
-origin (each scope; what a key holds ticked mailbox by mailbox; the key shown once, copied, never
-kept; a mailbox given to it from its sheet, its sends; revoked, and listed among the keys the
-person created in Account), API keys on a server with MCP over HTTP off (no address, no command)
-and on one whose keys do not send (no send scope), and Storage (a mailbox whose account needs
-authorizing again keeps its index; turning sync off reads the figures again). It fails on a page error, a CSP
-violation, horizontal scrolling, any legal link, byline or company name, and any request to the
-message or sending routes, which its fake daemon does not implement.
+once; a password change; the password asked for again to replace the recovery code), the one-time
+upgrade of an account made before it (and its refusal for an address that enrolled here), recovery
+with the code and a reset link, an IMAP mailbox, iCloud (a refused password, an app-specific one, a
+custom domain), the loopback and web OAuth flows, a Gmail consent that came back without the
+mailbox, a folder listing the mail server refuses, removal (with the mailbox's id repeated in
+`confirm`, as the daemon requires), the account section and an expired session, on desktop and
+phone, light and dark, then in pt-BR and German; then sync (the consent card, the first sync over
+the event stream with `Last-Event-ID` on every reconnection, Sync now, folders from the index,
+turning it off, the text changing while the page is open, a revoked session), actions in the Account
+section (a consent to an older text is paused), the API keys of the personal workspace and the MCP
+endpoint at this origin (each scope; what a key holds ticked mailbox by mailbox; the key shown once,
+copied, never kept; a mailbox given to it from its sheet, its sends; revoked, and listed among the
+keys the person created in Account), API keys on a server with MCP over HTTP off (no address, no
+command) and on one whose keys do not send (no send scope), and Storage (a mailbox whose account
+needs authorizing again keeps its index; turning sync off reads the figures again). It fails on a
+page error, a CSP violation, horizontal scrolling, any legal link, byline or company name, and any
+request to the message or sending routes, which its fake daemon does not implement.
 `QA_ONLY=console|keys-scheme|sync|actions|keys|storage` runs one group.
 
 The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and sessions, the key

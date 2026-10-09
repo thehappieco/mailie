@@ -652,10 +652,11 @@ actions when that time is more than 10 minutes old, or later than the server's o
     grant for another person, sections 12.13 and 12.14);
   - writing any row of `mailbox_keys`, with the grants that come with it: linking a mailbox
     (section 12.11), a new key (section 12.12), and the first key of a mailbox that has none
-    (section 12.14);
-  - replacing the recovery code (section 12.5).
+    (section 12.14).
 
-  Changing the password presents the current auth key anyway (section 12.3).
+  Changing the password and replacing the recovery code present the current auth key in their own
+  request instead (sections 12.3 and 12.5), window or not: each sets a secret of the person's, and
+  a recovery code a session could set would be a password it could set (section 12.4).
 - **What sets the time, self-hosted:** a ceremony in which the server verified the person's own
   secret and opened the session (signing up, section 12.1; signing in, 12.2; a reset invitation,
   12.6; the upgrade's enrolment, 12.7), and a step-up; on the server's clock.
@@ -667,7 +668,8 @@ actions when that time is more than 10 minutes old, or later than the server's o
 - **A sign-in counts.** For 10 minutes after a sign-in that sets the time, the session needs no
   further step-up, so that the console can key mailboxes right after a sign-in (section 12.14)
   without asking for the password twice. The cost is stated, not hidden: a session token copied
-  within those 10 minutes can do every action above (threat model, sections 4.5 and 5.12).
+  within those 10 minutes can do every action above (threat model, sections 4.5 and 5.12), and
+  none that sets the person's password or recovery code.
 - **A step-up proves the session's own person, and refreshes that one session only.**
   - Self-hosted: `stepup {auth_key}` on the session. It carries no address: the browser derives
     the auth key under the stored salt and parameters of the session's person (which `challenge`
@@ -689,11 +691,13 @@ actions when that time is more than 10 minutes old, or later than the server's o
     session and checks the identity instead.
 - **Tested with the server's code** (`internal/auth/accountkeys_test.go`,
   `TestAStepUpProvesOnlyTheSessionsOwnPerson`, `TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity`,
-  `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`,
-  `TestReplacingTheRecoveryCodeNeedsAFreshStepUp`; the actions on mailbox keys come with them in
-  the next steps of phase 3): a step-up as another person or
+  `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`; the actions on mailbox keys come
+  with them in the next steps of phase 3): a step-up as another person or
   another id. identity is refused; a silent sign-in does not freshen the time; each action above
-  is refused past the 10 minutes, and accepted within them after a sign-in or a step-up.
+  is refused past the 10 minutes, and accepted within them after a sign-in or a step-up. That a
+  session alone, right after its sign-in, does not replace the recovery code is
+  `TestReplacingTheRecoveryCodeNeedsTheCurrentAuthKey` and, over REST,
+  `TestASessionAloneCannotReplaceTheRecoveryCodeEvenRightAfterSignIn`.
 
 **Why.** In phase 3 the server decides who reads a mailbox from the "read" flag and the existence
 of a grant row at the current epoch, and it cannot tell a real grant from 88 random bytes of the
@@ -784,8 +788,16 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
 
 ### 12.5 Replacing the recovery code
 
-With a fresh step-up: the browser makes a new code and wraps the account key its vault holds under
-it; `recovery {recovery_wrap, recovery_proof}` replaces both.
+1. The browser asks `challenge {email}` for the account's stored salt and parameters, prepares the
+   current password as presented, and derives the current auth key, as a password change's first
+   step does (section 12.3); it makes a new code and wraps the account key its vault holds under
+   it.
+2. `recovery {current_auth_key, recovery_wrap, recovery_proof}` on the session. The server checks
+   the current auth key against the session's person's verifier only, under the sign-in rate
+   limits (a session alone, whatever its step-up time, sets nothing), and, in the transaction that
+   stores the new wrap and proof, that the verifier is still the one it checked. It deletes the
+   person's recoveries opened with the old code (section 12.4), and nothing else: the password is
+   unchanged. The browser shows the new code once.
 
 ### 12.6 The reset invitation, and a lost key
 
@@ -832,11 +844,15 @@ password reaches the server **one last time**:
    person, like an unknown address, gets the plain answer of section 5.3.
 2. The browser keeps a memory of the addresses that have enrolled, keyed by the server's origin
    and `normalise(address)` (section 2), so that every spelling the server takes for one account
-   is one record (IndexedDB, not wiped at sign-out). It records an address after every ceremony in
-   this browser in which the account enrolled or the server accepted a zero-knowledge proof for
-   it: signing up, signing in, changing the password, a recovery, a reset invitation, this
-   upgrade, and a step-up (sections 11, 12.1 to 12.4, 12.6). **If it remembers this address as
-   enrolled, it refuses an `upgrade` answer as a security error and never sends the password.**
+   is one record (IndexedDB, not wiped at sign-out; and the page's own memory, never cleared, so
+   that a browser that refuses IndexedDB still remembers until a reload). It records an address
+   after every ceremony in this browser in which the account enrolled or the server accepted a
+   zero-knowledge proof for it: signing up, signing in, changing the password, a recovery,
+   replacing the recovery code, a reset invitation, this upgrade, and a step-up (sections 11, 12.1
+   to 12.6). **If it remembers this address as enrolled, it refuses an `upgrade` answer and never
+   sends the password**; it tells the person to tell the server's administrator, since a server
+   put back from a copy older than its enrolment asks this honestly, and a reset invitation is
+   then the way back (section 12.6).
    Otherwise it sends `upgrade/login {email, password}` over TLS, as every sign-in did before
    phase 3. The console's tests hold the memory to another spelling of a remembered address
    (another case, surrounding white space) being refused too.
@@ -1172,7 +1188,9 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     answers the new session of a password change, and nothing (`204`) for a sign-in's
     re-derivation.
     `GET /v1/auth/me` names the person's `seal_id` and `public_key` and the session's
-    `authenticated_at`, for the vault (section 7) and for asking for a step-up before a refusal.
+    `authenticated_at`, for the vault (section 7) and for asking for a step-up before a refusal;
+    the console compares that time with the server's clock, as the `Date` of its answers gives
+    it, never with its own.
   - **Tickets** carry the target they were issued with, and a finish stores that target, never one
     recomputed then (an address changed between the two halves would otherwise store a salt the
     browser did not derive with); `kdf` must be both the server's current default and the
@@ -1187,10 +1205,10 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     or the session's person), the account's.
   - **Errors.** A secret that does not verify is `unauthorized` on the public routes (`login`,
     `recover/open`, `upgrade/login`) and `not_authorized` on a session's (`password/begin`,
-    `stepup`), never saying which part failed; a key, wrap, auth key or proof outside its shape is
-    `bad_request`; parameters other than the current default are `conflict` (derive again); a
-    ticket that is not valid, a step-up that is needed or refused, and a reset link that is not
-    valid are `not_authorized`; a reset that would take the last reader is `conflict`.
+    `recovery`, `stepup`), never saying which part failed; a key, wrap, auth key or proof outside
+    its shape is `bad_request`; parameters other than the current default are `conflict` (derive
+    again); a ticket that is not valid, a step-up that is needed or refused, and a reset link that
+    is not valid are `not_authorized`; a reset that would take the last reader is `conflict`.
   - **Verifiers** are hashed in the slots of people's secrets (two at once, the old passwords'),
     not those of API keys, so a burst of sign-ins cannot starve key checks.
   - **The seal id** of a new person is drawn by the code (`NewSealID`): for a sign-up by
@@ -1215,3 +1233,12 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     mark replaces one not yet used. A sign-in through id. whose `auth_time` is after the server's
     now takes now (section 12.8: "at most its own now"); a step-up whose `auth_time` is after now
     is refused (section 11).
+  - **Replacing the recovery code presents the current auth key** (sections 11 and 12.5), where
+    the first text asked for a fresh step-up only. Found in review: a sign-in opens the step-up
+    window by itself, so a session token copied right after one could set a recovery code of its
+    choosing, open a recovery with it and set the password (section 12.4), which the threat model
+    (section 4.5) says a stolen session cannot. The window no longer guards it: the key in the
+    same request does, under the account's sign-in limit, and is checked again in the transaction
+    that stores the code. `recover/open` likewise checks again, in the transaction that issues the
+    ticket, that the proof it verified is still the stored one, so a recovery opened while its
+    code is replaced gets no ticket. No byte changed.

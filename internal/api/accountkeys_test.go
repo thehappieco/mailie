@@ -175,7 +175,7 @@ func TestARecoveryOverRESTKeepsTheAccountKeyAndEndsEverySession(t *testing.T) {
 	}
 }
 
-func TestAStepUpOverRESTGuardsTheRecoveryCodeAndRefreshesOnlyItsSession(t *testing.T) {
+func TestAStepUpOverRESTRefreshesOnlyItsOwnSession(t *testing.T) {
 	clock := &fakeClock{now: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
 	h := newHarnessWith(t, nil, serviceOptions{now: clock.Now})
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
@@ -184,18 +184,12 @@ func TestAStepUpOverRESTGuardsTheRecoveryCodeAndRefreshesOnlyItsSession(t *testi
 	if laptop.AuthenticatedAt != clock.Now().Unix() {
 		t.Fatalf("a sign-in's step-up time is %d, want now", laptop.AuthenticatedAt)
 	}
-	replace := func(token string) int {
-		resp := h.do(t, http.MethodPost, "/v1/auth/recovery", token, jsonOf(t, map[string]any{
-			"recovery_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)), "recovery_proof": secret("replaced"),
-		}))
-		return resp.StatusCode
-	}
 	clock.Advance(auth.StepUpWindow + time.Second)
-	if status := replace(laptop.Token); status != http.StatusForbidden {
-		t.Fatalf("replacing the recovery code past the window: %d, want 403", status)
-	}
 	if resp := h.do(t, http.MethodPost, "/v1/auth/stepup", laptop.Token, jsonOf(t, map[string]any{"auth_key": secret("x")})); resp.StatusCode != http.StatusForbidden {
 		t.Errorf("a step-up with a wrong auth key: %d", resp.StatusCode)
+	}
+	if _, me := meOf(t, h, laptop.Token); !strings.Contains(me, fmt.Sprintf(`"authenticated_at":%d`, laptop.AuthenticatedAt)) {
+		t.Errorf("a refused step-up moved the step-up time: %s", me)
 	}
 	resp := h.do(t, http.MethodPost, "/v1/auth/stepup", laptop.Token, jsonOf(t, map[string]any{"auth_key": authtest.AuthKey}))
 	var stepped struct {
@@ -205,15 +199,71 @@ func TestAStepUpOverRESTGuardsTheRecoveryCodeAndRefreshesOnlyItsSession(t *testi
 	if resp.StatusCode != http.StatusOK || stepped.AuthenticatedAt != clock.Now().Unix() {
 		t.Fatalf("step-up answered %d %+v", resp.StatusCode, stepped)
 	}
-	if status := replace(laptop.Token); status != http.StatusNoContent {
-		t.Errorf("replacing the recovery code after a step-up: %d", status)
+	if _, me := meOf(t, h, laptop.Token); !strings.Contains(me, fmt.Sprintf(`"authenticated_at":%d`, stepped.AuthenticatedAt)) {
+		t.Errorf("the stepped-up session's time: %s", me)
 	}
 	// The other session was not stepped up with it.
-	if status := replace(phone.Token); status != http.StatusForbidden {
-		t.Errorf("the other session replaced the recovery code: %d", status)
-	}
 	if _, me := meOf(t, h, phone.Token); !strings.Contains(me, fmt.Sprintf(`"authenticated_at":%d`, phone.AuthenticatedAt)) {
 		t.Errorf("the other session's step-up time moved: %s", me)
+	}
+}
+
+func TestASessionAloneCannotReplaceTheRecoveryCodeEvenRightAfterSignIn(t *testing.T) {
+	h := newHarness(t, false)
+	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
+	// Ana's session token, copied right after her sign-in: its step-up
+	// window is open, and its holder has neither her password nor her auth
+	// key. A recovery code they could set would be a password they could
+	// set (recover/open, recover/finish).
+	stolen := h.signIn(t, "ana@example.com")
+	theirs := secret("the thief's code")
+	replace := func(token string, fields map[string]any) (int, string) {
+		t.Helper()
+		in := map[string]any{"recovery_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)), "recovery_proof": theirs}
+		for k, v := range fields {
+			in[k] = v
+		}
+		resp := h.do(t, http.MethodPost, "/v1/auth/recovery", token, jsonOf(t, in))
+		if resp.StatusCode < 400 {
+			return resp.StatusCode, ""
+		}
+		code, _ := decodeError(t, resp)
+		return resp.StatusCode, code
+	}
+	for name, c := range map[string]struct {
+		fields map[string]any
+		status int
+		code   string
+	}{
+		"no current auth key":      {nil, http.StatusBadRequest, "bad_request"},
+		"a guessed current key":    {map[string]any{"current_auth_key": secret("guess")}, http.StatusForbidden, "not_authorized"},
+		"the code's own proof":     {map[string]any{"current_auth_key": theirs}, http.StatusForbidden, "not_authorized"},
+		"Ana's recovery proof too": {map[string]any{"current_auth_key": authtest.RecoveryProof}, http.StatusForbidden, "not_authorized"},
+	} {
+		if status, code := replace(stolen.Token, c.fields); status != c.status || code != c.code {
+			t.Errorf("%s: %d %s, want %d %s", name, status, code, c.status, c.code)
+		}
+	}
+	// So the thief's code opens no recovery, and Ana's password and code
+	// still work.
+	resp := h.do(t, http.MethodPost, "/v1/auth/recover/open", "",
+		jsonOf(t, map[string]any{"email": "ana@example.com", "recovery_proof": theirs}))
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the thief's code opened a recovery: %d", resp.StatusCode)
+	}
+	h.signIn(t, "ana@example.com")
+	if status, _ := meOf(t, h, stolen.Token); status != http.StatusOK {
+		t.Errorf("a refused replacement ended the session: %d", status)
+	}
+	// With her current auth key, Ana replaces it.
+	mine := secret("Ana's new code")
+	if status, code := replace(stolen.Token, map[string]any{"current_auth_key": authtest.AuthKey, "recovery_proof": mine}); status != http.StatusNoContent {
+		t.Fatalf("the current auth key could not replace the code: %d %s", status, code)
+	}
+	resp = h.do(t, http.MethodPost, "/v1/auth/recover/open", "",
+		jsonOf(t, map[string]any{"email": "ana@example.com", "recovery_proof": mine}))
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("the new code does not open a recovery: %d", resp.StatusCode)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -414,27 +415,87 @@ func TestARecoveryKeepsTheAccountKeyAndEndsEverySession(t *testing.T) {
 	}
 }
 
-func TestReplacingTheRecoveryCodeNeedsAFreshStepUp(t *testing.T) {
+func TestReplacingTheRecoveryCodeNeedsTheCurrentAuthKey(t *testing.T) {
 	cheapKDF(t)
 	users, db, clock := newUsers(t)
 	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	if _, err := db.Writer().ExecContext(t.Context(), `UPDATE users SET auth_verifier = ? WHERE id = ?`,
+		mustVerifier(t, secretOf("bea")), bea.ID); err != nil {
+		t.Fatal(err)
+	}
+	// Right after the sign-in, the step-up window open: the session alone
+	// still does not do it.
 	sid := sessionOf(t, users, authtest.SignIn(t, users, "ana@example.com"))
-
-	*clock = clock.Add(auth.StepUpWindow + time.Second)
 	before := userRow(t, db, ana.ID)
-	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.Wrap(t), secretOf("new")); !errors.Is(err, auth.ErrStepUpNeeded) {
-		t.Fatalf("an old session replaced the recovery code: %v", err)
+	for name, key := range map[string]string{
+		"a wrong auth key":            secretOf("guess"),
+		"another person's auth key":   secretOf("bea"),
+		"the recovery proof instead":  authtest.RecoveryProof,
+		"the new code's proof itself": secretOf("new"),
+	} {
+		if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, key, authtest.Wrap(t), secretOf("new")); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Errorf("%s replaced the recovery code: %v", name, err)
+		}
+	}
+	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, "", authtest.Wrap(t), secretOf("new")); !errors.Is(err, auth.ErrMalformedSecret) {
+		t.Errorf("no auth key at all: %v", err)
 	}
 	if userRow(t, db, ana.ID) != before {
 		t.Fatal("a refused replacement stored something")
 	}
-	if _, err := users.StepUp(t.Context(), ana.ID, sid, authtest.AuthKey); err != nil {
-		t.Fatal(err)
-	}
-	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.Wrap(t), secretOf("new")); err != nil {
-		t.Fatalf("a stepped-up session could not replace the recovery code: %v", err)
+	// The key proves the password whenever it is presented: no step-up
+	// window is asked for on top of it.
+	*clock = clock.Add(auth.StepUpWindow + time.Hour)
+	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.AuthKey, authtest.Wrap(t), secretOf("new")); err != nil {
+		t.Fatalf("the current auth key could not replace the recovery code: %v", err)
 	}
 	if _, err := users.OpenRecovery(t.Context(), "ana@example.com", secretOf("new")); err != nil {
+		t.Errorf("the new code does not open: %v", err)
+	}
+	if _, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Errorf("the old code still opens: %v", err)
+	}
+	// A session that has ended replaces nothing, whatever it presents.
+	if err := users.EndSession(t.Context(), sid); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.AuthKey, authtest.Wrap(t), secretOf("later")); !errors.Is(err, auth.ErrInvalidSession) {
+		t.Errorf("an ended session replaced the recovery code: %v", err)
+	}
+}
+
+func TestARecoveryOpenedWhileItsCodeIsReplacedGetsNoTicket(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	sid := sessionOf(t, users, authtest.SignIn(t, users, "ana@example.com"))
+	// Whoever holds the old code opens a recovery; while its proof is
+	// hashed, the person replaces the code. No ticket was there to delete
+	// yet: the recovery must not get one after the replacement committed.
+	var once sync.Once
+	var replaced error
+	auth.SetDeriveKeyForTest(t, func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+		if string(password) == authtest.RecoveryProof {
+			once.Do(func() {
+				replaced = users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.AuthKey, authtest.Wrap(t), secretOf("replaced"))
+			})
+		}
+		return argon2.IDKey(password, salt, 1, 8, 1, keyLen)
+	})
+	_, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
+	if replaced != nil {
+		t.Fatalf("the replacement during the hash: %v", replaced)
+	}
+	if !errors.Is(err, auth.ErrBadCredentials) {
+		t.Fatalf("a recovery opened with the code replaced while it was checked: %v", err)
+	}
+	var tickets int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM auth_tickets WHERE user_id = ? AND purpose = 'recover'`,
+		ana.ID).Scan(&tickets); err != nil || tickets != 0 {
+		t.Errorf("recover tickets after the replacement: %d, %v", tickets, err)
+	}
+	if _, err := users.OpenRecovery(t.Context(), "ana@example.com", secretOf("replaced")); err != nil {
 		t.Errorf("the new code does not open: %v", err)
 	}
 }
@@ -456,7 +517,7 @@ func TestReplacingTheRecoveryCodeEndsARecoveryOpenedWithTheOldOne(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.Wrap(t), secretOf("replaced")); err != nil {
+	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.AuthKey, authtest.Wrap(t), secretOf("replaced")); err != nil {
 		t.Fatal(err)
 	}
 	before := userRow(t, db, ana.ID)

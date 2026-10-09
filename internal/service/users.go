@@ -211,11 +211,13 @@ type RecoverFinishRequest struct {
 	RecoveryProof string `json:"recovery_proof"`
 }
 
-// RecoveryRequest replaces the recovery code: the account key wrapped under
-// a new one, and its proof.
+// RecoveryRequest replaces the recovery code: the current auth key, which
+// proves the password in this request, the account key wrapped under a new
+// code, and that code's proof.
 type RecoveryRequest struct {
-	RecoveryWrap  string `json:"recovery_wrap"`
-	RecoveryProof string `json:"recovery_proof"`
+	CurrentAuthKey string `json:"current_auth_key"`
+	RecoveryWrap   string `json:"recovery_wrap"`
+	RecoveryProof  string `json:"recovery_proof"`
 }
 
 // StepUpRequest proves the session's own person again: the auth key derived
@@ -460,8 +462,9 @@ func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) 
 	return nil
 }
 
-// ReplaceRecovery replaces the caller's recovery code, with a step-up within
-// the last ten minutes.
+// ReplaceRecovery replaces the caller's recovery code, with their current
+// auth key verified in the same request: a session alone, even right after
+// its sign-in, sets no secret of its person's.
 func (s *Service) ReplaceRecovery(ctx context.Context, p Principal, req RecoveryRequest) error {
 	if err := s.personalSecrets(p); err != nil {
 		return err
@@ -470,8 +473,10 @@ func (s *Service) ReplaceRecovery(ctx context.Context, p Principal, req Recovery
 	if err != nil {
 		return err
 	}
-	if err := s.users.ReplaceRecovery(ctx, p.UserID, p.SessionID, wrap, req.RecoveryProof); err != nil {
-		return fromUsers(err, "replacing the recovery code failed")
+	if err := s.users.ReplaceRecovery(ctx, p.UserID, p.SessionID, req.CurrentAuthKey, wrap, req.RecoveryProof); err != nil {
+		// not_authorized, as a password change's: the session is fine, the
+		// proof offered for this one operation is not.
+		return fromSecret(err, CodeNotAuthorized, "the current password is wrong", "replacing the recovery code failed")
 	}
 	return nil
 }

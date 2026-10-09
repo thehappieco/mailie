@@ -8,9 +8,10 @@
 //
 // It walks what a self-hosted server's console offers: signing in and up
 // with a password the server never receives (docs/key-scheme.md: the auth
-// key, the recovery code shown once, the step-up, recovery, a reset link and
-// the one-time upgrade), connecting mailboxes, sync, the person's account and permissions, API keys
-// and the MCP endpoint, and Storage. The console names no company and links
+// key, the recovery code shown once and replaced with the password,
+// recovery, a reset link and the one-time upgrade), connecting mailboxes,
+// sync, the person's account and permissions, API keys and the MCP endpoint,
+// and Storage. The console names no company and links
 // to no policy; there is no mail to read or send, and the pass fails on any
 // request to the message or sending routes.
 //
@@ -414,20 +415,24 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.getByText('Password changed.', { exact: false }).first().waitFor()
       assert.equal(sent(daemon, PASSWORD) || sent(daemon, 'another-password-2'), false, 'a password change sends auth keys only')
 
-      // --- the recovery code, after a step-up --------------------------------
-      // The server holds the session's proof of the password older than ten
-      // minutes: replacing the code asks for the password again first.
-      for (const session of daemon.sessions.values()) session.authenticated_at = now() - 3600
+      // --- the recovery code, with the password every time ------------------
+      // A session alone, however recent its sign-in, does not replace the
+      // code: the password is asked for, and proved in the same request.
       await page.getByRole('button', { name: /Recovery code Replace the code/ }).click()
-      const stepUp = page.getByRole('dialog', { name: 'Enter your password again' })
-      await stepUp.waitFor()
-      await stepUp.getByLabel('Password', { exact: true }).fill('another-password-2')
-      await shot('step-up')
-      await stepUp.getByRole('button', { name: 'Continue' }).click()
+      const replaceCode = page.getByRole('dialog', { name: 'Replace recovery code' })
+      await replaceCode.waitFor()
+      await replaceCode.getByLabel('Password', { exact: true }).fill('not the password at all')
+      await replaceCode.getByRole('button', { name: 'Make a new code' }).click()
+      await replaceCode.getByRole('alert').filter({ hasText: 'The password is incorrect.' }).waitFor()
+      assert.equal(daemon.calls.recovery, 0, 'a wrong password replaces nothing')
+      await replaceCode.getByLabel('Password', { exact: true }).fill('another-password-2')
+      await shot('recovery-code-password')
+      await replaceCode.getByRole('button', { name: 'Make a new code' }).click()
       await saveRecoveryCode(page)
       await page.getByText('Recovery code replaced.', { exact: false }).first().waitFor()
-      assert.equal(daemon.calls.stepUp, 1, 'one step-up')
-      assert.equal(daemon.calls.recovery, 1, 'the code was replaced once, after it')
+      assert.equal(daemon.calls.stepUp, 0, 'no step-up: the password went with the request')
+      assert.equal(daemon.calls.recovery, 1, 'the code was replaced once')
+      assert.equal(sent(daemon, 'another-password-2'), false, 'replacing the code sends the auth key only')
       // A new token for the same person keeps the accounts section as it was.
       await openSection('Mailboxes')
       assert.equal(await page.locator('.account-card').count(), 5, 'a password change does not empty the accounts section')
@@ -650,7 +655,7 @@ for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] :
     const enrolled = { ...ana }
     Object.assign(ana, { authKey: undefined, password: PASSWORD })
     await signIn(PASSWORD)
-    await page.getByRole('alert').filter({ hasText: 'This server answered something Mailie does not trust' }).waitFor()
+    await page.getByRole('alert').filter({ hasText: 'This browser already set up this account so that your password never leaves it' }).waitFor()
     assert.equal(daemon.calls.upgrade, 1, 'never a second password in clear for an address that enrolled here')
     await shot('upgrade-refused')
     Object.assign(ana, enrolled)

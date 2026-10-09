@@ -4,10 +4,13 @@
 //
 // security: the server answered something this browser will not use, such
 // as a wrap that does not open for the auth key it just accepted, a seal id
-// or public key outside their spelling, KDF parameters or a salt outside the
-// platform's bounds, or an upgrade asked of an address this browser saw
-// enrol. Nothing more is sent, and the person is told to contact whoever
-// runs the server.
+// or public key outside their spelling, or KDF parameters or a salt outside
+// the platform's bounds. Nothing more is sent, and the person is told to
+// contact whoever runs the server.
+// upgrade_refused: the server asked for the password in clear (the upgrade,
+// docs/key-scheme.md section 12.7) of an address this browser saw enrol.
+// Nothing is sent. A server put back from a copy older than the key scheme
+// does this honestly too, and the person's way back is then a reset link.
 // password_too_short, password_too_long, password_invalid: the platform's
 // preparation refused a new password, before anything was derived.
 // password_rejected: it refused a password being presented.
@@ -16,8 +19,8 @@
 // likely).
 // no_account_key: this browser does not hold the person's account key (they
 // signed in elsewhere, or it refuses storage); signing in again here keeps it.
-export type CeremonyCode = 'security' | 'password_too_short' | 'password_too_long' | 'password_invalid' | 'password_rejected'
-  | 'recovery_code' | 'derive_failed' | 'no_account_key'
+export type CeremonyCode = 'security' | 'upgrade_refused' | 'password_too_short' | 'password_too_long' | 'password_invalid'
+  | 'password_rejected' | 'recovery_code' | 'derive_failed' | 'no_account_key'
 
 export class CeremonyError extends Error {
   constructor(readonly code: CeremonyCode) {

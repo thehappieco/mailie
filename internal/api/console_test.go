@@ -140,7 +140,7 @@ func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/auth/logout", ""},
 		{http.MethodPost, "/v1/auth/password/begin", `{"current_auth_key":"a"}`},
 		{http.MethodPost, "/v1/auth/password/finish", `{"ticket":"a"}`},
-		{http.MethodPost, "/v1/auth/recovery", `{"recovery_proof":"a"}`},
+		{http.MethodPost, "/v1/auth/recovery", `{"current_auth_key":"a","recovery_proof":"a"}`},
 		{http.MethodPost, "/v1/auth/stepup", `{"auth_key":"a"}`},
 		{http.MethodPut, "/v1/auth/profile", `{"name":"x"}`},
 	} {

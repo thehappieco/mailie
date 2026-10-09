@@ -64,7 +64,8 @@ function specific(failure: Failure): string | undefined {
       if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
       return undefined
     case 'recovery-code':
-      if (code === 'not_authorized') return t('This needs your password again. Enter it, and try again.')
+      if (code === 'not_authorized') return t('The password is incorrect.')
+      if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
       return undefined
     case 'restore':
       return t('Could not restore your session right now. Check your connection and try again.')
@@ -278,6 +279,7 @@ function general(failure: Failure): string {
     case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'security': return t('This server answered something Mailie does not trust, so nothing more was sent. Tell the administrator of this server.')
+    case 'upgrade_refused': return t('This browser already set up this account so that your password never leaves it, but the server asked for it, so nothing was sent. Tell the administrator of this server: if they restored it from an older copy, they can send you a reset link.')
     case 'password_too_short': return t('The new password needs at least {count} characters.', { count: MIN_PASSWORD })
     case 'password_too_long': return t('The password can have at most 256 characters.')
     case 'password_invalid':

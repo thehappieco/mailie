@@ -574,8 +574,12 @@ func (u *Users) OpenRecovery(ctx context.Context, email, proof string) (Recovery
 	}
 	out := Recovery{Target: target, SealID: r.user.SealID, PublicKey: r.user.PublicKey, RecoveryWrap: r.rwrap}
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		// Disabled, or gone, while the hash ran: as a wrong proof.
-		if err := requireEnrolledTx(ctx, tx, r.user.ID); err != nil {
+		// Read again under the write lock, as a sign-in does: disabled, or
+		// gone, while the hash ran, or the code replaced (ReplaceRecovery),
+		// is a wrong proof. A ticket issued after the replacement committed
+		// would answer the wrap of a code its person has put aside, and no
+		// replacement would be left to delete it.
+		if err := requireVerifierTx(ctx, tx, r.user.ID, recoveryVerifier, r.recovery); err != nil {
 			return asRefusal(err, ErrBadCredentials)
 		}
 		var err error
@@ -654,16 +658,21 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 
 // ReplaceRecovery replaces the recovery wrap and its proof of a session's
 // person, who made a new recovery code over the account key their browser
-// holds. It needs a fresh step-up (docs/key-scheme.md section 12.5). Every
-// recovery the person has open, opened with the old code, ends with it.
-func (u *Users) ReplaceRecovery(ctx context.Context, userID, sessionID string, recoveryWrap []byte, proof string) error {
+// holds, with the current auth key verified in the same request
+// (docs/key-scheme.md section 12.5). A session alone, however recent its
+// sign-in, does not: a recovery code it could set would be a password it
+// could set, through a recovery. A key that does not verify is
+// ErrBadCredentials after the same work, and changes nothing. Every recovery
+// the person has open, opened with the old code, ends with it.
+func (u *Users) ReplaceRecovery(ctx context.Context, userID, sessionID, currentAuthKey string, recoveryWrap []byte, proof string) error {
 	if err := checkSecretText(proof); err != nil {
 		return err
 	}
 	if err := checkWraps(recoveryWrap); err != nil {
 		return err
 	}
-	if err := u.RequireStepUp(ctx, userID, sessionID); err != nil {
+	r, err := u.proveSecret(ctx, userID, currentAuthKey, func(r enrolledRow) string { return r.verifier })
+	if err != nil {
 		return err
 	}
 	verifier, err := hashPersonSecret(ctx, proof)
@@ -671,13 +680,13 @@ func (u *Users) ReplaceRecovery(ctx context.Context, userID, sessionID string, r
 		return err
 	}
 	return u.store.Write(ctx, func(tx *sql.Tx) error {
-		// Asked again where it counts: the window may have closed, or the
-		// session ended, while the hash ran.
-		if err := requireStepUpTx(ctx, tx, userID, sessionID, u.now()); err != nil {
+		// Asked again where it counts: the session may have ended, or the
+		// password changed, while the hashes ran.
+		if err := requireLiveSessionTx(ctx, tx, userID, sessionID, u.now()); err != nil {
 			return err
 		}
-		if err := requireEnrolledTx(ctx, tx, userID); err != nil {
-			return err
+		if err := requireVerifierTx(ctx, tx, userID, authVerifier, r.verifier); err != nil {
+			return asRefusal(err, ErrBadCredentials)
 		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE users SET recovery_wrap = ?, recovery_verifier = ?, updated_at = ? WHERE id = ?`,
@@ -1325,6 +1334,42 @@ func requireEnrolledTx(ctx context.Context, tx *sql.Tx, userID string) error {
 	case err != nil:
 		return fmt.Errorf("auth: read the person: %w", err)
 	case status != userActive || enrolled == 0:
+		return ErrBadCredentials
+	}
+	return nil
+}
+
+// The verifiers requireVerifierTx compares.
+const (
+	authVerifier     = "auth_verifier"
+	recoveryVerifier = "recovery_verifier"
+)
+
+// requireVerifierTx refuses, with ErrBadCredentials, a person who is not
+// active and enrolled, or whose verifier (authVerifier or recoveryVerifier)
+// is no longer the one a ceremony just checked a secret against: what a
+// ceremony reads again under the write lock, since the person may have been
+// disabled, or that secret replaced, while its hash ran.
+func requireVerifierTx(ctx context.Context, tx *sql.Tx, userID, which, checked string) error {
+	var (
+		status, authV, recoveryV string
+		enrolled                 int64
+	)
+	err := tx.QueryRowContext(ctx, `SELECT status, zk_enrolled_at, auth_verifier, recovery_verifier FROM users WHERE id = ?`,
+		userID).Scan(&status, &enrolled, &authV, &recoveryV)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrUserNotFound
+	case err != nil:
+		return fmt.Errorf("auth: read the person: %w", err)
+	case status != userActive || enrolled == 0:
+		return ErrBadCredentials
+	}
+	current := authV
+	if which == recoveryVerifier {
+		current = recoveryV
+	}
+	if checked == "" || current != checked {
 		return ErrBadCredentials
 	}
 	return nil

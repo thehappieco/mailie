@@ -141,19 +141,20 @@ allow; ask for their grants and platform wrap, which open nothing without their 
 
 **Can, if it was copied within 10 minutes of the session's sign-in or last step-up** (spec §11):
 also what the step-up guards, until those 10 minutes end: give an accomplice "read" with 88 bytes
-of the right shape, write a mailbox key, the first key of a mailbox that has none included (a key
-it chose, which a team mailbox keeps for good, spec §12.12 and §12.14), and replace the recovery
-code. On the hosted service the 10 minutes are counted from id.'s `auth_time`, so a silent sign-in
-opens none (section 5.12).
+of the right shape, and write a mailbox key, the first key of a mailbox that has none included (a
+key it chose, which a team mailbox keeps for good, spec §12.12 and §12.14). On the hosted service
+the 10 minutes are counted from id.'s `auth_time`, so a silent sign-in opens none (section 5.12).
 
 **Cannot:** obtain the password wrap (it is answered only to an auth key verified in the same
-request, spec §5.7) or the recovery wrap; change the password (it needs the current auth key);
-after those 10 minutes, do any of what the step-up guards (spec §11). A step-up proves the
-session's own person: the self-hosted one checks an auth key against that person's verifier only,
-and the hosted one refuses an id. sign-in whose issuer and `sub` are not the identity linked to
-that person, so signing in as oneself does not step up someone else's session. Without the
-step-up, a stolen owner's session could give an accomplice "read" with 88 bytes of the right
-shape, because in phase 3 the server checks that a grant exists, not that it opens.
+request, spec §5.7) or the recovery wrap; change the password or replace the recovery code, even
+within those 10 minutes (each needs the current auth key in its own request, spec §12.3 and
+§12.5: a recovery code a session could set would be a password it could set, through a recovery,
+spec §12.4); after those 10 minutes, do any of what the step-up guards (spec §11). A step-up proves
+the session's own person: the self-hosted one checks an auth key against that person's verifier
+only, and the hosted one refuses an id. sign-in whose issuer and `sub` are not the identity linked
+to that person, so signing in as oneself does not step up someone else's session. Without the
+step-up, a stolen owner's session could give an accomplice "read" with 88 bytes of the right shape,
+because in phase 3 the server checks that a grant exists, not that it opens.
 
 ### 4.6 A stolen device
 
@@ -292,15 +293,20 @@ index); phase 4 must decide whether browsers remember a mailbox's keys across ep
 
 A person who signed up before phase 3 sends their password in clear to the server one last time
 (spec §12.7). A browser remembers every address that enrolled or proved a zero-knowledge secret in
-it (signing up, signing in, a password change, a recovery, a reset, the upgrade, a step-up), keyed
-by the server's origin and the address as the server stores it, so another spelling of the address
-is the same record; it never sends that address's password again. A browser that did not (a new
-device, cleared storage, a browser only ever used before phase 3) cannot tell an account that needs
-the upgrade from a server that pretends it does, and would send it. Until the legacy route is
-removed, a challenge also says to anyone that an address has an active account not yet upgraded
-(a disabled one is answered as an unknown address): the `upgrade` answer is an enumeration oracle
-for those accounts, under the sign-in rate limits. Both end when the route is removed in a later
-release (spec §17).
+it (signing up, signing in, a password change, a recovery, a new recovery code, a reset, the
+upgrade, a step-up), keyed by the server's origin and the address as the server stores it, so
+another spelling of the address is the same record; it never sends that address's password again.
+A page whose browser refuses storage remembers in its own memory until it is reloaded. A browser
+that did not see the enrolment (a new device, cleared storage, a page reloaded in a browser that
+refuses storage, a browser only ever used before phase 3) cannot tell an account that needs the
+upgrade from a server that pretends it does, and would send it. The memory also refuses an honest
+server: one put back from a copy older than phase 3 and upgraded again asks everyone who enrolled
+in between for the upgrade, and their browsers refuse; each then needs a reset invitation (spec
+§12.6), which the operator's documentation says before it offers that way back. Until the legacy
+route is removed, a challenge also says to anyone that an address has an active account not yet
+upgraded (a disabled one is answered as an unknown address): the `upgrade` answer is an enumeration
+oracle for those accounts, under the sign-in rate limits. Both end when the route is removed in a
+later release (spec §17).
 
 ### 5.6 Offline guessing from a copy
 
@@ -363,8 +369,10 @@ deleted browser record is not erased from disk until the browser compacts its st
 A sign-in counts as a step-up for 10 minutes (spec §11), so that the console can key mailboxes
 right after it. A session token copied within those 10 minutes (from a logging proxy that saw the
 sign-in's answer, or a device taken right after a sign-in) can do what the step-up guards: give an
-accomplice "read" with grant-shaped bytes, write a mailbox key of its choosing, the first key of a
-keyless mailbox included, and replace the recovery code. On a self-hosted server the window opens
+accomplice "read" with grant-shaped bytes, and write a mailbox key of its choosing, the first key of
+a keyless mailbox included. It cannot set the person's secrets: changing the password and replacing
+the recovery code each take the current auth key in their own request, since either would hand the
+holder the account for good, past the session's end. On a self-hosted server the window opens
 at a sign-in or a step-up that verified the person's secret; on the hosted service it opens only
 when id. says the person authenticated (`auth_time`), so a silent sign-in from id.'s session opens
 none. Not counting a sign-in as a step-up would close the window at the cost of a second password
@@ -391,15 +399,19 @@ prompt after every sign-in that keys mailboxes.
 The guarantees that need the server or the console's ceremonies are tested with the code that
 enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
 `internal/auth/accountkeys_test.go` (the step-up and its window, a step-up as another person or
-another id. identity, a silent sign-in, the upgrade's one-way flag, written-once columns, the
-targets of salts and parameters, the reset and its last-reader guard), `internal/api/accountkeys_test.go`
-(no route answers a wrap to a session alone, the challenge, the ceremonies over REST and their
-limits) and `internal/store/migrate_thirteen_test.go`. The console's half is tested in
+another id. identity, a silent sign-in, the current auth key a new recovery code needs, a recovery
+opened while its code is replaced, the upgrade's one-way flag, written-once columns, the targets of
+salts and parameters, the reset and its last-reader guard), `internal/api/accountkeys_test.go`
+(no route answers a wrap to a session alone, nor lets one set a recovery code right after its
+sign-in, the challenge, the ceremonies over REST and their limits) and
+`internal/store/migrate_thirteen_test.go`. The console's half is tested in
 `web/test/account.spec.ts`, with the real derivation and wraps: no password in any request but
-the upgrade's one, and never for an address the browser saw enrol, under any spelling; a wrap
+the upgrade's one, and never for an address the browser saw enrol, under any spelling, nor in a
+page that saw it enrol in a browser that refuses storage; the step-up judged by the server's
+clock, not the browser's; a wrap
 that does not open after an accepted auth key, and parameters outside the bounds, refused as
 security errors; every enrolment bound to the seal id the server answered; the re-derivation, the
-reset's target, the two-step password change, recovery, the step-up before a new recovery code;
+reset's target, the two-step password change, recovery, the password before a new recovery code;
 and the vault, opened only for the person named, wiped at sign-out and when no session is valid.
 The rest comes in the next step of phase 3: that the step-up guards every key written, the first
 key of a keyless mailbox included; who may give "read" and supply the key; the deletion of

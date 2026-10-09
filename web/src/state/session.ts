@@ -17,6 +17,7 @@ import { ApiError, checked } from '../api/http'
 import { enrolled, isSessionReply, type SessionReply, type User } from '../api/types'
 import { edition } from '../edition'
 import { uuid } from '../ui/uuid'
+import { serverNow } from './connection'
 import { forgetHeldAccountKey, holdsAccountKey, wipeAccountKey } from './accountVault'
 import { clearLocalSession, loadLocalSession, localSessionWasCleared, observeLocalSession, saveLocalSession, type BrowserLogin } from './sessionVault'
 
@@ -281,8 +282,14 @@ export function markKeyed(userID: string): void {
 /** The server's ten minutes (docs/key-scheme.md section 11), less a margin for the clocks and the request. */
 const STEP_UP_FRESH_S = 10 * 60 - 30
 
-/** freshStepUp says whether the session proved its person recently enough for what the step-up guards, by this browser's clock. */
-export function freshStepUp(now = Date.now()): boolean {
+/**
+ * freshStepUp says whether the session proved its person recently enough for
+ * what the step-up guards. The step-up time is the server's, so it is judged
+ * by the server's clock (state/connection.ts serverNow), never this
+ * browser's: a browser whose clock runs ahead would otherwise find a step-up
+ * it just made already old, and ask for the password again and again.
+ */
+export function freshStepUp(now = serverNow()): boolean {
   const at = session.authenticatedAt
   return at > 0 && now / 1000 - at < STEP_UP_FRESH_S
 }

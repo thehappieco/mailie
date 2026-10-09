@@ -683,9 +683,15 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   [A forgotten password](#a-forgotten-password).
 - **Sessions open at the upgrade stay open,** with no step-up time. The person enrols at their next
   sign-in; until then the console asks them to sign in again for what needs their account key
-  (changing the password or the recovery code). In this release the step-up guards only replacing
-  the recovery code; giving access asks for it once mailboxes have keys, the key scheme's next
-  step. Changing the password ends every session, as before.
+  (changing the password or the recovery code, each of which asks for the password again). Nothing
+  asks for a step-up in this release; giving access asks for one once mailboxes have keys, the key
+  scheme's next step. Changing the password ends every session, as before.
+- **Going back from this release costs those who signed in on it.** Each browser that enrolled
+  someone remembers it, and never sends that person's password in clear again. If you go back
+  (below) and later upgrade again, the restored database asks everyone who signed in on this
+  version for the upgrade once more, and their browsers refuse, telling them to ask you: give each
+  a reset invitation ([A forgotten password](#a-forgotten-password)), or have them clear the site's
+  data in their browser. Restoring a backup from before this version onto it does the same.
 - **The API.** `POST /v1/auth/login` takes `{email, auth_key}`; `POST /v1/auth/signup` an
   enrolment; `POST /v1/auth/password` is gone, replaced by `/v1/auth/password/begin` and
   `/finish`; new routes answer the challenge, recovery, step-up, the reset invitation and the
@@ -739,6 +745,11 @@ sudo systemctl start mailie
 
 The copy is the database in clear apart from the credentials: delete it, and the kept version, once
 the new version has proved itself.
+
+Going back from the release that brings the key scheme (migration 0013) puts back the old password
+hashes, and the browsers of the people who signed in on it remember that they enrolled: when you
+upgrade again, those people cannot sign in until you give each a reset invitation
+([A forgotten password](#a-forgotten-password)) or they clear the site's data in their browser.
 
 ## A forgotten password
 

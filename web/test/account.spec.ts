@@ -167,7 +167,7 @@ describe('the upgrade of an account made before the key scheme', { timeout: 30_0
     server.people.set(ANA, legacy())
     const next = await load()
     for (const spelling of [ANA, '  ANA@example.TEST\t']) {
-      await expect(next.signIn(spelling, 'my old password')).rejects.toMatchObject({ code: 'security' })
+      await expect(next.signIn(spelling, 'my old password')).rejects.toMatchObject({ code: 'upgrade_refused' })
     }
     expect(server.paths().filter(path => path === '/v1/auth/upgrade/login')).toHaveLength(1)
   })
@@ -178,8 +178,24 @@ describe('the upgrade of an account made before the key scheme', { timeout: 30_0
     server.people.set(ANA, stored(atTarget, targetOf(ANA)))
     await s.signIn(ANA, PASSWORD)
     server.people.set(ANA, legacy())
-    await expect(s.signIn(ANA, PASSWORD)).rejects.toMatchObject({ code: 'security' })
+    await expect(s.signIn(ANA, PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
     expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
+  })
+
+  it('remembers an address that enrolled in this page even when the browser refuses storage', async () => {
+    // A browser that refuses site data: IndexedDB throws, and nothing this page learns outlives it.
+    vi.stubGlobal('indexedDB', { open() { throw new Error('storage refused') } })
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await s.signIn(ANA, PASSWORD)
+    expect(s.session.notRemembered).toBe(true)
+    await s.signOut()
+    // Signing in again in the same page, to a server that now says upgrade.
+    server.people.set(ANA, legacy())
+    await expect(s.signIn(' ana@EXAMPLE.test', PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
+    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
+    expect(sentPassword(server)).toBe(false)
   })
 
   it('asks for a new password when the old one cannot be used as it is', async () => {
@@ -267,35 +283,79 @@ describe('a signed-in person’s password and recovery code', { timeout: 40_000 
     expect(s.session.phase).toBe('ready')
   })
 
-  it('asks for the password again once the step-up is old, and replaces the recovery code with the key this browser keeps', async () => {
+  it('replaces the recovery code over the key this browser keeps, with the current password proved in the same request', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    // However recent the sign-in, the session alone is not enough: the password is asked for every time.
+    await s.signIn(ANA, PASSWORD)
+    const before = { ...server.people.get(ANA)! }
+    await expect(s.replaceRecoveryCode('not my password at all')).rejects.toMatchObject({ code: 'not_authorized' })
+    expect(server.people.get(ANA)!.recoveryProof).toBe(before.recoveryProof)
+    expect(s.recoveryCode.code).toBe('')
+    await s.replaceRecoveryCode(PASSWORD)
+    expect(server.paths().slice(2)).toEqual(['/v1/auth/challenge', '/v1/auth/recovery', '/v1/auth/challenge', '/v1/auth/recovery'])
+    const body = server.calls.at(-1)!.body
+    expect(Object.keys(body).sort()).toEqual(['current_auth_key', 'recovery_proof', 'recovery_wrap'])
+    expect(body.current_auth_key).toBe(atTarget.enrolment.auth_key)
+    expect(sentPassword(server)).toBe(false)
+    const person = server.people.get(ANA)!
+    expect(s.recoveryCode.reason).toBe('replaced')
+    expect(sentPassword(server, s.recoveryCode.code)).toBe(false)
+    const keys = await recoveryKeys(s.recoveryCode.code)
+    expect(keys.proof).toBe(person.recoveryProof)
+    expect(same(await openWrap('recovery', keys.key, person.recoveryWrap, ANA_SEAL, person.publicKey!), atTarget.accountKey)).toBe(true)
+    // The password and the account key did not change.
+    expect(person.authKey).toBe(before.authKey)
+    expect(person.publicKey).toBe(before.publicKey)
+  })
+
+  it('says so when this browser does not hold the account key to wrap again, before deriving or sending anything', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await s.signIn(ANA, PASSWORD)
+    await s.vault.wipeAccountKey()
+    const asked = server.calls.length
+    await expect(s.replaceRecoveryCode(PASSWORD)).rejects.toMatchObject({ code: 'no_account_key' })
+    expect(s.session.keyed).toBe(false)
+    expect(server.calls).toHaveLength(asked)
+  })
+})
+
+describe('the step-up', { timeout: 30_000 }, () => {
+  it('proves the session’s own person with the password, and refreshes the step-up time', async () => {
     const s = await load()
     const server = accountServer()
     server.people.set(ANA, stored(atTarget, targetOf(ANA)))
     server.clock.authenticatedAt = () => now() - 11 * 60
     await s.signIn(ANA, PASSWORD)
     expect(s.freshStepUp()).toBe(false)
-    await expect(s.replaceRecoveryCode()).rejects.toMatchObject({ code: 'not_authorized' })
     await expect(s.stepUp('not my password at all')).rejects.toMatchObject({ code: 'not_authorized' })
     expect(s.freshStepUp()).toBe(false)
     await s.stepUp(PASSWORD)
     expect(s.freshStepUp()).toBe(true)
-    await s.replaceRecoveryCode()
-    const person = server.people.get(ANA)!
-    expect(s.recoveryCode.reason).toBe('replaced')
-    const keys = await recoveryKeys(s.recoveryCode.code)
-    expect(keys.proof).toBe(person.recoveryProof)
-    expect(same(await openWrap('recovery', keys.key, person.recoveryWrap, ANA_SEAL, person.publicKey!), atTarget.accountKey)).toBe(true)
+    expect(sentPassword(server)).toBe(false)
   })
 
-  it('says so when this browser does not hold the account key to wrap again', async () => {
-    const s = await load()
+  it('judges the step-up by the server’s clock, never this browser’s', async () => {
+    // The browser's clock fifteen minutes ahead of the server's: a step-up made now is fresh.
+    const ahead = await load()
     const server = accountServer()
     server.people.set(ANA, stored(atTarget, targetOf(ANA)))
-    await s.signIn(ANA, PASSWORD)
-    await s.vault.wipeAccountKey()
-    await expect(s.replaceRecoveryCode()).rejects.toMatchObject({ code: 'no_account_key' })
-    expect(s.session.keyed).toBe(false)
-    expect(server.paths()).not.toContain('/v1/auth/recovery')
+    server.clock.skew = 15 * 60
+    await ahead.signIn(ANA, PASSWORD)
+    expect(ahead.freshStepUp()).toBe(true)
+    await ahead.stepUp(PASSWORD)
+    expect(ahead.freshStepUp()).toBe(true)
+
+    // Fifteen minutes behind it: one eleven minutes old by the server's clock is not.
+    const behind = await load()
+    server.clock.skew = -15 * 60
+    server.clock.authenticatedAt = () => now() + 15 * 60 - 11 * 60
+    await behind.signOut()
+    await behind.signIn(ANA, PASSWORD)
+    expect(behind.freshStepUp()).toBe(false)
   })
 })
 

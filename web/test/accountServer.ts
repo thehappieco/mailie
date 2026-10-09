@@ -52,8 +52,14 @@ export function accountServer() {
   const invites = new Map<string, { email: string; sealID: string; used: boolean }>()
   const resets = new Map<string, string>()
   const calls: Call[] = []
-  /** What the server answers next for a step-up time of a new session; a spec moves it to make one old. */
-  const clock = { authenticatedAt: () => now() }
+  /**
+   * The server's clock: skew is how many seconds it is behind this
+   * browser's (negative: ahead), which every answer's Date says; and what it
+   * answers next for a step-up time of a new session, which a spec moves to
+   * make one old.
+   */
+  const clock = { skew: 0, authenticatedAt: () => serverNow() }
+  const serverNow = () => now() - clock.skew
 
   const userOf = (p: Stored): User => ({
     id: p.id, email: p.email, name: p.name, role: 'member', created_at: 1_790_000_000, has_password: true, seal_id: p.sealID,
@@ -81,7 +87,12 @@ export function accountServer() {
     })
   }
 
-  const fetch = serve(({ path, body: raw, token }) => {
+  const fetch = serve(request => {
+    const response = answer(request)
+    response.headers.set('Date', new Date(serverNow() * 1000).toUTCString())
+    return response
+  })
+  function answer({ path, body: raw, token }: { path: string; body?: unknown; token: string }): Response {
     const body = (raw ?? {}) as Record<string, unknown>
     calls.push({ path, body, token })
     const session = sessions.get(token)
@@ -176,15 +187,17 @@ export function accountServer() {
       }
       case '/v1/auth/stepup':
         if (body.auth_key !== signedIn.authKey) return failure('not_authorized', 403)
-        session!.authenticatedAt = now()
+        session!.authenticatedAt = serverNow()
         return json({ authenticated_at: session!.authenticatedAt })
       case '/v1/auth/recovery':
-        if (now() - session!.authenticatedAt > 600) return failure('not_authorized', 403)
+        // The current auth key, in this request: the session alone sets no secret.
+        if (body.current_auth_key !== signedIn.authKey) return failure('not_authorized', 403)
         Object.assign(signedIn, { recoveryWrap: body.recovery_wrap, recoveryProof: body.recovery_proof })
+        for (const [id, t] of tickets) if (t.purpose === 'recover' && t.userID === signedIn.id) tickets.delete(id)
         return new Response(null, { status: 204 })
     }
     return failure('not_found', 404)
-  })
+  }
 
   return {
     people, sessions, calls, fetch, clock,

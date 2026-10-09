@@ -24,3 +24,23 @@ export function markReachable(reachable: boolean): void {
 export function setStream(phase: StreamPhase): void {
   if (server.stream !== phase) server.stream = phase
 }
+
+/**
+ * How far the daemon's clock is from this browser's, in milliseconds, as the
+ * Date of its latest answer says (to the second, plus the trip): what turns
+ * a time the server wrote, such as a session's step-up time, into one this
+ * page can compare with now. Zero until an answer carries a Date.
+ */
+let serverOffsetMS = 0
+
+/** noteServerDate takes the daemon's clock from an answer's Date header; one it cannot read changes nothing. */
+export function noteServerDate(header: string | null, localNow = Date.now()): void {
+  if (!header) return
+  const at = Date.parse(header)
+  if (Number.isFinite(at)) serverOffsetMS = at - localNow
+}
+
+/** serverNow is now by the daemon's clock, in milliseconds, as far as this page can tell. */
+export function serverNow(localNow = Date.now()): number {
+  return localNow + serverOffsetMS
+}

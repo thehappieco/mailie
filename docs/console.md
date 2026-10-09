@@ -150,20 +150,27 @@ presented has no minimum.
   seal id, the public key, the target and a ticket, only to the proof verified in that request;
   `POST /v1/auth/recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap,
   recovery_proof}` stores a new password and a new recovery code over the same account key, and
-  ends every session. `POST /v1/auth/recovery {recovery_wrap, recovery_proof}` replaces the
-  recovery code of a signed-in person, with a fresh step-up.
-- **Step-up.** Replacing the recovery code needs the person to have proved their own secret within
-  the last ten minutes: a sign-in, a sign-up, an enrolment, or `POST /v1/auth/stepup {auth_key}`,
-  which checks the auth key of the session's own person only and refreshes that one session
-  (`{authenticated_at}`). It is the one route that asks in this release. Giving "read" with a
-  grant, supplying a mailbox's key and writing mailbox keys will ask the same once mailboxes have
-  keys, the next step of the key scheme ([`key-scheme.md`](key-scheme.md) section 11); until then
-  access is given as before, with the flag alone. `GET /v1/auth/me` reports the session's
-  `authenticated_at` (0: none), so the console asks for the password again before it calls such a
-  route rather than after a refusal.
+  ends every session.
+- **Replacing the recovery code.** `POST /v1/auth/recovery {current_auth_key, recovery_wrap,
+  recovery_proof}` replaces the recovery code of a signed-in person, with their current auth key
+  verified in that request under the account's sign-in limit, as `password/begin` is: a session
+  alone, however recent its sign-in, sets no secret of its person's, since a recovery code it could
+  set would be a password it could set, through a recovery. A wrong key is `403`
+  (`not_authorized`) and changes nothing. It ends the recoveries opened with the old code.
+- **Step-up.** `POST /v1/auth/stepup {auth_key}` proves the session's own person again: it checks
+  the auth key of that person only and refreshes that one session's step-up time
+  (`{authenticated_at}`), as a sign-in, a sign-up or an enrolment sets it. No route asks for it in
+  this release. Giving "read" with a grant, supplying a mailbox's key and writing mailbox keys will
+  ask for one within the last ten minutes once mailboxes have keys, the next step of the key scheme
+  ([`key-scheme.md`](key-scheme.md) section 11); until then access is given as before, with the
+  flag alone. `GET /v1/auth/me` reports the session's `authenticated_at` (0: none), so the console
+  can ask for the password again before it calls such a route rather than after a refusal.
 - **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
   minutes, stored as SHA-256 and bound to the person (and, for a password change and a
-  re-derivation, the session); any ceremony that changes a person's secrets spends the others.
+  re-derivation, the session). A ceremony that changes the password (a change, a re-derivation, a
+  recovery, a reset, an enrolment) spends every other ticket of the person; replacing the recovery
+  code spends only the recoveries opened with the old code, and a password change or re-derivation
+  in flight goes on, since the password it proved has not changed.
 - **The upgrade, in this release only.** A person who signed up before the key scheme has a
   password hashed on the server and no account key; their challenge adds `upgrade: true`. Their
   browser sends the password in clear **one last time**, `POST /v1/auth/upgrade/login {email,
@@ -217,16 +224,22 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **The recovery code is shown once**, after a sign-up, a recovery, a reset link and the upgrade,
   and after the person replaces theirs, in a dialog that stays until they say they saved it
   (`components/RecoveryCodeDialog.vue`); nothing keeps it once it closes.
-- **The step-up prompt** (`components/StepUpDialog.vue`): before replacing the recovery code, the
-  console compares the session's `authenticated_at` with its own clock and asks for the password
-  again when it is older than ten minutes (less a margin); a `403` from the server, whose clock
-  decides, asks too, and the request is made again once.
+- **A new recovery code** (`components/AccountPanel.vue`) asks for the password every time,
+  derives the current auth key under the account's own salt and parameters, and sends it with the
+  new wrap and proof; the password is never sent.
+- **The step-up prompt** (`components/StepUpDialog.vue`) is for what the step-up will guard in the
+  next step; nothing asks for it yet. The console judges the session's `authenticated_at` by the
+  server's clock, as the `Date` of the server's answers gives it (`state/connection.ts`), never by
+  its own: a browser whose clock runs ahead would otherwise find a step-up it just made already
+  old.
 - **The links.** An invitation (`#invite=…&email=…`) starts with `signup/open`; a reset link
   (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
 - **The upgrade.** The console remembers, per origin and per address as the server stores it, every
-  address that enrolled or proved an auth key in this browser (not wiped at sign-out). For a
-  remembered address it refuses the challenge's `upgrade` as a security error and sends nothing;
+  address that enrolled or proved an auth key in this browser (not wiped at sign-out; in the page's
+  own memory too, so a browser that refuses IndexedDB remembers until a reload). For a remembered
+  address it refuses the challenge's `upgrade` and sends nothing, and tells the person to tell the
+  server's administrator, who can send a reset link if the server was put back from an older copy;
   otherwise the password goes once to `upgrade/login`, and the same password, derived, to
   `upgrade/enrol`. A password the platform's preparation refuses as it is asks for a new one. A
   person still signed in from before the upgrade (no `user.public_key`) is asked to sign in again
@@ -598,7 +611,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password/begin` | session | `{current_auth_key}` → `{password_wrap, salt, kdf, ticket}` |
 | `POST /v1/auth/password/finish` | session | `{ticket, auth_key, kdf, password_wrap}` → a new `Session` (a change: every other session ends), or 204 (a sign-in's re-derivation) |
-| `POST /v1/auth/recovery` | session, stepped up | `{recovery_wrap, recovery_proof}` → 204 |
+| `POST /v1/auth/recovery` | session, current auth key | `{current_auth_key, recovery_wrap, recovery_proof}` → 204 |
 | `POST /v1/auth/stepup` | session | `{auth_key}` → `{authenticated_at}` |
 | `PUT /v1/auth/profile` | session | `{name}` → `User` |
 | `POST /v1/users/invites` | instance owner signed in, or unrestricted instance admin key | `{email, role?}` → `Invite` |

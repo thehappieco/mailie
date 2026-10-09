@@ -8,7 +8,7 @@
 // nothing it said: the console maps codes to its own translated text.
 
 import { endpoint } from './endpoint'
-import { markReachable } from '../state/connection'
+import { markReachable, noteServerDate } from '../state/connection'
 
 /** The seven codes the daemon answers with (internal/service/errors.go). */
 export const serverCodes = ['unauthorized', 'not_authorized', 'bad_request', 'not_found', 'conflict', 'rate_limited', 'internal'] as const
@@ -154,6 +154,8 @@ async function send(path: string, options: RequestOptions, accept: string): Prom
   }
   const gateway = response.status === 502 || response.status === 503 || response.status === 504
   markReachable(!gateway)
+  // A proxy with no daemon behind it answers with its own clock.
+  if (!gateway) noteServerDate(response.headers.get('Date'))
   return response
 }
 

@@ -198,8 +198,8 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   keeps as a hash, and keeps each person's **account key**, a key pair it made, under the password
   and under a recovery code shown once at sign-up; the server holds the public half and the wraps it
   cannot open. Signing in, changing the password and recovering it are the key scheme's ceremonies
-  ([`docs/key-scheme.md`](docs/key-scheme.md)); replacing the recovery code needs the password
-  proved within the last ten minutes, as giving access will once mailboxes have keys. The account
+  ([`docs/key-scheme.md`](docs/key-scheme.md)); replacing the recovery code, like changing the
+  password, needs the password proved in the same request, never a session alone. The account
   keys protect no mail yet: the index stays in clear on the server, as before
   ([`docs/key-scheme-threat-model.md`](docs/key-scheme-threat-model.md)).
 - People are invited (`mailserver user invite --email X [--role owner|member]`), never sign up on

@@ -102,7 +102,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			{"the upgrade's enrolment", http.MethodPost, "/v1/auth/upgrade/enrol", "",
 				jsonOf(t, enrolment(t, secret("upgraded"), secret("upgraded code"), map[string]any{"ticket": upgrade.Ticket}))},
 			{"replace the recovery code", http.MethodPost, "/v1/auth/recovery", owner,
-				jsonOf(t, map[string]any{"recovery_wrap": wrap(), "recovery_proof": secret("replaced")})},
+				jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey, "recovery_wrap": wrap(), "recovery_proof": secret("replaced")})},
 			{"begin a password change", http.MethodPost, "/v1/auth/password/begin", owner,
 				jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey})},
 			{"finish a password change", http.MethodPost, "/v1/auth/password/finish", owner, jsonOf(t, map[string]any{

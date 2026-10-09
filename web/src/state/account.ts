@@ -68,7 +68,7 @@ export interface PendingUpgrade { email: string; ticket: UpgradeTicket }
  *
  * An address the challenge says has not upgraded is upgraded here (section
  * 12.7), unless this browser remembers it enrolled: then nothing is sent, and
- * it is a security error. It answers a PendingUpgrade when the old password
+ * it is upgrade_refused. It answers a PendingUpgrade when the old password
  * cannot be used as it is, and null once signed in.
  */
 export async function signIn(email: string, password: string): Promise<PendingUpgrade | null> {
@@ -106,7 +106,7 @@ async function rederive(reply: LoginReply, password: string, accountKey: Uint8Ar
 async function upgrade(email: string, password: string): Promise<PendingUpgrade | null> {
   // The one password in clear, never to an address this browser saw enrol:
   // a server that says otherwise is not believed.
-  if (await rememberedEnrolled(email)) throw new CeremonyError('security')
+  if (await rememberedEnrolled(email)) throw new CeremonyError('upgrade_refused')
   const ticket = await auth.upgradeLogin(email, password)
   try {
     await finishEnrolment(email, password, ticket, 'presented')
@@ -266,12 +266,15 @@ export async function stepUp(password: string): Promise<void> {
 
 /**
  * replaceRecoveryCode makes a new recovery code over the account key this
- * browser kept, and replaces the old one (section 12.5); the server needs a
- * step-up within the last ten minutes, which the caller asks for first
- * (freshStepUp). Without the key here (another browser's sign-in, storage
- * refused), it is no_account_key: signing in again on this browser keeps it.
+ * browser kept, and replaces the old one (section 12.5), with the current
+ * password proved in the same request: derived under the account's own salt
+ * and parameters, as a password change's first step, and sent as its auth
+ * key only. A session alone, however recent its sign-in, replaces nothing.
+ * Without the key here (another browser's sign-in, storage refused), it is
+ * no_account_key, before anything is derived or sent: signing in again on
+ * this browser keeps it.
  */
-export async function replaceRecoveryCode(): Promise<void> {
+export async function replaceRecoveryCode(password: string): Promise<void> {
   const user = enrolledPerson()
   const accountKey = await accountKeyOf(user.seal_id, user.public_key)
   if (!accountKey) {
@@ -280,10 +283,15 @@ export async function replaceRecoveryCode(): Promise<void> {
   }
   try {
     markKeyed(user.id)
+    const answer = await auth.challenge(user.email)
+    const keys = await deriveKeys(password, answer, 'presented')
     const recovery = await newRecovery(accountKey, user.seal_id)
-    await authorized(token => auth.replaceRecovery(token, { recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof }))
+    await authorized(token => auth.replaceRecovery(token, {
+      current_auth_key: keys.authKey, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof,
+    }))
     showRecoveryCode(recovery.code, 'replaced')
   } finally {
     accountKey.fill(0)
   }
+  await rememberEnrolled(user.email)
 }

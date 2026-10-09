@@ -92,8 +92,8 @@ export async function finishPasswordChange(token: string, input: { ticket: strin
   return reply === undefined ? undefined : checked(reply, isSessionReply)
 }
 
-/** Replaces the recovery code; needs a step-up within the last ten minutes. */
-export async function replaceRecovery(token: string, input: { recovery_wrap: string; recovery_proof: string }): Promise<void> {
+/** Replaces the recovery code, with the current auth key: never for the session alone. */
+export async function replaceRecovery(token: string, input: { current_auth_key: string; recovery_wrap: string; recovery_proof: string }): Promise<void> {
   await request<void>('/v1/auth/recovery', { token, body: input })
 }
 

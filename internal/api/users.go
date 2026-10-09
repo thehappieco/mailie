@@ -183,7 +183,9 @@ func (h *Handler) replaceRecovery(q *request) {
 		q.fail(err)
 		return
 	}
-	if q.principal.IsSession() && !q.allowSignIn("") {
+	// It proves the current password, a guess at it like any sign-in's, so
+	// it spends the account's budget as password/begin does.
+	if q.principal.IsSession() && !q.allowSignIn("user:"+q.principal.UserID) {
 		return
 	}
 	if err := h.Service.ReplaceRecovery(q.ctx(), q.principal, req); err != nil {

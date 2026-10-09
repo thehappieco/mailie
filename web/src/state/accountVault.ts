@@ -17,7 +17,9 @@
 // origin and the address as the server stores it (normaliseAddress), so
 // every spelling of one account is one record, and it is not wiped at
 // sign-out: it says nothing secret, and forgetting it would reopen the door
-// it closes.
+// it closes. This page also keeps its own copy, which nothing clears, so a
+// browser that refuses IndexedDB still never sends the password of an
+// address it saw enrol for as long as the page lives.
 
 import { toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
 import { KeySchemeError, normaliseAddress, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope } from '../crypto/mailie'
@@ -142,18 +144,31 @@ export function forgetHeldAccountKey(): void {
 
 const enrolledKey = (email: string) => `${currentOrigin()}|${normaliseAddress(email)}`
 
+/**
+ * The addresses this page saw enrol, as enrolledKey spells them: what it
+ * remembers even when IndexedDB is refused. Never cleared, not at sign-out
+ * either; a reload starts it again from what IndexedDB kept.
+ */
+const enrolledHere = new Set<string>()
+
 /** rememberEnrolled records that an address enrolled, or proved a zero-knowledge secret, in this browser (section 12.7). */
 export async function rememberEnrolled(email: string): Promise<void> {
+  let key: string
+  try { key = enrolledKey(email) } catch { return }
+  enrolledHere.add(key)
   try {
-    await transaction<void>(enrolledStore, 'readwrite', (store, done) => { store.put(Date.now(), enrolledKey(email)); done(undefined) })
-  } catch { /* A browser that refuses storage cannot remember; the server still refuses the password of an enrolled account. */ }
+    await transaction<void>(enrolledStore, 'readwrite', (store, done) => { store.put(Date.now(), key); done(undefined) })
+  } catch { /* A browser that refuses storage remembers in this page only (enrolledHere) until a reload. */ }
 }
 
 /** rememberedEnrolled says whether this browser saw the address enrol, in any of the spellings the server takes for it. */
 export async function rememberedEnrolled(email: string): Promise<boolean> {
+  let key: string
+  try { key = enrolledKey(email) } catch { return false }
+  if (enrolledHere.has(key)) return true
   try {
     return await transaction<boolean>(enrolledStore, 'readonly', (store, done) => {
-      const request = store.get(enrolledKey(email))
+      const request = store.get(key)
       request.onsuccess = () => done(request.result !== undefined)
     })
   } catch {

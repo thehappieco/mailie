@@ -11,19 +11,19 @@
 //
 // The password never leaves the browser (docs/key-scheme.md): changing it is
 // two steps behind one form (state/account.ts), and replacing the recovery
-// code wraps the account key this browser keeps under a new one, after a
-// step-up when the session's last proof of the password is more than ten
-// minutes old. A person who signed up before the key scheme and has not
-// signed in since has no account key yet: they are asked to sign in again,
-// which upgrades their account.
+// code wraps the account key this browser keeps under a new one, with the
+// password asked for every time and proved in the same request: a session
+// alone, however recent its sign-in, sets neither secret. A person who
+// signed up before the key scheme and has not signed in since has no account
+// key yet: they are asked to sign in again, which upgrades their account.
 import { computed, provide, ref, shallowRef, watch } from 'vue'
 import { MIN_PASSWORD } from '../api/auth'
-import { ApiError } from '../api/http'
 import { enrolled, hasPassword } from '../api/types'
 import { edition } from '../edition'
+import { CeremonyError } from '../crypto/errors'
 import { changePassword, replaceRecoveryCode } from '../state/account'
 import { failure, type Failure } from '../state/failure'
-import { freshStepUp, session, signOut, updateProfile } from '../state/session'
+import { session, signOut, updateProfile } from '../state/session'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
 import { dayStamp, initials } from '../ui/format'
@@ -33,7 +33,6 @@ import { accountNotice } from './accountNotice'
 import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
 import PasswordInput from './PasswordInput.vue'
-import StepUpDialog from './StepUpDialog.vue'
 
 const name = ref('')
 const profileBusy = ref(false)
@@ -106,33 +105,43 @@ async function rotatePassword(event: SubmitEvent) {
   }
 }
 
-/** Replacing the recovery code: after a step-up when the session's is older than ten minutes. */
+/** Replacing the recovery code: the password every time, never sent, and a new code shown once. */
+const recoveryOpen = ref(false)
+const recoveryPassword = ref('')
 const recoveryBusy = ref(false)
 const recoveryProblem = ref<Failure | null>(null)
-const steppingUp = ref(false)
 
-/** steppedUp: the person just proved their password, so a refusal now is no stale step-up and is said as it is. */
-async function replaceCode(steppedUp = false) {
+function openRecovery() {
   if (recoveryBusy.value) return
   recoveryProblem.value = null; done.value = null
-  // Without the key here nothing would be asked for: say so at once (no_account_key).
-  if (session.keyed && !freshStepUp()) { steppingUp.value = true; return }
+  // Without the key here there is nothing to wrap: say so at once, before a password is typed.
+  if (!session.keyed) { recoveryProblem.value = failure('recovery-code', new CeremonyError('no_account_key')); return }
+  recoveryPassword.value = ''
+  recoveryOpen.value = true
+}
+function closeRecovery() {
+  if (recoveryBusy.value) return
+  recoveryOpen.value = false
+  recoveryPassword.value = ''
+}
+async function replaceCode(event: SubmitEvent) {
+  if (recoveryBusy.value) return
+  // Password managers can fill without an input event; read the named field.
+  recoveryPassword.value = String(new FormData(event.currentTarget as HTMLFormElement).get('password') ?? '')
   recoveryBusy.value = true
+  recoveryProblem.value = null
   try {
-    await replaceRecoveryCode()
+    await replaceRecoveryCode(recoveryPassword.value)
+    recoveryBusy.value = false
+    closeRecovery()
     done.value = () => t('Recovery code replaced. The old one no longer works.')
     announce(t('Recovery code replaced. The old one no longer works.'))
   } catch (error) {
-    // The server's clock found the step-up older than this browser's did: ask again.
-    if (error instanceof ApiError && error.code === 'not_authorized' && !steppedUp) { session.authenticatedAt = 0; steppingUp.value = true }
-    else recoveryProblem.value = failure('recovery-code', error)
+    recoveryProblem.value = failure('recovery-code', error)
   } finally {
     recoveryBusy.value = false
+    recoveryPassword.value = ''
   }
-}
-function afterStepUp() {
-  steppingUp.value = false
-  void replaceCode(true)
 }
 
 const everywhere = ref(false)
@@ -170,12 +179,12 @@ async function leave(all: boolean) {
         <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Change the password you sign in with') }}</small></span>
         <AppIcon name="chevron-right" :size="18" />
       </button>
-      <button v-if="withPassword" class="security-summary" type="button" :disabled="recoveryBusy" @click="replaceCode()">
+      <button v-if="withPassword" class="security-summary" type="button" aria-haspopup="dialog" @click="openRecovery">
         <span class="summary-icon"><AppIcon name="key" :size="22" /></span>
-        <span class="summary-text"><strong>{{ t('Recovery code') }}</strong><small>{{ recoveryBusy ? t('Making a new recovery code…') : t('Replace the code that lets you back in if you forget your password') }}</small></span>
+        <span class="summary-text"><strong>{{ t('Recovery code') }}</strong><small>{{ t('Replace the code that lets you back in if you forget your password') }}</small></span>
         <AppIcon name="chevron-right" :size="18" />
       </button>
-      <p v-if="recoveryProblem" class="alert" role="alert">{{ describe(recoveryProblem) }}</p>
+      <p v-if="recoveryProblem && !recoveryOpen" class="alert" role="alert">{{ describe(recoveryProblem) }}</p>
       <div v-if="notUpgraded" class="security-summary upgrade">
         <span class="summary-icon"><AppIcon name="lock" :size="22" /></span>
         <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Sign in again to finish setting up your account: your password then stays in your browser, and you get a recovery code. Until then you cannot change either.') }}</small></span>
@@ -202,7 +211,16 @@ async function leave(all: boolean) {
       <slot />
     </div>
 
-    <StepUpDialog v-if="steppingUp" @done="afterStepUp" @close="steppingUp = false" />
+    <ConsoleDialog v-if="recoveryOpen && withPassword" :title="t('Replace recovery code')" :busy="recoveryBusy" @close="closeRecovery">
+      <form class="form-stack" name="mailie-recovery-code" method="post" autocomplete="on" @submit.prevent="replaceCode">
+        <p class="dim">{{ t('Enter your password to make a new recovery code. It is processed here and never sent, and your old code stops working.') }}</p>
+        <p v-if="recoveryProblem" class="alert" role="alert">{{ describe(recoveryProblem) }}</p>
+        <!-- For password managers: the account the password belongs to. -->
+        <input name="username" :value="session.user?.email" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />
+        <div class="password-field"><label for="recovery-code-password">{{ t('Password') }}</label><PasswordInput id="recovery-code-password" v-model="recoveryPassword" name="password" required autocomplete="current-password" :disabled="recoveryBusy" /></div>
+        <div class="dialog-actions"><button class="ghost" type="button" :disabled="recoveryBusy" @click="closeRecovery">{{ t('Cancel') }}</button><button class="primary" type="submit" :disabled="recoveryBusy">{{ recoveryBusy ? t('Making a new recovery code…') : t('Make a new code') }}</button></div>
+      </form>
+    </ConsoleDialog>
     <ConsoleDialog v-if="passwordOpen && withPassword" :title="t('Change password')" :busy="passwordBusy" @close="closePassword">
       <p v-if="passwordProblem || mismatch" class="alert" role="alert">{{ mismatch ? t('The new passwords do not match.') : passwordProblem ? describe(passwordProblem) : '' }}</p>
       <form class="form-stack" name="mailie-password-change" method="post" autocomplete="on" @submit.prevent="rotatePassword">

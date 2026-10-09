@@ -350,7 +350,8 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         return json({ authenticated_at: session.authenticated_at })
       }
       if (path === '/v1/auth/recovery' && method === 'POST') {
-        if (now() - session.authenticated_at > 600) return fail(403, 'not_authorized')
+        // The current auth key, in this request: the session alone sets no secret.
+        if (!user.authKey || body().current_auth_key !== user.authKey) return fail(403, 'not_authorized')
         calls.recovery++
         Object.assign(user, { recoveryWrap: body().recovery_wrap, recoveryProof: body().recovery_proof })
         return route.fulfill({ status: 204 })
