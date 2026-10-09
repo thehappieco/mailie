@@ -244,14 +244,18 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	fs := flag.NewFlagSet("rewrap-credentials", flag.ContinueOnError)
 	newRoot := fs.Bool("new-send-hash-root", false,
 		"replace a send-hash root no configured key opens (its key is lost) with a new one, and re-seal nothing")
+	newSaltKey := fs.Bool("new-salt-key", false,
+		"replace a salt key no configured key opens (its key is lost) with a new one, and re-seal nothing; "+
+			"each account moves to its salt under the new key at its next sign-in")
 	kmsKeyLost := fs.Bool("kms-key-lost", false,
-		"with --new-send-hash-root: also replace a root of the configured KMS key's kind that it does not unwrap, "+
-			"which the KMS key and MAIL_ENV that sealed it would still open; only when that key is lost for good")
+		"with --new-send-hash-root or --new-salt-key: also replace one of the configured KMS key's kind that it "+
+			"does not unwrap, which the KMS key and MAIL_ENV that sealed it would still open; only when that key "+
+			"is lost for good")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *kmsKeyLost && !*newRoot {
-		return errors.New("rewrap-credentials: --kms-key-lost goes only with --new-send-hash-root")
+	if *kmsKeyLost && !*newRoot && !*newSaltKey {
+		return errors.New("rewrap-credentials: --kms-key-lost goes only with --new-send-hash-root or --new-salt-key")
 	}
 
 	sealer, err := app.NewSealer(ctx, cfg)
@@ -264,14 +268,21 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	}
 	defer release()
 
-	if *newRoot {
-		if err := replaceSendHashRoot(ctx, db, sealer, *kmsKeyLost); err != nil {
+	if *newRoot || *newSaltKey {
+		if err := replaceSealedSecrets(ctx, db, sealer, *newRoot, *newSaltKey, *kmsKeyLost); err != nil {
 			return app.ExplainSealed(err, sealer)
 		}
-		fmt.Println("replaced the send-hash root, sealed with", sealer.Describe())
-		fmt.Fprintln(os.Stderr, "A send repeated from before the replacement is not recognised: one without "+
-			"an idempotency key is sent again. Credentials no configured key opens stay as they are: "+
-			"authorize their mailboxes again.")
+		if *newRoot {
+			fmt.Println("replaced the send-hash root, sealed with", sealer.Describe())
+			fmt.Fprintln(os.Stderr, "A send repeated from before the replacement is not recognised: one without "+
+				"an idempotency key is sent again. Credentials no configured key opens stay as they are: "+
+				"authorize their mailboxes again.")
+		}
+		if *newSaltKey {
+			fmt.Println("replaced the salt key, sealed with", sealer.Describe())
+			fmt.Fprintln(os.Stderr, "Every account keeps signing in with the salt it has, and moves to its salt "+
+				"under the new key at its next sign-in.")
+		}
 		return nil
 	}
 
@@ -280,12 +291,15 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 		return app.ExplainSealed(err, sealer)
 	}
 	switch {
-	case done.credentials == 0 && !done.root:
-		fmt.Println("every credential and the send-hash root are already sealed with", sealer.Describe())
+	case done.credentials == 0 && !done.root && !done.saltKey:
+		fmt.Println("every credential, the send-hash root and the salt key are already sealed with", sealer.Describe())
 	default:
 		what := plural(done.credentials, "credential")
 		if done.root {
 			what += " and the send-hash root"
+		}
+		if done.saltKey {
+			what += " and the salt key"
 		}
 		fmt.Printf("re-sealed %s with %s\n", what, sealer.Describe())
 		switch {

@@ -1152,7 +1152,7 @@ func TestAMemberCannotMintAnAccountThroughATeamInvite(t *testing.T) {
 	}
 	signUp := func(code string) (service.Session, error) {
 		return f.svc.SignUp(ctx, service.SignUpRequest{Invite: code, Email: "alice@example.com", Name: "Alice",
-			Password: "long enough password"}, "test")
+			Enrolment: wireEnrolment(t)}, "test")
 	}
 
 	owner, err := f.svc.CreateInvite(ctx, admin(), service.InviteRequest{Email: "alice@example.com", Role: "owner"})

@@ -76,11 +76,21 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		return obj
 	}
 
+	// Signing in (docs/key-scheme.md section 12): the challenge for an
+	// address, which is the same with or without an account, and the
+	// sign-in with the auth key derived under it.
+	capture("challenge", http.StatusOK, http.MethodPost, "/v1/auth/challenge", "", `{"email":"ana@example.com"}`)
 	session := capture("session", http.StatusOK, http.MethodPost, "/v1/auth/login", "",
-		fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password))
+		fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey))
 	token, _ := session["token"].(string)
 
 	capture("me", http.StatusOK, http.MethodGet, "/v1/auth/me", token, "")
+	capture("stepup", http.StatusOK, http.MethodPost, "/v1/auth/stepup", token,
+		fmt.Sprintf(`{"auth_key":%q}`, authtest.AuthKey))
+	capture("password_begin", http.StatusOK, http.MethodPost, "/v1/auth/password/begin", token,
+		fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey))
+	capture("recover_open", http.StatusOK, http.MethodPost, "/v1/auth/recover/open", "",
+		fmt.Sprintf(`{"email":"ana@example.com","recovery_proof":%q}`, authtest.RecoveryProof))
 	capture("user", http.StatusOK, http.MethodPut, "/v1/auth/profile", token, `{"name":"Ana Lima"}`)
 	capture("providers", http.StatusOK, http.MethodGet, "/v1/providers", token, "")
 	capture("mcp", http.StatusOK, http.MethodGet, "/v1/me/mcp", token, "")
@@ -319,8 +329,8 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	signedUp := capture("", http.StatusCreated, http.MethodPost, "/v1/auth/signup", "",
-		fmt.Sprintf(`{"invite":%q,"email":"bea@example.com","name":"Bea Lima","password":%q}`,
-			fragment.Get("invite"), authtest.Password))
+		jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
+			map[string]any{"invite": fragment.Get("invite"), "email": "bea@example.com", "name": "Bea Lima"})))
 	beaID, _ := signedUp["user"].(map[string]any)["id"].(string)
 	carol := authtest.NewUser(t, h.store, "carol@example.com", auth.RoleMember)
 	toCarol := capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
@@ -369,6 +379,23 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		t.Fatal(err)
 	}
 	capture("me_without_password", http.StatusOK, http.MethodGet, "/v1/auth/me", external, "")
+
+	// An account not at its target (its address changed, say) is named the
+	// target to derive under again, with the ticket that finishes it.
+	dee := authtest.NewUser(t, h.store, "dee@example.com", auth.RoleMember)
+	if _, err := h.store.Writer().ExecContext(t.Context(), `UPDATE users SET kdf_salt = ? WHERE id = ?`,
+		bytes.Repeat([]byte{0x44}, 16), dee.ID); err != nil {
+		t.Fatal(err)
+	}
+	capture("login_rederive", http.StatusOK, http.MethodPost, "/v1/auth/login", "",
+		fmt.Sprintf(`{"email":"dee@example.com","auth_key":%q}`, authtest.AuthKey))
+	// A person who signed up before the key scheme: the challenge says so,
+	// in this release, and their password in clear proves a ticket to enrol
+	// with, never a session.
+	authtest.NewLegacyUser(t, h.store, "eve@example.com", auth.RoleMember)
+	capture("challenge_upgrade", http.StatusOK, http.MethodPost, "/v1/auth/challenge", "", `{"email":"eve@example.com"}`)
+	capture("upgrade_ticket", http.StatusOK, http.MethodPost, "/v1/auth/upgrade/login", "",
+		fmt.Sprintf(`{"email":"eve@example.com","password":%q}`, authtest.Password))
 }
 
 // capsWithoutUIDPlus is a server with MOVE and without UIDPLUS: a move
@@ -504,6 +531,18 @@ func (n *normalizer) normalizeString(key, v string, inFlow bool) string {
 	switch key {
 	case "token":
 		return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 32))
+	case "ticket":
+		return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x54}, 32))
+	case "seal_id":
+		return n.fixed("seal", v, func(i int) string { return fmt.Sprintf("00000000-0000-4000-8000-%012x", i) })
+	case "public_key":
+		// A fresh key per person: stable, and still 32 bytes of base64url.
+		return n.fixed("public_key", v, func(i int) string {
+			return base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{byte(0x30 + i)}, 32))
+		})
+	case "password_wrap", "recovery_wrap":
+		// 61 bytes starting with 0x02, as every wrap.
+		return base64.RawURLEncoding.EncodeToString(append([]byte{0x02}, bytes.Repeat([]byte{0x57}, 60)...))
 	case "state":
 		if inFlow {
 			return "fixed-oauth-state"
@@ -576,6 +615,23 @@ func (n *normalizer) id(v string) string {
 	}
 	fixed := fmt.Sprintf("%s_%016x", prefix, count)
 	n.ids[v] = fixed
+	return fixed
+}
+
+// fixed maps each random value of a kind to a stable one that make writes
+// from its rank, consistently across the fixtures of one run.
+func (n *normalizer) fixed(kind, v string, make func(int) string) string {
+	if fixed, ok := n.ids[kind+":"+v]; ok {
+		return fixed
+	}
+	count := 1
+	for k := range n.ids {
+		if strings.HasPrefix(k, kind+":") {
+			count++
+		}
+	}
+	fixed := make(count)
+	n.ids[kind+":"+v] = fixed
 	return fixed
 }
 

@@ -19,7 +19,10 @@ import (
 //
 // A daemon whose people sign in only that way (Deps.ExternalSignInOnly)
 // refuses every route that signs in with a password, signs up or accepts an
-// invitation, changes a password, or creates an invitation.
+// invitation, changes a password, or creates an invitation: every route of
+// the key scheme's password and recovery code (docs/key-scheme.md section 12)
+// and the upgrade's. Its step-up is the provider's (MarkExternalStepUp,
+// ExternalStepUp).
 
 // ExternalSignIn is a person an identity provider vouched for, as an
 // extension presents them once it has done the provider's protocol.
@@ -52,6 +55,14 @@ type ExternalSignIn struct {
 	// provider can tell this server it closed someone, disabling the person
 	// here is what revokes the keys they created.
 	TTL time.Duration
+	// AuthTime is when the provider says the person last authenticated
+	// (OpenID Connect's auth_time, from the userinfo of the access token
+	// the sign-in presented): the session's step-up time, never the moment
+	// of the sign-in, and at most now. A sign-in the provider answered
+	// silently from a session of its own carries the person's earlier
+	// authentication, and opens no step-up window unless that was within
+	// the last ten minutes (docs/key-scheme.md section 11). Zero is none.
+	AuthTime time.Time
 }
 
 // SignInExternal signs in the person an identity provider vouched for and
@@ -70,7 +81,7 @@ type ExternalSignIn struct {
 func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (Session, error) {
 	token, session, user, err := s.users.SignInExternal(ctx, auth.ExternalSignIn{
 		Issuer: in.Issuer, Subject: in.Subject, Email: in.Email, EmailVerified: in.EmailVerified,
-		Name: in.Name, UserAgent: in.UserAgent, TTL: in.TTL,
+		Name: in.Name, UserAgent: in.UserAgent, TTL: in.TTL, AuthTime: in.AuthTime,
 	})
 	if err != nil {
 		return Session{}, fromExternal(err, "signing in failed")
@@ -93,6 +104,46 @@ func (s *Service) PinIdentityKey(ctx context.Context, issuer, subject, keyID str
 		return nil, false, fromExternal(err, "pinning the key failed")
 	}
 	return pinned, inserted, nil
+}
+
+// MarkExternalStepUp starts a step-up through the identity provider on the
+// caller's session (docs/key-scheme.md section 11, hosted): it records a mark,
+// the time now, bound to this session, used once and valid for ten minutes,
+// and returns it. The page then signs in at the provider again, asking it to
+// authenticate the person anew, and the extension finishes with
+// ExternalStepUp.
+//
+// What an extension of internal/app uses; no transport calls it.
+func (s *Service) MarkExternalStepUp(ctx context.Context, p Principal) (time.Time, error) {
+	if err := requireSession(p); err != nil {
+		return time.Time{}, err
+	}
+	at, err := s.users.MarkExternalStepUp(ctx, p.UserID, p.SessionID)
+	if err != nil {
+		return time.Time{}, fromUsers(err, "starting the step-up failed")
+	}
+	return at, nil
+}
+
+// ExternalStepUp finishes a step-up through the identity provider: the
+// provider says the identity (issuer, subject) authenticated at authTime.
+// The caller's session's step-up time becomes authTime only if the session
+// has a mark younger than ten minutes, authTime is after it and not after
+// now, and the identity is the one linked to the session's own person;
+// anything else is refused, not_authorized, and changes nothing. The
+// extension checks, before calling this, that the provider issued the
+// access token to this product. It never creates a session, nor changes
+// another one or whose this one is.
+//
+// What an extension of internal/app uses; no transport calls it.
+func (s *Service) ExternalStepUp(ctx context.Context, p Principal, issuer, subject string, authTime time.Time) error {
+	if err := requireSession(p); err != nil {
+		return err
+	}
+	if err := s.users.ExternalStepUp(ctx, p.UserID, p.SessionID, issuer, subject, authTime); err != nil {
+		return fromUsers(err, "stepping up failed")
+	}
+	return nil
 }
 
 // errExternalSignInOnly is every password and invitation route of a daemon

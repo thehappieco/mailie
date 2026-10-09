@@ -57,6 +57,11 @@ type Session struct {
 	CreatedAt  time.Time
 	LastSeenAt time.Time
 	ExpiresAt  time.Time
+	// AuthenticatedAt is the session's step-up time (docs/key-scheme.md
+	// section 11): when a sign-in or a step-up last verified its person's
+	// own secret, or the identity provider's authentication time for a
+	// session it started. Zero is none.
+	AuthenticatedAt time.Time
 }
 
 // IsAPIKey reports whether a bearer token has the shape of an API key rather
@@ -134,9 +139,10 @@ func (u *Users) RecheckSession(ctx context.Context, p Principal) error {
 func (u *Users) Session(ctx context.Context, id string) (Session, error) {
 	var s Session
 	err := u.store.Reader().QueryRowContext(ctx,
-		`SELECT id, user_id, user_agent, created_at, last_seen_at, expires_at FROM sessions WHERE id = ?`, id,
+		`SELECT id, user_id, user_agent, created_at, last_seen_at, expires_at, authenticated_at
+		   FROM sessions WHERE id = ?`, id,
 	).Scan(&s.ID, &s.UserID, &s.UserAgent,
-		unixScanner{&s.CreatedAt}, unixScanner{&s.LastSeenAt}, unixScanner{&s.ExpiresAt})
+		unixScanner{&s.CreatedAt}, unixScanner{&s.LastSeenAt}, unixScanner{&s.ExpiresAt}, unixScanner{&s.AuthenticatedAt})
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return Session{}, ErrInvalidSession
@@ -170,7 +176,12 @@ func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 // startSessionTx issues a token inside the caller's transaction, so a session
 // is created in the same commit as whatever justified it: a sign-up, a
 // password change. It expires ttl after it starts, and nothing extends it.
-func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, now time.Time, ttl time.Duration) (string, Session, error) {
+// authenticated is its step-up time: now for a ceremony that verified the
+// person's own secret, an identity provider's authentication time, the
+// step-up time of the session it replaces, or zero for none.
+func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, now time.Time, ttl time.Duration,
+	authenticated time.Time,
+) (string, Session, error) {
 	raw := make([]byte, sessionTokenBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return "", Session{}, fmt.Errorf("auth: read random: %w", err)
@@ -185,10 +196,15 @@ func startSessionTx(ctx context.Context, tx *sql.Tx, userID, userAgent string, n
 		ID: id, UserID: userID, UserAgent: truncateUTF8(userAgent, maxUserAgent),
 		CreatedAt: now, LastSeenAt: now, ExpiresAt: now.Add(ttl),
 	}
+	var stepUp int64
+	if !authenticated.IsZero() {
+		s.AuthenticatedAt = authenticated.UTC().Truncate(time.Second)
+		stepUp = s.AuthenticatedAt.Unix()
+	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO sessions(id, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		s.ID, s.UserID, sum[:], s.UserAgent, now.Unix(), now.Unix(), s.ExpiresAt.Unix(),
+		`INSERT INTO sessions(id, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at, authenticated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		s.ID, s.UserID, sum[:], s.UserAgent, now.Unix(), now.Unix(), s.ExpiresAt.Unix(), stepUp,
 	); err != nil {
 		return "", Session{}, fmt.Errorf("auth: start session: %w", err)
 	}

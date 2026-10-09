@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -14,8 +15,9 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 	// The same requests to two daemons: one whose people sign in only
 	// through an extension, where every route that signs in with a password,
 	// signs up or accepts an invitation, changes a password or creates an
-	// invitation answers 403 with the one refusal, whoever asks; and one as
-	// `serve` runs it, where each of them does what it does.
+	// invitation, every ceremony of the key scheme's password and recovery
+	// code and the upgrade's, answers 403 with the one refusal, whoever asks;
+	// and one as `serve` runs it, where each of them does what it does.
 	for _, only := range []bool{true, false} {
 		h := newHarnessWith(t, nil, serviceOptions{publicURL: "http://localhost:5174", externalSignInOnly: only})
 		owner := h.person(t, "owner@example.com", auth.RoleOwner)
@@ -40,19 +42,66 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Changing the owner's password ends her sessions, so it goes last.
+		// What the ceremonies that finish need from the ones that begin,
+		// made at the repository so that both daemons are asked the same.
+		authtest.NewUser(t, h.store, "rec@example.com", auth.RoleMember)
+		authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
+		ownerP, err := h.users.AuthenticateSession(t.Context(), owner)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opened, err := h.users.OpenRecovery(t.Context(), "rec@example.com", authtest.RecoveryProof)
+		if err != nil {
+			t.Fatal(err)
+		}
+		upgrade, err := h.users.LegacySignIn(t.Context(), "old@example.com", authtest.Password)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resetCode, _, err := h.users.CreateReset(t.Context(), ownerP.UserID, false, "cli")
+		if err != nil {
+			t.Fatal(err)
+		}
+		begun, err := h.users.BeginPasswordChange(t.Context(), ownerP.UserID, ownerP.SessionID, authtest.AuthKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wrap := func() string { return base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)) }
+
+		// Changing the owner's password, and the reset of her account, end
+		// her sessions, so they go last.
 		for _, route := range []struct{ name, method, path, token, body string }{
+			{"answer a challenge", http.MethodPost, "/v1/auth/challenge", "", `{"email":"owner@example.com"}`},
 			{"sign in", http.MethodPost, "/v1/auth/login", "",
-				fmt.Sprintf(`{"email":"owner@example.com","password":%q}`, authtest.Password)},
-			{"sign up", http.MethodPost, "/v1/auth/signup", "",
-				fmt.Sprintf(`{"invite":%q,"email":"new@example.com","name":"New","password":"a long enough password"}`, signUpCode)},
+				jsonOf(t, map[string]any{"email": "owner@example.com", "auth_key": authtest.AuthKey})},
+			{"sign up", http.MethodPost, "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
+				map[string]any{"invite": signUpCode, "email": "new@example.com", "name": "New"}))},
 			{"accept a team invitation", http.MethodPost, "/v1/auth/invites/accept", member, fmt.Sprintf(`{"invite":%q}`, joinCode)},
 			{"invite to the instance", http.MethodPost, "/v1/users/invites", owner, `{"email":"x@example.com"}`},
 			{"invite to the instance with a key", http.MethodPost, "/v1/users/invites", key, `{"email":"y@example.com"}`},
 			{"invite into a team", http.MethodPost, "/v1/workspaces/" + team.ID + "/invites", owner, `{"email":"z@example.com"}`},
 			{"invite into a team with a key", http.MethodPost, "/v1/workspaces/" + team.ID + "/invites", key, `{"email":"w@example.com"}`},
-			{"change a password", http.MethodPost, "/v1/auth/password", owner,
-				fmt.Sprintf(`{"current":%q,"next":"a brand new password"}`, authtest.Password)},
+			{"step up with the password", http.MethodPost, "/v1/auth/stepup", owner,
+				jsonOf(t, map[string]any{"auth_key": authtest.AuthKey})},
+			{"open a recovery", http.MethodPost, "/v1/auth/recover/open", "",
+				jsonOf(t, map[string]any{"email": "rec@example.com", "recovery_proof": authtest.RecoveryProof})},
+			{"finish a recovery", http.MethodPost, "/v1/auth/recover/finish", "", jsonOf(t, map[string]any{
+				"ticket": opened.Ticket, "auth_key": secret("recovered"), "kdf": defaultKDF(), "password_wrap": wrap(),
+				"recovery_wrap": wrap(), "recovery_proof": secret("new code"),
+			})},
+			{"the upgrade's sign-in", http.MethodPost, "/v1/auth/upgrade/login", "",
+				jsonOf(t, map[string]any{"email": "old@example.com", "password": authtest.Password})},
+			{"the upgrade's enrolment", http.MethodPost, "/v1/auth/upgrade/enrol", "",
+				jsonOf(t, enrolment(t, secret("upgraded"), secret("upgraded code"), map[string]any{"ticket": upgrade}))},
+			{"replace the recovery code", http.MethodPost, "/v1/auth/recovery", owner,
+				jsonOf(t, map[string]any{"recovery_wrap": wrap(), "recovery_proof": secret("replaced")})},
+			{"begin a password change", http.MethodPost, "/v1/auth/password/begin", owner,
+				jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey})},
+			{"finish a password change", http.MethodPost, "/v1/auth/password/finish", owner, jsonOf(t, map[string]any{
+				"ticket": begun.Ticket, "auth_key": secret("changed"), "kdf": defaultKDF(), "password_wrap": wrap(),
+			})},
+			{"a reset invitation", http.MethodPost, "/v1/auth/reset", "", jsonOf(t, enrolment(t, secret("reset"),
+				secret("reset code"), map[string]any{"reset": resetCode, "email": "owner@example.com"}))},
 		} {
 			resp := h.do(t, route.method, route.path, route.token, route.body)
 			status := resp.StatusCode
@@ -99,7 +148,7 @@ func TestAPersonsOwnProfileSaysWhetherTheyHaveAPassword(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for token, want := range map[string]bool{h.signIn(t, "ana@example.com", authtest.Password).Token: true, external: false} {
+	for token, want := range map[string]bool{h.signIn(t, "ana@example.com").Token: true, external: false} {
 		var me struct {
 			User struct {
 				Email       string `json:"email"`

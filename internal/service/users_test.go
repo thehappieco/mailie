@@ -1,13 +1,32 @@
 package service_test
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
+
+// wireEnrolment is what a browser sends to enrol a person, as the routes
+// carry it: authtest's auth key and proof, a fresh public key and wraps of
+// the right shape.
+func wireEnrolment(t *testing.T) service.Enrolment {
+	t.Helper()
+	in := authtest.Enrolment(t)
+	enc := base64.RawURLEncoding.EncodeToString
+	return service.Enrolment{
+		AuthKey: in.AuthKey, KDF: defaultKDF(), PublicKey: enc(in.PublicKey),
+		PasswordWrap: enc(in.PasswordWrap), RecoveryWrap: enc(in.RecoveryWrap), RecoveryProof: in.RecoveryProof,
+	}
+}
+
+func defaultKDF() service.KDF {
+	return service.KDF{Alg: "argon2id", M: auth.DefaultKDF.M, T: auth.DefaultKDF.T, P: auth.DefaultKDF.P}
+}
 
 func TestAnAPIKeyCannotUseTheSessionUseCases(t *testing.T) {
 	f := newFixture(t)
@@ -15,7 +34,12 @@ func TestAnAPIKeyCannotUseTheSessionUseCases(t *testing.T) {
 	checks := map[string]error{}
 	_, checks["Me"] = f.svc.Me(t.Context(), key)
 	checks["SignOut"] = f.svc.SignOut(t.Context(), key, service.SignOutRequest{})
-	_, checks["ChangePassword"] = f.svc.ChangePassword(t.Context(), key, service.PasswordRequest{Current: "a", Next: "b"}, "")
+	_, checks["BeginPasswordChange"] = f.svc.BeginPasswordChange(t.Context(), key,
+		service.PasswordBeginRequest{CurrentAuthKey: authtest.AuthKey})
+	_, _, checks["FinishPasswordChange"] = f.svc.FinishPasswordChange(t.Context(), key, service.PasswordFinishRequest{}, "")
+	checks["ReplaceRecovery"] = f.svc.ReplaceRecovery(t.Context(), key, service.RecoveryRequest{})
+	_, checks["StepUp"] = f.svc.StepUp(t.Context(), key, service.StepUpRequest{AuthKey: authtest.AuthKey})
+	_, checks["MarkExternalStepUp"] = f.svc.MarkExternalStepUp(t.Context(), key)
 	_, checks["UpdateProfile"] = f.svc.UpdateProfile(t.Context(), key, service.ProfileRequest{Name: "x"})
 	for name, err := range checks {
 		if service.CodeOf(err) != service.CodeNotAuthorized {

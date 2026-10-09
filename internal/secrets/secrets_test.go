@@ -146,7 +146,7 @@ func TestEveryPurposeIsOneAKeyServiceTakes(t *testing.T) {
 	// These names are what a key service's policy allows: a purpose added
 	// here changes that policy before the code that uses it ships, and a
 	// name changed here stops every envelope sealed under the old one.
-	want := []string{"credential/oauth-token", "credential/password", "send/hash-root"}
+	want := []string{"credential/oauth-token", "credential/password", "send/hash-root", "auth/kdf-salt-key"}
 	got := secrets.Purposes()
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("Purposes = %q, want %q", got, want)

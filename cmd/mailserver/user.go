@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -313,61 +312,48 @@ func closeBody(req service.CloseUserRequest) map[string]any {
 	return body
 }
 
-// A forgotten password is set again by the operator, with the daemon
-// stopped: `user password --bootstrap --email ADDRESS`. There is no route for
-// it, by design: nothing that reaches the daemon over the network sets
-// someone's password, so --bootstrap is not optional here. Whoever can open
-// the database file and hold its lock administers the instance already.
+// A person who lost both their password and their recovery code gets a reset
+// invitation from the operator, with the daemon stopped: `user password
+// --bootstrap --email ADDRESS` (docs/key-scheme.md section 12.6). Nothing
+// that reaches the daemon over the network makes one, by design, so
+// --bootstrap is not optional here; whoever can open the database file and
+// hold its lock administers the instance already.
 //
-// The new password is typed at a terminal, twice and without echo, or read as
-// one line from standard input when that is not a terminal (automation,
-// tests). Never a flag or an environment variable: those end up in a process
-// listing, a shell history or the host's journal.
-
-// errPasswordsDiffer is a confirmation that does not match the first entry.
-var errPasswordsDiffer = errors.New("user password: the two entries differ; nothing was changed")
-
-// stdinIsTerminal and readHidden stand for the terminal, which `go test`
-// never has; variables so that a test can be one.
-var (
-	stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
-	readHidden      = readHiddenLine
-)
+// The command sets no password: the server never knows one. It prints a
+// single-use link, valid for seven days, with the code in its fragment, which
+// the person opens to choose a new password; their browser makes a new
+// account key and recovery code, and in one transaction the server replaces
+// their public key, deletes every grant sealed to the old one and ends their
+// sessions. It is refused, naming the mailboxes, while the person is the last
+// reader of a team mailbox, unless --force, which the invitation records.
 
 func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("user password", flag.ContinueOnError)
-	emailFlag := fs.String("email", "", "the address the person signs in with"+emailFlagUsage+
-		"; the password is then typed at a terminal")
+	emailFlag := fs.String("email", "", "the address the person signs in with"+emailFlagUsage)
+	force := fs.Bool("force", false, "go ahead even if the person is the last who can read a team mailbox: "+
+		"the reset takes read from them on every mailbox that has a key, and nobody can be given it again "+
+		"on such a team mailbox (give another member read first, if the old key is not truly lost)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, when no daemon is running "+
-		"(required: no route sets a password)")
+		"(required: no route makes a reset invitation)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() > 0 {
-		// Not quoted back: a stray argument here may well be the password.
-		return errors.New("user password: unexpected argument; the password is never an argument, " +
-			"it is typed at a terminal or read from standard input")
+		// Not quoted back: a stray argument here may well be a password.
+		return errors.New("user password: unexpected argument; no password is ever given here: " +
+			"the command prints a reset link, and the person chooses a new password with it")
 	}
 	if !*bootstrap {
 		return errors.New("user password: needs --bootstrap, with the daemon stopped: " +
-			"no route sets someone's password, by design")
+			"no route makes a reset invitation, by design")
 	}
-	terminal := stdinIsTerminal()
-	if *emailFlag == "-" && !terminal {
-		return errors.New("user password: --email - takes the address from standard input, so the password " +
-			"has to be typed at a terminal; run it from one, or give --email ADDRESS and pipe the password")
-	}
-	// The lock first, and then who it is for: nobody types anything beside
-	// a running daemon, or a password for nobody.
+	// The lock first, and then who it is for.
 	db, release, err := openExclusively(ctx, cfg)
 	if err != nil {
 		return err
 	}
 	defer release()
 
-	if *emailFlag == "-" {
-		fmt.Fprint(os.Stderr, "Address: ")
-	}
 	address, err := emailArg("user password", *emailFlag)
 	if err != nil {
 		return err
@@ -379,81 +365,50 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 	users := auth.NewUsers(db)
 	user, err := users.GetByEmail(ctx, address)
 	if errors.Is(err, auth.ErrUserNotFound) {
-		return errors.New("user password: no person has that address; nothing was changed")
+		return errors.New("user password: no person has that address; nothing was made")
 	}
 	if err != nil {
 		return err
 	}
-
-	var password string
-	if terminal {
-		password, err = readNewPassword(ctx, readHidden, func(s string) { fmt.Fprint(os.Stderr, s) }, user.Email)
-	} else {
-		password, err = readPasswordLine(stdin)
+	base := cfg.PublicURL
+	if base == "" {
+		base = devConsoleURL
+		fmt.Fprintf(os.Stderr, "MAIL_PUBLIC_URL is not set; the link points at %s, "+
+			"where `npm run dev` serves the console.\n", devConsoleURL)
+	}
+	code, reset, err := users.CreateReset(ctx, user.ID, *force, "cli")
+	var blocked *auth.BlockedError
+	if errors.As(err, &blocked) {
+		return fmt.Errorf("user password: %s is the last person who can read the team mailboxes %s: "+
+			"a reset takes read from them; have another member given read first, or pass --force; "+
+			"nothing was made", user.Email, strings.Join(blocked.LastReaderOf, ", "))
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("user password: %w; nothing was made", err)
 	}
-	ended, err := users.SetPassword(ctx, user.ID, password)
-	if err != nil {
-		return fmt.Errorf("user password: %w; nothing was changed", err)
-	}
-	obs.LoggerFrom(ctx).Info("password set by the operator",
-		"user", user.ID, "sessions_ended", ended, "disabled", user.Disabled)
-	fmt.Printf("new password for %s (%s): every session ended (%s)\n", user.Email, user.ID, plural(ended, "session"))
+	obs.LoggerFrom(ctx).Info("reset invitation made by the operator",
+		"user", user.ID, "forced", reset.Forced, "disabled", user.Disabled)
+	fmt.Println(auth.ResetLink(base, code, reset.Email))
+	fmt.Fprintf(os.Stderr, "\nreset invitation for %s (%s), expires %s\n", reset.Email, user.ID,
+		reset.ExpiresAt.Local().Format(time.RFC3339))
+	fmt.Fprintln(os.Stderr, "Send the link to that person only. It works once, for that address, and replaces "+
+		"any earlier one. With it they choose a new password and get a new recovery code and account key; "+
+		"their sessions end, and their personal mailboxes need a new key before they open again.")
 	if user.Disabled {
-		fmt.Fprintln(os.Stderr, "This person is disabled and stays so: "+
-			"the new password signs in only once they are enabled again.")
+		fmt.Fprintln(os.Stderr, "This person is disabled: the link works only once they are enabled again.")
 	}
 	return nil
 }
 
-// readNewPassword asks for the new password twice and returns it once both
-// entries match. The first is held to sign-up's rules before the second is
-// asked for, so a short one is not typed twice for nothing.
-func readNewPassword(ctx context.Context, read func(context.Context) ([]byte, error), say func(string), email string) (string, error) {
-	ask := func(prompt string) (string, error) {
-		say(prompt)
-		line, err := read(ctx)
-		say("\n") // the Return the terminal did not echo
-		if err != nil {
-			return "", fmt.Errorf("user password: reading the password: %w", err)
-		}
-		return string(line), nil
-	}
-	first, err := ask("New password for " + email + ": ")
-	if err != nil {
-		return "", err
-	}
-	if err := auth.CheckPassword(first); err != nil {
-		return "", fmt.Errorf("user password: %w; nothing was changed", err)
-	}
-	again, err := ask("The same password again: ")
-	if err != nil {
-		return "", err
-	}
-	if subtle.ConstantTimeCompare([]byte(first), []byte(again)) != 1 {
-		return "", errPasswordsDiffer
-	}
-	return first, nil
-}
+// stdinIsTerminal and readHidden stand for the terminal, which `go test`
+// never has; variables so that a test can be one. `mcp install` reads a key
+// with them.
+var (
+	stdinIsTerminal = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	readHidden      = readHiddenLine
+)
 
-// readPasswordLine reads exactly one line of r and removes its line ending,
-// and nothing else: a space is as much part of a password as any other
-// character.
-func readPasswordLine(r io.Reader) (string, error) {
-	line, err := bufio.NewReader(r).ReadString('\n')
-	if err != nil && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("user password: reading the password from standard input: %w", err)
-	}
-	line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
-	if line == "" {
-		return "", errors.New("user password: read no password from standard input; nothing was changed")
-	}
-	return line, nil
-}
-
-// hiddenTerminal is a terminal a password is typed at. hide switches its echo
+// hiddenTerminal is a terminal a secret is typed at. hide switches its echo
 // off and returns what switches it back on; readLine reads one line and never
 // touches the terminal's settings.
 type hiddenTerminal interface {

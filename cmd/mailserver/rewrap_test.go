@@ -22,10 +22,11 @@ import (
 )
 
 // sealedDatabase is a database whose credentials (a password, and a token of
-// another mailbox) and send-hash root were sealed with sealer.
+// another mailbox), send-hash root and salt key were sealed with sealer.
 type sealedDatabase struct {
-	db   *store.Store
-	root []byte
+	db      *store.Store
+	root    []byte
+	saltKey []byte
 }
 
 func newSealedDatabase(t *testing.T, cfg config.Config, sealer secrets.Sealer) sealedDatabase {
@@ -53,7 +54,11 @@ func newSealedDatabase(t *testing.T, cfg config.Config, sealer secrets.Sealer) s
 	if err != nil || !created {
 		t.Fatalf("SendHashRoot: created %v, %v", created, err)
 	}
-	return sealedDatabase{db: db, root: root}
+	saltKey, created, err := db.KDFSaltKey(t.Context(), sealer)
+	if err != nil || !created {
+		t.Fatalf("KDFSaltKey: created %v, %v", created, err)
+	}
+	return sealedDatabase{db: db, root: root, saltKey: saltKey}
 }
 
 // opensWith checks that only sealer is needed to read everything, and that
@@ -69,6 +74,9 @@ func (d sealedDatabase) opensWith(t *testing.T, sealer secrets.Sealer, wantKeyID
 	}
 	if root, created, err := d.db.SendHashRoot(t.Context(), sealer); err != nil || created || !bytes.Equal(root, d.root) {
 		t.Fatalf("the send-hash root: created %v, the same %v, %v", created, bytes.Equal(root, d.root), err)
+	}
+	if key, created, err := d.db.KDFSaltKey(t.Context(), sealer); err != nil || created || !bytes.Equal(key, d.saltKey) {
+		t.Fatalf("the salt key: created %v, the same %v, %v", created, bytes.Equal(key, d.saltKey), err)
 	}
 	rows, err := d.db.Reader().QueryContext(t.Context(), `SELECT keyid, ciphertext FROM credentials`)
 	if err != nil {
@@ -138,7 +146,7 @@ func TestRewrapMovesEveryRowToAnotherKindOfSealerAndBack(t *testing.T) {
 	// it sealed, until the rewrap has moved every row.
 	toKMS := secrets.NewComposite(kms, keyring)
 	done, err := rewrapCredentials(t.Context(), d.db, toKMS)
-	if err != nil || done != (resealed{credentials: 2, root: true}) {
+	if err != nil || done != (resealed{credentials: 2, root: true, saltKey: true}) {
 		t.Fatalf("rewrap to the other kind: %+v, %v", done, err)
 	}
 	d.opensWith(t, kms, 0)
@@ -152,7 +160,7 @@ func TestRewrapMovesEveryRowToAnotherKindOfSealerAndBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	if done, err := rewrapCredentials(t.Context(), d.db, secrets.NewComposite(rotated, kms)); err != nil ||
-		done != (resealed{credentials: 2, root: true}) {
+		done != (resealed{credentials: 2, root: true, saltKey: true}) {
 		t.Fatalf("rewrap back to the keyring: %+v, %v", done, err)
 	}
 	d.opensWith(t, rotated, 2)
@@ -215,6 +223,48 @@ func TestANewSendHashRootReplacesOnlyARootNoConfiguredKeyOpens(t *testing.T) {
 	}
 }
 
+func TestANewSaltKeyReplacesOnlyASaltKeyNoConfiguredKeyOpens(t *testing.T) {
+	cfg := localConfig(t)
+	cfg.Credentials = config.Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{1: keyOf(0xA1)}}
+	lost, err := secrets.NewKeyring(1, map[uint8][]byte{1: keyOf(0xA1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSealedDatabase(t, cfg, lost)
+	rootOf := func() string {
+		t.Helper()
+		v, err := d.db.Meta(t.Context(), store.MetaSendHashRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	credentials, root := dumpCredentials(t, d.db), rootOf()
+
+	if err := rewrapCommand(t.Context(), cfg, []string{"--new-salt-key"}); !errors.Is(err, store.ErrKDFSaltKeyOpens) {
+		t.Fatalf("replacing a salt key the configured key opens: %v", err)
+	}
+	cfg.Credentials = config.Credentials{ActiveKeyID: 2, Keys: map[uint8][]byte{2: keyOf(0xD4)}}
+	if err := rewrapCommand(t.Context(), cfg, []string{"--new-salt-key"}); err != nil {
+		t.Fatalf("rewrap-credentials --new-salt-key: %v", err)
+	}
+	sealer, err := secrets.NewKeyring(2, map[uint8][]byte{2: keyOf(0xD4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, created, err := d.db.KDFSaltKey(context.Background(), sealer)
+	if err != nil || created || bytes.Equal(key, d.saltKey) {
+		t.Fatalf("after the replacement: created %v, the old key %v, %v", created, bytes.Equal(key, d.saltKey), err)
+	}
+	// Nothing else: the credentials and the send-hash root are as they were.
+	if !bytes.Equal(dumpCredentials(t, d.db), credentials) || rootOf() != root {
+		t.Fatal("replacing the salt key touched the credentials or the root")
+	}
+	if err := rewrapCommand(t.Context(), cfg, []string{"--kms-key-lost"}); err == nil {
+		t.Error("--kms-key-lost alone was accepted")
+	}
+}
+
 // dumpCredentials is every credentials row, in order, as bytes.
 func dumpCredentials(t *testing.T, db *store.Store) []byte {
 	t.Helper()
@@ -240,12 +290,17 @@ func dumpCredentials(t *testing.T, db *store.Store) []byte {
 	return out.Bytes()
 }
 
-// dumpSealed is every credential and the send-hash root's row, as bytes.
+// dumpSealed is every credential, the send-hash root's row and the salt
+// key's, as bytes.
 func dumpSealed(t *testing.T, db *store.Store) []byte {
 	t.Helper()
-	root, err := db.Meta(t.Context(), store.MetaSendHashRoot)
-	if err != nil {
-		t.Fatal(err)
+	out := dumpCredentials(t, db)
+	for _, key := range []string{store.MetaSendHashRoot, store.MetaKDFSaltKey} {
+		v, err := db.Meta(t.Context(), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, v+"\n"...)
 	}
-	return append(dumpCredentials(t, db), root...)
+	return out
 }

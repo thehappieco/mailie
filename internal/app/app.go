@@ -156,9 +156,25 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Info("created the send-hash root", "sealed_with", sealer.Describe())
 	}
 
+	// The salt every address is answered is the address's under this key
+	// (docs/key-scheme.md section 5.3), so it is opened before anyone can
+	// ask; where people sign in only through an extension nobody asks, and
+	// no salt key is made.
+	users := auth.NewUsers(db).WithWorkspaceSource(opts.WorkspaceSource)
+	if !opts.ExternalSignInOnly {
+		saltKey, made, err := openKDFSaltKey(ctx, db, sealer)
+		if err != nil {
+			return err
+		}
+		if made {
+			logger.Info("created the salt key", "sealed_with", sealer.Describe())
+		}
+		users = users.WithSaltKey(saltKey)
+		clear(saltKey)
+	}
+
 	metrics := obs.NewMetrics()
 	keys := auth.NewKeys(db)
-	users := auth.NewUsers(db).WithWorkspaceSource(opts.WorkspaceSource)
 	bus := events.NewBus(events.NewJournal(db))
 	started := time.Now()
 

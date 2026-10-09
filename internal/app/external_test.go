@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
+	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 )
@@ -106,9 +108,12 @@ func TestAnExtensionSignsPeopleInWhereExternalSignInOnlyTurnsPasswordsOff(t *tes
 	// the invitation's own code, ana's own session and current password. So
 	// the refusal, and its words, can only be the option's.
 	for _, call := range []struct{ path, token, body string }{
-		{"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password)},
-		{"/v1/auth/signup", "", fmt.Sprintf(`{"invite":%q,"email":"new@example.com","name":"New","password":"a long enough password"}`, code)},
-		{"/v1/auth/password", ana, fmt.Sprintf(`{"current":%q,"next":"a brand new password"}`, authtest.Password)},
+		{"/v1/auth/challenge", "", `{"email":"ana@example.com"}`},
+		{"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey)},
+		{"/v1/auth/signup", "", signUpBody(t, code)},
+		{"/v1/auth/password/begin", ana, fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey)},
+		{"/v1/auth/stepup", ana, fmt.Sprintf(`{"auth_key":%q}`, authtest.AuthKey)},
+		{"/v1/auth/upgrade/login", "", fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password)},
 	} {
 		a := request(t, http.MethodPost, base+call.path, call.token, call.body)
 		if a.status != http.StatusForbidden || !strings.Contains(a.body, `"code":"not_authorized"`) ||
@@ -123,12 +128,97 @@ func TestTheZeroOptionsLeavePasswordsOn(t *testing.T) {
 	// the right one signs in.
 	cfg, _, _ := seeded(t)
 	base := runDaemon(t, cfg, Options{})
-	a := request(t, http.MethodPost, base+"/v1/auth/login", "", `{"email":"nobody@example.com","password":"any password at all"}`)
+	wrong := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	a := request(t, http.MethodPost, base+"/v1/auth/login", "", fmt.Sprintf(`{"email":"nobody@example.com","auth_key":%q}`, wrong))
 	if a.status != http.StatusUnauthorized || !strings.Contains(a.body, `"code":"unauthorized"`) {
 		t.Errorf("POST /v1/auth/login answered %d %q, want 401 unauthorized", a.status, a.body)
 	}
-	a = request(t, http.MethodPost, base+"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password))
+	a = request(t, http.MethodPost, base+"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey))
 	if a.status != http.StatusOK || !strings.Contains(a.body, `"has_password":true`) {
 		t.Errorf("POST /v1/auth/login with her password answered %d %q, want her session", a.status, a.body)
 	}
+}
+
+func TestTheSaltAnAddressIsAnsweredOutlivesARestart(t *testing.T) {
+	// The salt key is made once, sealed like a credential, and opened at
+	// every start: an address is answered one salt, whether or not it has
+	// an account, before a restart and after it.
+	cfg, _, _ := seeded(t)
+	challenge := func() string {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- Run(ctx, cfg, obs.NewLoggerTo(io.Discard, "error", "text"), Options{}) }()
+		defer func() {
+			cancel()
+			if err := <-done; err != nil {
+				t.Errorf("Run: %v", err)
+			}
+		}()
+		base := "http://" + cfg.HTTPAddr
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/healthz", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp, err := http.DefaultClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					break
+				}
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the daemon did not answer within 10s")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		a := request(t, http.MethodPost, base+"/v1/auth/challenge", "", `{"email":"nobody@example.com"}`)
+		if a.status != http.StatusOK {
+			t.Fatalf("the challenge answered %d %q", a.status, a.body)
+		}
+		return a.body
+	}
+	first := challenge()
+	if again := challenge(); again != first || !strings.Contains(first, `"salt":"`) {
+		t.Fatalf("the challenge answered %q, and %q after a restart", first, again)
+	}
+	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if v, err := db.Meta(t.Context(), store.MetaKDFSaltKey); err != nil || v == "" {
+		t.Errorf("no salt key kept (%v)", err)
+	}
+}
+
+func TestADaemonWherePeopleSignInOnlyThroughAnExtensionMakesNoSaltKey(t *testing.T) {
+	cfg, _, _ := seeded(t)
+	runDaemon(t, cfg, Options{ExternalSignInOnly: true})
+	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if v, err := db.Meta(t.Context(), store.MetaKDFSaltKey); err != nil || v != "" {
+		t.Errorf("a salt key was made (%v): nobody asks for a salt there", err)
+	}
+}
+
+// signUpBody is a sign-up with an invitation's code and a fresh enrolment.
+func signUpBody(t *testing.T, code string) string {
+	t.Helper()
+	in := authtest.Enrolment(t)
+	enc := base64.RawURLEncoding.EncodeToString
+	b, err := json.Marshal(map[string]any{
+		"invite": code, "email": "new@example.com", "name": "New", "auth_key": in.AuthKey,
+		"kdf":        map[string]any{"alg": "argon2id", "m": in.KDF.M, "t": in.KDF.T, "p": in.KDF.P},
+		"public_key": enc(in.PublicKey), "password_wrap": enc(in.PasswordWrap), "recovery_wrap": enc(in.RecoveryWrap),
+		"recovery_proof": in.RecoveryProof,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

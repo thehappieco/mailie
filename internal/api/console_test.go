@@ -1,6 +1,7 @@
 package api_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -44,21 +45,31 @@ func decodeInto(t *testing.T, resp *http.Response, v any) {
 }
 
 type sessionReply struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
-	User      struct {
-		ID    string `json:"id"`
-		Email string `json:"email"`
-		Name  string `json:"name"`
-		Role  string `json:"role"`
+	Token           string `json:"token"`
+	ExpiresAt       int64  `json:"expires_at"`
+	AuthenticatedAt int64  `json:"authenticated_at"`
+	PasswordWrap    string `json:"password_wrap"`
+	User            struct {
+		ID        string `json:"id"`
+		Email     string `json:"email"`
+		Name      string `json:"name"`
+		Role      string `json:"role"`
+		SealID    string `json:"seal_id"`
+		PublicKey string `json:"public_key"`
 	} `json:"user"`
 }
 
-// signIn signs in over HTTP and returns the session.
-func (h *harness) signIn(t *testing.T, email, password string) sessionReply {
+// signIn signs in over HTTP with a user's auth key (authtest.AuthKey) and
+// returns the session.
+func (h *harness) signIn(t *testing.T, email string) sessionReply {
 	t.Helper()
-	resp := h.do(t, http.MethodPost, "/v1/auth/login", "",
-		fmt.Sprintf(`{"email":%q,"password":%q}`, email, password))
+	return h.signInWith(t, email, authtest.AuthKey)
+}
+
+// signInWith signs in over HTTP with an auth key and returns the session.
+func (h *harness) signInWith(t *testing.T, email, authKey string) sessionReply {
+	t.Helper()
+	resp := h.do(t, http.MethodPost, "/v1/auth/login", "", jsonOf(t, map[string]any{"email": email, "auth_key": authKey}))
 	if resp.StatusCode != http.StatusOK {
 		code, message := decodeError(t, resp)
 		t.Fatalf("sign in as %s: %d %s %s", email, resp.StatusCode, code, message)
@@ -66,6 +77,42 @@ func (h *harness) signIn(t *testing.T, email, password string) sessionReply {
 	var s sessionReply
 	decodeInto(t, resp, &s)
 	return s
+}
+
+// jsonOf is v as a request body.
+func jsonOf(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// enrolment is what a browser sends to enrol a person, as the routes take it,
+// with the auth key and the proof given and a fresh public key and wraps;
+// extra adds the rest of a request's members.
+func enrolment(t *testing.T, authKey, proof string, extra map[string]any) map[string]any {
+	t.Helper()
+	in := authtest.EnrolmentWith(t, authKey, proof)
+	enc := base64.RawURLEncoding.EncodeToString
+	out := map[string]any{
+		"auth_key": authKey, "recovery_proof": proof, "kdf": defaultKDF(),
+		"public_key": enc(in.PublicKey), "password_wrap": enc(in.PasswordWrap), "recovery_wrap": enc(in.RecoveryWrap),
+	}
+	for k, v := range extra {
+		out[k] = v
+	}
+	return out
+}
+
+func defaultKDF() map[string]any {
+	return map[string]any{"alg": "argon2id", "m": auth.DefaultKDF.M, "t": auth.DefaultKDF.T, "p": auth.DefaultKDF.P}
+}
+
+// secret is base64url of 32 bytes made from a label: an auth key or a proof.
+func secret(label string) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat(label, 32)[:32]))
 }
 
 func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
@@ -76,7 +123,10 @@ func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
 	for _, route := range []struct{ method, path, body string }{
 		{http.MethodGet, "/v1/auth/me", ""},
 		{http.MethodPost, "/v1/auth/logout", ""},
-		{http.MethodPost, "/v1/auth/password", `{"current":"a","next":"bbbbbbbbbbbb"}`},
+		{http.MethodPost, "/v1/auth/password/begin", `{"current_auth_key":"a"}`},
+		{http.MethodPost, "/v1/auth/password/finish", `{"ticket":"a"}`},
+		{http.MethodPost, "/v1/auth/recovery", `{"recovery_proof":"a"}`},
+		{http.MethodPost, "/v1/auth/stepup", `{"auth_key":"a"}`},
 		{http.MethodPut, "/v1/auth/profile", `{"name":"x"}`},
 	} {
 		resp := h.do(t, route.method, route.path, key, route.body)
@@ -93,7 +143,7 @@ func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
 func TestASignedInPersonCanReadAndRenameThemselves(t *testing.T) {
 	h := newHarness(t, false)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	s := h.signIn(t, "Ana@Example.com", authtest.Password)
+	s := h.signIn(t, "Ana@Example.com")
 	if s.User.Email != "ana@example.com" || s.User.Role != "member" || len(s.Token) != 43 {
 		t.Fatalf("session = %+v", s)
 	}
@@ -137,13 +187,13 @@ func TestAnUnknownEmailAnswersLikeAWrongPassword(t *testing.T) {
 		status        int
 		code, message string
 	}
-	ask := func(email, password string) answer {
-		resp := h.do(t, http.MethodPost, "/v1/auth/login", "", fmt.Sprintf(`{"email":%q,"password":%q}`, email, password))
+	ask := func(email, authKey string) answer {
+		resp := h.do(t, http.MethodPost, "/v1/auth/login", "", jsonOf(t, map[string]any{"email": email, "auth_key": authKey}))
 		code, message := decodeError(t, resp)
 		return answer{resp.StatusCode, code, message}
 	}
-	wrong := ask("ana@example.com", "not the password")
-	unknown := ask("nobody@example.com", "not the password")
+	wrong := ask("ana@example.com", secret("not the password"))
+	unknown := ask("nobody@example.com", secret("not the password"))
 	if wrong != unknown {
 		t.Fatalf("a wrong password answered %+v and an unknown address %+v", wrong, unknown)
 	}
@@ -164,7 +214,7 @@ func TestSignInIsRateLimitedPerEmail(t *testing.T) {
 
 	attempt := func(email, from string) *http.Response {
 		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.server.URL+"/v1/auth/login",
-			strings.NewReader(fmt.Sprintf(`{"email":%q,"password":"wrong password"}`, email)))
+			strings.NewReader(jsonOf(t, map[string]any{"email": email, "auth_key": secret("wrong")})))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -195,22 +245,42 @@ func TestSignInIsRateLimitedPerEmail(t *testing.T) {
 	}
 }
 
-func TestAPasswordChangeEndsEverySession(t *testing.T) {
+func TestAPasswordChangeNeedsTheCurrentAuthKeyAndEndsEverySession(t *testing.T) {
 	h := newHarness(t, false)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	laptop := h.signIn(t, "ana@example.com", authtest.Password)
-	phone := h.signIn(t, "ana@example.com", authtest.Password)
+	laptop := h.signIn(t, "ana@example.com")
+	phone := h.signIn(t, "ana@example.com")
 
-	resp := h.do(t, http.MethodPost, "/v1/auth/password", laptop.Token, `{"current":"wrong","next":"a brand new password"}`)
+	resp := h.do(t, http.MethodPost, "/v1/auth/password/begin", laptop.Token,
+		jsonOf(t, map[string]any{"current_auth_key": secret("wrong")}))
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("a wrong current password: %d, want 403 (the session itself is fine)", resp.StatusCode)
 	}
-
-	resp = h.do(t, http.MethodPost, "/v1/auth/password", laptop.Token,
-		fmt.Sprintf(`{"current":%q,"next":"a brand new password"}`, authtest.Password))
+	resp = h.do(t, http.MethodPost, "/v1/auth/password/begin", laptop.Token,
+		jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey}))
 	if resp.StatusCode != http.StatusOK {
 		code, message := decodeError(t, resp)
-		t.Fatalf("change: %d %s %s", resp.StatusCode, code, message)
+		t.Fatalf("begin: %d %s %s", resp.StatusCode, code, message)
+	}
+	var begun struct {
+		PasswordWrap string         `json:"password_wrap"`
+		Salt         string         `json:"salt"`
+		KDF          map[string]any `json:"kdf"`
+		Ticket       string         `json:"ticket"`
+	}
+	decodeInto(t, resp, &begun)
+	if begun.PasswordWrap != laptop.PasswordWrap || begun.Ticket == "" || len(begun.Salt) != 22 {
+		t.Fatalf("begin answered %+v", begun)
+	}
+
+	newKey := secret("a brand new password")
+	resp = h.do(t, http.MethodPost, "/v1/auth/password/finish", laptop.Token, jsonOf(t, map[string]any{
+		"ticket": begun.Ticket, "auth_key": newKey, "kdf": defaultKDF(),
+		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
+	}))
+	if resp.StatusCode != http.StatusOK {
+		code, message := decodeError(t, resp)
+		t.Fatalf("finish: %d %s %s", resp.StatusCode, code, message)
 	}
 	var fresh sessionReply
 	decodeInto(t, resp, &fresh)
@@ -225,14 +295,15 @@ func TestAPasswordChangeEndsEverySession(t *testing.T) {
 	if resp := h.do(t, http.MethodGet, "/v1/auth/me", fresh.Token, ""); resp.StatusCode != http.StatusOK {
 		t.Errorf("the new token does not work: %d", resp.StatusCode)
 	}
+	h.signInWith(t, "ana@example.com", newKey)
 }
 
 func TestSigningOutEndsTheSessionOrEverySession(t *testing.T) {
 	h := newHarness(t, false)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	laptop := h.signIn(t, "ana@example.com", authtest.Password)
-	phone := h.signIn(t, "ana@example.com", authtest.Password)
-	tablet := h.signIn(t, "ana@example.com", authtest.Password)
+	laptop := h.signIn(t, "ana@example.com")
+	phone := h.signIn(t, "ana@example.com")
+	tablet := h.signIn(t, "ana@example.com")
 
 	if resp := h.do(t, http.MethodPost, "/v1/auth/logout", laptop.Token, ""); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("logout without a body: %d", resp.StatusCode)
@@ -279,8 +350,8 @@ func TestAnInviteLinkSignsUpItsAddressOnce(t *testing.T) {
 	}
 
 	signUp := func(email string) *http.Response {
-		return h.do(t, http.MethodPost, "/v1/auth/signup", "", fmt.Sprintf(
-			`{"invite":%q,"email":%q,"name":"Ana","password":"long enough password"}`, fragment.Get("invite"), email))
+		return h.do(t, http.MethodPost, "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
+			map[string]any{"invite": fragment.Get("invite"), "email": email, "name": "Ana"})))
 	}
 	if resp := signUp("mallory@example.com"); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("another address used the invite: %d", resp.StatusCode)

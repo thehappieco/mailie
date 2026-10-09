@@ -101,23 +101,88 @@ tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`. Rou
 
 ### Passwords and sign-in
 
-Passwords are hashed with Argon2id on the server (64 MiB, t=3, p=1), at least 10 characters of
-valid UTF-8, with at most two hashes running at once. An unknown address, a disabled person and a
-person with no password (one who signs in only through an extension) cost the same work as a wrong
-password and get the same answer: a password is checked against a dummy hash in all three, and
-nothing matches the empty hash a person without a password has. Changing the password ends every
-other session; a person without one has no current password to prove, and the console does not
-offer the change (`user.has_password` is `false` in `GET /v1/auth/me`).
+The server never receives a password (the key scheme, [`key-scheme.md`](key-scheme.md), sections
+5 and 12; its threat model, [`key-scheme-threat-model.md`](key-scheme-threat-model.md)). The
+browser prepares the password with the platform's profile, stretches it with Argon2id under a salt
+and parameters the server hands out, and splits the result: the **auth key**, which it sends and
+the server keeps only as a hash (Argon2id at an API key's cost, 19 MiB), proves who the person is;
+the **wrap key**, which never leaves the browser, wraps the person's **account key**, an X25519 key
+pair the browser made at enrolment. The server keeps the public half, written once, the account key
+wrapped under the password and under a **recovery code** (150 bits, shown once at enrolment and
+replaced at every recovery), and a hash of the recovery code's proof. A new password has at least
+twelve code points, which the console checks before it derives anything; a password being
+presented has no minimum.
 
-A forgotten password is reset by the operator, with the daemon stopped:
-`mailserver user password --bootstrap --email X`. It asks for the new password twice without
-echo, or reads one line from standard input when that is not a terminal (never a flag or a
-variable), applies the same rules as sign-up (bytes in another encoding, such as a Latin-1 file,
-are refused: no sign-in could send them), and ends every session the person has in the same
-transaction. A disabled person stays disabled. There is no route for it, by design: nothing remote
-sets someone's password. `--email -` reads the address from standard input; the password must then
-be typed at a terminal. It is also how a person who signs in through an extension, and has no
-password, is given one.
+- **The challenge.** `POST /v1/auth/challenge {email}` answers `{salt, kdf}`: an enrolled person's
+  own, and for any other address (unknown, disabled, a person with no password) the address's
+  salt under the server's salt key and the default parameters, which is also what an account at
+  its target stores, so the answer does not say whether an address has an account. The salt key
+  is made at the daemon's first start and kept in the database sealed like a credential
+  (`meta.kdf_salt_key`, under `MAIL_CREDENTIAL_KEY_HEX` or the KMS key). The browser refuses
+  parameters or a salt outside the platform's bounds before it derives anything.
+- **Signing in.** `POST /v1/auth/login {email, auth_key}` answers the session (its step-up time
+  now), and the password wrap, which the browser opens with its wrap key: a wrap that does not
+  open after the auth key was accepted is a security error, not a wrong password. When the account
+  is not at its target (its address changed, or the default was raised) the answer adds `rederive
+  {salt, kdf, ticket}`: the browser derives the same password under it and finishes with
+  `POST /v1/auth/password/finish`, and no session ends. An unknown address, a disabled person, a
+  person who has not enrolled and a person with no password cost the same work as a wrong auth key
+  and get the same answer (`unauthorized`): an auth key is checked against a dummy verifier in all
+  of them. At most two checks of people's secrets run at once.
+- **Signing up.** An invitation's link opens the sign-up: the browser makes the account key and a
+  recovery code, shows the code once, and sends `POST /v1/auth/signup {invite, email, name,
+  auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`. The server checks the
+  invitation, that `kdf` is its default (`409` otherwise: derive again), the public key (a valid
+  X25519 key, not of low order) and the wraps' shape (61 bytes starting with `0x02`), and draws
+  the person's **seal id**, the UUID every wrap and grant binds them by.
+- **Changing the password** is two steps: `POST /v1/auth/password/begin {current_auth_key}`
+  answers the current password wrap, the target and a ticket only to the current auth key verified
+  in that request (a session alone gets nothing); the browser wraps the same account key under the
+  new password and sends `POST /v1/auth/password/finish {ticket, auth_key, kdf, password_wrap}`.
+  Every session of the person ends, and the reply is the one this browser goes on with; the account
+  key, the grants and the recovery code do not change. A person without a password has no current
+  one to prove, and the console does not offer the change (`user.has_password` is `false`).
+- **Recovery.** `POST /v1/auth/recover/open {email, recovery_proof}` answers the recovery wrap, the
+  seal id, the public key, the target and a ticket, only to the proof verified in that request;
+  `POST /v1/auth/recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap,
+  recovery_proof}` stores a new password and a new recovery code over the same account key, and
+  ends every session. `POST /v1/auth/recovery {recovery_wrap, recovery_proof}` replaces the
+  recovery code of a signed-in person, with a fresh step-up.
+- **Step-up.** What gives access or writes keys, and replacing the recovery code, needs the person
+  to have proved their own secret within the last ten minutes: a sign-in, a sign-up, an enrolment,
+  or `POST /v1/auth/stepup {auth_key}`, which checks the auth key of the session's own person only
+  and refreshes that one session (`{authenticated_at}`). `GET /v1/auth/me` reports the session's
+  `authenticated_at` (0: none), so the console asks for the password again before it calls such a
+  route rather than after a refusal.
+- **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
+  minutes, stored as SHA-256 and bound to the person (and, for a password change and a
+  re-derivation, the session); any ceremony that changes a person's secrets spends the others.
+- **The upgrade, in this release only.** A person who signed up before the key scheme has a
+  password hashed on the server and no account key; their challenge adds `upgrade: true`. Their
+  browser sends the password in clear **one last time**, `POST /v1/auth/upgrade/login {email,
+  password}`, which checks it against the old hash and answers `{ticket}`, never a session; then
+  `POST /v1/auth/upgrade/enrol {ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap,
+  recovery_proof}` enrols them with the same password, clears the old hash, ends their other
+  sessions and signs this browser in. Enrolment is one way (the schema refuses undoing it): from
+  then on the server answers their password in clear as a wrong one, and the console, which
+  remembers every address that enrolled in this browser, never sends it. The route and the
+  `upgrade` answer leave in the next release; a person who has not signed in by then gets a reset
+  invitation.
+- **A lost password and recovery code.** The operator prints a **reset invitation** with the
+  daemon stopped: `mailserver user password --bootstrap --email X [--force]`. It sets no password:
+  it prints a single-use link, `<MAIL_PUBLIC_URL>/#reset=…&email=…`, valid seven days (the code in
+  the fragment, stored as SHA-256), and changes nothing until it is used. The person's browser then
+  makes a new account key, password and recovery code and sends `POST /v1/auth/reset {reset, email,
+  auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`; in one transaction the
+  server replaces the public key (the one replacement of a key written once), deletes every grant
+  sealed to the old one, ends every session and signs this browser in. A reset takes "read" from
+  the person on every mailbox that has a key, so the command refuses, naming the mailboxes, while
+  the person is the last reader of a team mailbox (the test closing a person uses), unless
+  `--force`, which the invitation records; one issued without force checks again when it is used.
+  A disabled person's link works only once they are enabled again; disabling a person deletes
+  their invitations and tickets. There is no route that makes one, by design. `--email -` reads
+  the address from standard input. It is also how a person who signs in through an extension, and
+  has no password, is given one.
 
 ### Invitations
 
@@ -193,9 +258,17 @@ says the person is, and answers its page with the `Session` that comes back, exa
   everything indexed from them), after which they sign in through the provider as new people and
   link their mailboxes again. A disabled person whose own pair signs in is refused
   (`unauthorized`), as their password sign-in is.
-- **No password.** Such a person's `password_hash` is empty and `password_changed_at` is 0. No
-  password check accepts an empty hash (it costs a dummy derivation, as an unknown address does),
-  and `user.has_password` is `false`. `user password --bootstrap` gives them one.
+- **No password.** Such a person's `password_hash` is empty, they have not enrolled in the key
+  scheme, and `password_changed_at` is 0. No auth key signs them in (it is checked against a dummy
+  verifier, as an unknown address is), and `user.has_password` is `false`. A reset invitation
+  (`user password --bootstrap`) gives them one.
+- **The step-up time** of a session an extension starts is the provider's authentication time
+  (`ExternalSignIn.AuthTime`, OpenID Connect's `auth_time`), at most now, never the moment of the
+  sign-in: a sign-in the provider answered from its own session opens no step-up window. The
+  extension's step-up is `Service.MarkExternalStepUp` (a mark on the session, used once, valid ten
+  minutes) and then `Service.ExternalStepUp` with the provider's issuer, subject and authentication
+  time, which refuses any identity but the one linked to the session's person and any time not
+  after the mark.
 - **The session's lifetime** is the extension's to choose: more than nothing and at most 14 days
   (`auth.SessionTTL`), absolute from its start. Nothing renews a session on use, and no statement
   can move an existing session's expiry later: the schema refuses an update that would
@@ -229,8 +302,10 @@ says the person is, and answers its page with the `Session` that comes back, exa
   variable, and `serve` never sets it) is a server whose people sign in only that way. The service
   then refuses, `not_authorized`, every route that signs in with a password, signs up or accepts an
   invitation, changes a password, or creates an invitation to the instance or into a team:
-  `POST /v1/auth/login`, `/v1/auth/signup`, `/v1/auth/invites/accept`, `/v1/auth/password`,
-  `/v1/users/invites` and `/v1/workspaces/{id}/invites`. The command line's `--bootstrap` commands
+  `POST /v1/auth/challenge`, `/v1/auth/login`, `/v1/auth/signup`, `/v1/auth/reset`,
+  `/v1/auth/invites/accept`, `/v1/auth/password/begin` and `/finish`, `/v1/auth/recover/open` and
+  `/finish`, `/v1/auth/recovery`, `/v1/auth/stepup`, `/v1/auth/upgrade/login` and `/enrol`,
+  `/v1/users/invites` and `/v1/workspaces/{id}/invites`. No salt key is made there. The command line's `--bootstrap` commands
   still write to the database, but an invitation they print signs nobody up there. Left at its zero
   value nothing changes.
 
@@ -460,11 +535,20 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | Route | Who | What |
 |---|---|---|
 | `GET /v1/healthz` | anyone | `{status, version, uptime_seconds}` |
-| `POST /v1/auth/login` | anyone | `{email, password}` → `Session` |
-| `POST /v1/auth/signup` | anyone | `{invite, email, name, password}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
-| `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension |
+| `POST /v1/auth/challenge` | anyone | `{email}` → `{salt, kdf, upgrade?}`; `upgrade` in this release only |
+| `POST /v1/auth/login` | anyone | `{email, auth_key}` → `Session` with `password_wrap`, and `rederive {salt, kdf, ticket}` when the account is off its target |
+| `POST /v1/auth/signup` | anyone | `{invite, email, name, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
+| `POST /v1/auth/reset` | anyone | `{reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; a new account key, every session and grant of the old one ends |
+| `POST /v1/auth/recover/open` | anyone | `{email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf, ticket}` |
+| `POST /v1/auth/recover/finish` | anyone | `{ticket, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends |
+| `POST /v1/auth/upgrade/login` | anyone | `{email, password}` → `{ticket}`; in this release only |
+| `POST /v1/auth/upgrade/enrol` | anyone | `{ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; in this release only |
+| `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension; `user.seal_id`, `user.public_key`, `session.authenticated_at` |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
-| `POST /v1/auth/password` | session | `{current, next}` → a new `Session`; every other session ends |
+| `POST /v1/auth/password/begin` | session | `{current_auth_key}` → `{password_wrap, salt, kdf, ticket}` |
+| `POST /v1/auth/password/finish` | session | `{ticket, auth_key, kdf, password_wrap}` → a new `Session` (a change: every other session ends), or 204 (a sign-in's re-derivation) |
+| `POST /v1/auth/recovery` | session, stepped up | `{recovery_wrap, recovery_proof}` → 204 |
+| `POST /v1/auth/stepup` | session | `{auth_key}` → `{authenticated_at}` |
 | `PUT /v1/auth/profile` | session | `{name}` → `User` |
 | `POST /v1/users/invites` | instance owner signed in, or unrestricted instance admin key | `{email, role?}` → `Invite` |
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins the team with the invite's role |
@@ -1221,8 +1305,9 @@ CI runs it in a job of its own. `web/README.md` describes the tests and the opti
 - Drafts kept on the server, composing HTML, the MCP tools that send, and webhooks. Permanent
   deletion does not exist and will not.
 - Searching message bodies.
-- Self-service sign-up, email verification, password recovery by email (the operator resets a
-  forgotten password: [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
+- Self-service sign-up, email verification, password recovery by email (the recovery code
+  recovers a forgotten password, and the operator's reset invitation a lost recovery code too:
+  [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
 - A screen for the server's own people: inviting someone to the server, disabling or deleting a
   person (`POST /v1/users/*`); the routes and the command line exist. A team's people have theirs
   (Members).

@@ -28,11 +28,14 @@ const (
 	PurposePassword = "credential/password"
 	// PurposeSendHashRoot is the key of a send record's hashes.
 	PurposeSendHashRoot = "send/hash-root"
+	// PurposeKDFSaltKey is the key of the salts the server hands out for
+	// the addresses people sign in with (docs/key-scheme.md section 5.3).
+	PurposeKDFSaltKey = "auth/kdf-salt-key"
 )
 
 // Purposes lists every purpose this server seals for.
 func Purposes() []string {
-	return []string{PurposeOAuthToken, PurposePassword, PurposeSendHashRoot}
+	return []string{PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey}
 }
 
 // MaxBindingLen is the longest purpose or ref a binding may have, as a key
@@ -41,7 +44,8 @@ const MaxBindingLen = 128
 
 // Binding is what an envelope is sealed for, and the only thing it opens
 // for. Purpose is what the secret is, one of Purposes; Ref is which one: a
-// credential's account id, the meta row that keeps the send-hash root. Both
+// credential's account id, the meta row that keeps the send-hash root or the
+// salt key. Both
 // are part of what an envelope authenticates, so one moved to another row
 // does not open there.
 //
@@ -74,7 +78,7 @@ func Credential(accountID, field string) Binding {
 // which part fails, never its value.
 func (b Binding) Validate() error {
 	switch b.Purpose {
-	case PurposeOAuthToken, PurposePassword, PurposeSendHashRoot:
+	case PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey:
 	case "":
 		return fmt.Errorf("%w: it has no purpose", ErrBinding)
 	default:

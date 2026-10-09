@@ -15,6 +15,7 @@ import (
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/api"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/obs"
@@ -83,7 +84,7 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 	return service.New(service.Deps{
 		Accounts:  registry,
 		Keys:      auth.NewKeys(db),
-		Users:     auth.NewUsers(db),
+		Users:     auth.NewUsers(db).WithSaltKey(authtest.SaltKey),
 		Store:     db,
 		Bus:       bus,
 		Sync:      o.sync,
@@ -141,7 +142,7 @@ func newHarnessWith(t *testing.T, adjust func(*api.Handler), o serviceOptions) *
 	h.Mount(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &harness{server: srv, keys: auth.NewKeys(db), users: auth.NewUsers(db), store: db, bus: bus}
+	return &harness{server: srv, keys: auth.NewKeys(db), users: auth.NewUsers(db).WithSaltKey(authtest.SaltKey), store: db, bus: bus}
 }
 
 func (h *harness) key(t *testing.T, scope auth.Scope, accounts ...string) string {

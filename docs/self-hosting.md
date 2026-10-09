@@ -641,6 +641,44 @@ credential is, so a rotation of the key no longer changes it.
   replaces only a root no configured key opens, and refuses one that opens.
 - **`rewrap-credentials` re-seals the root** with the credentials, under the active key.
 
+### Passwords the server never receives (migration 0013)
+
+The release that brings the key scheme ([`key-scheme.md`](key-scheme.md)) changes how everyone
+signs in. **Back up first**, as above: going back is that copy, and the version you are leaving.
+
+- **Nobody's password reaches the server any more,** but once. Each person's browser derives an
+  auth key from the password, which the server keeps as a hash, and keeps an account key, which the
+  browser makes, under the password and under a recovery code shown once. People who signed up
+  before keep signing in with the same password: at their first sign-in on the new version the
+  console sends it in clear one last time, the server checks it against the old hash, and the
+  browser enrols them (it shows them their recovery code, which they should keep). From then on the
+  server refuses their password in clear, as a wrong one.
+- **The old way in exists in this release only.** The route that takes the password in clear for
+  the upgrade (`POST /v1/auth/upgrade/login`), and the challenge's `upgrade` answer that sends a
+  browser there, leave in the next release. Until then a challenge tells anyone who asks that an
+  address has an account not yet upgraded (the key scheme's threat model, section 5.5). Ask
+  everyone to sign in once on this version; whoever has not by the next one gets a reset
+  invitation from you (below).
+- **New passwords have at least twelve characters**; one chosen before keeps working, however
+  short.
+- **Nothing needs configuring.** The first start makes a **salt key**, the key of the salt every
+  address's password is derived under, and keeps it in the database sealed under the credential
+  key as the send-hash root is (`meta.kdf_salt_key`). The daemon refuses to start without the key
+  that sealed it, as for the root; `rewrap-credentials` re-seals it with the credentials, and if
+  its key is lost for good, `mailserver rewrap-credentials --new-salt-key`, with the daemon
+  stopped, puts a new one in place: everyone keeps signing in, and moves to their new salt at
+  their next sign-in. A daemon whose people sign in only through an extension makes none.
+- **A forgotten password** is the recovery code's to replace, in the console. A person who lost
+  both now gets a **reset invitation** rather than a password set for them: see
+  [A forgotten password](#a-forgotten-password).
+- **Sessions open at the upgrade stay open,** with no step-up time: what gives access asks for the
+  password again on them. Changing the password ends every session, as before.
+- **The API.** `POST /v1/auth/login` takes `{email, auth_key}`; `POST /v1/auth/signup` an
+  enrolment; `POST /v1/auth/password` is gone, replaced by `/v1/auth/password/begin` and
+  `/finish`; new routes answer the challenge, recovery, step-up, the reset invitation and the
+  upgrade ([`console.md`](console.md#routes)). A script that signed in with a password needs an
+  API key instead, as it always should have.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
@@ -691,9 +729,18 @@ the new version has proved itself.
 
 ## A forgotten password
 
-Nobody can set a password through the API. The operator resets one with the daemon stopped;
-`user password --bootstrap` asks for the new password twice at a terminal (or reads one line piped
-in) and ends every session the person has.
+A person who forgot their password replaces it with their recovery code, in the console. Nobody can
+set a password, through the API or the command line: the server never knows one. A person who lost
+both their password and their recovery code gets a **reset invitation** from the operator, with the
+daemon stopped: `user password --bootstrap` prints a link, valid seven days and once, for that
+person only. With it they choose a new password and get a new recovery code and a new account key;
+their sessions end then, and everything sealed to their old key goes (from the next release, their
+personal mailboxes then need a new key, and a team's mailboxes a reader to give them theirs again).
+Until the link is used, nothing of theirs changes; a newer one replaces it.
+
+It refuses, naming the mailboxes, while the person is the last who can read a team mailbox:
+nobody could give them read again. Have another member given read first, or, when the old key is
+truly lost, pass `--force`.
 
 ```sh
 # Compose, from deploy/:
@@ -706,3 +753,5 @@ sudo systemctl stop mailie
 mailie-admin user password --bootstrap --email you@example.com
 sudo systemctl start mailie
 ```
+
+Send the link to that person only: it is a credential until it is used.

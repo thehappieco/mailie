@@ -1,0 +1,26 @@
+{
+  "authenticated_at": 1790000000,
+  "expires_at": 1791209600,
+  "password_wrap": "AldXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXVw",
+  "rederive": {
+    "kdf": {
+      "alg": "argon2id",
+      "m": 65536,
+      "p": 1,
+      "t": 3
+    },
+    "salt": "M4GOnV49OS52fwXbTjngUw",
+    "ticket": "VFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFQ"
+  },
+  "token": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo",
+  "user": {
+    "created_at": 1790000000,
+    "email": "dee@example.com",
+    "has_password": true,
+    "id": "usr_0000000000000005",
+    "name": "",
+    "public_key": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI",
+    "role": "member",
+    "seal_id": "00000000-0000-4000-8000-000000000003"
+  }
+}

@@ -51,12 +51,24 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		invites := f.count(t, `SELECT count(*) FROM invites`)
 
 		calls := map[string]error{}
-		_, calls["sign in with a password"] = f.svc.SignIn(ctx, service.SignInRequest{Email: "owner@example.com", Password: authtest.Password}, "test")
+		_, calls["answer a challenge"] = f.svc.Challenge(ctx, service.ChallengeRequest{Email: "owner@example.com"})
+		_, calls["sign in with a password"] = f.svc.Login(ctx, service.LoginRequest{Email: "owner@example.com", AuthKey: authtest.AuthKey}, "test")
 		_, calls["sign up with an invitation"] = f.svc.SignUp(ctx, service.SignUpRequest{
-			Invite: signUpCode, Email: "new@example.com", Name: "New", Password: "a long enough password"}, "test")
+			Invite: signUpCode, Email: "new@example.com", Name: "New", Enrolment: wireEnrolment(t)}, "test")
 		_, calls["accept a team invitation"] = f.svc.AcceptInvite(ctx, member, service.AcceptInviteRequest{Invite: joinCode})
-		_, calls["change a password"] = f.svc.ChangePassword(ctx, owner,
-			service.PasswordRequest{Current: authtest.Password, Next: "a brand new password"}, "test")
+		_, calls["begin a password change"] = f.svc.BeginPasswordChange(ctx, owner,
+			service.PasswordBeginRequest{CurrentAuthKey: authtest.AuthKey})
+		_, _, calls["finish a password change"] = f.svc.FinishPasswordChange(ctx, owner, service.PasswordFinishRequest{}, "test")
+		_, calls["open a recovery"] = f.svc.OpenRecovery(ctx, service.RecoverOpenRequest{
+			Email: "owner@example.com", RecoveryProof: authtest.RecoveryProof})
+		calls["finish a recovery"] = f.svc.FinishRecovery(ctx, service.RecoverFinishRequest{})
+		calls["replace the recovery code"] = f.svc.ReplaceRecovery(ctx, owner, service.RecoveryRequest{})
+		_, calls["step up with the password"] = f.svc.StepUp(ctx, owner, service.StepUpRequest{AuthKey: authtest.AuthKey})
+		_, calls["the upgrade's sign-in"] = f.svc.UpgradeLogin(ctx, service.UpgradeLoginRequest{
+			Email: "owner@example.com", Password: authtest.Password})
+		_, calls["the upgrade's enrolment"] = f.svc.UpgradeEnrol(ctx, service.UpgradeEnrolRequest{Enrolment: wireEnrolment(t)}, "test")
+		_, calls["a reset invitation"] = f.svc.CompleteReset(ctx, service.ResetRequest{
+			Email: "owner@example.com", Enrolment: wireEnrolment(t)}, "test")
 		_, calls["invite to the instance, signed in"] = f.svc.CreateInvite(ctx, owner, service.InviteRequest{Email: "x@example.com"})
 		_, calls["invite to the instance, with a key"] = f.svc.CreateInvite(ctx, admin(), service.InviteRequest{Email: "y@example.com"})
 		_, calls["invite into a team"] = f.svc.CreateTeamInvite(ctx, owner, team.ID, service.TeamInviteRequest{Email: "z@example.com"})
@@ -84,7 +96,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		if n := f.count(t, `SELECT count(*) FROM users WHERE email = 'new@example.com'`); n != 0 {
 			t.Error("an invitation signed somebody up")
 		}
-		if _, _, _, err := f.users.SignIn(ctx, "owner@example.com", authtest.Password, "test"); err != nil {
+		if _, err := f.users.Login(ctx, "owner@example.com", authtest.AuthKey, "test"); err != nil {
 			t.Errorf("the owner's password changed: %v", err)
 		}
 

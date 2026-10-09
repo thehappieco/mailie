@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/thehappieco/mailie/internal/keyscheme"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -291,20 +292,24 @@ func InviteLink(publicURL, code, email string) string {
 	return strings.TrimRight(publicURL, "/") + "/#invite=" + url.QueryEscape(code) + "&email=" + url.QueryEscape(email)
 }
 
-// SignUpRequest is what the sign-up form sends.
+// SignUpRequest is what the sign-up form sends: the person's browser made
+// their account key and derived their auth key (docs/key-scheme.md section
+// 12.1); the password never comes.
 type SignUpRequest struct {
 	Invite    string
 	Email     string
 	Name      string
-	Password  string
+	Enrolment Enrolment
 	UserAgent string
 }
 
-// SignUp redeems an invite: it creates the account, with the personal
-// workspace the workspace source makes for it, joins the invite's team for a
-// team invite, and starts its first session, in one transaction with marking
-// the invite used, so a crash cannot leave an invite spent with nobody behind
-// it or an account behind an invite that still works.
+// SignUp redeems an invite: it creates the account, enrolled in the key
+// scheme with what the browser sent and the address's target salt, with the
+// personal workspace the workspace source makes for it, joins the invite's
+// team for a team invite, and starts its first session, whose step-up time is
+// now, in one transaction with marking the invite used, so a crash cannot
+// leave an invite spent with nobody behind it or an account behind an invite
+// that still works.
 //
 // The person gets the role their invite names. The first person to sign up
 // on a server is an owner only when invited as one.
@@ -317,6 +322,9 @@ type SignUpRequest struct {
 // sign-up would spend the instance invites waiting for that address. Any
 // other team invite is ErrInviteJoinsOnly here, whether the address has an
 // account or not, and stays unspent for its person to accept signed in.
+//
+// The answer's User carries the seal id drawn now and the public key, for
+// the browser to keep the account key under (docs/key-scheme.md section 7).
 func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session, User, error) {
 	email, err := NormalizeEmail(req.Email)
 	if err != nil {
@@ -326,7 +334,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 	if err != nil {
 		return "", Session{}, User{}, err
 	}
-	if err := CheckPassword(req.Password); err != nil {
+	if err := req.Enrolment.check(); err != nil {
 		return "", Session{}, User{}, err
 	}
 	codeHash, ok := hashInviteCode(req.Invite)
@@ -334,12 +342,16 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 		return "", Session{}, User{}, ErrInviteInvalid
 	}
 
-	// Checked before the hash as well as inside the transaction: a bad code
-	// or a taken address should not cost 64 MiB of Argon2id to refuse.
+	// Checked before the hashes as well as inside the transaction: a bad
+	// code or a taken address should cost no Argon2id to refuse.
 	if err := u.checkSignUp(ctx, codeHash, email); err != nil {
 		return "", Session{}, User{}, err
 	}
-	hash, err := hashPassword(ctx, req.Password)
+	hashed, err := hashVerifiers(ctx, req.Enrolment.AuthKey, req.Enrolment.RecoveryProof)
+	if err != nil {
+		return "", Session{}, User{}, err
+	}
+	target, err := u.target(email)
 	if err != nil {
 		return "", Session{}, User{}, err
 	}
@@ -349,7 +361,11 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 	}
 
 	now := u.now().UTC().Truncate(time.Second)
-	user := User{ID: userID, Email: email, Name: name, HasPassword: true, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now}
+	user := User{
+		ID: userID, Email: email, Name: name, HasPassword: true, Enrolled: true, SealID: keyscheme.NewSealID(),
+		PublicKey: req.Enrolment.PublicKey, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	in := req.Enrolment
 	var token string
 	var session Session
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
@@ -381,9 +397,13 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 			}
 		}
 		_, err = tx.ExecContext(ctx,
-			`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			user.ID, user.Email, user.Name, hash, string(user.Role), userActive, now.Unix(), now.Unix(), now.Unix())
+			`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at,
+			                   seal_id, public_key, auth_verifier, kdf_salt, kdf_m, kdf_t, kdf_p, password_wrap,
+			                   recovery_wrap, recovery_verifier, zk_enrolled_at)
+			 VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			user.ID, user.Email, user.Name, string(user.Role), userActive, now.Unix(), now.Unix(), now.Unix(),
+			user.SealID, in.PublicKey, hashed.auth, target.Salt, target.KDF.M, target.KDF.T, target.KDF.P,
+			in.PasswordWrap, in.RecoveryWrap, hashed.recovery, now.Unix())
 		if store.IsUnique(err) {
 			return ErrEmailTaken
 		}
@@ -404,7 +424,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 		if err := dropOtherInvitesTx(ctx, tx, email, team, true); err != nil {
 			return err
 		}
-		token, session, err = startSessionTx(ctx, tx, user.ID, req.UserAgent, now, SessionTTL)
+		token, session, err = startSessionTx(ctx, tx, user.ID, req.UserAgent, now, SessionTTL, now)
 		return err
 	})
 	if err != nil {

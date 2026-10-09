@@ -62,9 +62,11 @@ const housekeepingInterval = time.Hour
 // housekeep enforces retention: now, and then every interval until ctx ends.
 // Today that is the unused invites, deleted within auth.InviteRetention of
 // expiring; the keys pinned for an identity that never signed anyone in,
-// deleted once they are auth.UnlinkedPinGrace old; and the send records and
-// their send.finished notices, deleted store.SendRetention after their last
-// change. scrub then takes the deleted rows out of the write-ahead log too.
+// deleted once they are auth.UnlinkedPinGrace old; the tickets of the key
+// scheme's ceremonies and the reset invitations, deleted once expired; and
+// the send records and their send.finished notices, deleted
+// store.SendRetention after their last change. scrub then takes the deleted
+// rows out of the write-ahead log too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
@@ -88,6 +90,15 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 			logger.Warn("sweeping the keys pinned for no identity failed", "err", err)
 		case n > 0:
 			logger.Info("deleted the keys pinned for no identity", "count", n)
+			deleted += n
+		}
+		// Expired, they are hashes nobody can use, of a ceremony that ended.
+		n, err = users.SweepTickets(ctx)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.Warn("sweeping expired tickets and reset invitations failed", "err", err)
+		case n > 0:
+			logger.Debug("deleted expired tickets and reset invitations", "count", n)
 			deleted += n
 		}
 		records, notices, err := sweepSends(ctx, every)

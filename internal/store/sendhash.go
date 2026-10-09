@@ -2,11 +2,8 @@ package store
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/base64"
 	"errors"
-	"fmt"
 
 	"github.com/thehappieco/mailie/internal/secrets"
 )
@@ -17,9 +14,9 @@ import (
 // can confirm a guess of a message.
 //
 // It is random, made once, and kept in the meta table sealed like a
-// credential, so it opens wherever the credentials do, survives a rotation of
-// the key (rewrap-credentials re-seals it with them) and never needs key
-// material a sealer may not have to hand.
+// credential (metasecret.go), so it opens wherever the credentials do,
+// survives a rotation of the key (rewrap-credentials re-seals it with them)
+// and never needs key material a sealer may not have to hand.
 const (
 	// MetaSendHashRoot is the meta row that keeps the root: the base64 of
 	// its envelope.
@@ -59,54 +56,20 @@ var ErrSendHashRootOpens = errors.New("store: the send-hash root opens with the 
 var ErrSendHashRootMayOpen = errors.New("store: the send-hash root may open under the KMS key and MAIL_ENV " +
 	"that sealed it; it is not replaced unless that key is lost for good")
 
+// sendHashRoot is the root as a sealed secret of the meta table.
+var sendHashRoot = sealedSecret{
+	key: MetaSendHashRoot, sealedWith: MetaSendHashRootSealedWith, binding: SendHashRootBinding,
+	size: SendHashRootLen, what: "send-hash root",
+	notOpen: ErrSendHashRoot, opens: ErrSendHashRootOpens, mayOpen: ErrSendHashRootMayOpen,
+}
+
 // SendHashRoot opens the database's send-hash root, and reports whether it
 // made it now: the first time a database without one is opened. A root the
 // configured keys do not open is ErrSendHashRoot, never replaced: that would
 // hide the wrong key until the first credential it cannot open. Any other
 // error is returned as it is.
 func (s *Store) SendHashRoot(ctx context.Context, sealer secrets.Sealer) ([]byte, bool, error) {
-	stored, err := s.Meta(ctx, MetaSendHashRoot)
-	if err != nil {
-		return nil, false, err
-	}
-	if stored != "" {
-		root, err := openSendHashRoot(ctx, sealer, stored)
-		if errors.Is(err, ErrSendHashRoot) {
-			err = sealedWith(err, s.metaOrEmpty(ctx, MetaSendHashRootSealedWith))
-		}
-		return root, false, err
-	}
-
-	fresh, err := sealSendHashRoot(ctx, sealer)
-	if err != nil {
-		return nil, false, err
-	}
-	created := false
-	err = s.Write(ctx, func(tx *sql.Tx) error {
-		// Kept only if no root got there first, and the one that is there
-		// is read back in the same transaction: there is only ever one.
-		res, err := tx.ExecContext(ctx,
-			`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING`, MetaSendHashRoot, fresh)
-		if err != nil {
-			return fmt.Errorf("store: keep the send-hash root: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("store: keep the send-hash root: %w", err)
-		}
-		created = n == 1
-		if created {
-			if err := recordSealedWithTx(ctx, tx, sealer); err != nil {
-				return err
-			}
-		}
-		return tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
-	})
-	if err != nil {
-		return nil, false, err
-	}
-	root, err := openSendHashRoot(ctx, sealer, stored)
-	return root, created, err
+	return sendHashRoot.open(ctx, s, sealer)
 }
 
 // ResealSendHashRootTx seals the root again with sealer's active sealer when
@@ -119,45 +82,7 @@ func (s *Store) SendHashRoot(ctx context.Context, sealer secrets.Sealer) ([]byte
 // neither the key nor the env, so a root sealed under another KMS key or
 // another MAIL_ENV reads as current and opens only once they are put back.
 func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) (bool, error) {
-	var stored string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("store: read the send-hash root: %w", err)
-	}
-	envelope, err := base64.StdEncoding.DecodeString(stored)
-	if err != nil {
-		return false, sealedWith(fmt.Errorf("%w: %w", ErrSendHashRoot, secrets.ErrMalformed),
-			sealedWithTx(ctx, tx))
-	}
-	// Opened as a root, its size checked, before it is sealed again: a row
-	// that holds something else is refused, not carried over.
-	root, err := openSendHashRoot(ctx, sealer, stored)
-	if errors.Is(err, ErrSendHashRoot) {
-		return false, sealedWith(err, sealedWithTx(ctx, tx))
-	}
-	if err != nil {
-		return false, err
-	}
-	if sealer.Current(envelope) {
-		clear(root)
-		return false, nil
-	}
-	resealed, err := sealer.Seal(ctx, SendHashRootBinding, root)
-	clear(root)
-	if err != nil {
-		return false, fmt.Errorf("store: seal the send-hash root: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE meta SET value = ? WHERE key = ?`,
-		base64.StdEncoding.EncodeToString(resealed), MetaSendHashRoot); err != nil {
-		return false, fmt.Errorf("store: keep the send-hash root: %w", err)
-	}
-	if err := recordSealedWithTx(ctx, tx, sealer); err != nil {
-		return false, err
-	}
-	return true, nil
+	return sendHashRoot.resealTx(ctx, tx, sealer)
 }
 
 // ReplaceSendHashRootTx puts a new root in place of one the configured keys
@@ -176,110 +101,5 @@ func ResealSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer
 // send repeated after the replacement is sent again, and one repeated with
 // its idempotency key is refused as that key reused.
 func ReplaceSendHashRootTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer, kmsKeyLost bool) error {
-	var stored string
-	err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRoot).Scan(&stored)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-	case err != nil:
-		return fmt.Errorf("store: read the send-hash root: %w", err)
-	default:
-		root, err := openSendHashRoot(ctx, sealer, stored)
-		if err == nil {
-			clear(root)
-			return ErrSendHashRootOpens
-		}
-		if !errors.Is(err, ErrSendHashRoot) {
-			return err
-		}
-		if errors.Is(err, secrets.ErrSealedElsewhere) && !kmsKeyLost {
-			return fmt.Errorf("%w: %w", ErrSendHashRootMayOpen, sealedWith(err, sealedWithTx(ctx, tx)))
-		}
-	}
-	fresh, err := sealSendHashRoot(ctx, sealer)
-	if err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		MetaSendHashRoot, fresh); err != nil {
-		return fmt.Errorf("store: keep the send-hash root: %w", err)
-	}
-	return recordSealedWithTx(ctx, tx, sealer)
-}
-
-// recordSealedWithTx keeps, beside the root just sealed, what sealed it.
-func recordSealedWithTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) error {
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-		MetaSendHashRootSealedWith, sealer.Describe()); err != nil {
-		return fmt.Errorf("store: record what sealed the send-hash root: %w", err)
-	}
-	return nil
-}
-
-// sealedWithTx is what the meta row says sealed the root, or "" when no row
-// says it (a root made before the row was kept) or it cannot be read: it is
-// only ever for a message.
-func sealedWithTx(ctx context.Context, tx *sql.Tx) string {
-	var v string
-	if err := tx.QueryRowContext(ctx, `SELECT value FROM meta WHERE key = ?`, MetaSendHashRootSealedWith).Scan(&v); err != nil {
-		return ""
-	}
-	return v
-}
-
-// metaOrEmpty is Meta for a message: "" for a row that is missing or cannot
-// be read.
-func (s *Store) metaOrEmpty(ctx context.Context, key string) string {
-	v, err := s.Meta(ctx, key)
-	if err != nil {
-		return ""
-	}
-	return v
-}
-
-// sealedWith adds to a root that does not open what sealed it, when the meta
-// row says so.
-func sealedWith(err error, recorded string) error {
-	if recorded == "" {
-		return err
-	}
-	return fmt.Errorf("%w (it was sealed with %s)", err, recorded)
-}
-
-// sealSendHashRoot makes a new root and seals it, as the meta row keeps it.
-func sealSendHashRoot(ctx context.Context, sealer secrets.Sealer) (string, error) {
-	root := make([]byte, SendHashRootLen)
-	//nolint:errcheck // crypto/rand.Read never returns an error
-	_, _ = rand.Read(root)
-	envelope, err := sealer.Seal(ctx, SendHashRootBinding, root)
-	clear(root)
-	if err != nil {
-		return "", fmt.Errorf("store: seal the send-hash root: %w", err)
-	}
-	return base64.StdEncoding.EncodeToString(envelope), nil
-}
-
-// openSendHashRoot opens a root as the meta row keeps it. Only what says the
-// root does not open with the configured keys is ErrSendHashRoot: a row that
-// is not base64, an envelope the sealer reports as not opening here
-// (secrets.DoesNotOpen), a plaintext of the wrong size. Every other error of
-// the sealer is returned as it is.
-func openSendHashRoot(ctx context.Context, sealer secrets.Sealer, stored string) ([]byte, error) {
-	envelope, err := base64.StdEncoding.DecodeString(stored)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSendHashRoot, secrets.ErrMalformed)
-	}
-	root, err := sealer.Open(ctx, SendHashRootBinding, envelope)
-	if secrets.DoesNotOpen(err) {
-		return nil, fmt.Errorf("%w: %w", ErrSendHashRoot, err)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("store: open the send-hash root: %w", err)
-	}
-	if len(root) != SendHashRootLen {
-		clear(root)
-		return nil, fmt.Errorf("%w: it is %d bytes, not %d", ErrSendHashRoot, len(root), SendHashRootLen)
-	}
-	return root, nil
+	return sendHashRoot.replaceTx(ctx, tx, sealer, kmsKeyLost)
 }

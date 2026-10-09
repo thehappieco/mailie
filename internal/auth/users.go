@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/thehappieco/mailie/internal/keyscheme"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -27,13 +28,17 @@ import (
 //
 // Nobody signs up without an invite. There is no public registration, no email
 // verification and no reset by email: an invite is printed by the CLI or made
-// in the console, it names the one address it is for, and it works once. A
-// forgotten password is set again by the operator, from the command line
-// (SetPassword).
+// in the console, it names the one address it is for, and it works once. The
+// password never reaches the server: the person's browser derives an auth key
+// from it, which the server keeps as a hash, and wraps the person's account
+// key with the rest (accountkeys.go, docs/key-scheme.md). A forgotten
+// password is the recovery code's to replace, and with both lost, the
+// operator's reset invitation (CreateReset) gives the person a new password
+// and a new account key.
 //
 // The one other way in is an identity provider an extension of the daemon
 // trusts (identities.go): a person who arrives that way has no password until
-// the operator sets one.
+// the operator gives them a reset invitation.
 
 // Role is a person's role on the instance: the self-hosted server's own
 // administration, apart from any workspace.
@@ -69,8 +74,7 @@ const MaxNameLength = 120
 // maxEmailLength is RFC 5321's limit on a forward path.
 const maxEmailLength = 254
 
-// User is a person who can sign in. The password hash never leaves this
-// package.
+// User is a person who can sign in. No hash or verifier leaves this package.
 type User struct {
 	ID       string
 	Email    string
@@ -79,8 +83,19 @@ type User struct {
 	Disabled bool
 	// HasPassword is false for a person who signs in only through an
 	// identity provider (SignInExternal) and has never been given a
-	// password: no password signs them in, and none can be changed.
+	// password: no password signs them in, and none can be changed. It is
+	// true for a person enrolled in the key scheme (Enrolled) and for one
+	// whose old password the server still checks, once, for the upgrade.
 	HasPassword bool
+	// Enrolled is a person enrolled in the key scheme (docs/key-scheme.md
+	// section 12): their password never reaches the server.
+	Enrolled bool
+	// SealID is the UUIDv4 every wrap and grant binds the person by: drawn
+	// once, never changed.
+	SealID string
+	// PublicKey is the person's account public key, 32 bytes, written once
+	// at their own enrolment; nil before.
+	PublicKey []byte
 	// PasswordChangedAt is zero for a person without a password.
 	PasswordChangedAt time.Time
 	CreatedAt         time.Time
@@ -111,6 +126,9 @@ type Users struct {
 	now        func() time.Time
 	source     workspace.Source
 	workspaces *workspace.Repository
+	// saltKey is K_salt: the key of the salt every address is answered
+	// (docs/key-scheme.md section 5.3).
+	saltKey []byte
 }
 
 // NewUsers builds the repository, with the local workspace source.
@@ -118,8 +136,21 @@ func NewUsers(s *store.Store) *Users { return NewUsersWithClock(s, s.Now) }
 
 // NewUsersWithClock builds the repository with an injected clock, for tests.
 func NewUsersWithClock(s *store.Store, now func() time.Time) *Users {
-	u := &Users{store: s, now: now}
+	key := make([]byte, keyscheme.KeyLen)
+	//nolint:errcheck // crypto/rand.Read never returns an error
+	_, _ = rand.Read(key)
+	u := &Users{store: s, now: now, saltKey: key}
 	return u.WithWorkspaceSource(nil)
+}
+
+// WithSaltKey sets the key of the salts addresses are answered: the daemon's
+// is the database's salt key (store.KDFSaltKey), so every address is answered
+// the same salt across restarts. Without it, a repository has a random one of
+// its own, which is what a test or a command that never answers a salt needs.
+// The key is copied.
+func (u *Users) WithSaltKey(key []byte) *Users {
+	u.saltKey = append([]byte(nil), key...)
+	return u
 }
 
 // WithWorkspaceSource sets where workspaces come from: what creating a person
@@ -161,8 +192,16 @@ func NormalizeName(s string) (string, error) {
 }
 
 // userColumns are a person as User holds them. Whether they have a password
-// is read from the hash, never the hash itself.
-const userColumns = `id, email, name, role, status, password_hash <> '', password_changed_at, created_at, updated_at`
+// is read from the hash and the enrolment, never the hash itself.
+const userColumns = `id, email, name, role, status, (password_hash <> '' OR zk_enrolled_at <> 0), password_changed_at,
+	created_at, updated_at, zk_enrolled_at <> 0, seal_id, public_key`
+
+// userFields are where userColumns scan into; status is the stored one.
+func userFields(user *User, status *string) []any {
+	return []any{&user.ID, &user.Email, &user.Name, &user.Role, status, &user.HasPassword,
+		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt},
+		&user.Enrolled, &user.SealID, &user.PublicKey}
+}
 
 // Get reads one user.
 func (u *Users) Get(ctx context.Context, id string) (User, error) {
@@ -233,182 +272,10 @@ func (u *Users) SetDisabled(ctx context.Context, id string, disabled bool) error
 	})
 }
 
-// SignIn checks an address and a password and starts a session.
-//
-// The shape is the security property, as in Keys.Authenticate: exactly one
-// Argon2id derivation whether or not the address exists, and one error for
-// every way of failing. A person without a password (SignInExternal) is one
-// more way of failing, at the same cost: verifyPassword checks against the
-// dummy and accepts nothing.
-func (u *Users) SignIn(ctx context.Context, email, password, userAgent string) (string, Session, User, error) {
-	var (
-		user   User
-		hash   string
-		status string
-	)
-	err := u.store.Reader().QueryRowContext(ctx,
-		`SELECT `+userColumns+`, password_hash FROM users WHERE email = ?`, strings.TrimSpace(email),
-	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status, &user.HasPassword,
-		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt}, &hash)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		if _, err := verifyPassword(ctx, password, dummyPasswordHash); err != nil {
-			return "", Session{}, User{}, err
-		}
-		return "", Session{}, User{}, ErrBadCredentials
-	case err != nil:
-		return "", Session{}, User{}, fmt.Errorf("auth: sign in: %w", err)
-	}
-
-	if status != userActive {
-		// Compared against the dummy rather than the real hash, so a
-		// disabled account cannot even be used to confirm its old password.
-		if _, err := verifyPassword(ctx, password, dummyPasswordHash); err != nil {
-			return "", Session{}, User{}, err
-		}
-		return "", Session{}, User{}, ErrBadCredentials
-	}
-	ok, err := verifyPassword(ctx, password, hash)
-	if err != nil {
-		return "", Session{}, User{}, err
-	}
-	if !ok {
-		return "", Session{}, User{}, ErrBadCredentials
-	}
-
-	var token string
-	var session Session
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		// Re-read under the write lock: the account may have been disabled
-		// while the hash ran, and a session must not outlive that.
-		var current string
-		if err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id = ?`, user.ID).Scan(&current); err != nil {
-			return fmt.Errorf("auth: sign in: %w", err)
-		}
-		if current != userActive {
-			return ErrBadCredentials
-		}
-		var err error
-		token, session, err = startSessionTx(ctx, tx, user.ID, userAgent, u.now(), SessionTTL)
-		return err
-	})
-	if err != nil {
-		return "", Session{}, User{}, err
-	}
-	return token, session, user, nil
-}
-
-// ChangePassword replaces a password that the caller proves they still know,
-// ends every session the user has — the one asking included — and starts a
-// new one.
-//
-// Everything goes, because the usual reason for changing a password is no
-// longer trusting where the old one was typed; a session opened under it that
-// survived the change would be that distrust ignored.
-//
-// A person without a password has none to prove, and is refused as a wrong
-// one is, after the same work: SetPassword is how they get one.
-func (u *Users) ChangePassword(ctx context.Context, userID, current, next, userAgent string) (string, Session, error) {
-	if err := CheckPassword(next); err != nil {
-		return "", Session{}, err
-	}
-	var hash, status string
-	err := u.store.Reader().QueryRowContext(ctx,
-		`SELECT password_hash, status FROM users WHERE id = ?`, userID).Scan(&hash, &status)
-	switch {
-	case errors.Is(err, sql.ErrNoRows):
-		return "", Session{}, ErrUserNotFound
-	case err != nil:
-		return "", Session{}, fmt.Errorf("auth: change password: %w", err)
-	}
-	ok, err := verifyPassword(ctx, current, hash)
-	if err != nil {
-		return "", Session{}, err
-	}
-	if !ok || status != userActive {
-		return "", Session{}, ErrBadCredentials
-	}
-	fresh, err := hashPassword(ctx, next)
-	if err != nil {
-		return "", Session{}, err
-	}
-
-	var token string
-	var session Session
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		now := u.now()
-		// The old hash is part of the condition: two changes racing each
-		// other must not both succeed against the same proof.
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET password_hash = ?, password_changed_at = ?, updated_at = ?
-			  WHERE id = ? AND status = ? AND password_hash = ?`,
-			fresh, now.Unix(), now.Unix(), userID, userActive, hash)
-		if err != nil {
-			return fmt.Errorf("auth: change password: %w", err)
-		}
-		if err := requireRow(res, ErrBadCredentials); err != nil {
-			return err
-		}
-		if _, err := revokeSessionsTx(ctx, tx, userID, now.Unix()); err != nil {
-			return err
-		}
-		token, session, err = startSessionTx(ctx, tx, userID, userAgent, now, SessionTTL)
-		return err
-	})
-	if err != nil {
-		return "", Session{}, err
-	}
-	return token, session, nil
-}
-
-// SetPassword replaces a person's password without asking for the old one,
-// and reports how many sessions it ended. It is how a forgotten password is
-// recovered, and only the operator reaches it: `mailserver user password
-// --bootstrap`, with the database open and the daemon stopped. No route calls
-// it, so nothing remote can set someone's password.
-//
-// It is also how a person who signs in through an identity provider, and
-// has no password, is given one.
-//
-// The rules and the hash are sign-up's. Every session the person has ends in
-// the same transaction, as with a change: whoever forgot a password may also
-// have left it somewhere, and a session opened under it must not outlive the
-// reset. A disabled person stays disabled; the new password signs in only if
-// they are enabled again.
-func (u *Users) SetPassword(ctx context.Context, userID, password string) (int, error) {
-	if err := CheckPassword(password); err != nil {
-		return 0, err
-	}
-	fresh, err := hashPassword(ctx, password)
-	if err != nil {
-		return 0, err
-	}
-	var ended int
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		now := u.now()
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET password_hash = ?, password_changed_at = ?, updated_at = ? WHERE id = ?`,
-			fresh, now.Unix(), now.Unix(), userID)
-		if err != nil {
-			return fmt.Errorf("auth: set password: %w", err)
-		}
-		if err := requireRow(res, ErrUserNotFound); err != nil {
-			return err
-		}
-		ended, err = revokeSessionsTx(ctx, tx, userID, now.Unix())
-		return err
-	})
-	if err != nil {
-		return 0, err
-	}
-	return ended, nil
-}
-
 func scanUser(row interface{ Scan(...any) error }) (User, error) {
 	var user User
 	var status string
-	err := row.Scan(&user.ID, &user.Email, &user.Name, &user.Role, &status, &user.HasPassword,
-		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt})
+	err := row.Scan(userFields(&user, &status)...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return User{}, err

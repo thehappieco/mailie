@@ -389,7 +389,12 @@ prompt after every sign-in that keys mailboxes.
 | Salts tell nothing outside the windows of section 5.9 | `account-go.json#mailie/decoy-salt/*` | `TestTheSaltIsOfTheAddressAsTheServerStoresIt` |
 
 The guarantees that need the server or the console's ceremonies are tested with the code that
-enforces them, in the next steps of phase 3: written-once columns; the step-up, that it proves
+enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
+`internal/auth/accountkeys_test.go` (the step-up and its window, a step-up as another person or
+another id. identity, a silent sign-in, the upgrade's one-way flag, written-once columns, the
+targets of salts and parameters, the reset and its last-reader guard), `internal/api/accountkeys_test.go`
+(no route answers a wrap to a session alone, the challenge, the ceremonies over REST and their
+limits) and `internal/store/migrate_thirteen_test.go`; the rest comes in the next steps of phase 3: written-once columns; the step-up, that it proves
 the session's own person (a step-up as another person or another id. identity is refused), that a
 silent sign-in does not freshen it, and that it guards every key written, the first key of a
 keyless mailbox included; who may give "read" and supply the key; the upgrade's one-way flag and

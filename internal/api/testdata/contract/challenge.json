@@ -1,0 +1,9 @@
+{
+  "kdf": {
+    "alg": "argon2id",
+    "m": 65536,
+    "p": 1,
+    "t": 3
+  },
+  "salt": "xTE_qsW8FKu2KiXn0N-qjg"
+}

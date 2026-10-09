@@ -14,9 +14,9 @@ func TestClosingAnAccountOverRESTIsForTheOperatorOrAnInstanceOwnerSignedIn(t *te
 	authtest.NewUser(t, h.store, "owner@example.com", auth.RoleOwner)
 	authtest.NewUser(t, h.store, "mo@example.com", auth.RoleMember)
 	ana := authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	owner := h.signIn(t, "owner@example.com", authtest.Password).Token
-	member := h.signIn(t, "mo@example.com", authtest.Password).Token
-	anas := h.signIn(t, "ana@example.com", authtest.Password).Token
+	owner := h.signIn(t, "owner@example.com").Token
+	member := h.signIn(t, "mo@example.com").Token
+	anas := h.signIn(t, "ana@example.com").Token
 	body := `{"email":"ana@example.com"}`
 	admin := h.key(t, auth.ScopeAdmin)
 	added := h.do(t, http.MethodPost, "/v1/accounts", admin, h.passwordAccount(t, "shared@mail.example"))

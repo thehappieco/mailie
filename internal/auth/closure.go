@@ -111,9 +111,12 @@ type Ended struct {
 }
 
 // Disable switches a person off and ends every way they had in: their status
-// becomes disabled, every live session is revoked, every live key they
-// created is revoked, in whichever workspace, and every invite they made
-// that is still waiting expires, in one transaction. A disabled person still signed in somewhere, or
+// becomes disabled, every live session is revoked, every ticket of a
+// ceremony under way and every reset invitation for them is deleted, every
+// live key they created is revoked, in whichever workspace, and every invite
+// they made that is still waiting expires, in one transaction. What they
+// enrolled with (their account key, verifiers and wraps) stays: switched back
+// on, they sign in with their password again. A disabled person still signed in somewhere, or
 // holding a key or an invite that would work again if they were switched
 // back on, would not be disabled. The mailboxes of their personal workspace
 // stop syncing, since they are no longer active; a team mailbox whose consent
@@ -154,6 +157,14 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		}
 		if out.Sessions, err = revokeSessionsTx(ctx, tx, id, now); err != nil {
 			return err
+		}
+		// Deleted rather than left to fail: a reset invitation would work
+		// again if the person were switched back on, as a key would.
+		if err := dropTicketsTx(ctx, tx, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM reset_invites WHERE user_id = ?`, id); err != nil {
+			return fmt.Errorf("auth: delete the user's reset invitations: %w", err)
 		}
 		// Revoked rather than left to fail: switching the person back on
 		// must not bring a key back, any more than it brings a session back.
@@ -200,7 +211,9 @@ type Removed struct {
 }
 
 // DeleteTx deletes a person inside the caller's transaction: their sessions,
-// the keys they created, revoked and without their name — those of their
+// with the row the person goes everything they enrolled with in the key
+// scheme (their seal id, public key, verifiers and wraps) and their tickets
+// and reset invitations, the keys they created, revoked and without their name — those of their
 // personal workspace and of the teams they were alone in go with those
 // workspaces —, every invite for their address — the one they signed up with and any other,
 // used or not — the identities they signed in with through a provider and the

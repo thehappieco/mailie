@@ -21,7 +21,7 @@ import (
 
 func signUp(t *testing.T, users *auth.Users, code, email string) auth.User {
 	t.Helper()
-	_, _, user, err := users.SignUp(t.Context(), auth.SignUpRequest{Invite: code, Email: email, Password: "long enough password"})
+	_, _, user, err := users.SignUp(t.Context(), signUpRequest(t, code, email))
 	if err != nil {
 		t.Fatalf("sign up %s: %v", email, err)
 	}
@@ -68,7 +68,7 @@ func TestATeamInviteSignsUpANewPersonOnlyWhenTheOperatorOrAnInstanceOwnerMadeIt(
 	authtest.NewUser(t, db, "bea@example.org", auth.RoleMember)
 	team := teamOf(t, db, mallory.ID)
 	signUpWith := func(code, email string) error {
-		_, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{Invite: code, Email: email, Password: "long enough password"})
+		_, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, email))
 		return err
 	}
 	exists := func(email string) bool {
@@ -203,8 +203,7 @@ func TestAnExistingPersonJoinsByAcceptingATeamInvite(t *testing.T) {
 	code, _ := teamInvite(t, users, "bea@example.org", team.ID, workspace.RoleMember)
 
 	// Signing up again is refused: the address has an account.
-	if _, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{Invite: code, Email: "bea@example.org",
-		Password: "long enough password"}); !errors.Is(err, auth.ErrEmailTaken) {
+	if _, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, "bea@example.org")); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Fatalf("signing up with an address that has an account: %v", err)
 	}
 	joined, err := users.AcceptInvite(t.Context(), bea.ID, code)

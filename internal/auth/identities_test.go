@@ -3,8 +3,10 @@ package auth_test
 import (
 	"bytes"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -75,7 +77,8 @@ func TestAnExternalSessionNeverOutlivesItsTTL(t *testing.T) {
 	// an expiry later, whatever does the writing. An update; an upsert; and
 	// a replace, which deletes the row it collides with, under the
 	// session's id or its token, and would not fire an update trigger.
-	later := `SELECT %s, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at + 3600, revoked_at
+	later := `SELECT %s, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at + 3600, revoked_at,
+	            authenticated_at, stepup_mark_at
 	            FROM sessions WHERE id = ?`
 	for _, stmt := range []string{
 		`UPDATE sessions SET expires_at = expires_at + 3600 WHERE id = ?`,
@@ -149,7 +152,7 @@ func TestANewExternalPersonIsAMemberWithTheirWorkspaceAndNoPassword(t *testing.T
 		!cy.PasswordChangedAt.IsZero() || cy.Disabled {
 		t.Fatalf("created %+v", cy)
 	}
-	if got, err := users.Get(t.Context(), cy.ID); err != nil || got != cy {
+	if got, err := users.Get(t.Context(), cy.ID); err != nil || !reflect.DeepEqual(got, cy) {
 		t.Fatalf("stored %+v (%v), want %+v", got, err, cy)
 	}
 	if _, err := workspace.NewRepository(db, nil).PersonalOf(t.Context(), cy.ID); err != nil {
@@ -246,8 +249,9 @@ func rowsOf(t *testing.T, db *store.Store) []string {
 
 func TestAnExternalIdentityNeverTakesOverAnExistingAddress(t *testing.T) {
 	users, db, _ := newUsers(t)
-	// Ana signed up with a password and is signed in; Cy came through the
-	// provider, and signs in with the identity that created her.
+	// Ana signed up with a password, enrolled in the key scheme, and is
+	// signed in; Cy came through the provider, and signs in with the
+	// identity that created her.
 	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
 	anaToken := authtest.SignIn(t, users, "ana@example.com")
 	cyToken, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
@@ -267,7 +271,7 @@ func TestAnExternalIdentityNeverTakesOverAnExistingAddress(t *testing.T) {
 		"Cy's address from another provider":  withIssuer(external("subject-of-someone", "Cy@example.com"), other),
 	} {
 		token, session, user, err := users.SignInExternal(t.Context(), in)
-		if !errors.Is(err, auth.ErrEmailTaken) || token != "" || session != (auth.Session{}) || user != (auth.User{}) {
+		if !errors.Is(err, auth.ErrEmailTaken) || token != "" || session != (auth.Session{}) || user.ID != "" {
 			t.Errorf("%s: signed in %+v (%v), want ErrEmailTaken and nobody", name, user, err)
 		}
 	}
@@ -282,8 +286,8 @@ func TestAnExternalIdentityNeverTakesOverAnExistingAddress(t *testing.T) {
 	}
 	// Each still signs in as before: Ana with her password, both with their
 	// sessions, and Cy with the one identity that signs her in.
-	if _, _, user, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); err != nil || user.ID != ana.ID {
-		t.Errorf("Ana's password: %+v, %v", user, err)
+	if login, err := users.Login(t.Context(), "ana@example.com", authtest.AuthKey, "test"); err != nil || login.User.ID != ana.ID {
+		t.Errorf("Ana's password: %+v, %v", login.User, err)
 	}
 	for token, id := range map[string]string{anaToken: ana.ID, cyToken: cy.ID} {
 		if p, err := users.AuthenticateSession(t.Context(), token); err != nil || p.UserID != id {
@@ -345,43 +349,65 @@ func TestAPasswordlessPersonCannotSignInWithAnyPassword(t *testing.T) {
 		mu.Unlock()
 		return argon2.IDKey(password, salt, 1, 8, threads, keyLen)
 	})
-	memory, passes := auth.PasswordCostForTest()
+	verifierMemory, verifierPasses := auth.VerifierCostForTest()
+	passwordMemory, passwordPasses := auth.PasswordCostForTest()
 	// Every one refused, as an unknown address is: one error, and exactly one
 	// derivation at the full cost, so the answer does not tell a guesser
-	// that this address signs in another way.
+	// that this address signs in another way. Neither an auth key nor, at
+	// the upgrade, a password in clear.
+	for _, key := range []string{authtest.AuthKey, base64.RawURLEncoding.EncodeToString(make([]byte, 32))} {
+		calls = nil
+		if _, err := users.Login(t.Context(), "cy@example.com", key, "test"); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Errorf("an auth key signed in: %v", err)
+		}
+		if len(calls) != 1 || calls[0].memory != verifierMemory || calls[0].passes != verifierPasses {
+			t.Errorf("an auth key: derivations %+v, want exactly one at m=%d t=%d", calls, verifierMemory, verifierPasses)
+		}
+	}
 	for _, password := range []string{"", " ", authtest.Password, "no password hashes to this value", "mailie-dummy-sal"} {
 		calls = nil
-		_, _, _, err := users.SignIn(t.Context(), "cy@example.com", password, "test")
-		if !errors.Is(err, auth.ErrBadCredentials) {
-			t.Errorf("password %q signed in: %v", password, err)
+		if _, err := users.LegacySignIn(t.Context(), "cy@example.com", password); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Errorf("password %q was taken for an upgrade: %v", password, err)
 		}
-		if len(calls) != 1 || calls[0].memory != memory || calls[0].passes != passes {
-			t.Errorf("password %q: derivations %+v, want exactly one at m=%d t=%d", password, calls, memory, passes)
+		if len(calls) != 1 || calls[0].memory != passwordMemory || calls[0].passes != passwordPasses {
+			t.Errorf("password %q: derivations %+v, want exactly one at m=%d t=%d", password, calls, passwordMemory, passwordPasses)
 		}
 	}
-	// Nor is there a current password to prove for a change.
-	calls = nil
-	if _, _, err := users.ChangePassword(t.Context(), cy.ID, "", "a brand new password", "test"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Errorf("a password was set by proving none: %v", err)
+	// Nor is there a current password to prove for a change, and the
+	// challenge answers her address as it answers one with no account.
+	p, err := users.AuthenticateSession(t.Context(), mustSignInExternal(t, users, "subject-of-cy", "cy@example.com"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(calls) != 1 || calls[0].memory != memory {
-		t.Errorf("refusing the change cost %+v, want one derivation at full cost", calls)
+	if _, err := users.BeginPasswordChange(t.Context(), cy.ID, p.SessionID, authtest.AuthKey); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Errorf("a password change began by proving none: %v", err)
 	}
-	if n := count(t, db, `SELECT count(*) FROM sessions WHERE user_id = ? AND revoked_at = 0`, cy.ID); n != 1 {
-		t.Errorf("%d live sessions, want the one the provider's sign-in started", n)
+	if c, err := users.Challenge(t.Context(), "cy@example.com"); err != nil || c.Upgrade {
+		t.Errorf("challenge = %+v, %v; want the plain answer", c, err)
 	}
+}
+
+// mustSignInExternal signs a linked identity in again and returns the token.
+func mustSignInExternal(t *testing.T, users *auth.Users, subject, email string) string {
+	t.Helper()
+	token, _, _ := signInExternal(t, users, external(subject, email))
+	return token
 }
 
 func TestTheOperatorCanGiveAPasswordlessPersonAPassword(t *testing.T) {
 	cheapKDF(t)
 	users, _, _ := newUsers(t)
 	_, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
-	if _, err := users.SetPassword(t.Context(), cy.ID, "a brand new password"); err != nil {
-		t.Fatalf("SetPassword: %v", err)
+	code, _, err := users.CreateReset(t.Context(), cy.ID, false, "cli")
+	if err != nil {
+		t.Fatalf("CreateReset: %v", err)
 	}
-	_, _, user, err := users.SignIn(t.Context(), "cy@example.com", "a brand new password", "test")
-	if err != nil || !user.HasPassword || user.PasswordChangedAt.IsZero() {
-		t.Fatalf("signing in with the password set: %+v, %v", user, err)
+	if _, _, _, err := users.CompleteReset(t.Context(), code, "cy@example.com", authtest.Enrolment(t), "test"); err != nil {
+		t.Fatalf("CompleteReset: %v", err)
+	}
+	login, err := users.Login(t.Context(), "cy@example.com", authtest.AuthKey, "test")
+	if err != nil || !login.User.HasPassword || !login.User.Enrolled || login.User.PasswordChangedAt.IsZero() {
+		t.Fatalf("signing in with the password set: %+v, %v", login.User, err)
 	}
 	// And the provider still signs her in.
 	if _, _, again := signInExternal(t, users, external("subject-of-cy", "cy@example.com")); again.ID != cy.ID || !again.HasPassword {

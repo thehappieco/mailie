@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,11 +24,18 @@ func newUsers(t *testing.T) (*auth.Users, *store.Store, *time.Time) {
 	s := storetest.New(t)
 	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
 	clock := &now
-	return auth.NewUsersWithClock(s, func() time.Time { return *clock }), s, clock
+	users := auth.NewUsersWithClock(s, func() time.Time { return *clock }).WithSaltKey(authtest.SaltKey)
+	return users, s, clock
+}
+
+// signUpRequest is a sign-up request for an invite, with a fresh enrolment.
+func signUpRequest(t *testing.T, code, email string) auth.SignUpRequest {
+	t.Helper()
+	return auth.SignUpRequest{Invite: code, Email: email, Enrolment: authtest.Enrolment(t), UserAgent: "test"}
 }
 
 // cheapKDF stands in for Argon2id where a test is about what is hashed and
-// when, not about the hash: a real sign-up costs over a second under -race.
+// when, not about the hash: a real sign-up hashes two verifiers at 19 MiB.
 func cheapKDF(t *testing.T) {
 	t.Helper()
 	auth.SetDeriveKeyForTest(t, func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
@@ -47,9 +53,10 @@ func invite(t *testing.T, users *auth.Users, email string, role auth.Role) strin
 	return code
 }
 
-func TestPasswordHashingIsBoundedToTwoAtATime(t *testing.T) {
-	// 64 MiB a hash: a burst of sign-ins with no bound is a way to run the
-	// daemon out of memory that the rate limiter only slows down.
+func TestHashingPeoplesSecretsIsBoundedToTwoAtATime(t *testing.T) {
+	// 19 MiB a verifier and 64 MiB the upgrade's old password: a burst of
+	// sign-ins with no bound is a way to run the daemon out of memory that
+	// the rate limiter only slows down.
 	var running, peak atomic.Int32
 	release := make(chan struct{})
 	started := make(chan struct{}, 8)
@@ -70,7 +77,7 @@ func TestPasswordHashingIsBoundedToTwoAtATime(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 6 {
 		wg.Go(func() {
-			if _, err := auth.HashPasswordForTest(context.Background(), "correct horse battery"); err != nil {
+			if _, err := auth.HashVerifierForTest(context.Background(), "correct horse battery"); err != nil {
 				t.Errorf("hash: %v", err)
 			}
 		})
@@ -87,7 +94,7 @@ func TestPasswordHashingIsBoundedToTwoAtATime(t *testing.T) {
 	// the queue instead of holding a place in it.
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if _, err := auth.HashPasswordForTest(ctx, "correct horse battery"); !errors.Is(err, context.Canceled) {
+	if _, err := auth.HashVerifierForTest(ctx, "correct horse battery"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("a cancelled caller waiting for a slot got %v, want context.Canceled", err)
 	}
 
@@ -98,17 +105,19 @@ func TestPasswordHashingIsBoundedToTwoAtATime(t *testing.T) {
 	}
 }
 
-func TestAnUnknownEmailAnswersLikeAWrongPassword(t *testing.T) {
-	// Same error, and the same work: exactly one derivation at the full cost
-	// for an address with no account, a wrong password, and a disabled
-	// account. A miss that returned early would time out as a free oracle for
-	// which addresses have accounts.
+func TestEveryWayASignInFailsLooksTheSame(t *testing.T) {
+	// Same error, and the same work: exactly one derivation at a verifier's
+	// full cost for an address with no account, a disabled person, a person
+	// who has not enrolled (their next sign-in is the upgrade's) and a wrong
+	// auth key. A miss that returned early would time out as a free oracle
+	// for which addresses have accounts.
 	users, db, _ := newUsers(t)
 	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	gone := authtest.NewUser(t, db, "gone@example.com", auth.RoleMember)
 	if err := users.SetDisabled(t.Context(), gone.ID, true); err != nil {
 		t.Fatal(err)
 	}
+	authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
 
 	type call struct{ memory, passes uint32 }
 	var calls []call
@@ -120,14 +129,16 @@ func TestAnUnknownEmailAnswersLikeAWrongPassword(t *testing.T) {
 		return argon2.IDKey(password, salt, 1, 8, threads, keyLen)
 	})
 
-	memory, passes := auth.PasswordCostForTest()
-	for _, attempt := range []struct{ name, email, password string }{
-		{"unknown address", "nobody@example.com", authtest.Password},
-		{"disabled account", "gone@example.com", authtest.Password},
-		{"wrong password", "ana@example.com", "not the password at all"},
+	memory, passes := auth.VerifierCostForTest()
+	wrong := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	for _, attempt := range []struct{ name, email, key string }{
+		{"unknown address", "nobody@example.com", authtest.AuthKey},
+		{"disabled person", "gone@example.com", authtest.AuthKey},
+		{"person not enrolled", "old@example.com", authtest.AuthKey},
+		{"wrong auth key", "ana@example.com", wrong},
 	} {
 		calls = nil
-		_, _, _, err := users.SignIn(t.Context(), attempt.email, attempt.password, "test")
+		_, err := users.Login(t.Context(), attempt.email, attempt.key, "test")
 		if !errors.Is(err, auth.ErrBadCredentials) {
 			t.Errorf("%s: err = %v, want ErrBadCredentials", attempt.name, err)
 		}
@@ -135,9 +146,9 @@ func TestAnUnknownEmailAnswersLikeAWrongPassword(t *testing.T) {
 			t.Errorf("%s: %d derivations, want exactly 1", attempt.name, len(calls))
 			continue
 		}
-		// The test users carry a cheap hash, so the wrong password is checked
-		// at their stored cost; the other two must be at the full one.
-		if attempt.name != "wrong password" && (calls[0].memory != memory || calls[0].passes != passes) {
+		// The test users carry a cheap verifier, so the wrong key is checked
+		// at its stored cost; the others must be at the full one.
+		if attempt.name != "wrong auth key" && (calls[0].memory != memory || calls[0].passes != passes) {
 			t.Errorf("%s: derived at m=%d t=%d, want the real cost m=%d t=%d",
 				attempt.name, calls[0].memory, calls[0].passes, memory, passes)
 		}
@@ -150,7 +161,7 @@ func TestAnInviteWorksOnceAndOnlyForItsEmail(t *testing.T) {
 	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
 
-	req := auth.SignUpRequest{Invite: code, Email: "mallory@example.com", Name: "M", Password: "long enough password"}
+	req := signUpRequest(t, code, "mallory@example.com")
 	if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, auth.ErrInviteInvalid) {
 		t.Fatalf("another address redeemed the invite: %v", err)
 	}
@@ -176,9 +187,7 @@ func TestAnExpiredInviteIsRefused(t *testing.T) {
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
 
 	*clock = clock.Add(auth.InviteTTL + time.Second)
-	_, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{
-		Invite: code, Email: "ana@example.com", Password: "long enough password",
-	})
+	_, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, "ana@example.com"))
 	if !errors.Is(err, auth.ErrInviteInvalid) {
 		t.Fatalf("err = %v, want ErrInviteInvalid", err)
 	}
@@ -195,9 +204,7 @@ func TestTheFirstSignUpIsNoOwnerUnlessInvitedAsOne(t *testing.T) {
 
 	signUp := func(code, email string) auth.User {
 		t.Helper()
-		_, _, user, err := users.SignUp(t.Context(), auth.SignUpRequest{
-			Invite: code, Email: email, Password: "long enough password",
-		})
+		_, _, user, err := users.SignUp(t.Context(), signUpRequest(t, code, email))
 		if err != nil {
 			t.Fatalf("sign up %s: %v", email, err)
 		}
@@ -211,21 +218,41 @@ func TestTheFirstSignUpIsNoOwnerUnlessInvitedAsOne(t *testing.T) {
 	}
 }
 
-func TestAWeakPasswordIsRefusedBeforeTheInviteIsSpent(t *testing.T) {
+func TestAnEnrolmentOutOfShapeIsRefusedBeforeTheInviteIsSpent(t *testing.T) {
 	cheapKDF(t)
 	users, db, _ := newUsers(t)
 	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
 
-	for _, password := range []string{"short", strings.Repeat("x", auth.MaxPasswordBytes+1)} {
-		_, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{Invite: code, Email: "ana@example.com", Password: password})
-		if !errors.Is(err, auth.ErrPasswordTooShort) && !errors.Is(err, auth.ErrPasswordTooLong) {
-			t.Fatalf("password of %d bytes: err = %v", len(password), err)
+	lowOrder := make([]byte, 32) // the all-zero point: no secret is agreed with it
+	for name, c := range map[string]struct {
+		change func(*auth.Enrolment)
+		want   error
+	}{
+		"an auth key of 31 bytes": {func(e *auth.Enrolment) {
+			e.AuthKey = base64.RawURLEncoding.EncodeToString(make([]byte, 31))
+		}, auth.ErrMalformedSecret},
+		"an auth key with padding": {func(e *auth.Enrolment) { e.AuthKey += "=" }, auth.ErrMalformedSecret},
+		"the password itself":      {func(e *auth.Enrolment) { e.AuthKey = authtest.Password }, auth.ErrMalformedSecret},
+		"a proof of 33 bytes": {func(e *auth.Enrolment) {
+			e.RecoveryProof = base64.RawURLEncoding.EncodeToString(make([]byte, 33))
+		}, auth.ErrMalformedSecret},
+		"cheaper parameters":       {func(e *auth.Enrolment) { e.KDF.M = 32768 }, auth.ErrKDFNotCurrent},
+		"more passes":              {func(e *auth.Enrolment) { e.KDF.T = 4 }, auth.ErrKDFNotCurrent},
+		"a low-order public key":   {func(e *auth.Enrolment) { e.PublicKey = lowOrder }, auth.ErrInvalidPublicKey},
+		"a public key of 31 bytes": {func(e *auth.Enrolment) { e.PublicKey = e.PublicKey[:31] }, auth.ErrInvalidPublicKey},
+		"a platform wrap's header": {func(e *auth.Enrolment) { e.PasswordWrap[0] = 0x03 }, auth.ErrInvalidWrap},
+		"a recovery wrap of 60 bytes": {func(e *auth.Enrolment) {
+			e.RecoveryWrap = e.RecoveryWrap[:60]
+		}, auth.ErrInvalidWrap},
+	} {
+		req := signUpRequest(t, code, "ana@example.com")
+		c.change(&req.Enrolment)
+		if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, c.want) {
+			t.Errorf("%s: err = %v, want %v", name, err, c.want)
 		}
 	}
-	if _, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{
-		Invite: code, Email: "ana@example.com", Password: "long enough password",
-	}); err != nil {
+	if _, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, "ana@example.com")); err != nil {
 		t.Fatalf("the invite did not survive the refused attempts: %v", err)
 	}
 }
@@ -344,194 +371,6 @@ func TestADisabledUsersSessionsStopWorking(t *testing.T) {
 	}
 }
 
-func TestAPasswordChangeEndsEverySessionAndIssuesANewOne(t *testing.T) {
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	laptop := authtest.SignIn(t, users, "ana@example.com")
-	phone := authtest.SignIn(t, users, "ana@example.com")
-
-	if _, _, err := users.ChangePassword(t.Context(), ana.ID, "wrong", "a brand new password", "test"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Fatalf("a wrong current password was accepted: %v", err)
-	}
-	if _, err := users.AuthenticateSession(t.Context(), laptop); err != nil {
-		t.Fatalf("a refused change still ended a session: %v", err)
-	}
-
-	fresh, _, err := users.ChangePassword(t.Context(), ana.ID, authtest.Password, "a brand new password", "test")
-	if err != nil {
-		t.Fatalf("ChangePassword: %v", err)
-	}
-	for name, token := range map[string]string{"laptop": laptop, "phone": phone} {
-		if _, err := users.AuthenticateSession(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
-			t.Errorf("the %s session survived the change: %v", name, err)
-		}
-	}
-	if _, err := users.AuthenticateSession(t.Context(), fresh); err != nil {
-		t.Errorf("the new session does not work: %v", err)
-	}
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Errorf("the old password still signs in: %v", err)
-	}
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); err != nil {
-		t.Errorf("the new password does not sign in: %v", err)
-	}
-}
-
-// passwordState is what a password reset changes: the stored hash, when it
-// last changed, and how many of the person's sessions are still live.
-func passwordState(t *testing.T, db *store.Store, userID string) string {
-	t.Helper()
-	var hash string
-	var changed, live int64
-	if err := db.Reader().QueryRowContext(t.Context(),
-		`SELECT password_hash, password_changed_at,
-		        (SELECT count(*) FROM sessions WHERE user_id = users.id AND revoked_at = 0)
-		   FROM users WHERE id = ?`, userID).Scan(&hash, &changed, &live); err != nil {
-		t.Fatal(err)
-	}
-	return fmt.Sprintf("%s|%d|%d", hash, changed, live)
-}
-
-func TestAPasswordSetByTheOperatorSignsInAndTheOldOneNoLongerDoes(t *testing.T) {
-	cheapKDF(t)
-	users, db, clock := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	*clock = clock.Add(time.Hour)
-
-	if _, err := users.SetPassword(t.Context(), ana.ID, "a brand new password"); err != nil {
-		t.Fatalf("SetPassword: %v", err)
-	}
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", authtest.Password, "test"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Errorf("the old password still signs in: %v", err)
-	}
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); err != nil {
-		t.Errorf("the new password does not sign in: %v", err)
-	}
-	if got, err := users.Get(t.Context(), ana.ID); err != nil || !got.PasswordChangedAt.Equal(clock.Truncate(time.Second)) {
-		t.Errorf("password_changed_at = %v (%v), want %v", got.PasswordChangedAt, err, *clock)
-	}
-	// Sign-up's hash, at sign-up's cost: the reset is not a cheaper door.
-	var hash string
-	if err := db.Reader().QueryRowContext(t.Context(), `SELECT password_hash FROM users WHERE id = ?`, ana.ID).Scan(&hash); err != nil {
-		t.Fatal(err)
-	}
-	memory, passes := auth.PasswordCostForTest()
-	if want := fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=1$", argon2.Version, memory, passes); !strings.HasPrefix(hash, want) {
-		t.Errorf("stored %q, want a PHC string starting %q", hash[:min(len(hash), 40)], want)
-	}
-}
-
-func TestSettingAPasswordEndsEverySessionOfThatPersonAndNobodyElses(t *testing.T) {
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	authtest.NewUser(t, db, "bob@example.com", auth.RoleMember)
-	laptop := authtest.SignIn(t, users, "ana@example.com")
-	phone := authtest.SignIn(t, users, "ana@example.com")
-	bobs := authtest.SignIn(t, users, "bob@example.com")
-
-	ended, err := users.SetPassword(t.Context(), ana.ID, "a brand new password")
-	if err != nil {
-		t.Fatalf("SetPassword: %v", err)
-	}
-	if ended != 2 {
-		t.Errorf("ended %d sessions, want 2", ended)
-	}
-	for name, token := range map[string]string{"laptop": laptop, "phone": phone} {
-		if _, err := users.AuthenticateSession(t.Context(), token); !errors.Is(err, auth.ErrInvalidSession) {
-			t.Errorf("ana's %s session survived the reset: %v", name, err)
-		}
-	}
-	if _, err := users.AuthenticateSession(t.Context(), bobs); err != nil {
-		t.Errorf("bob's session ended with ana's reset: %v", err)
-	}
-}
-
-func TestAShortPasswordIsRefusedAndNothingChanges(t *testing.T) {
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	token := authtest.SignIn(t, users, "ana@example.com")
-	before := passwordState(t, db, ana.ID)
-
-	for password, want := range map[string]error{
-		"too short":               auth.ErrPasswordTooShort,
-		strings.Repeat("x", 1025): auth.ErrPasswordTooLong,
-		"ninechars":               auth.ErrPasswordTooShort,
-		strings.Repeat("é", 9):    auth.ErrPasswordTooShort, // characters, not bytes
-	} {
-		if _, err := users.SetPassword(t.Context(), ana.ID, password); !errors.Is(err, want) {
-			t.Errorf("SetPassword(%d bytes) = %v, want %v", len(password), err, want)
-		}
-	}
-	if after := passwordState(t, db, ana.ID); after != before {
-		t.Errorf("a refused password changed something:\nbefore %s\nafter  %s", before, after)
-	}
-	if _, err := users.AuthenticateSession(t.Context(), token); err != nil {
-		t.Errorf("a refused password ended a session: %v", err)
-	}
-}
-
-func TestAPasswordThatIsNotUTF8IsRefusedAndNothingChanges(t *testing.T) {
-	// "contraseña2026" in Latin-1: no sign-in could ever present these
-	// bytes, since the console sends UTF-8 and JSON turns \xf1 into U+FFFD.
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	token := authtest.SignIn(t, users, "ana@example.com")
-	before := passwordState(t, db, ana.ID)
-
-	if err := auth.CheckPassword("contrase\xf1a2026"); !errors.Is(err, auth.ErrPasswordNotUTF8) {
-		t.Errorf("CheckPassword(Latin-1) = %v, want ErrPasswordNotUTF8", err)
-	}
-	if _, err := users.SetPassword(t.Context(), ana.ID, "contrase\xf1a2026"); !errors.Is(err, auth.ErrPasswordNotUTF8) {
-		t.Errorf("SetPassword(Latin-1) = %v, want ErrPasswordNotUTF8", err)
-	}
-	if after := passwordState(t, db, ana.ID); after != before {
-		t.Errorf("a refused password changed something:\nbefore %s\nafter  %s", before, after)
-	}
-	if _, err := users.AuthenticateSession(t.Context(), token); err != nil {
-		t.Errorf("a refused password ended a session: %v", err)
-	}
-	if err := auth.CheckPassword("contraseña2026"); err != nil {
-		t.Errorf("the same password in UTF-8 is refused: %v", err)
-	}
-}
-
-func TestSettingAPasswordKeepsADisabledPersonDisabled(t *testing.T) {
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	if err := users.SetDisabled(t.Context(), ana.ID, true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := users.SetPassword(t.Context(), ana.ID, "a brand new password"); err != nil {
-		t.Fatalf("SetPassword: %v", err)
-	}
-	if got, err := users.Get(t.Context(), ana.ID); err != nil || !got.Disabled {
-		t.Errorf("the reset enabled the person again: %+v, %v", got, err)
-	}
-	if _, _, _, err := users.SignIn(t.Context(), "ana@example.com", "a brand new password", "test"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Errorf("a disabled person signed in with the new password: %v", err)
-	}
-}
-
-func TestSettingAPasswordForNobodyChangesNothing(t *testing.T) {
-	cheapKDF(t)
-	users, db, _ := newUsers(t)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	authtest.SignIn(t, users, "ana@example.com")
-	before := passwordState(t, db, ana.ID)
-
-	if _, err := users.SetPassword(t.Context(), "usr_0000000000000000", "a brand new password"); !errors.Is(err, auth.ErrUserNotFound) {
-		t.Errorf("SetPassword for nobody = %v, want ErrUserNotFound", err)
-	}
-	if after := passwordState(t, db, ana.ID); after != before {
-		t.Errorf("a reset for nobody changed somebody:\nbefore %s\nafter  %s", before, after)
-	}
-}
-
 func TestSigningOutEndsOnlyThatSessionUnlessAskedForAll(t *testing.T) {
 	users, db, _ := newUsers(t)
 	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
@@ -580,7 +419,7 @@ func TestAnInviteLinkCarriesItsSecretsInTheFragment(t *testing.T) {
 	}
 }
 
-func TestAFullPasswordQueueIsRefusedAtOnce(t *testing.T) {
+func TestAFullHashingQueueIsRefusedAtOnce(t *testing.T) {
 	// Two hashing and a few waiting is a second or two. Anything beyond that
 	// is an attack filling the queue, and a request behind it is told to come
 	// back rather than held until its deadline.
@@ -597,7 +436,7 @@ func TestAFullPasswordQueueIsRefusedAtOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	for range running + queue {
 		wg.Go(func() {
-			if _, err := auth.HashPasswordForTest(context.Background(), "correct horse battery"); err != nil {
+			if _, err := auth.HashVerifierForTest(context.Background(), "correct horse battery"); err != nil {
 				t.Errorf("a queued hash failed: %v", err)
 			}
 		})
@@ -615,7 +454,7 @@ func TestAFullPasswordQueueIsRefusedAtOnce(t *testing.T) {
 	}
 
 	start := time.Now()
-	if _, err := auth.HashPasswordForTest(t.Context(), "correct horse battery"); !errors.Is(err, auth.ErrHashBusy) {
+	if _, err := auth.HashVerifierForTest(t.Context(), "correct horse battery"); !errors.Is(err, auth.ErrHashBusy) {
 		t.Errorf("a hash behind a full queue: %v, want ErrHashBusy", err)
 	}
 	if waited := time.Since(start); waited > time.Second {

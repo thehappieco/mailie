@@ -8,7 +8,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 
 - `cmd/mailserver` — one binary: `serve`, `account`, `apikey`, `user`, `migrate`,
   `rewrap-credentials`, `backup`, `mcp connect|install`. The CLI is a REST client of the daemon; only
-  `apikey create --bootstrap`, `user invite|disable|delete|password --bootstrap`, `migrate` and
+  `apikey create --bootstrap`, `user invite|disable|delete|password --bootstrap` (`password` prints a
+  reset invitation, never sets one), `migrate` and
   `rewrap-credentials` open the database directly, and they refuse to run while the daemon is up.
   The one exception to the lock is `backup`: it reads the database with the daemon up, through a
   `mode=ro` connection that writes nothing, and takes no lock. `backup` and `backup restore` load
@@ -33,8 +34,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
   `PRAGMA user_version`, FTS5.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
-  three purposes, `credential/oauth-token`, `credential/password` and `send/hash-root`, and a ref,
-  a credential's account id, both held to a key service's encryption-context rule by every sealer;
+  four purposes, `credential/oauth-token`, `credential/password`, `send/hash-root` and
+  `auth/kdf-salt-key`, and a ref, a credential's account id or a meta row, both held to a key
+  service's encryption-context rule by every sealer;
   `Knows`/`Current` read only the header) and a `Composite` that seals with its active sealer and
   opens what any of its sealers knows. An envelope that does not open is only `ErrDecrypt`,
   `ErrUnknownKey` or `ErrMalformed` (`DoesNotOpen`); any other error is a sealer that could not
@@ -60,9 +62,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
   (`read`/`write`/`send`, holding its mailboxes in `key_access`, `internal/workspace/keys.go`);
-  `Principal.IsInstance` means the operator workspace's. Also the console's people: users (Argon2id password
-  on the server, instance roles `owner`/`member`), sessions (a 43-character opaque token stored as
-  SHA-256, 14 days at most, never extended) and single-use invites, to the instance or into a team.
+  `Principal.IsInstance` means the operator workspace's. Also the console's people: users (instance
+  roles `owner`/`member`; a password the server never receives: the key scheme's ceremonies,
+  `accountkeys.go`, store an auth verifier, the account public key written once, the password and
+  recovery wraps, the target salt and parameters; an old server-side password hash is checked only
+  by the upgrade, once), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
+  never extended, with a step-up time), the ceremonies' single-use tickets and reset invitations,
+  and single-use invites, to the instance or into a team.
   External identities (issuer + subject, linked only to the new person a first sign-in with a
   verified address creates; an existing address is a conflict, never a link) and their key pins
   (insert only, deleted only with the person, or by the hourly sweep when no sign-in linked them);
@@ -213,20 +219,34 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   Replay always comes from the `events` table — there is no history in memory.
 - **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. What must be
   opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
-  credentials, and the send-hash root (`meta.send_hash_root`, random, made at the first start, never
-  derived from a key), which the daemon refuses to start without opening. The sealer is the keyring
+  credentials, the send-hash root (`meta.send_hash_root`, random, made at the first start, never
+  derived from a key) and the salt key (`meta.kdf_salt_key`, K_salt of the key scheme, the same way,
+  made only where people have passwords here), which the daemon refuses to start without opening. The sealer is the keyring
   (`MAIL_CREDENTIAL_KEY_HEX`) or AWS KMS (`MAIL_CREDENTIAL_KMS_KEY_ARN`, a key's full ARN, never an
   alias, with `MAIL_ENV` set; the keyring's keys then only open, and `MAIL_CREDENTIAL_SEALER=keyring`
   beside it is the way back, the KMS key only opening). The KMS provider takes the EC2 instance
   role's credentials through IMDSv2 only, unlike the backup's SDK default chain, and checks the key
-  with `DescribeKey` before anything opens. `rewrap-credentials` opens the root and re-seals both
-  with the active sealer; `--new-send-hash-root` replaces a root under another KMS key or
-  `MAIL_ENV` only with `--kms-key-lost`. Only an envelope that does not open (`secrets.DoesNotOpen`)
+  with `DescribeKey` before anything opens. `rewrap-credentials` opens the root and the salt key and
+  re-seals them with the credentials under the active sealer; `--new-send-hash-root` and
+  `--new-salt-key` replace one under another KMS key or `MAIL_ENV` only with `--kms-key-lost`. Only an envelope that does not open (`secrets.DoesNotOpen`)
   is a lost key: nothing replaces, or tells the operator to replace, what a sealer could not try. TLS
   is mandatory for IMAP/SMTP; `AllowInsecureAuth` is set only by tests.
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and
   API keys are told apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API
   keys.
+- **The server never receives a password** (`docs/key-scheme.md`, normative; its vectors are never
+  edited by hand). A sign-in proves an auth key the browser derived under the salt and parameters
+  the challenge answers (the address's target for every address without an enrolled account, so it
+  says nothing of who has one); every way of failing costs one derivation against a dummy and gets
+  one answer. A wrap is answered only to the secret verified in the same request, never to a
+  session alone. The server checks shapes and stores only its default parameters and the target
+  salt; it never makes or opens a key. `users.public_key` is written once (only a reset, which
+  deletes every grant sealed to the old key, replaces it), `seal_id` never changes, and enrolment
+  (`zk_enrolled_at`) is one way, with no password hash beside it: the schema holds all three.
+  Giving access, writing keys and replacing the recovery code need a step-up within ten minutes on
+  that session (a sign-in counts; the hosted one is id.'s `auth_time`, never the sign-in's
+  moment). The upgrade's password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists
+  in the release that brings the scheme only. New passwords have at least twelve code points.
 - **An external identity never takes over a person.** Accounts are never linked by matching
   addresses: a first sign-in through an extension only creates a new person, and an address that
   already has one here is `conflict`, with nothing created or linked.

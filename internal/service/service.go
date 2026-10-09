@@ -143,10 +143,12 @@ type Deps struct {
 	// a workspace key acts only while its creator allows actions.
 	KeysActUnderCreatorConsent bool
 	// ExternalSignInOnly says people sign in only through an extension of
-	// the daemon (SignInExternal): signing in with a password, signing up
-	// or accepting an invitation, changing a password and creating an
-	// invitation are refused, not_authorized. False, the default, changes
-	// nothing. Only internal/app sets it, from its Options.
+	// the daemon (SignInExternal): the challenge, signing in with a
+	// password, signing up or accepting an invitation, changing or
+	// recovering a password, the password's step-up, the upgrade, a reset
+	// invitation and creating an invitation are refused, not_authorized.
+	// False, the default, changes nothing. Only internal/app sets it, from
+	// its Options.
 	ExternalSignInOnly bool
 }
 

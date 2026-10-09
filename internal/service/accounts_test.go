@@ -12,6 +12,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/obs"
@@ -106,7 +107,7 @@ func newFixtureWith(t *testing.T, o fixtureOptions) *fixture {
 	}
 	f := &fixture{
 		repo: account.NewRepository(db, keyring), db: db,
-		users: auth.NewUsers(db), keys: auth.NewKeys(db), opts: o,
+		users: auth.NewUsers(db).WithSaltKey(authtest.SaltKey), keys: auth.NewKeys(db), opts: o,
 		bus:  events.NewBus(events.NewJournal(db)),
 		logs: &logBuffer{},
 	}

@@ -16,14 +16,27 @@ password, database or message: describe them instead.
 - One OAuth refresh token or password per mailbox, encrypted at rest with AES-256-GCM under
   `MAIL_CREDENTIAL_KEY_HEX`, with additional data that binds each value to its account and field.
 - The send-hash root, the random key of the hashes a send record keeps of the message it sent,
-  sealed the same way: without it the database cannot confirm a guess of a message.
+  sealed the same way: without it the database cannot confirm a guess of a message. And the salt
+  key, the random key of the salt every address is answered for its password, sealed the same way.
 - For synced mailboxes, an index of metadata: senders and recipients, subjects, dates, sizes,
   folders, flags and the names and types of parts. Message bodies and attachments are fetched on
   request and never stored.
-- Argon2id hashes of passwords and API keys, and SHA-256 hashes of session tokens.
+- For each person, never their password: their browser derives an auth key from it (Argon2id,
+  64 MiB), and the server keeps an Argon2id hash of the auth key, the person's account public key,
+  their account key wrapped under the password and under a recovery code (which only their browser
+  opens), and a hash of the recovery code's proof ([`docs/key-scheme.md`](docs/key-scheme.md)).
+  People who signed up before the key scheme keep an Argon2id hash of their password until their
+  next sign-in, the one time their password reaches the server again, which enrols them and clears
+  it.
+- Argon2id hashes of API keys, and SHA-256 hashes of session tokens, of the single-use tickets of
+  the sign-in ceremonies, and of invitation and reset codes.
 
 Whoever has both the database file and `MAIL_CREDENTIAL_KEY_HEX` can reach every connected mailbox.
-Whoever runs the server can read the index.
+Whoever runs the server can read the index: the account keys of this release protect no mail yet
+(the threat model of the key scheme, [`docs/key-scheme-threat-model.md`](docs/key-scheme-threat-model.md),
+says what they do and do not protect). A copy of the database lets its holder guess each enrolled
+person's password at the cost of a 64 MiB Argon2id per guess, as the password wrap beside the
+verifier is the same offline oracle.
 
 ## Threat model
 
@@ -42,6 +55,16 @@ Whoever runs the server can read the index.
 - Mail servers are reached over TLS only, and an account host that resolves to a loopback, private,
   link-local or CGNAT address is refused at dial time unless the operator allows it.
 - Logs redact addresses and credentials and carry ids rather than subjects or content.
+- A console session is a bearer token, never a cookie. Signing in proves an auth key, never a
+  password; a password wrap is answered only to an auth key verified in the same request and a
+  recovery wrap only to a recovery proof, never to a session alone. Every way a sign-in can fail
+  costs the same work and gets the same answer. Giving access, writing keys and replacing the
+  recovery code need the person's secret proved within the last ten minutes (a sign-in or a
+  step-up), on that session.
+- In the release that brings the key scheme only, a person who signed up before it sends their
+  password in clear one last time, at their next sign-in, and a challenge says, to anyone, that such
+  an address has an account not yet upgraded. Enrolment is one way: the server then refuses their
+  password in clear, and the console never sends it for an address it remembers.
 
 [`docs/architecture.md`](docs/architecture.md) lists the rules that keep these properties, and
 [`docs/backup.md`](docs/backup.md) the threat model of backups.

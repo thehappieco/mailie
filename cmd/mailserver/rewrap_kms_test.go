@@ -45,7 +45,7 @@ func configuredSealer(t *testing.T, cfg config.Config, wrapper *secretstest.Wrap
 	return sealer
 }
 
-func TestRewrapMovesEveryCredentialAndTheRootFromTheKeyringToKMSAndIsIdempotent(t *testing.T) {
+func TestRewrapMovesEveryCredentialTheRootAndTheSaltKeyFromTheKeyringToKMSAndIsIdempotent(t *testing.T) {
 	cfg := localConfig(t)
 	keyring := configuredSealer(t, cfg, nil)
 	d := newSealedDatabase(t, cfg, keyring)
@@ -55,11 +55,11 @@ func TestRewrapMovesEveryCredentialAndTheRootFromTheKeyringToKMSAndIsIdempotent(
 	wrapper := secretstest.NewWrapper("kms")
 	both := configuredSealer(t, withKMSKey(cfg), wrapper)
 	done, err := rewrapCredentials(t.Context(), d.db, both)
-	if err != nil || done != (resealed{credentials: 2, root: true}) {
+	if err != nil || done != (resealed{credentials: 2, root: true, saltKey: true}) {
 		t.Fatalf("rewrap to KMS: %+v, %v", done, err)
 	}
-	if wrapper.Generated() != 3 {
-		t.Errorf("%d data keys for three envelopes", wrapper.Generated())
+	if wrapper.Generated() != 4 {
+		t.Errorf("%d data keys for four envelopes", wrapper.Generated())
 	}
 
 	// The hex key can leave the environment: everything opens under KMS
@@ -102,7 +102,7 @@ func TestAKMSThatCannotAnswerNeverHasTheRootReplaced(t *testing.T) {
 	denied := errors.New("operation error KMS: Decrypt, AccessDeniedException: not authorized to perform kms:Decrypt")
 	wrapper.FailDecrypts(denied)
 	for _, lost := range []bool{false, true} {
-		if err := replaceSendHashRoot(t.Context(), d.db, sealer, lost); !errors.Is(err, denied) ||
+		if err := replaceSealedSecrets(t.Context(), d.db, sealer, true, false, lost); !errors.Is(err, denied) ||
 			errors.Is(err, store.ErrSendHashRoot) || secrets.DoesNotOpen(err) {
 			t.Fatalf("--new-send-hash-root (--kms-key-lost %v) while KMS refuses: %v", lost, err)
 		}
@@ -186,7 +186,7 @@ func TestUnderKMSAChangedMAIL_ENVIsNeitherAlreadySealedNorALostKey(t *testing.T)
 		t.Errorf("the advice asks for a key to be given beside the KMS key: %s", advice)
 	}
 
-	err = replaceSendHashRoot(t.Context(), d.db, prodSealer, false)
+	err = replaceSealedSecrets(t.Context(), d.db, prodSealer, true, false, false)
 	if !errors.Is(err, store.ErrSendHashRootMayOpen) {
 		t.Fatalf("--new-send-hash-root under prod, without --kms-key-lost: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestRewrapMovesEverythingBackFromKMSToTheKeyringWhileKMSOnlyOpens(t *testin
 	}
 	generated := wrapper.Generated()
 	done, err := rewrapCredentials(t.Context(), d.db, backSealer)
-	if err != nil || done != (resealed{credentials: 2, root: true}) {
+	if err != nil || done != (resealed{credentials: 2, root: true, saltKey: true}) {
 		t.Fatalf("rewrap back to the keyring: %+v, %v", done, err)
 	}
 	if wrapper.Generated() != generated {

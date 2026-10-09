@@ -194,6 +194,13 @@ mailboxes take up in the index) and **Account** (name, password, sessions, and t
 sync and for actions). There is no mail to read or write in it: a tool does that, with a key.
 
 - Sessions are bearer tokens, never cookies, valid for 14 days.
+- The server never receives a password. The browser derives an auth key from it, which the server
+  keeps as a hash, and keeps each person's **account key**, a key pair it made, under the password
+  and under a recovery code shown once at sign-up; the server holds the public half and the wraps it
+  cannot open. Signing in, changing the password and recovering it are the key scheme's ceremonies
+  ([`docs/key-scheme.md`](docs/key-scheme.md)); giving access needs the password proved within the
+  last ten minutes. The account keys protect no mail yet: the index stays in clear on the server,
+  as before ([`docs/key-scheme-threat-model.md`](docs/key-scheme-threat-model.md)).
 - People are invited (`mailserver user invite --email X [--role owner|member]`), never sign up on
   their own. Each person has a personal workspace for their own mailboxes, and may belong to
   **teams**, whose mailboxes are the team's and are shared through per-mailbox grants (`read`,
@@ -217,9 +224,11 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
   `manage` to members only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
   for a team invite.
-- A forgotten password is reset by the operator with the daemon stopped:
-  `mailserver user password --bootstrap --email X` asks for the new one twice (or reads one line
-  piped in) and ends every session that person has. No route sets a password.
+- A forgotten password is recovered with the recovery code. A person who lost both gets a **reset
+  invitation** from the operator, with the daemon stopped: `mailserver user password --bootstrap
+  --email X` prints a single-use link with which they choose a new password and get a new account
+  key; their sessions end and what was granted to the old key goes. It refuses, without `--force`,
+  the last person who can read a team mailbox. No route sets or resets a password.
 
 [`docs/console.md`](docs/console.md) covers the console, its REST API, consent, events and the
 OAuth flows in detail.
@@ -322,8 +331,9 @@ with the first owner, OAuth clients, backups, upgrades and a forgotten password.
   migrations; the daemon also applies them when it starts.
 - To rotate `MAIL_CREDENTIAL_KEY_HEX`, set the new key with a new `MAIL_CREDENTIAL_KEY_ID`, keep the
   old one in `MAIL_CREDENTIAL_PREVIOUS_KEYS` (`<id>:<hex>`), and run
-  `mailserver rewrap-credentials` with the daemon stopped: it re-seals the credentials and the
-  send-hash root (the key of a send record's hashes) under the new key. The daemon then no longer
+  `mailserver rewrap-credentials` with the daemon stopped: it re-seals the credentials, the
+  send-hash root (the key of a send record's hashes) and the salt key (the key of the salts
+  passwords are derived under) under the new key. The daemon then no longer
   needs the old key (it refuses to start while the root needs one it is not given), but do not
   destroy it: `rewrap-credentials` re-seals the live database only, so every backup
   taken before the rotation still holds credentials sealed under the old key. Keep each retired

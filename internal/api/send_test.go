@@ -108,7 +108,7 @@ func (h *harness) submitTo(t *testing.T, id string, smtp *providertest.SMTPServe
 func signIn(t *testing.T, h *harness, email string) string {
 	t.Helper()
 	resp := h.do(t, http.MethodPost, "/v1/auth/login", "",
-		fmt.Sprintf(`{"email":%q,"password":%q}`, email, authtest.Password))
+		fmt.Sprintf(`{"email":%q,"auth_key":%q}`, email, authtest.AuthKey))
 	var session struct {
 		Token string `json:"token"`
 	}

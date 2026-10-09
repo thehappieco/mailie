@@ -5,7 +5,8 @@
   version byte, a new label or a new kind, never in place, and the vectors of a published version
   keep passing. Section 12 is normative for what each side sends, checks and stores; the route
   names it gives are informative until the server serves them, when [`console.md`](console.md) and
-  the contract fixtures name them.
+  the contract fixtures name them. The server serves those of sections 12.1 to 12.7 under
+  `/v1/auth/` (Appendix C).
 - Built on: The Happie Co's kit, `github.com/thehappieco/kit` v0.6.0 in Go and
   `@thehappieco/kit` 0.6.0 in TypeScript. Its `SPEC.md` is cited as "kit §n". This document is
   Mailie's profile of it (kit §3): labels, headers, magic, kinds and additional data, and the
@@ -683,7 +684,11 @@ actions when that time is more than 10 minutes old, or later than the server's o
     platform's own console does it the other way (`id-v1`, "Step-up": a step-up is a fresh sign-in
     that replaces the session, so a session is always its last authenticator's); Mailie keeps the
     session and checks the identity instead.
-- **Tested with the server's code** (the next steps of phase 3): a step-up as another person or
+- **Tested with the server's code** (`internal/auth/accountkeys_test.go`,
+  `TestAStepUpProvesOnlyTheSessionsOwnPerson`, `TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity`,
+  `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`,
+  `TestReplacingTheRecoveryCodeNeedsAFreshStepUp`; the actions on mailbox keys come with them in
+  the next steps of phase 3): a step-up as another person or
   another id. identity is refused; a silent sign-in does not freshen the time; each action above
   is refused past the 10 minutes, and accepted within them after a sign-in or a step-up.
 
@@ -1042,9 +1047,12 @@ sections 5.3 and 5.4).
 The kit modules underneath: Go `account`, `seal`, `hpke`, `platformwrap`, `profiles/mailie`,
 `profiles/platform`, `jcs`; TypeScript `@thehappieco/kit/account`, `/seal`, `/hpke`,
 `/platformwrap`, `/profiles/mailie`, `/profiles/platform/core`, `/browserAccount`, `/jcs`,
-`/bytes`. The server and console code that will run the ceremonies (migrations, `internal/auth`,
-`internal/service`, the console's sign-in and access screens) comes in the next steps of phase 3
-and will point back here.
+`/bytes`. The server's half of sections 11 and 12.1 to 12.7 is migration 0013
+(`internal/store/migrations/0013_account_keys.sql`), `internal/auth/accountkeys.go` (the
+ceremonies), `internal/service/users.go` and `internal/api/users.go` (the routes), the salt key in
+`internal/store/saltkey.go`, and the reset invitation of `mailserver user password --bootstrap`;
+the console's sign-in screens, the mailbox keys and the grants (sections 8, 9, 12.11 to 12.15)
+come in the next steps of phase 3 and will point back here.
 
 ## 17. Open questions
 
@@ -1120,3 +1128,58 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
 - Version 1 (2026-10-09): first version, before any server or console code of phase 3. The same
   day, the owner settled the new-password minimum (twelve) and the upgrade's window (one release),
   and `K_salt`'s home and the open console's names were settled (section 17); no byte changed.
+- Version 1, the server's half of sections 11 and 12.1 to 12.7 (2026-10-09). No byte changed. Where
+  the code had to choose and this document did not, the narrowest choice, recorded here:
+  - **`K_salt`'s envelope.** The meta row `kdf_salt_key`, sealed by the credential sealer for the
+    purpose `auth/kdf-salt-key` with the ref `meta/kdf_salt_key` (a key service's policy must
+    allow the purpose before a daemon that makes one runs under it), beside the send-hash root and
+    under its rules: made at the first start, opened at every start or the daemon refuses to
+    start, re-sealed by `rewrap-credentials`, replaced only when no configured key opens it
+    (`rewrap-credentials --new-salt-key [--kms-key-lost]`), which moves every account off its
+    target until its next sign-in. A daemon whose people sign in only through an extension makes
+    none.
+  - **Routes.** `POST /v1/auth/challenge`, `login`, `signup`, `password/begin` and
+    `password/finish`, `recover/open` and `recover/finish`, `recovery`, `stepup`,
+    `upgrade/login` and `upgrade/enrol`, as section 12 names them; and `POST /v1/auth/reset
+    {reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` for
+    section 12.6, "section 12.1 with the reset code instead of an invitation", whose link is
+    `#reset=…&email=…`. `upgrade/login` answers `{ticket}` alone. `password/finish` answers the
+    new session of a password change, and nothing (`204`) for a sign-in's re-derivation.
+    `GET /v1/auth/me` names the person's `seal_id` and `public_key` and the session's
+    `authenticated_at`, for the vault (section 7) and for asking for a step-up before a refusal.
+  - **Tickets** carry the target they were issued with, and a finish stores that target, never one
+    recomputed then (an address changed between the two halves would otherwise store a salt the
+    browser did not derive with); `kdf` must be both the server's current default and the
+    ticket's. A ceremony that changes a person's secrets deletes their other tickets.
+  - **A password change's new session keeps the step-up time of the session it replaces**:
+    section 11 does not list a change among what sets the time, so it opens no window of its own.
+  - **The challenge** refuses something that is not an address (`bad_request`), as no account can
+    have it, and spends the sign-in limit of the client's address only: it checks no secret and
+    hashes nothing. Every other ceremony spends that and, when it names an account (its address,
+    or the session's person), the account's.
+  - **Errors.** A secret that does not verify is `unauthorized` on the public routes (`login`,
+    `recover/open`, `upgrade/login`) and `not_authorized` on a session's (`password/begin`,
+    `stepup`), never saying which part failed; a key, wrap, auth key or proof outside its shape is
+    `bad_request`; parameters other than the current default are `conflict` (derive again); a
+    ticket that is not valid, a step-up that is needed or refused, and a reset link that is not
+    valid are `not_authorized`; a reset that would take the last reader is `conflict`.
+  - **Verifiers** are hashed in the slots of people's secrets (two at once, the old passwords'),
+    not those of API keys, so a burst of sign-ins cannot starve key checks.
+  - **The seal id** of a new person is drawn by the code (`NewSealID`); a row written without one
+    gets one drawn by the schema, as the migration draws them for the people who exist. The
+    schema refuses changing a seal id, any change of `public_key` that does not move
+    `key_replaced_at` forward in the same statement (the reset's), and any change of
+    `zk_enrolled_at` once set; an enrolled row has every column of section 5.7 and no password
+    hash (a CHECK).
+  - **The reset invitation** replaces any earlier one of the person; it may be issued for a
+    disabled person, whose link works only once they are enabled again, and disabling a person
+    deletes their reset invitations and tickets. Completing it enrols a person who was not (an old
+    password, or none, for a person who signs in through an extension) and clears any old
+    password hash. Its last-reader test is the one closing a person uses (section 12.6): until
+    mailboxes have keys (the next step of phase 3), that test is the flag alone, the rule of a
+    mailbox without a key (section 12.13), so it refuses resets that would take "read" from
+    nobody yet; `--force` goes ahead.
+  - **The hosted step-up's mark** is a column of the session (`sessions.stepup_mark_at`); a new
+    mark replaces one not yet used. A sign-in through id. whose `auth_time` is after the server's
+    now takes now (section 12.8: "at most its own now"); a step-up whose `auth_time` is after now
+    is refused (section 11).

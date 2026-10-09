@@ -4,5 +4,7 @@
   "has_password": true,
   "id": "usr_0000000000000001",
   "name": "Ana Lima",
-  "role": "owner"
+  "public_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+  "role": "owner",
+  "seal_id": "00000000-0000-4000-8000-000000000001"
 }

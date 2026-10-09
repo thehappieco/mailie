@@ -243,7 +243,7 @@ func isTHCSEAL(envelope []byte) bool { return bytes.HasPrefix(envelope, []byte(M
 // credential's purpose: the credentials row's field, as it did before
 // purposes had names. Every stored credential was sealed with them, so they
 // never change (TestTheEnvelopeLabelsNeverChange); a purpose not listed, the
-// send-hash root's, is its own label.
+// send-hash root's and the salt key's, is its own label.
 //
 //nolint:gosec // G101: field names, not credentials
 var keyringLabels = map[string]string{

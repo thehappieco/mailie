@@ -38,7 +38,7 @@ const Service = "mailie"
 // and the key policy conditions on it, so it names what a secret is and
 // which row keeps it, never whose it is: the purpose is one of
 // secrets.Purposes, the ref a mailbox's random id or the meta row of the
-// send-hash root.
+// send-hash root or the salt key.
 func Context(env string, b secrets.Binding) kms.Context {
 	return kms.Context{Service: Service, Env: env, Purpose: b.Purpose, Ref: b.Ref}
 }

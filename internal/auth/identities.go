@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/thehappieco/mailie/internal/keyscheme"
 	"github.com/thehappieco/mailie/internal/store"
 )
 
@@ -100,6 +101,12 @@ type ExternalSignIn struct {
 	// TTL is how long the session lasts: more than nothing, at most
 	// SessionTTL.
 	TTL time.Duration
+	// AuthTime is when the provider says the person last authenticated
+	// (OpenID Connect's auth_time): the session's step-up time, at most
+	// now, never the moment of the sign-in, so a sign-in the provider
+	// answered from a session of its own opens no step-up window
+	// (docs/key-scheme.md section 11). Zero is none.
+	AuthTime time.Time
 }
 
 // SignInExternal signs in the person an identity provider vouched for, and
@@ -151,7 +158,11 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, 
 			// Only a linked identity's person can be: a new one is active.
 			return ErrUserDisabled
 		}
-		token, session, err = startSessionTx(ctx, tx, user.ID, in.UserAgent, now, in.TTL)
+		authenticated := in.AuthTime
+		if authenticated.After(now) {
+			authenticated = now
+		}
+		token, session, err = startSessionTx(ctx, tx, user.ID, in.UserAgent, now, in.TTL, authenticated)
 		return err
 	})
 	if err != nil {
@@ -217,9 +228,10 @@ func (u *Users) createPasswordlessTx(ctx context.Context, tx *sql.Tx, email, nam
 		return "", err
 	}
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at)
-		 VALUES (?, ?, ?, '', ?, ?, 0, ?, ?)`,
-		userID, email, name, string(RoleMember), userActive, now.Unix(), now.Unix())
+		`INSERT INTO users(id, email, name, password_hash, role, status, password_changed_at, created_at, updated_at,
+		                   seal_id)
+		 VALUES (?, ?, ?, '', ?, ?, 0, ?, ?, ?)`,
+		userID, email, name, string(RoleMember), userActive, now.Unix(), now.Unix(), keyscheme.NewSealID())
 	switch {
 	case store.IsUnique(err):
 		return "", ErrEmailTaken

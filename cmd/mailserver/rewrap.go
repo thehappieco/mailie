@@ -15,11 +15,14 @@ type resealed struct {
 	credentials int
 	// root is whether it re-sealed the send-hash root.
 	root bool
+	// saltKey is whether it re-sealed the salt key.
+	saltKey bool
 }
 
 // rewrapCredentials seals again, with the active sealer, every stored
-// credential and the send-hash root whose envelope is not what that sealer
-// writes now, opening each with whichever configured sealer knows it.
+// credential, the send-hash root and the salt key whose envelope is not what
+// that sealer writes now, opening each with whichever configured sealer
+// knows it.
 //
 // Every row is looked at, and only those that are not current are opened: an
 // envelope says what sealed it, which the keyid column beside a credential
@@ -61,6 +64,12 @@ func rewrapCredentials(ctx context.Context, db *store.Store, sealer secrets.Seal
 			return fmt.Errorf("rewrap: %w", err)
 		}
 		done.root = root
+
+		saltKey, err := store.ResealKDFSaltKeyTx(ctx, tx, sealer)
+		if err != nil {
+			return fmt.Errorf("rewrap: %w", err)
+		}
+		done.saltKey = saltKey
 		return nil
 	})
 	if err != nil {
@@ -105,15 +114,23 @@ func staleCredentials(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) ([
 	return stale, nil
 }
 
-// replaceSendHashRoot puts a new send-hash root in place of one no configured
-// key opens any more, and touches nothing else: a credential sealed under a
-// lost key stays as it is until its mailbox is authorized again. A root of
-// the configured KMS key's own kind that it does not unwrap is replaced only
-// with kmsKeyLost (store.ReplaceSendHashRootTx).
-func replaceSendHashRoot(ctx context.Context, db *store.Store, sealer secrets.Sealer, kmsKeyLost bool) error {
+// replaceSealedSecrets puts a new send-hash root (root), a new salt key
+// (saltKey), or both, in place of what no configured key opens any more, in
+// one transaction, and touches nothing else: a credential sealed under a
+// lost key stays as it is until its mailbox is authorized again. One of the
+// configured KMS key's own kind that it does not unwrap is replaced only with
+// kmsKeyLost (store.ReplaceSendHashRootTx, store.ReplaceKDFSaltKeyTx).
+func replaceSealedSecrets(ctx context.Context, db *store.Store, sealer secrets.Sealer, root, saltKey, kmsKeyLost bool) error {
 	return db.Write(ctx, func(tx *sql.Tx) error {
-		if err := store.ReplaceSendHashRootTx(ctx, tx, sealer, kmsKeyLost); err != nil {
-			return fmt.Errorf("rewrap: %w", err)
+		if root {
+			if err := store.ReplaceSendHashRootTx(ctx, tx, sealer, kmsKeyLost); err != nil {
+				return fmt.Errorf("rewrap: %w", err)
+			}
+		}
+		if saltKey {
+			if err := store.ReplaceKDFSaltKeyTx(ctx, tx, sealer, kmsKeyLost); err != nil {
+				return fmt.Errorf("rewrap: %w", err)
+			}
 		}
 		return nil
 	})

@@ -364,6 +364,19 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		}
 	}
 
+	// A recovery under way for ana and for bob, and a reset invitation for
+	// each: deleting her takes hers with her row.
+	for _, email := range []string{"ana@example.com", "bob@example.com"} {
+		if _, err := f.users.OpenRecovery(t.Context(), email, authtest.RecoveryProof); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, id := range []string{ana.UserID, bob.UserID} {
+		if _, _, err := f.users.CreateReset(t.Context(), id, true, "cli"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 	// The scan below proves something only about tables that hold rows. A
 	// table a later migration adds starts out empty here, and would pass
 	// without anyone having decided what deleting a person does to it; this
@@ -448,6 +461,8 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		"bob's identity":            f.count(t, `SELECT count(*) FROM user_identities WHERE subject = 'subject-of-bob' AND user_id = ?`, bob.UserID),
 		"bob's pinned key":          f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-bob'`),
 		"the key pinned for nobody": f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-nobody'`),
+		"bob's recovery under way":  f.count(t, `SELECT count(*) FROM auth_tickets WHERE user_id = ?`, bob.UserID),
+		"bob's reset invitation":    f.count(t, `SELECT count(*) FROM reset_invites WHERE user_id = ?`, bob.UserID),
 	} {
 		if n != 1 {
 			t.Errorf("%s: %d rows, want 1", what, n)

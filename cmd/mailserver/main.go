@@ -156,15 +156,16 @@ Usage:
                                           Let a member manage a mailbox (the operator grants nothing else)
   mailserver access revoke --account ID --email ADDR [--read] [--act] [--send] [--manage]
                                           Take flags away from a member's grant; none named: every flag
-  mailserver user password --bootstrap --email ADDR
-                                          Set a forgotten console password and end every session
-                                          (daemon stopped; typed twice at a terminal, or one line piped)
+  mailserver user password --bootstrap --email ADDR [--force]
+                                          Print a reset invitation: the person chooses a new password and
+                                          gets a new account key (daemon stopped; --force for the last reader
+                                          of a team mailbox)
   mailserver migrate [--dry-run]          Apply pending schema migrations
-  mailserver rewrap-credentials           Re-seal the credentials and the send-hash root under the active key
-                                          (the KMS key, when MAIL_CREDENTIAL_KMS_KEY_ARN names one)
-  mailserver rewrap-credentials --new-send-hash-root [--kms-key-lost]
-                                          Replace a send-hash root no configured key opens (its key is lost);
-                                          --kms-key-lost confirms the KMS key that sealed it is lost, not moved
+  mailserver rewrap-credentials           Re-seal the credentials, the send-hash root and the salt key under
+                                          the active key (the KMS key, when MAIL_CREDENTIAL_KMS_KEY_ARN names one)
+  mailserver rewrap-credentials [--new-send-hash-root] [--new-salt-key] [--kms-key-lost]
+                                          Replace a send-hash root or a salt key no configured key opens (its key
+                                          is lost); --kms-key-lost confirms the KMS key that sealed it is lost
   mailserver mcp connect --url URL        Run a local stdio MCP server relaying to the Mailie server at URL,
                                           with the key in MAILIE_API_KEY (for a client that launches one)
   mailserver mcp install --client CLIENT --url URL [--name mailie] [--force]

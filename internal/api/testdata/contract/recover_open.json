@@ -1,0 +1,13 @@
+{
+  "kdf": {
+    "alg": "argon2id",
+    "m": 65536,
+    "p": 1,
+    "t": 3
+  },
+  "public_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+  "recovery_wrap": "AldXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXVw",
+  "salt": "xTE_qsW8FKu2KiXn0N-qjg",
+  "seal_id": "00000000-0000-4000-8000-000000000001",
+  "ticket": "VFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFQ"
+}

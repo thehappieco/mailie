@@ -28,9 +28,7 @@ func TestAnUnusedInviteIsDeletedThirtyDaysAfterItExpires(t *testing.T) {
 	start := *clock
 	invite(t, users, "late@example.com", auth.RoleMember)
 	used := invite(t, users, "used@example.com", auth.RoleMember)
-	if _, _, _, err := users.SignUp(t.Context(), auth.SignUpRequest{
-		Invite: used, Email: "used@example.com", Password: authtest.Password,
-	}); err != nil {
+	if _, _, _, err := users.SignUp(t.Context(), signUpRequest(t, used, "used@example.com")); err != nil {
 		t.Fatal(err)
 	}
 	expired := start.Add(auth.InviteTTL)

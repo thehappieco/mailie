@@ -1,5 +1,7 @@
 {
+  "authenticated_at": 1790000000,
   "expires_at": 1791209600,
+  "password_wrap": "AldXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXV1dXVw",
   "token": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlo",
   "user": {
     "created_at": 1790000000,
@@ -7,6 +9,8 @@
     "has_password": true,
     "id": "usr_0000000000000001",
     "name": "",
-    "role": "owner"
+    "public_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+    "role": "owner",
+    "seal_id": "00000000-0000-4000-8000-000000000001"
   }
 }
