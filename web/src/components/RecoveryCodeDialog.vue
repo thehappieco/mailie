@@ -59,5 +59,5 @@ function close() {
 .dialog-actions.start { justify-content: flex-start; margin-top: 0; }
 .dialog-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .check { display: flex !important; align-items: flex-start; gap: 10px !important; font-size: 14px !important; line-height: 1.45; }
-.check input { margin-top: 3px; flex: none; }
+.check input { width: auto; min-height: 0; margin: 3px 0 0; accent-color: var(--accent); flex: none; }
 </style>
