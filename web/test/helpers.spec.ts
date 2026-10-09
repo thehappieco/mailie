@@ -9,7 +9,7 @@ import { needsAuthorization, providerChoice, providerIcon, providerName, stateDe
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, reasonText } from '../src/ui/reasons'
-import { signupLink, takeInvitation } from '../src/ui/signupLink'
+import { resetLink, signupLink, takeInvitation, takeReset } from '../src/ui/signupLink'
 import { account, ORIGIN, syncing } from './support'
 
 afterEach(() => { locale.value = 'en'; vi.unstubAllGlobals() })
@@ -33,6 +33,28 @@ describe('invitation links', () => {
     vi.stubGlobal('location', new URL(`${ORIGIN}/#invite=${INVITE}&email=new%40example.test`))
     expect(takeInvitation()).toEqual({ invite: INVITE, email: 'new@example.test' })
     expect(history.replaceState).toHaveBeenCalledWith(null, '', `${ORIGIN}/`)
+  })
+})
+
+describe('reset links', () => {
+  const RESET = 'SyntheticResetCode_0123456789abcdefghijklmnop'
+  it('take the code and address from the fragment and hand back an address without them', () => {
+    expect(resetLink(`${ORIGIN}/#reset=${RESET}&email=ana%40example.test&keep=1`)).toEqual({ reset: RESET, email: 'ana@example.test', cleanURL: `${ORIGIN}/#keep=1` })
+    expect(resetLink(`${ORIGIN}/#reset=%3Cscript%3E&email=ana%40example.test`).reset).toBe('')
+  })
+  it('are removed from the address bar the moment the page reads them, and are never read as an invitation', () => {
+    const history = { state: null, replaceState: vi.fn() }
+    vi.stubGlobal('history', history)
+    vi.stubGlobal('location', new URL(`${ORIGIN}/#reset=${RESET}&email=ana%40example.test`))
+    expect(takeInvitation()).toBeNull()
+    expect(history.replaceState).not.toHaveBeenCalled()
+    expect(takeReset()).toEqual({ reset: RESET, email: 'ana@example.test' })
+    expect(history.replaceState).toHaveBeenCalledWith(null, '', `${ORIGIN}/`)
+  })
+  it('need both the code and the address', () => {
+    vi.stubGlobal('history', { state: null, replaceState: vi.fn() })
+    vi.stubGlobal('location', new URL(`${ORIGIN}/#reset=${RESET}`))
+    expect(takeReset()).toBeNull()
   })
 })
 

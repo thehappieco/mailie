@@ -10,7 +10,7 @@ import type { Storage } from '../src/api/types'
 import StoragePanel from '../src/components/StoragePanel.vue'
 import { loadAccounts } from '../src/state/accounts'
 import { storage } from '../src/state/storage'
-import { signIn, signOut } from '../src/state/session'
+import { adoptSession, signOut } from '../src/state/session'
 import { grantConsent, loadConsent, withdrawConsent } from '../src/state/sync'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
 import { account, json, reply, serve, stubPage, syncOff, syncing } from './support'
@@ -50,7 +50,7 @@ describe('the Storage section on a page', () => {
       return json({ code: 'not_found', message: 'no such endpoint' }, 404)
     })
     const reads = () => fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/v1/me/storage').length
-    await signIn('ana@example.test', 'correct-password')
+    await adoptSession(reply())
     await loadAccounts()
     await loadConsent()
     mounted = mount(StoragePanel)

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -73,7 +74,8 @@ func TestTheConsoleIsServedWithItsSecurityHeaders(t *testing.T) {
 			got[name] = value
 		}
 		for name, want := range map[string]string{
-			"default-src": "'self'", "script-src": "'self'", "style-src": "'self' 'unsafe-inline'", "img-src": "'self' data:",
+			"default-src": "'self'", "script-src": "'self'", "worker-src": "'self'",
+			"style-src": "'self' 'unsafe-inline'", "img-src": "'self' data:",
 			"font-src": "'self'", "connect-src": "'self'", "frame-src": "'none'", "frame-ancestors": "'none'",
 			"base-uri": "'none'", "object-src": "'none'", "form-action": "'self'",
 		} {
@@ -81,8 +83,8 @@ func TestTheConsoleIsServedWithItsSecurityHeaders(t *testing.T) {
 				t.Errorf("%s: CSP %s = %q, want %q (%q)", target, name, got[name], want, csp)
 			}
 		}
-		if len(got) != 11 {
-			t.Errorf("%s: CSP has %d directives, want exactly the 11 above: %q", target, len(got), csp)
+		if len(got) != 12 {
+			t.Errorf("%s: CSP has %d directives, want exactly the 12 above: %q", target, len(got), csp)
 		}
 		for name, want := range map[string]string{
 			"X-Content-Type-Options":       "nosniff",
@@ -226,9 +228,11 @@ func TestADirectoryWithoutAConsoleIsNotServed(t *testing.T) {
 	}
 }
 
-// alwaysPolicy is the policy the console has always been served with,
-// written out in full: without extra origins it must not move by a byte.
-const alwaysPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
+// alwaysPolicy is the policy the console is served with, written out in
+// full: without extra origins it must not move by a byte. worker-src came with
+// the key scheme's derivation in a worker, and allows that worker alone.
+const alwaysPolicy = "default-src 'self'; script-src 'self'; worker-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; img-src 'self' data:; " +
 	"font-src 'self'; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; " +
 	"object-src 'none'; form-action 'self'"
 
@@ -257,5 +261,24 @@ func TestExtraOriginsAreAddedToConnectSrcAndNowhereElse(t *testing.T) {
 		if got := get(t, h, http.MethodGet, target).Header().Get("Content-Security-Policy"); got != want {
 			t.Errorf("%s: CSP = %q\nwant %q", target, got, want)
 		}
+	}
+}
+
+// The page's own copy of the policy (web/index.html's meta tag), which a
+// static server other than the daemon still serves, must be the header's but
+// for frame-ancestors, which a browser ignores in a meta tag: a directive in
+// one and not the other would let one serving allow what the other refuses.
+func TestThePagesOwnPolicyIsTheHeadersButForFrameAncestors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	match := regexp.MustCompile(`(?s)http-equiv="Content-Security-Policy"\s+content="([^"]*)"`).FindSubmatch(raw)
+	if match == nil {
+		t.Fatal("web/index.html carries no Content-Security-Policy meta tag")
+	}
+	want := strings.Replace(alwaysPolicy, " frame-ancestors 'none';", "", 1)
+	if got := string(match[1]); got != want {
+		t.Errorf("web/index.html's policy = %q\nwant the header's without frame-ancestors, %q", got, want)
 	}
 }

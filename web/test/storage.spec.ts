@@ -27,7 +27,7 @@ async function signedIn(route: Route) {
     if (request.path === '/v1/workspaces') return failure('not_found', 404)
     return route(request)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   return { session, accounts, storage, fetch }
 }
 

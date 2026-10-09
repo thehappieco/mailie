@@ -14,7 +14,11 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { EventStreamParser } from '../src/api/events'
+import { fromBase64URL } from '@thehappieco/kit/bytes'
+import { checkKDF } from '../src/crypto/mailie'
 import {
+  isChallenge, isLoginReply, isOpening, isPasswordBegin, isRecoverOpen, isStepUpReply, isUpgradeTicket, enrolled,
+  type Challenge, type LoginReply, type Opening, type RecoverOpen, type UpgradeTicket,
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
   isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
   isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
@@ -42,6 +46,16 @@ function fixture(name: string): unknown {
 
 const shapes: [string, (value: unknown) => boolean][] = [
   ['session', value => isSessionReply(value, true)],
+  ['login', value => isLoginReply(value, true)],
+  ['login_rederive', value => isLoginReply(value, true)],
+  ['challenge', value => isChallenge(value, true)],
+  ['challenge_upgrade', value => isChallenge(value, true)],
+  ['signup_open', value => isOpening(value, true)],
+  ['reset_open', value => isOpening(value, true)],
+  ['upgrade_ticket', value => isUpgradeTicket(value, true)],
+  ['password_begin', value => isPasswordBegin(value, true)],
+  ['recover_open', value => isRecoverOpen(value, true)],
+  ['stepup', value => isStepUpReply(value, true)],
   ['me', value => isMe(value, true)],
   ['me_without_password', value => isMe(value, true)],
   ['user', value => isUser(value, true)],
@@ -99,6 +113,37 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(hasPassword((fixture('me') as Me).user)).toBe(true)
     // A session of the length the extension asked for, never a password's fourteen days.
     expect(external.session.expires_at - external.session.created_at).toBe(86_400)
+  })
+
+  it('keeps a plain session apart from a sign-in’s answer, which alone carries the password wrap', () => {
+    const plain = fixture('session') as SessionReply
+    expect(plain).not.toHaveProperty('password_wrap')
+    expect(isLoginReply(plain, true)).toBe(false)
+    expect(isSessionReply(fixture('login'), true)).toBe(false)
+    expect(plain.authenticated_at).toBeGreaterThan(0)
+    expect(enrolled(plain.user)).toBe(true)
+    // A person who signs in only another way has a seal id, and no account key yet.
+    const external = fixture('me_without_password') as Me
+    expect(external.user.seal_id).toBeTruthy()
+    expect(enrolled(external.user)).toBe(false)
+  })
+
+  it('names every salt and parameter set a browser derives under as one it accepts', () => {
+    const targets: { salt: string; kdf: unknown }[] = [
+      fixture('challenge') as Challenge, fixture('challenge_upgrade') as Challenge, fixture('signup_open') as Opening,
+      fixture('reset_open') as Opening, fixture('upgrade_ticket') as UpgradeTicket, fixture('recover_open') as RecoverOpen,
+      (fixture('login_rederive') as LoginReply).rederive!,
+    ]
+    for (const target of targets) expect(() => checkKDF(target.kdf, fromBase64URL(target.salt, 16))).not.toThrow()
+    expect((fixture('challenge_upgrade') as Challenge).upgrade).toBe(true)
+    expect(fixture('challenge')).not.toHaveProperty('upgrade')
+    expect(fixture('login')).not.toHaveProperty('rederive')
+  })
+
+  it('tells every enrolment the seal id it binds the wraps to before it seals one', () => {
+    for (const name of ['signup_open', 'reset_open', 'upgrade_ticket', 'recover_open']) expect((fixture(name) as Opening).seal_id, name).toMatch(/^[0-9a-f-]{36}$/)
+    // The upgrade's check of an old password answers a ticket, never a session.
+    expect(fixture('upgrade_ticket')).not.toHaveProperty('token')
   })
 
   it('a session token is an opaque bearer, not an API key', () => {

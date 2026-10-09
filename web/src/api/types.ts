@@ -32,11 +32,52 @@ export interface User {
    * the field leaves it out: a password, as every person had one then.
    */
   has_password?: boolean
+  /**
+   * The UUID every wrap and grant binds the person by (docs/key-scheme.md
+   * section 3.1): the browser keeps the account key under it.
+   */
+  seal_id?: string
+  /**
+   * The person's account public key, base64url of 32 bytes, written once at
+   * their enrolment; absent before (a person who has not upgraded yet, or
+   * one who signs in only another way). The browser compares the key it
+   * opens with it.
+   */
+  public_key?: string
 }
-/** What sign-in, sign-up and a password change answer: a fresh bearer token. */
-export interface SessionReply { token: string; expires_at: number; user: User }
-export interface SessionInfo { id: string; created_at: number; expires_at: number }
+/**
+ * What sign-up, a reset, the upgrade's enrolment and a password change
+ * answer: a fresh bearer token. authenticated_at is the session's step-up
+ * time (unix seconds; 0 is none), which what the step-up guards needs within
+ * the last ten minutes.
+ */
+export interface SessionReply { token: string; expires_at: number; authenticated_at?: number; user: User }
+/**
+ * What a sign-in answers: the session, and the account key under the
+ * password, which only the password opens; and, when the account is not at
+ * its target, what to derive the same password under again.
+ */
+export interface LoginReply extends SessionReply { password_wrap: string; rederive?: Rederive }
+export interface SessionInfo { id: string; created_at: number; expires_at: number; authenticated_at?: number }
 export interface Me { user: User; session: SessionInfo }
+/** Argon2id parameters as the server names them; crypto/mailie.ts checkKDF decides whether a browser derives with them. */
+export interface KDFWire { alg: string; m: number; t: number; p: number }
+/** A salt (base64url, 16 bytes) and parameters to derive a password under. */
+export interface Target { salt: string; kdf: KDFWire }
+/** POST /v1/auth/challenge: what an address's password is derived under; upgrade in the release that brings the key scheme only. */
+export interface Challenge extends Target { upgrade?: boolean }
+/** Login's rederive: the account's target, and the ticket that stores the same password under it. */
+export interface Rederive extends Target { ticket: string }
+/** POST /v1/auth/signup/open and /v1/auth/reset/open: the target, and the seal id the wraps are bound to. */
+export interface Opening extends Target { seal_id: string }
+/** POST /v1/auth/upgrade/login: a ticket to enrol with, never a session. */
+export interface UpgradeTicket extends Opening { ticket: string }
+/** POST /v1/auth/password/begin: the current password wrap, the target of the new password, and its ticket. */
+export interface PasswordBegin extends Target { password_wrap: string; ticket: string }
+/** POST /v1/auth/recover/open: the account key under the recovery code, whose it is, the target, and the ticket. */
+export interface RecoverOpen extends Opening { public_key: string; recovery_wrap: string; ticket: string }
+/** POST /v1/auth/stepup: the session's new step-up time. */
+export interface StepUpReply { authenticated_at: number }
 export interface Account {
   id: string
   email: string
@@ -498,11 +539,24 @@ export const keyLifetimes: readonly KeyLifetime[] = [30, 90, 365]
 export const eventTypes = ['message.new', 'message.flags', 'message.moved', 'message.deleted', 'folder.changed', 'account.state', 'send.finished', 'sync.progress'] as const
 export const folderSyncStates = ['new', 'initial', 'live', 'resync', 'error', 'disabled'] as const
 
+/** A seal id or a namespace in its one spelling: a lowercase UUIDv4 (crypto/mailie.ts isSealID decides what is bound). */
+export const isSealIDText = (v: unknown): v is string => typeof v === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(v)
+/** base64url without padding of n bytes. */
+export const isB64 = (n: number) => (v: unknown): v is string => typeof v === 'string' && v.length === Math.ceil(n * 4 / 3) && /^[A-Za-z0-9_-]+$/.test(v)
+/** A single-use ticket of a ceremony: base64url of 32 bytes. */
+const isTicket = isB64(32)
+
 export function isUser(v: unknown, strict = false): v is User {
-  return record(v) && known(v, ['id', 'email', 'name', 'role', 'created_at', 'has_password'], strict)
+  return record(v) && known(v, ['id', 'email', 'name', 'role', 'created_at', 'has_password', 'seal_id', 'public_key'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && text(v.name, 1024) && oneOf(roles)(v.role) && seconds(v.created_at)
     // The daemon that writes the fixtures always says; an older one may not.
-    && (strict ? flag(v.has_password) : optional(v.has_password, flag))
+    && (strict ? flag(v.has_password) && isSealIDText(v.seal_id) : optional(v.has_password, flag) && optional(v.seal_id, isSealIDText))
+    && optional(v.public_key, isB64(32))
+}
+
+/** Whether the person holds an account key: enrolled in the key scheme, with a public key the server serves. */
+export function enrolled(user: User | null | undefined): boolean {
+  return !!user?.public_key && !!user.seal_id
 }
 
 /** Whether the person signs in with a password here, which they may change: every person, but one who signs in only another way. */
@@ -516,15 +570,65 @@ export function isToken(v: unknown): v is string {
 }
 
 export function isSessionReply(v: unknown, strict = false): v is SessionReply {
-  return record(v) && known(v, ['token', 'expires_at', 'user'], strict)
+  return record(v) && known(v, ['token', 'expires_at', 'authenticated_at', 'user'], strict)
     && isToken(v.token) && seconds(v.expires_at) && isUser(v.user, strict)
+    && (strict ? seconds(v.authenticated_at) : optional(v.authenticated_at, seconds))
+}
+
+export function isLoginReply(v: unknown, strict = false): v is LoginReply {
+  if (!record(v) || !known(v, ['token', 'expires_at', 'authenticated_at', 'user', 'password_wrap', 'rederive'], strict)) return false
+  const { password_wrap, rederive, ...session } = v
+  return isSessionReply(session, strict) && isB64(61)(password_wrap) && optional(rederive, x => isRederive(x, strict))
+    // A sign-in names the person it signed in, with the key it opens.
+    && isSealIDText((v.user as User).seal_id) && isB64(32)((v.user as User).public_key)
 }
 
 export function isMe(v: unknown, strict = false): v is Me {
   if (!record(v) || !known(v, ['user', 'session'], strict) || !isUser(v.user, strict)) return false
   const s = v.session
-  return record(s) && known(s, ['id', 'created_at', 'expires_at'], strict)
+  return record(s) && known(s, ['id', 'created_at', 'expires_at', 'authenticated_at'], strict)
     && filled(s.id, 64) && seconds(s.created_at) && seconds(s.expires_at)
+    && (strict ? seconds(s.authenticated_at) : optional(s.authenticated_at, seconds))
+}
+
+/** The shape of KDF parameters; whether a browser derives with them is crypto/mailie.ts checkKDF's to say. */
+export function isKDFWire(v: unknown, strict = false): v is KDFWire {
+  return record(v) && known(v, ['alg', 'm', 't', 'p'], strict) && filled(v.alg, 32) && counter(v.m) && counter(v.t) && counter(v.p)
+}
+
+function isTarget(v: Fields, strict: boolean): boolean {
+  return isB64(16)(v.salt) && isKDFWire(v.kdf, strict)
+}
+
+export function isChallenge(v: unknown, strict = false): v is Challenge {
+  return record(v) && known(v, ['salt', 'kdf', 'upgrade'], strict) && isTarget(v, strict) && optional(v.upgrade, flag)
+}
+
+export function isRederive(v: unknown, strict = false): v is Rederive {
+  return record(v) && known(v, ['salt', 'kdf', 'ticket'], strict) && isTarget(v, strict) && isTicket(v.ticket)
+}
+
+export function isOpening(v: unknown, strict = false): v is Opening {
+  return record(v) && known(v, ['salt', 'kdf', 'seal_id'], strict) && isTarget(v, strict) && isSealIDText(v.seal_id)
+}
+
+export function isUpgradeTicket(v: unknown, strict = false): v is UpgradeTicket {
+  return record(v) && known(v, ['salt', 'kdf', 'seal_id', 'ticket'], strict) && isTarget(v, strict) && isSealIDText(v.seal_id)
+    && isTicket(v.ticket)
+}
+
+export function isPasswordBegin(v: unknown, strict = false): v is PasswordBegin {
+  return record(v) && known(v, ['salt', 'kdf', 'password_wrap', 'ticket'], strict) && isTarget(v, strict)
+    && isB64(61)(v.password_wrap) && isTicket(v.ticket)
+}
+
+export function isRecoverOpen(v: unknown, strict = false): v is RecoverOpen {
+  return record(v) && known(v, ['salt', 'kdf', 'seal_id', 'public_key', 'recovery_wrap', 'ticket'], strict) && isTarget(v, strict)
+    && isSealIDText(v.seal_id) && isB64(32)(v.public_key) && isB64(61)(v.recovery_wrap) && isTicket(v.ticket)
+}
+
+export function isStepUpReply(v: unknown, strict = false): v is StepUpReply {
+  return record(v) && known(v, ['authenticated_at'], strict) && seconds(v.authenticated_at)
 }
 
 export function isAccount(v: unknown, strict = false): v is Account {

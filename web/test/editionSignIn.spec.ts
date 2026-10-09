@@ -133,7 +133,7 @@ describe('the session an edition’s sign-in adopts', () => {
   it('replaces a login this browser had, as signing in again does', async () => {
     const s = await load()
     serve(() => json(reply()))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     const before = await s.vault.loadLocalSession()
     const cleared: string[] = []
     s.vault.observeLocalSession(change => cleared.push(change.id))
@@ -177,7 +177,7 @@ describe('the edition’s word after signing out', () => {
         if (path === '/v1/auth/logout') seen.push('server told')
         return path === '/v1/auth/login' ? json(reply()) : new Response(null, { status: 204 })
       })
-      await s.signIn('ana@example.test', 'correct-password')
+      await s.adoptSession(reply())
       await s.signOut({ everywhere })
       expect(seen, everywhere ? 'everywhere' : 'here').toEqual(['server told', 'edition: signed-out'])
       expect(await s.vault.loadLocalSession()).toBeNull()
@@ -191,13 +191,13 @@ describe('the edition’s word after signing out', () => {
     serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : failure('unauthorized', 401))
 
     // The server refused the token mid-use.
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     await expect(s.authorized(async () => { throw new s.ApiError('unauthorized', 401) })).rejects.toMatchObject({ code: 'unauthorized' })
     await settle()
     expect(s.session.notice).toBe('expired')
 
     // Another tab cleared the login.
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     const stored = await s.vault.loadLocalSession()
     await s.vault.clearLocalSession(stored!.id)
     expect(s.session.phase).toBe('signed-out')
@@ -205,7 +205,7 @@ describe('the edition’s word after signing out', () => {
     // Signing out everywhere could not reach the server: still signed in.
     vi.restoreAllMocks()
     serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : Promise.reject(new TypeError('offline')))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     await expect(s.signOut({ everywhere: true })).rejects.toMatchObject({ code: 'unavailable' })
     expect(s.session.phase).toBe('ready')
 

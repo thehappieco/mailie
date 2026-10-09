@@ -11,8 +11,9 @@
 // its sealed envelope's direct mode at grantRow, the wrap under the product
 // key is its platformwrap under its Mailie profile, the password preparation
 // and the recovery code are its platform profile's, and the browser vault is
-// its browserAccount. Nothing here is called by the console yet: the account
-// and mailbox ceremonies that use it come with the routes that serve them.
+// its browserAccount. The account's ceremonies (sign-up, sign-in, recovery,
+// the upgrade) use it through crypto/account.ts; the mailbox keys and grants
+// come with the routes that serve them.
 
 import {
   AccountError,
@@ -58,7 +59,7 @@ import {
 } from '@thehappieco/kit/seal'
 
 export { AccountError, SealError }
-export type { Bytes, PrivateKey }
+export type { BrowserKeyEnvelope, Bytes, PrivateKey }
 
 const KEY_LEN = 32
 
@@ -478,6 +479,29 @@ export async function sealBrowserVault(accountKey: Uint8Array, accountPublicKey:
   key32('the account key', accountKey)
   browserVaultAAD(sealID, accountPublicKey)
   return sealBrowserAccountKey(mailieBrowserVault, new Uint8Array(accountKey) as Bytes, new Uint8Array(accountPublicKey) as Bytes, sealID)
+}
+
+/**
+ * openBrowserVaultKey is openBrowserVault for the one caller that wraps the
+ * account key again (a new recovery code, docs/key-scheme.md section 12.5):
+ * the same checks, the kit's opening first (the AAD, and the public half
+ * against the one recorded), then the raw 32 bytes the envelope holds, which
+ * the caller zeroes once the new wrap is sealed. It never leaves the page.
+ */
+export async function openBrowserVaultKey(envelope: BrowserKeyEnvelope, sealID: string): Promise<Bytes> {
+  await openBrowserVault(envelope, sealID)
+  try {
+    const raw = new Uint8Array(await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: envelope.nonce, additionalData: browserVaultAAD(sealID, envelope.publicRaw) }, envelope.key, envelope.ciphertext,
+    )) as Bytes
+    if (raw.length !== KEY_LEN) {
+      raw.fill(0)
+      throw new Error('not an account key')
+    }
+    return raw
+  } catch {
+    throw new KeySchemeError('the vault record does not open for this person', 'vault')
+  }
 }
 
 /**

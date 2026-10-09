@@ -18,7 +18,7 @@ async function signedIn(route: Route, options: { mcp?: boolean } = {}) {
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
     return route(request)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   const asked = () => fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/v1/me/mcp').length
   return { session, mcp, asked }
 }
@@ -74,7 +74,7 @@ describe('the MCP address', () => {
     await mcp.loadMcpAccess()
     await session.signOut()
     expect(mcp.mcpAccess).toMatchObject({ loaded: false, served: false, keysSend: false })
-    await session.signIn('ana@example.test', 'correct-password')
+    await session.adoptSession(reply())
     await mcp.loadMcpAccess()
     expect(asked()).toBe(2)
   })

@@ -1066,9 +1066,13 @@ The kit modules underneath: Go `account`, `seal`, `hpke`, `platformwrap`, `profi
 `/bytes`. The server's half of sections 11 and 12.1 to 12.7 is migration 0013
 (`internal/store/migrations/0013_account_keys.sql`), `internal/auth/accountkeys.go` (the
 ceremonies), `internal/service/users.go` and `internal/api/users.go` (the routes), the salt key in
-`internal/store/saltkey.go`, and the reset invitation of `mailserver user password --bootstrap`;
-the console's sign-in screens, the mailbox keys and the grants (sections 8, 9, 12.11 to 12.15)
-come in the next steps of phase 3 and will point back here.
+`internal/store/saltkey.go`, and the reset invitation of `mailserver user password --bootstrap`.
+The console's half is `web/src/crypto/account.ts` (the derivations and wraps of each ceremony),
+`web/src/state/account.ts` (its requests, in order), `web/src/state/accountVault.ts` (the browser
+vault and the memory of enrolled addresses, sections 7 and 12.7) and the sign-in screens
+(`web/src/components/SignInView.vue`, `RecoveryCodeDialog.vue`, `StepUpDialog.vue`), held by
+`web/test/account.spec.ts`; the mailbox keys and the grants (sections 8, 9, 12.11 to 12.15) come
+in the next step of phase 3 and will point back here.
 
 ## 17. Open questions
 

@@ -8,12 +8,22 @@
 // another way (an edition's own sign-in) has no password, and is not offered
 // to change one. One success line serves the whole section: the rows say what
 // they did through accountNotice.
+//
+// The password never leaves the browser (docs/key-scheme.md): changing it is
+// two steps behind one form (state/account.ts), and replacing the recovery
+// code wraps the account key this browser keeps under a new one, after a
+// step-up when the session's last proof of the password is more than ten
+// minutes old. A person who signed up before the key scheme and has not
+// signed in since has no account key yet: they are asked to sign in again,
+// which upgrades their account.
 import { computed, provide, ref, shallowRef, watch } from 'vue'
 import { MIN_PASSWORD } from '../api/auth'
-import { hasPassword } from '../api/types'
+import { ApiError } from '../api/http'
+import { enrolled, hasPassword } from '../api/types'
 import { edition } from '../edition'
+import { changePassword, replaceRecoveryCode } from '../state/account'
 import { failure, type Failure } from '../state/failure'
-import { changePassword, session, signOut, updateProfile } from '../state/session'
+import { freshStepUp, session, signOut, updateProfile } from '../state/session'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
 import { dayStamp, initials } from '../ui/format'
@@ -23,6 +33,7 @@ import { accountNotice } from './accountNotice'
 import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
 import PasswordInput from './PasswordInput.vue'
+import StepUpDialog from './StepUpDialog.vue'
 
 const name = ref('')
 const profileBusy = ref(false)
@@ -49,8 +60,10 @@ async function saveProfile() {
   finally { profileBusy.value = false }
 }
 
-/** Whether there is a password to change: not for a person who signs in only another way. */
-const withPassword = computed(() => hasPassword(session.user))
+/** Whether there is a password to change: not for a person who signs in only another way, nor one not upgraded yet. */
+const withPassword = computed(() => hasPassword(session.user) && enrolled(session.user))
+/** A password the server still checks itself: the person signs in again to upgrade, which gives them an account key. */
+const notUpgraded = computed(() => hasPassword(session.user) && !enrolled(session.user))
 const passwordOpen = ref(false)
 const current = ref('')
 const next = ref('')
@@ -93,6 +106,35 @@ async function rotatePassword(event: SubmitEvent) {
   }
 }
 
+/** Replacing the recovery code: after a step-up when the session's is older than ten minutes. */
+const recoveryBusy = ref(false)
+const recoveryProblem = ref<Failure | null>(null)
+const steppingUp = ref(false)
+
+/** steppedUp: the person just proved their password, so a refusal now is no stale step-up and is said as it is. */
+async function replaceCode(steppedUp = false) {
+  if (recoveryBusy.value) return
+  recoveryProblem.value = null; done.value = null
+  // Without the key here nothing would be asked for: say so at once (no_account_key).
+  if (session.keyed && !freshStepUp()) { steppingUp.value = true; return }
+  recoveryBusy.value = true
+  try {
+    await replaceRecoveryCode()
+    done.value = () => t('Recovery code replaced. The old one no longer works.')
+    announce(t('Recovery code replaced. The old one no longer works.'))
+  } catch (error) {
+    // The server's clock found the step-up older than this browser's did: ask again.
+    if (error instanceof ApiError && error.code === 'not_authorized' && !steppedUp) { session.authenticatedAt = 0; steppingUp.value = true }
+    else recoveryProblem.value = failure('recovery-code', error)
+  } finally {
+    recoveryBusy.value = false
+  }
+}
+function afterStepUp() {
+  steppingUp.value = false
+  void replaceCode(true)
+}
+
 const everywhere = ref(false)
 const leaving = ref(false)
 const leaveProblem = ref<Failure | null>(null)
@@ -128,6 +170,17 @@ async function leave(all: boolean) {
         <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Change the password you sign in with') }}</small></span>
         <AppIcon name="chevron-right" :size="18" />
       </button>
+      <button v-if="withPassword" class="security-summary" type="button" :disabled="recoveryBusy" @click="replaceCode()">
+        <span class="summary-icon"><AppIcon name="key" :size="22" /></span>
+        <span class="summary-text"><strong>{{ t('Recovery code') }}</strong><small>{{ recoveryBusy ? t('Making a new recovery code…') : t('Replace the code that lets you back in if you forget your password') }}</small></span>
+        <AppIcon name="chevron-right" :size="18" />
+      </button>
+      <p v-if="recoveryProblem" class="alert" role="alert">{{ describe(recoveryProblem) }}</p>
+      <div v-if="notUpgraded" class="security-summary upgrade">
+        <span class="summary-icon"><AppIcon name="lock" :size="22" /></span>
+        <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Sign in again to finish setting up your account: your password then stays in your browser, and you get a recovery code. Until then you cannot change either.') }}</small></span>
+        <div class="session-actions"><button class="ghost small" type="button" :disabled="leaving" @click="leave(false)"><AppIcon name="logout" :size="16" />{{ t('Sign in again') }}</button></div>
+      </div>
       <div class="security-summary sessions">
         <span class="summary-icon"><AppIcon name="shield" :size="22" /></span>
         <span class="summary-text">
@@ -149,6 +202,7 @@ async function leave(all: boolean) {
       <slot />
     </div>
 
+    <StepUpDialog v-if="steppingUp" @done="afterStepUp" @close="steppingUp = false" />
     <ConsoleDialog v-if="passwordOpen && withPassword" :title="t('Change password')" :busy="passwordBusy" @close="closePassword">
       <p v-if="passwordProblem || mismatch" class="alert" role="alert">{{ mismatch ? t('The new passwords do not match.') : passwordProblem ? describe(passwordProblem) : '' }}</p>
       <form class="form-stack" name="mailie-password-change" method="post" autocomplete="on" @submit.prevent="rotatePassword">
@@ -185,7 +239,7 @@ button.security-summary:hover { background: var(--bg-hover); }
 .summary-text { flex: 1; min-width: 0; }
 .summary-text strong { display: block; font-size: 14px; color: var(--text); }
 .summary-text small { display: block; font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.5; }
-.sessions { flex-wrap: wrap; }
+.sessions, .upgrade { flex-wrap: wrap; }
 .session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .session-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .success, .alert { margin: 0; }

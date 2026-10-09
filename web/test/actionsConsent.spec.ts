@@ -17,7 +17,7 @@ async function signedIn(route: Route) {
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
     return route(request)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   return { session, consent, fetch }
 }
 

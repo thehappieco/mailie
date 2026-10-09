@@ -253,7 +253,11 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   refuses the last reader of any team mailbox, a team they are alone in included (closing a person
   leaves that team out: it goes with them). The upgrade's password in clear
   (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists in the release that brings the scheme
-  only. New passwords have at least twelve code points.
+  only. New passwords have at least twelve code points. The console's half
+  (`web/src/crypto/account.ts`, `web/src/state/account.ts`) derives in the kit's worker, sends no
+  password but the upgrade's, never to an address it saw enrol, and keeps the account key only in
+  the browser vault (`web/src/state/accountVault.ts`), wiped at sign-out and whenever no session
+  is valid.
 - **An external identity never takes over a person.** Accounts are never linked by matching
   addresses: a first sign-in through an extension only creates a new person, and an address that
   already has one here is `conflict`, with nothing created or linked.

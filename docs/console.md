@@ -96,7 +96,8 @@ stored as SHA-256, with an absolute lifetime of 14 days and no sliding renewal (
 an extension may be given less, never more: see
 [Signing in through an extension](#signing-in-through-an-extension)). The browser keeps
 it in memory and an encrypted copy in IndexedDB under a non-extractable AES-GCM key, tells other
-tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`. Routes for a person
+tabs over a `BroadcastChannel` when it signs out, and drops it on any `401`, wiping the account key
+it kept with it ([The console's half](#the-consoles-half)). Routes for a person
 (`/v1/auth/*`) refuse API keys.
 
 ### Passwords and sign-in
@@ -194,6 +195,42 @@ presented has no minimum.
   their invitations and tickets. There is no route that makes one, by design. `--email -` reads
   the address from standard input. It is also how a person who signs in through an extension, and
   has no password, is given one.
+
+### The console's half
+
+What the browser does in each ceremony is `web/src/crypto/account.ts` (derivations, wraps and the
+recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests and what it keeps is
+`web/src/state/account.ts`:
+
+- **Argon2id runs in the kit's worker** (`kdf.worker.js`, which the build emits beside the page), so
+  the tab stays responsive for the seconds a derivation takes; a browser without workers derives on
+  the page. The policy's `worker-src 'self'` allows that one worker and nothing else (no `blob:`,
+  no WebAssembly). The console refuses a salt or parameters outside the platform's bounds before it
+  derives, and a new password under twelve code points before it asks the server anything.
+- **The account key at rest** (`web/src/state/accountVault.ts`): the kit's key at rest under
+  Mailie's profile, in IndexedDB beside the session's record, one per browser profile, bound to the
+  person's seal id and public key. It is opened only for the person `GET /v1/auth/me` names (a
+  record of anyone else is wiped), and wiped at sign-out and whenever the page finds no valid
+  session (expired, revoked, ended by a password change, a recovery or a reset); an edition whose
+  key outlives a session that merely ends says so (`Edition.accountKey`). A browser that refuses
+  IndexedDB keeps it for the page only.
+- **The recovery code is shown once**, after a sign-up, a recovery, a reset link and the upgrade,
+  and after the person replaces theirs, in a dialog that stays until they say they saved it
+  (`components/RecoveryCodeDialog.vue`); nothing keeps it once it closes.
+- **The step-up prompt** (`components/StepUpDialog.vue`): before replacing the recovery code, the
+  console compares the session's `authenticated_at` with its own clock and asks for the password
+  again when it is older than ten minutes (less a margin); a `403` from the server, whose clock
+  decides, asks too, and the request is made again once.
+- **The links.** An invitation (`#invite=…&email=…`) starts with `signup/open`; a reset link
+  (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
+  not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
+- **The upgrade.** The console remembers, per origin and per address as the server stores it, every
+  address that enrolled or proved an auth key in this browser (not wiped at sign-out). For a
+  remembered address it refuses the challenge's `upgrade` as a security error and sends nothing;
+  otherwise the password goes once to `upgrade/login`, and the same password, derived, to
+  `upgrade/enrol`. A password the platform's preparation refuses as it is asks for a new one. A
+  person still signed in from before the upgrade (no `user.public_key`) is asked to sign in again
+  to change their password or recovery code.
 
 ### Invitations
 

@@ -9,9 +9,11 @@
          carries it, together with X-Frame-Options. Inline style is allowed
          as the header allows it (internal/webui serves every edition, and one
          that shows a message's HTML does so in a sandboxed srcdoc frame that
-         inherits this policy); inline script never is. -->
+         inherits this policy); inline script never is. worker-src allows the
+         one worker the page starts, the key scheme's Argon2id (the kit's
+         kdf.worker.js, JavaScript: no WebAssembly). -->
     <meta http-equiv="Content-Security-Policy"
-          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; base-uri 'none'; object-src 'none'; form-action 'self'" />
+          content="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; base-uri 'none'; object-src 'none'; form-action 'self'" />
     <!-- An OAuth return carries the provider's code in the query until the
          page strips it; no-referrer keeps it out of every outgoing request. -->
     <meta name="referrer" content="no-referrer" />

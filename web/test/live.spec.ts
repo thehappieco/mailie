@@ -48,7 +48,7 @@ async function console_(api: Api, events?: (stream: Stream, attempt: number) => 
     stream.send(': connected\n\n')
     return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   return { session, accounts, live, connection, workspaces, fetch, streams }
 }
@@ -143,14 +143,11 @@ describe('the live stream', () => {
   })
 
   it('reconnects with the new token when a password change replaced the one the stream used', async () => {
-    const { session, live, streams } = await console_(({ path, method }) => {
-      if (path === '/v1/auth/password' && method === 'POST') return json(reply('tok_second_000000000000000000000000000000000'))
-      return json([])
-    })
+    const { session, live, streams } = await console_(() => json([]))
     live.startLive()
     await vi.advanceTimersByTimeAsync(0)
     expect(streams[0]!.token).toBe(reply().token)
-    await session.changePassword('correct-password', 'another-password')
+    await session.replaceSession(reply('tok_second_000000000000000000000000000000000'), false)
     // The server ended every other session, the stream's included.
     streams[0]!.send('event: error\ndata: {"code":"unauthorized","message":"x"}\n\n')
     await vi.advanceTimersByTimeAsync(0)

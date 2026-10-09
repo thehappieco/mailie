@@ -44,9 +44,17 @@ import (
 // 'unsafe-inline' here every style in an email is refused, whatever the
 // frame's policy says. Scripts stay 'self' only, and with img-src, font-src and
 // connect-src at 'self', a style has nowhere to send what it could see.
+//
+// worker-src 'self' is the one worker the console starts: the key scheme's
+// Argon2id (docs/key-scheme.md section 5.4), the kit's kdf.worker.js, a module
+// script the build emits beside the page's own. Said outright rather than
+// left to fall back on script-src, so that no blob: or data: worker is ever
+// allowed by a later change to that directive. The derivation is JavaScript,
+// not WebAssembly, so nothing here allows 'wasm-unsafe-eval'.
 func contentSecurityPolicy(connectSrc []string) string {
 	return "default-src 'self'; " +
 		"script-src 'self'; " +
+		"worker-src 'self'; " +
 		"style-src 'self' 'unsafe-inline'; " +
 		"img-src 'self' data:; " +
 		"font-src 'self'; " +

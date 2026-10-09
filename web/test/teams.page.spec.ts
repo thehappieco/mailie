@@ -28,7 +28,7 @@ import OpenMembers from '../src/open/OpenMembers.vue'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
 import { accounts, loadAccounts, loadProviders } from '../src/state/accounts'
 import { holdInvitation, invitation } from '../src/state/invitation'
-import { session, signIn, signOut } from '../src/state/session'
+import { session, adoptSession, signOut } from '../src/state/session'
 import { loadConsent } from '../src/state/sync'
 import { loadDirectory, loadMembers, team } from '../src/state/team'
 import { loadWorkspaces, selectWorkspace, workspaces } from '../src/state/workspaces'
@@ -62,7 +62,7 @@ async function signedIn(role: string, route: Route, list: () => Workspace[] = ()
     if (request.path === '/v1/workspaces' && request.method === 'GET') return json(list())
     return route(request)
   })
-  await signIn('ana@example.test', 'correct-password')
+  await adoptSession(reply())
   await loadWorkspaces()
   selectWorkspace(TEAM)
 }

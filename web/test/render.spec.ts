@@ -291,6 +291,42 @@ describe('what the console renders', () => {
     expect(html).toContain('Create your account')
   })
 
+  it('shows a reset link’s address but never its code, and asks for a new password of twelve characters twice', async () => {
+    const html = await render(SignInView, { invitation: null, reset: { reset: 'SyntheticResetCode_0123456789abcdefghijklmnop', email: 'ana@example.test' } })
+    expect(html).toContain('ana@example.test')
+    expect(html).toContain('readonly')
+    expect(html).not.toContain('SyntheticResetCode')
+    expect(text(html)).toContain('Choose a new password')
+    expect(html.match(/minlength="12"/g)).toHaveLength(2)
+    expect(html).toContain('autocomplete="new-password"')
+  })
+
+  it('offers recovery with the code from the sign-in card, and asks a new password for twelve characters', async () => {
+    const signin = await render(SignInView, { invitation: null })
+    expect(text(signin)).toContain('Forgot your password?')
+    expect(signin).not.toContain('minlength')
+    const signup = await render(SignInView, { invitation: { invite: 'SyntheticInviteCode_0123456789abcdefghijklmn', email: 'new@example.test' } })
+    expect(text(signup)).toContain('Use at least 12 characters.')
+    expect(signup.match(/minlength="12"/g)).toHaveLength(2)
+  })
+
+  it('offers an enrolled person their password and recovery code, and asks one not upgraded to sign in again instead', async () => {
+    signIn()
+    const enrolledHTML = text(await render(OpenAccount))
+    expect(enrolledHTML).toContain('Change the password you sign in with')
+    expect(enrolledHTML).toContain('Recovery code Replace the code that lets you back in if you forget your password')
+    const { public_key: _, ...notUpgraded } = ana
+    signIn(notUpgraded)
+    const legacyHTML = text(await render(OpenAccount))
+    expect(legacyHTML).not.toContain('Change the password you sign in with')
+    expect(legacyHTML).not.toContain('Recovery code')
+    expect(legacyHTML).toContain('Sign in again to finish setting up your account')
+    signIn({ ...notUpgraded, has_password: false })
+    const externalHTML = text(await render(OpenAccount))
+    expect(externalHTML).not.toContain('Sign in again to finish setting up your account')
+    expect(externalHTML).not.toContain('Recovery code')
+  })
+
   it('shows the person’s own name as text', async () => {
     signIn({ ...ana, name: hostile })
     const html = await render(OpenAccount)

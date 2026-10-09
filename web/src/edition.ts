@@ -120,6 +120,15 @@ export interface Edition {
   }
   /** Translations beyond the core's, for the edition's own sources. */
   catalogs?: Catalog[]
+  /**
+   * How long this browser keeps the person's account key (docs/key-scheme.md
+   * section 7). Unset: a self-hosted server's rule, wiped at sign-out and
+   * whenever the page finds no valid session, since every sign-in opens the
+   * password wrap anyway. outlivesSession keeps it past a session that
+   * merely ends (the hosted service's, whose next sign-in then needs no
+   * product key); sign-out wipes it in every edition.
+   */
+  accountKey?: { outlivesSession?: boolean }
 }
 
 let configured: Edition | null = null

@@ -134,7 +134,7 @@ describe('finishing a return', () => {
     const accounts = await import('../src/state/accounts')
     const returns = await import('../src/state/oauthReturn')
     const fetch = serve(request => request.path === '/v1/auth/login' ? json(reply()) : route(request))
-    await session.signIn('ana@example.test', 'correct-password')
+    await session.adoptSession(reply())
     return { session, accounts, returns, fetch }
   }
 

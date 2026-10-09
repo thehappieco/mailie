@@ -74,7 +74,7 @@ describe('a session in use', () => {
   it('ends once, with a notice, when the server refuses the token mid-use, and tells the other tabs', async () => {
     const s = await load()
     serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : failure('unauthorized', 401))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     expect(s.session.phase).toBe('ready')
     const cleared: string[] = []
     s.vault.observeLocalSession(change => cleared.push(change.id))
@@ -92,11 +92,12 @@ describe('a session in use', () => {
 
   it('does not end a newer session because an older token was refused', async () => {
     const s = await load()
-    serve(({ path }) => path === '/v1/auth/password' ? json(reply('tok_second_000000000000000000000000000000000')) : json(reply()))
-    await s.signIn('ana@example.test', 'correct-password')
+    serve(() => json(reply()))
+    await s.adoptSession(reply())
     let refuse!: () => void
     const late = s.authorized(() => new Promise<never>((_, reject) => { refuse = () => reject(new s.ApiError('unauthorized', 401)) }))
-    await s.changePassword('correct-password', 'another-password')
+    // What a password change answers: the only session left, for the same person.
+    await s.replaceSession(reply('tok_second_000000000000000000000000000000000'), false)
     refuse()
     await expect(late).rejects.toMatchObject({ code: 'unauthorized' })
     expect(s.session.phase).toBe('ready')
@@ -109,7 +110,7 @@ describe('a session in use', () => {
   it('leaves this browser at once on sign-out, even when the server cannot be told', async () => {
     const s = await load()
     serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : Promise.reject(new TypeError('offline')))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     await s.signOut()
     expect(s.session.phase).toBe('signed-out')
     expect(s.session.user).toBeNull()
@@ -120,7 +121,7 @@ describe('a session in use', () => {
   it('stays signed in when signing out everywhere could not reach the server', async () => {
     const s = await load()
     serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : Promise.reject(new TypeError('offline')))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     await expect(s.signOut({ everywhere: true })).rejects.toMatchObject({ code: 'unavailable' })
     expect(s.session.phase).toBe('ready')
   })
@@ -128,7 +129,7 @@ describe('a session in use', () => {
   it('asks the server to end every session when signing out everywhere', async () => {
     const s = await load()
     const fetch = serve(({ path }) => path === '/v1/auth/login' ? json(reply()) : new Response(null, { status: 204 }))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     await s.signOut({ everywhere: true })
     const logout = fetch.mock.calls.find(([url]) => String(url).endsWith('/v1/auth/logout'))!
     expect(JSON.parse(String(logout[1]!.body))).toEqual({ everywhere: true })
@@ -138,7 +139,7 @@ describe('a session in use', () => {
   it('signs this tab out when another tab clears its login', async () => {
     const s = await load()
     serve(() => json(reply()))
-    await s.signIn('ana@example.test', 'correct-password')
+    await s.adoptSession(reply())
     const stored = await s.vault.loadLocalSession()
     await s.vault.clearLocalSession(stored!.id)
     expect(s.session.phase).toBe('signed-out')

@@ -7,10 +7,15 @@ import type { Account, AccountSync, SessionReply, User } from '../src/api/types'
 export const ORIGIN = 'http://localhost:5174'
 export const now = () => Math.floor(Date.now() / 1000)
 
-export const ana: User = { id: 'usr_00000000000000a1', email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: 1_790_000_000 }
+/** A person enrolled in the key scheme: a seal id and an account public key (base64url of 32 bytes), as the daemon answers. */
+export const ana: User = {
+  id: 'usr_00000000000000a1', email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: 1_790_000_000, has_password: true,
+  seal_id: 'b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4', public_key: '3u_7I9EUTrHJW5mYFpPGq-AITIzk6w6MVYtEuC3PQRM',
+}
 
+/** A session as the daemon answers one: signed up, reset, enrolled or changed now, so its step-up time is now. */
 export function reply(token = 'tok_first_0000000000000000000000000000000000', user: User = ana): SessionReply {
-  return { token, expires_at: now() + 14 * 86_400, user }
+  return { token, expires_at: now() + 14 * 86_400, authenticated_at: now(), user }
 }
 
 /** The sync block of an account that does not sync: what the daemon answers before consent. */

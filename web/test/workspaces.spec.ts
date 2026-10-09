@@ -49,7 +49,7 @@ async function page(route: (request: Request) => Response | Promise<Response> | 
     }
     return await route(request) ?? failure('not_found', 404)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply(undefined, options.user))
   return { session, workspaces, accounts, storage, team, invitation, requests }
 }
 

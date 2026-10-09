@@ -49,7 +49,7 @@ async function signedIn(route: Route, list: Workspace[] = [personal], shown = PE
     if (request.path === '/v1/workspaces' && request.method === 'GET') return json(list)
     return route(request)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   await workspaces.loadWorkspaces()
   workspaces.selectWorkspace(shown)
   return { session, keys, workspaces, fetch }

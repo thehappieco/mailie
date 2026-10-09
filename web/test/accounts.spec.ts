@@ -18,7 +18,7 @@ async function signedIn(route: Route) {
     if (request.path === '/v1/workspaces') return failure('not_found', 404)
     return route(request)
   })
-  await session.signIn('ana@example.test', 'correct-password')
+  await session.adoptSession(reply())
   // Only timers the polling uses are faked; IndexedDB runs on setImmediate.
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
   const navigate = vi.fn()
@@ -404,7 +404,6 @@ describe('the accounts list', () => {
 
   it('survives a password change, which replaces the token but not the person', async () => {
     const { session, store } = await signedIn(({ path }) => {
-      if (path === '/v1/auth/password') return json(reply('tok_second_00000000000000000000000000000000'))
       if (path === '/v1/accounts') return json([account({ state: 'active' })])
       if (path === '/v1/providers') return json([{ id: 'gmail', oauth: true, password: false, flows: ['web'] }])
       return failure('not_found', 404)
@@ -413,7 +412,7 @@ describe('the accounts list', () => {
     await store.loadProviders()
     const seen: string[] = []
     const stop = watch(session.identity, value => { seen.push(value) }, { flush: 'sync' })
-    await session.changePassword('correct-password', 'another-password-2')
+    await session.replaceSession(reply('tok_second_000000000000000000000000000000000'), false)
     stop()
     expect(seen).toEqual([])
     expect(store.accounts.loaded).toBe(true)

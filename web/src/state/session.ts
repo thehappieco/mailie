@@ -5,13 +5,19 @@
 // needs it goes through authorized(), which is also where a 401 in the middle
 // of use ends the session — once, for the token that was refused, and never
 // for a request that raced a newer sign-in.
+//
+// The ceremonies that start a session (signing in and up, a recovery, a
+// reset link, the upgrade) are state/account.ts's: each ends here, in
+// beginSession. Where a session ends without the person asking, the account
+// key this browser kept goes with it (docs/key-scheme.md section 7).
 
 import { reactive } from 'vue'
 import * as auth from '../api/auth'
 import { ApiError, checked } from '../api/http'
-import { isSessionReply, type SessionReply, type User } from '../api/types'
+import { enrolled, isSessionReply, type SessionReply, type User } from '../api/types'
 import { edition } from '../edition'
 import { uuid } from '../ui/uuid'
+import { forgetHeldAccountKey, holdsAccountKey, wipeAccountKey } from './accountVault'
 import { clearLocalSession, loadLocalSession, localSessionWasCleared, observeLocalSession, saveLocalSession, type BrowserLogin } from './sessionVault'
 
 export type Phase = 'restoring' | 'signed-out' | 'ready'
@@ -27,9 +33,20 @@ interface SessionState {
   restoreFailed: boolean
   /** The browser refused to store the session, so a reload will ask for the password again. */
   notRemembered: boolean
+  /**
+   * The session's step-up time, the server's unix seconds (0: none): what
+   * the step-up guards needs it within the last ten minutes
+   * (docs/key-scheme.md section 11), and the console asks for the password
+   * again before such a call rather than after a refusal.
+   */
+  authenticatedAt: number
+  /** Whether this browser holds the person's account key (state/accountVault.ts), which replacing the recovery code wraps. */
+  keyed: boolean
 }
 
-const fresh = (phase: Phase): SessionState => ({ phase, user: null, expiresAt: 0, notice: '', restoreFailed: false, notRemembered: false })
+const fresh = (phase: Phase): SessionState => ({
+  phase, user: null, expiresAt: 0, notice: '', restoreFailed: false, notRemembered: false, authenticatedAt: 0, keyed: false,
+})
 
 export const session = reactive<SessionState>(fresh('restoring'))
 let token = ''
@@ -42,9 +59,11 @@ export function identity(): string {
   return session.phase === 'ready' ? session.user?.id ?? '' : ''
 }
 
-// Another tab signed out, or replaced this login with a newer one.
+// Another tab signed out, or replaced this login with a newer one. That tab
+// wiped the account key the two shared, or kept the newer login's in its
+// place; this page lets go of its own copy.
 observeLocalSession(change => {
-  if (change.id === loginID && session.phase === 'ready') drop('')
+  if (change.id === loginID && session.phase === 'ready') { drop(''); forgetHeldAccountKey() }
 })
 
 function drop(notice: SessionState['notice']): void {
@@ -53,6 +72,17 @@ function drop(notice: SessionState['notice']): void {
   loginID = ''
   clearTimeout(expiryTimer)
   Object.assign(session, fresh('signed-out'), { notice })
+}
+
+/**
+ * noValidSession wipes the account key this browser kept, where it lasts no
+ * longer than a session: a self-hosted server's, where every sign-in opens
+ * the password wrap anyway (docs/key-scheme.md section 7). An edition whose
+ * key outlives a session that merely ends keeps it (Edition.accountKey).
+ */
+function noValidSession(): Promise<void> {
+  if (edition().accountKey?.outlivesSession) return Promise.resolve()
+  return wipeAccountKey()
 }
 
 function scheduleExpiry(): void {
@@ -71,6 +101,7 @@ function expire(refused: string): void {
   const id = loginID
   drop('expired')
   if (id) void clearLocalSession(id).catch(() => { /* Nothing stored, nothing to clear. */ })
+  void noValidSession()
 }
 
 /**
@@ -80,14 +111,14 @@ function expire(refused: string): void {
  * itself out of the session it just opened. A sign-out that lands while the
  * write is pending wins: its tombstone stops the write, or its delete follows it.
  */
-async function adopt(login: BrowserLogin, user: User, expiresAt: number): Promise<void> {
+async function adopt(login: BrowserLogin, user: User, expiresAt: number, authenticatedAt: number, keyed: boolean): Promise<void> {
   const attempt = ++generation
   token = login.token
   loginID = login.id
   // One merged object, so each field is written once: assigning fresh() first
   // would pass user through null, and a new token for the same person (a
   // password change) would read as a sign-out to every store keyed on identity().
-  Object.assign(session, { ...fresh('ready'), user, expiresAt })
+  Object.assign(session, { ...fresh('ready'), user, expiresAt, authenticatedAt, keyed })
   scheduleExpiry()
   try { await saveLocalSession(login) }
   catch { if (attempt === generation) session.notRemembered = true }
@@ -110,15 +141,21 @@ export async function restore(): Promise<void> {
   let login: BrowserLogin | null = null
   try { login = await loadLocalSession() } catch { /* No storage, or none this browser can read: sign in instead. */ }
   if (attempt !== generation) return
-  if (!login) { drop(''); return }
+  if (!login) { drop(''); await noValidSession(); return }
   try {
     const current = await auth.me(login.token)
     if (attempt !== generation) return
     if (current.user.id !== login.userID) throw new ApiError('unauthorized')
+    // The account key kept for this person, if any: a record of anyone else is wiped here.
+    const keyed = enrolled(current.user) && await holdsAccountKey(current.user.seal_id!, current.user.public_key!)
+    if (attempt !== generation) return
     // Adopt without writing: the record is already the one just read.
     token = login.token
     loginID = login.id
-    Object.assign(session, { ...fresh('ready'), user: current.user, expiresAt: current.session.expires_at })
+    Object.assign(session, {
+      ...fresh('ready'), user: current.user, expiresAt: current.session.expires_at,
+      authenticatedAt: current.session.authenticated_at ?? 0, keyed,
+    })
     scheduleExpiry()
   } catch (error) {
     if (attempt !== generation) return
@@ -126,6 +163,7 @@ export async function restore(): Promise<void> {
       const id = login.id
       drop('')
       await clearLocalSession(id).catch(() => {})
+      await noValidSession()
       return
     }
     session.restoreFailed = true
@@ -133,9 +171,9 @@ export async function restore(): Promise<void> {
 }
 
 /**
- * showSignIn skips restoring: an invitation link explicitly starts a new
- * account, even in a browser that remembers another one. Signing up replaces
- * the remembered login, which also signs its other tabs out.
+ * showSignIn skips restoring: an invitation or a reset link explicitly starts
+ * a new sign-in, even in a browser that remembers another one. Signing up
+ * replaces the remembered login, which also signs its other tabs out.
  */
 export function showSignIn(): void {
   drop('')
@@ -146,31 +184,29 @@ export async function forgetRemembered(): Promise<void> {
   const login = await loadLocalSession().catch(() => null)
   drop('')
   if (login) await clearLocalSession(login.id).catch(() => {})
+  await noValidSession()
 }
 
-/** begin makes a session the server just issued the current one: every sign-in ends here. */
-async function begin(reply: SessionReply): Promise<void> {
-  await adopt(loginFrom(reply), reply.user, reply.expires_at)
-}
-
-export async function signIn(email: string, password: string): Promise<void> {
-  await begin(await auth.login(email, password))
-}
-
-export async function signUp(input: { invite: string; email: string; name: string; password: string }): Promise<void> {
-  await begin(await auth.signup(input))
+/**
+ * beginSession makes a session the server just issued the current one: every
+ * sign-in ends here (state/account.ts, once its ceremony is done; and
+ * adoptSession). keyed says whether the ceremony kept the person's account
+ * key in this browser.
+ */
+export async function beginSession(reply: SessionReply, keyed = false): Promise<void> {
+  await adopt(loginFrom(reply), reply.user, reply.expires_at, reply.authenticated_at ?? 0, keyed)
 }
 
 /**
  * adoptSession is how an edition's own sign-in (Edition.signIn) signs the
- * person in: it hands over what its route answered, which is what POST
- * /v1/auth/login answers, and the session begins exactly as a password
+ * person in: it hands over what its route answered, a session as POST
+ * /v1/auth/signup answers one, and the session begins exactly as a password
  * sign-in's does, stored for this browser and its other tabs, with the person
  * it names. A reply of any other shape is refused (ApiError
  * 'invalid_response') and changes nothing.
  */
 export async function adoptSession(reply: unknown): Promise<void> {
-  await begin(checked(reply, isSessionReply))
+  await beginSession(checked(reply, isSessionReply))
 }
 
 /**
@@ -180,6 +216,9 @@ export async function adoptSession(reply: unknown): Promise<void> {
  * Signing out everywhere is different: its whole point is the other browsers,
  * so the server has to confirm it before this one lets go, or the person would
  * walk away believing a lost laptop was signed out.
+ *
+ * Either way the account key this browser kept is wiped, in every edition
+ * (docs/key-scheme.md section 7).
  */
 export async function signOut(options: { everywhere?: boolean } = {}): Promise<void> {
   const current = token
@@ -194,6 +233,7 @@ export async function signOut(options: { everywhere?: boolean } = {}): Promise<v
   await Promise.allSettled([
     id ? clearLocalSession(id) : Promise.resolve(),
     current && !options.everywhere ? auth.logout(current) : Promise.resolve(),
+    wipeAccountKey(),
   ])
   // Only now: the server has been told, so an edition that navigates away
   // does not cut the request short.
@@ -217,15 +257,34 @@ export async function authorized<T>(call: (token: string) => Promise<T>): Promis
 }
 
 /**
- * changePassword ends every session of the person on the server, this one
- * included, and answers with the only token left. It replaces the stored one,
- * which also tells every other tab that its login is gone.
+ * replaceSession takes the only session left after a password change ended
+ * every other one, this one included. It replaces the stored one, which also
+ * tells every other tab that its login is gone. Nothing is taken for anyone
+ * but the person signed in.
  */
-export async function changePassword(current: string, next: string): Promise<void> {
+export async function replaceSession(reply: SessionReply, keyed: boolean): Promise<void> {
   const userID = session.user?.id
-  const reply = await authorized(t => auth.changePassword(t, current, next))
   if (!userID || reply.user.id !== userID || identity() !== userID) return
-  await adopt(loginFrom(reply), reply.user, reply.expires_at)
+  await adopt(loginFrom(reply), reply.user, reply.expires_at, reply.authenticated_at ?? 0, keyed)
+}
+
+/** steppedUp records the session's new step-up time: this session's only, for the person who proved it. */
+export function steppedUp(userID: string, authenticatedAt: number): void {
+  if (identity() === userID) session.authenticatedAt = authenticatedAt
+}
+
+/** markKeyed records that this browser now holds the account key of the person signed in. */
+export function markKeyed(userID: string): void {
+  if (identity() === userID) session.keyed = true
+}
+
+/** The server's ten minutes (docs/key-scheme.md section 11), less a margin for the clocks and the request. */
+const STEP_UP_FRESH_S = 10 * 60 - 30
+
+/** freshStepUp says whether the session proved its person recently enough for what the step-up guards, by this browser's clock. */
+export function freshStepUp(now = Date.now()): boolean {
+  const at = session.authenticatedAt
+  return at > 0 && now / 1000 - at < STEP_UP_FRESH_S
 }
 
 export async function updateProfile(name: string): Promise<void> {

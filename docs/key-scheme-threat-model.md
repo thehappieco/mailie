@@ -394,10 +394,14 @@ enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
 another id. identity, a silent sign-in, the upgrade's one-way flag, written-once columns, the
 targets of salts and parameters, the reset and its last-reader guard), `internal/api/accountkeys_test.go`
 (no route answers a wrap to a session alone, the challenge, the ceremonies over REST and their
-limits) and `internal/store/migrate_thirteen_test.go`; the rest comes in the next steps of phase 3: written-once columns; the step-up, that it proves
-the session's own person (a step-up as another person or another id. identity is refused), that a
-silent sign-in does not freshen it, and that it guards every key written, the first key of a
-keyless mailbox included; who may give "read" and supply the key; the upgrade's one-way flag and
-the browser's memory of enrolled addresses under any spelling; the targets of salts and
-parameters; the deletion of grants, and the reset's last-reader guard. The specification's
-sections 11 and 12 are what those tests hold the server and the console to.
+limits) and `internal/store/migrate_thirteen_test.go`. The console's half is tested in
+`web/test/account.spec.ts`, with the real derivation and wraps: no password in any request but
+the upgrade's one, and never for an address the browser saw enrol, under any spelling; a wrap
+that does not open after an accepted auth key, and parameters outside the bounds, refused as
+security errors; every enrolment bound to the seal id the server answered; the re-derivation, the
+reset's target, the two-step password change, recovery, the step-up before a new recovery code;
+and the vault, opened only for the person named, wiped at sign-out and when no session is valid.
+The rest comes in the next step of phase 3: that the step-up guards every key written, the first
+key of a keyless mailbox included; who may give "read" and supply the key; the deletion of
+grants. The specification's sections 11 and 12 are what those tests hold the server and the
+console to.

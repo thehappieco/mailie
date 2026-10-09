@@ -6,15 +6,18 @@
 //   npm run dev &   # or `npm run build && npx vite preview --port 4174` with QA_ORIGIN=http://localhost:4174
 //   node test/browser/console.mjs
 //
-// It walks what a self-hosted server's console offers: signing in and up,
-// connecting mailboxes, sync, the person's account and permissions, API keys
+// It walks what a self-hosted server's console offers: signing in and up
+// with a password the server never receives (docs/key-scheme.md: the auth
+// key, the recovery code shown once, the step-up, recovery, a reset link and
+// the one-time upgrade), connecting mailboxes, sync, the person's account and permissions, API keys
 // and the MCP endpoint, and Storage. The console names no company and links
 // to no policy; there is no mail to read or send, and the pass fails on any
 // request to the message or sending routes.
 //
 // QA_ORIGIN (default http://localhost:5174), QA_SCREENSHOTS (directory),
-// QA_ONLY (console: the account passes; sync; actions: the permission in
-// Account; keys: API keys and the MCP endpoint; storage),
+// QA_ONLY (console: the account passes; keys-scheme: the upgrade, recovery
+// and a reset link; sync; actions: the permission in Account; keys: API keys
+// and the MCP endpoint; storage),
 // QA_PLAYWRIGHT_MODULE (path to playwright's index.mjs when it is not
 // installed here), QA_BROWSER (chromium|firefox|webkit), QA_BROWSER_EXECUTABLE
 // or QA_BROWSER_CHANNEL (e.g. chrome) to use an installed browser.
@@ -23,7 +26,7 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import {
-  APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED,
+  APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, RESET,
   fakeDaemon as coreDaemon, focused, noHorizontalOverflow, now, sleep, spoken, until,
 } from './fakeDaemon.mjs'
 
@@ -101,6 +104,26 @@ const REFUSED = {
   },
 }
 
+/**
+ * The recovery code a ceremony just showed: once, in a dialog that stays
+ * until the person says they saved it. Returns the code.
+ */
+async function saveRecoveryCode(page, shot) {
+  const dialog = page.getByRole('dialog', { name: 'Save your recovery code' })
+  await dialog.waitFor({ timeout: 20_000 })
+  await shot?.()
+  const code = (await dialog.locator('.code-secret').textContent()).trim()
+  assert.match(code, /^[0-9A-Z]{5}(-[0-9A-Z]{5}){5}$/, 'a recovery code is six groups of five')
+  assert.equal(await dialog.getByRole('button', { name: 'Continue' }).isDisabled(), true, 'it stays until the person says they saved it')
+  await dialog.getByLabel('I saved my recovery code somewhere safe.').check()
+  await dialog.getByRole('button', { name: 'Continue' }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  return code
+}
+
+/** Whether any request of a pass carried this text: a password, or a recovery code. */
+const sent = (daemon, secret) => JSON.stringify(daemon.calls.auth).includes(secret)
+
 const failures = []
 for (const mobile of only && only !== 'console' ? [] : [false, true]) {
   for (const scheme of ['light', 'dark']) {
@@ -163,6 +186,9 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.locator('.console-main').waitFor()
       await page.locator('.account-card').first().waitFor()
       assert.equal(await page.locator('.account-card').count(), 3)
+      // An auth key derived here went, never the password, wrong or right.
+      assert.equal(sent(daemon, PASSWORD) || sent(daemon, 'wrong password'), false, 'no password reaches the server')
+      assert.ok(daemon.calls.auth.some(call => call.path === '/v1/auth/login' && /^[A-Za-z0-9_-]{43}$/.test(call.body.auth_key)), 'the sign-in sends an auth key')
       // The server's sections, and nothing to read or send mail with. API keys
       // are a workspace's, and this fake server has none (the keys pass has).
       if (mobile) await page.getByRole('button', { name: 'Open menu', exact: true }).click()
@@ -386,6 +412,22 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await shot('password')
       await change.getByRole('button', { name: 'Change password' }).click()
       await page.getByText('Password changed.', { exact: false }).first().waitFor()
+      assert.equal(sent(daemon, PASSWORD) || sent(daemon, 'another-password-2'), false, 'a password change sends auth keys only')
+
+      // --- the recovery code, after a step-up --------------------------------
+      // The server holds the session's proof of the password older than ten
+      // minutes: replacing the code asks for the password again first.
+      for (const session of daemon.sessions.values()) session.authenticated_at = now() - 3600
+      await page.getByRole('button', { name: /Recovery code Replace the code/ }).click()
+      const stepUp = page.getByRole('dialog', { name: 'Enter your password again' })
+      await stepUp.waitFor()
+      await stepUp.getByLabel('Password', { exact: true }).fill('another-password-2')
+      await shot('step-up')
+      await stepUp.getByRole('button', { name: 'Continue' }).click()
+      await saveRecoveryCode(page)
+      await page.getByText('Recovery code replaced.', { exact: false }).first().waitFor()
+      assert.equal(daemon.calls.stepUp, 1, 'one step-up')
+      assert.equal(daemon.calls.recovery, 1, 'the code was replaced once, after it')
       // A new token for the same person keeps the accounts section as it was.
       await openSection('Mailboxes')
       assert.equal(await page.locator('.account-card').count(), 5, 'a password change does not empty the accounts section')
@@ -435,6 +477,8 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.locator('input[name=password]').fill('bruno-password-1')
       await page.locator('input[name=confirm-password]').fill('bruno-password-1')
       await page.locator('form[name=mailie-signup] button[type=submit]').click()
+      await saveRecoveryCode(page, () => shot('recovery-code'))
+      assert.equal(sent(daemon, 'bruno-password-1'), false, 'signing up sends no password')
       await page.getByRole('heading', { name: 'Connect your first email account' }).waitFor()
       await shot('empty')
       // The empty state's button opens the dialog and is gone once the first
@@ -563,6 +607,97 @@ for (const language of only && only !== 'console' ? [] : ['pt-BR', 'de-DE']) {
       daemon.close()
       await context.close()
     }
+  }
+}
+
+// --- the key scheme's other ways in --------------------------------------------
+// The one-time upgrade of an account made before the key scheme, recovery
+// with the code it shows, and a reset link from the operator.
+
+for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] : [false, true]) {
+  const label = `key-scheme-${mobile ? 'mobile' : 'desktop'}`
+  const context = await browser.newContext({
+    serviceWorkers: 'block', locale: 'en-US', reducedMotion: 'reduce',
+    viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
+  })
+  const daemon = fakeDaemon({ notUpgraded: true })
+  const errors = []
+  await context.route('**/v1/**', route => daemon.handle(route))
+  const page = await context.newPage()
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error' && /Content Security Policy|Refused to|TypeError|Uncaught/.test(message.text())) errors.push(message.text()) })
+  const shot = async name => {
+    await noHorizontalOverflow(page, `${label} ${name}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `${name}-${label}.png`) })
+  }
+  const signIn = async password => {
+    await page.locator('form[name=mailie-login]').waitFor()
+    await page.locator('input[name=username]').fill('ana@example.test')
+    await page.locator('input[name=password]').fill(password)
+    await page.locator('form[name=mailie-login] button[type=submit]').click()
+  }
+  try {
+    // The upgrade: the old password goes once, and the account is enrolled with it.
+    await page.goto(origin + '/')
+    await signIn(PASSWORD)
+    const code = await saveRecoveryCode(page)
+    await page.locator('.account-card').first().waitFor()
+    assert.equal(daemon.calls.upgrade, 1, 'the old password is sent once, to the upgrade')
+    await page.locator(mobile ? '.mobile-profile' : '.profile-trigger').first().click()
+    await page.locator('.account-settings').getByRole('button', { name: 'Sign out', exact: true }).click()
+    // A server that asks again for the password in clear is not believed.
+    const ana = daemon.users.get('ana@example.test')
+    const enrolled = { ...ana }
+    Object.assign(ana, { authKey: undefined, password: PASSWORD })
+    await signIn(PASSWORD)
+    await page.getByRole('alert').filter({ hasText: 'This server answered something Mailie does not trust' }).waitFor()
+    assert.equal(daemon.calls.upgrade, 1, 'never a second password in clear for an address that enrolled here')
+    await shot('upgrade-refused')
+    Object.assign(ana, enrolled)
+
+    // Recovery with the code the upgrade showed: a new password, a new code.
+    await page.getByRole('button', { name: 'Forgot your password?' }).click()
+    const recover = page.locator('form[name=mailie-recover]')
+    await recover.waitFor()
+    await page.locator('input[name=username]').fill('ana@example.test')
+    await page.locator('input[name=recovery-code]').fill(code.toLowerCase())
+    await page.locator('input[name=password]').fill('a recovered password')
+    await page.locator('input[name=confirm-password]').fill('a recovered password')
+    await shot('recover')
+    await recover.locator('button[type=submit]').click()
+    const next = await saveRecoveryCode(page)
+    assert.notEqual(next, code, 'a recovery shows a new code')
+    await page.locator('.account-card').first().waitFor()
+    assert.equal(sent(daemon, code) || sent(daemon, 'a recovered password'), false, 'neither the code nor the new password is sent')
+
+    // A reset link from the operator: a new password, a new code, a new key.
+    await page.locator(mobile ? '.mobile-profile' : '.profile-trigger').first().click()
+    await page.locator('.account-settings').getByRole('button', { name: 'Sign out', exact: true }).click()
+    await page.locator('form[name=mailie-login]').waitFor()
+    const before = ana.publicKey
+    await page.goto('about:blank')
+    await page.goto(`${origin}/#reset=${RESET}&email=ana%40example.test`)
+    const reset = page.locator('form[name=mailie-reset]')
+    await reset.waitFor()
+    assert.equal(await page.evaluate(() => location.hash), '', 'the reset code leaves the address bar at once')
+    assert.equal(await page.locator('input[name=username]').inputValue(), 'ana@example.test')
+    await shot('reset')
+    await page.locator('input[name=password]').fill('a password after the reset')
+    await page.locator('input[name=confirm-password]').fill('a password after the reset')
+    await reset.locator('button[type=submit]').click()
+    await saveRecoveryCode(page)
+    await page.locator('.console-main').waitFor()
+    assert.notEqual(ana.publicKey, before, 'a reset gives a new account key')
+    assert.equal(sent(daemon, 'a password after the reset'), false, 'a reset sends no password')
+    assert.deepEqual(errors, [], 'no page, script or CSP errors')
+    console.log(`ok ${label}`)
+  } catch (error) {
+    failures.push(`${label}: ${error.message}`)
+    console.log(`FAIL ${label}: ${error.stack}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-${label}.png`) }).catch(() => {})
+  } finally {
+    daemon.close()
+    await context.close()
   }
 }
 
@@ -1083,7 +1218,7 @@ for (const { language, mobile, scheme, scope, chosen, served = true, sends = tru
     for (const where of ['local', 'session', 'href', 'state']) assert.ok(!kept[where].includes(secret.split('.')[1]) && !kept[where].includes(secret.split('.')[0]), `no key in ${where}`)
     assert.equal(kept.history, history, 'no history entry')
     assert.deepEqual(kept.caches, [], 'no Cache API storage')
-    assert.deepEqual(kept.databases, ['mailie-browser-session'], 'IndexedDB holds only the session vault')
+    assert.deepEqual([...kept.databases].sort(), ['mailie-browser-account', 'mailie-browser-session'], 'IndexedDB holds only the session vault and the account key’s')
 
     // --- the list, and the key's sheet: a mailbox given, its sends ---------------------
     const prefix = secret.split('.')[0]
@@ -1091,7 +1226,8 @@ for (const { language, mobile, scheme, scope, chosen, served = true, sends = tru
     await card.waitFor()
     assert.ok((await card.innerText()).includes(chosen ? 'suporte@example.test' : text.none), 'the card names what the key holds')
     await shot('keys-list')
-    await card.getByRole('button', { name: text.manage, exact: true }).click()
+    // On a server whose keys do not send, a key has no sends to show.
+    await card.getByRole('button', { name: sends ? text.manage : 'Mailboxes…', exact: true }).click()
     const sheet = page.getByRole('dialog', { name: 'Claude Code' })
     await sheet.waitFor()
     const row = sheet.locator('.key-row[data-account=acc_0000000000000003]')

@@ -11,19 +11,23 @@ import { forgetRemembered, recheckRemembered, restore, session, showSignIn } fro
 import { captureOAuthReturn, pendingOAuthReturn, sweepOAuthStorage } from './state/oauthReturn'
 import { finishOAuthReturn } from './state/accounts'
 import { dropInvitation, holdInvitation, invitation } from './state/invitation'
-import { takeInvitation } from './ui/signupLink'
+import { holdReset, resetLink } from './state/resetLink'
+import { takeInvitation, takeReset } from './ui/signupLink'
 import SignInView from './components/SignInView.vue'
 import OAuthReturnView from './components/OAuthReturnView.vue'
 import InvitationDialog from './components/InvitationDialog.vue'
 import LiveRegion from './components/LiveRegion.vue'
+import RecoveryCodeDialog from './components/RecoveryCodeDialog.vue'
 
 const consoleView = edition().console
 /** Teams are made here, so an invitation may be one to join a team, accepted signed in. */
 const teams = edition().teams === true
 
-// Both run before anything renders, so neither the provider's code nor an
-// invitation code stays in the address bar for a moment longer than needed.
+// They run before anything renders, so neither the provider's code, an
+// invitation code nor a reset code stays in the address bar for a moment
+// longer than needed. A reset link first: it carries an address too.
 captureOAuthReturn()
+holdReset(takeReset())
 holdInvitation(takeInvitation())
 
 // A provider start or return this tab never used is removed when its ten
@@ -82,8 +86,9 @@ onMounted(() => {
   window.addEventListener('focus', focused)
   // An invitation link starts a new account, even in a browser that
   // remembers another one; where teams are made here, it may be one to join
-  // a team, so a remembered session is restored and asked to accept it.
-  if (invitation.pending && !teams) showSignIn()
+  // a team, so a remembered session is restored and asked to accept it. A
+  // reset link always starts signed out: using it ends every session anyway.
+  if (resetLink.pending || (invitation.pending && !teams)) showSignIn()
   else void restore()
 })
 
@@ -111,10 +116,12 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <SignInView v-else-if="session.phase === 'signed-out'" :invitation="invitation.pending" />
+  <SignInView v-else-if="session.phase === 'signed-out'" :invitation="invitation.pending" :reset="resetLink.pending" />
   <OAuthReturnView v-else-if="finishing" />
   <component :is="consoleView" v-else />
   <InvitationDialog v-if="teams && session.phase === 'ready' && !finishing && invitation.pending" />
+  <!-- Over whatever is on screen, signed in or not: a recovery whose sign-in failed still shows its new code. -->
+  <RecoveryCodeDialog v-if="session.phase !== 'restoring'" />
 
   <div v-if="session.phase === 'ready' && session.notRemembered && !rememberNoticeClosed" class="alert session-notice" role="status">
     <span>{{ t('This browser did not let Mailie remember your session. You will need to sign in again after reloading the page.') }}</span>

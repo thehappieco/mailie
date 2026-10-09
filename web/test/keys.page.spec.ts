@@ -18,7 +18,7 @@ import KeysPanel from '../src/components/KeysPanel.vue'
 import MyKeys from '../src/components/MyKeys.vue'
 import { loadAccounts } from '../src/state/accounts'
 import { apiKeys, myKeys } from '../src/state/apikeys'
-import { signIn, signOut } from '../src/state/session'
+import { adoptSession, signOut } from '../src/state/session'
 import { loadWorkspaces, selectWorkspace } from '../src/state/workspaces'
 import { KEY_TERMS_VERSION } from '../src/open/versions'
 import { account, ana, failure, json, now, reply, serve, stubPage, type Route } from './support'
@@ -80,7 +80,7 @@ async function signedIn(route: Route, place: Place = home) {
     if (path === '/v1/me/mcp' && method === 'GET') return json(mcp)
     return route(request)
   })
-  await signIn('ana@example.test', 'correct-password')
+  await adoptSession(reply())
   await loadWorkspaces()
   selectWorkspace(place.shown)
   await loadAccounts()

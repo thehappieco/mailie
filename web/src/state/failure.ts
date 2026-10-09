@@ -1,4 +1,5 @@
 import { ApiError, type ErrorCode } from '../api/http'
+import { CeremonyError, type CeremonyCode } from '../crypto/errors'
 import type { ReasonFacts } from '../ui/reasons'
 
 /**
@@ -14,6 +15,7 @@ import type { ReasonFacts } from '../ui/reasons'
  */
 export interface Operations {
   'sign-in': true; 'sign-up': true; 'restore': true; 'sign-out': true; 'profile': true; 'password': true
+  'recover': true; 'reset': true; 'step-up': true; 'recovery-code': true
   'load-accounts': true; 'load-providers': true; 'add-account': true; 'test-login': true; 'test-login-icloud': true
   'start-auth': true; 'wait-auth': true; 'complete-auth': true; 'remove-account': true; 'folders': true
   'sync-consent': true; 'grant-sync': true; 'withdraw-sync': true; 'sync-now': true
@@ -34,9 +36,11 @@ export type Operation = keyof Operations
  * came back malformed or too late; a new key refused because the workspace
  * holds as many as it may, or because the text they were shown is no
  * longer the one the server asks about (a 409 on creating a key is either,
- * and state/apikeys.ts reads the list again to tell which).
+ * and state/apikeys.ts reads the list again to tell which); and what the key
+ * scheme refused in this browser (crypto/errors.ts).
  */
 export type FailureCode = ErrorCode | 'flow_expired' | 'flow_failed' | 'flow_unsupported' | 'return_invalid' | 'return_expired' | 'key_limit' | 'terms_changed'
+  | CeremonyCode
 
 /**
  * account is set when the failure left an account failing (a consent that
@@ -54,5 +58,5 @@ export interface Failure { op: Operation; code: FailureCode; account?: ReasonFac
 export interface PartialChange { done: number; left: number }
 
 export function failure(op: Operation, error: unknown): Failure {
-  return { op, code: error instanceof ApiError ? error.code : 'internal' }
+  return { op, code: error instanceof ApiError || error instanceof CeremonyError ? error.code : 'internal' }
 }

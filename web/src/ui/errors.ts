@@ -9,6 +9,7 @@
 // mean (addDescriber); the core's are here.
 
 import type { Account } from '../api/types'
+import { MIN_PASSWORD } from '../api/auth'
 import { edition } from '../edition'
 import { MAX_LIVE_KEYS } from './apikeys'
 import { count } from './format'
@@ -33,6 +34,8 @@ function specific(failure: Failure): string | undefined {
       if (code === 'unauthorized') return t('The email or password is incorrect.')
       if (code === 'bad_request') return t('Enter a valid email address and your password.')
       if (code === 'rate_limited') return t('Too many sign-in attempts. Wait a minute and try again.')
+      // The upgrade's ticket, or a derivation the server's default moved under: both are a new start.
+      if (code === 'not_authorized' || code === 'conflict') return t('This took too long, or something changed on the server. Sign in again.')
       return undefined
     case 'sign-up':
       // Also an invitation into a team made by someone who may not bring people onto the server: it is accepted signed in,
@@ -42,9 +45,26 @@ function specific(failure: Failure): string | undefined {
           ? t('This invitation cannot create an account for this address. It may have expired or been used, or it invites you to a team: sign in to the account you already have, and open the link again.')
           : t('This invitation cannot create an account for this address. It may have expired or been used: ask for a new one.')
       }
-      if (code === 'bad_request') return t('Check the details. The password needs at least 10 characters.')
+      if (code === 'bad_request') return t('Check your name and the address, and try again.')
       if (code === 'conflict') return t('An account with this email already exists. Sign in instead.')
       if (code === 'rate_limited') return t('Too many sign-in attempts. Wait a minute and try again.')
+      return undefined
+    case 'recover':
+      if (code === 'unauthorized') return t('The email or recovery code is incorrect.')
+      if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
+      if (code === 'not_authorized' || code === 'conflict') return t('This took too long, or something changed on the server. Start again.')
+      return undefined
+    case 'reset':
+      if (code === 'not_authorized') return t('This reset link is not valid: it may have expired or been used, or be meant for another address. Ask the administrator of this server for a new one.')
+      if (code === 'conflict') return t('This reset would leave a team mailbox that nobody can read. Ask the administrator of this server to give someone else Read on it first.')
+      if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
+      return undefined
+    case 'step-up':
+      if (code === 'not_authorized') return t('The password is incorrect.')
+      if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
+      return undefined
+    case 'recovery-code':
+      if (code === 'not_authorized') return t('This needs your password again. Enter it, and try again.')
       return undefined
     case 'restore':
       return t('Could not restore your session right now. Check your connection and try again.')
@@ -55,8 +75,8 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'password':
       if (code === 'not_authorized') return t('The current password is incorrect.')
-      if (code === 'bad_request') return t('The new password needs at least 10 characters.')
       if (code === 'rate_limited') return t('Too many attempts. Wait a minute and try again.')
+      if (code === 'conflict') return t('This took too long, or something changed on the server. Start again.')
       return undefined
     case 'load-accounts':
       if (code === 'unavailable' || code === 'internal') return t('Could not load your email accounts. Try again in a moment.')
@@ -257,6 +277,15 @@ function general(failure: Failure): string {
     case 'return_expired': return t('This authorization took too long and expired. Start again.')
     case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
+    case 'security': return t('This server answered something Mailie does not trust, so nothing more was sent. Tell the administrator of this server.')
+    case 'password_too_short': return t('The new password needs at least {count} characters.', { count: MIN_PASSWORD })
+    case 'password_too_long': return t('The password can have at most 256 characters.')
+    case 'password_invalid':
+    case 'password_rejected':
+      return t('The password has characters that cannot be used, such as control characters.')
+    case 'recovery_code': return t('That is not a recovery code. It has 30 letters and digits, in six groups of five.')
+    case 'derive_failed': return t('This browser could not process the password. Close other tabs and try again.')
+    case 'no_account_key': return t('This browser does not hold your account key. Sign out, sign in again here, and try again.')
     case 'aborted':
     case 'internal':
       return t('Something went wrong on the server. Try again in a moment.')
