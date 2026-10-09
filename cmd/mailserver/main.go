@@ -24,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -89,7 +90,7 @@ func run(argv []string) error {
 	if err != nil {
 		return err
 	}
-	logger := obs.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	logger := commandLogger(command, cfg)
 	ctx = obs.WithLogger(ctx, logger)
 
 	switch command {
@@ -114,6 +115,18 @@ func run(argv []string) error {
 	default:
 		return fmt.Errorf("%w: unknown command %q", errUsage, command)
 	}
+}
+
+// commandLogger is the logger a command logs through. The daemon's goes to
+// standard output, where its service manager collects it. Every other
+// command's standard output is its answer — a key, a link, a table — which a
+// script reads, or a person copies whole, so its log goes to standard error:
+// a log line among them would be read as part of the answer.
+func commandLogger(command string, cfg config.Config) *slog.Logger {
+	if command == "serve" {
+		return obs.NewLogger(cfg.Log.Level, cfg.Log.Format)
+	}
+	return obs.NewLoggerTo(os.Stderr, cfg.Log.Level, cfg.Log.Format)
 }
 
 func usage(w *os.File) {

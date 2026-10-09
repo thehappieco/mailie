@@ -17,7 +17,8 @@ import { enrolled, type LoginReply, type Opening, type SessionReply, type Upgrad
 import { checkNewPassword, deriveKeys, enrol, newRecovery, openWrap, recoveryKeys, rewrap, type Enrolled } from '../crypto/account'
 import { CeremonyError } from '../crypto/errors'
 import { accountKeyOf, keepAccountKey, rememberEnrolled, rememberedEnrolled } from './accountVault'
-import { authorized, beginSession, markKeyed, replaceSession, session, steppedUp } from './session'
+import { authorized, beginSession, identity, markKeyed, replaceSession, session, steppedUp } from './session'
+import { rememberedPerson } from './sessionVault'
 
 /**
  * The recovery code a ceremony just made, until the person says they saved
@@ -29,6 +30,20 @@ export const recoveryCode = reactive<{ code: string; reason: '' | 'new-account' 
 
 function showRecoveryCode(code: string, reason: typeof recoveryCode.reason): void {
   Object.assign(recoveryCode, { code, reason })
+}
+
+/**
+ * Whether a recovery code just made for a person may be shown on this page:
+ * while they are signed in here, or nobody is (their session may have ended
+ * while the server replaced the code, which is theirs all the same, and this
+ * is its only copy), and never while someone else is, on this page or in the
+ * login this browser remembers, which another tab's sign-in stores.
+ */
+async function mayShowCodeOf(userID: string): Promise<boolean> {
+  if (identity() !== '') return identity() === userID
+  const remembered = await rememberedPerson().catch(() => '')
+  const now = identity()
+  return (remembered === '' || remembered === userID) && (now === '' || now === userID)
 }
 
 /** The person saved the code: it is forgotten here. */
@@ -272,7 +287,8 @@ export async function stepUp(password: string): Promise<void> {
  * key only. A session alone, however recent its sign-in, replaces nothing.
  * Without the key here (another browser's sign-in, storage refused), it is
  * no_account_key, before anything is derived or sent: signing in again on
- * this browser keeps it.
+ * this browser keeps it. The new code is shown to its person only, even once
+ * their session has ended, never over someone else's (mayShowCodeOf).
  */
 export async function replaceRecoveryCode(password: string): Promise<void> {
   const user = enrolledPerson()
@@ -289,7 +305,7 @@ export async function replaceRecoveryCode(password: string): Promise<void> {
     await authorized(token => auth.replaceRecovery(token, {
       current_auth_key: keys.authKey, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof,
     }))
-    showRecoveryCode(recovery.code, 'replaced')
+    if (await mayShowCodeOf(user.id)) showRecoveryCode(recovery.code, 'replaced')
   } finally {
     accountKey.fill(0)
   }

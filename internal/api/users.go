@@ -16,11 +16,12 @@ import (
 // The key scheme's ceremonies (docs/key-scheme.md section 12). Every one
 // that proves a secret, or makes the server hash one, spends the sign-in
 // limits before it does: the address's always, and the account's being
-// guessed at when the request names one (its address, or the signed-in
-// person). The challenge proves nothing and hashes nothing, and spends only
-// the address's: it is the one answer that can say an account exists (the
-// upgrade's, in this release), and the address bucket is what bounds asking
-// it.
+// guessed at when the request names one, by its address typed or as the
+// signed-in person: one bucket per account, keyed by its address, whichever
+// route spends it (allowSessionSignIn). The challenge proves nothing and
+// hashes nothing, and spends only the address's: it is the one answer that
+// can say an account exists (the upgrade's, in this release), and the
+// address bucket is what bounds asking it.
 
 func (h *Handler) challenge(q *request) {
 	var req service.ChallengeRequest
@@ -104,9 +105,9 @@ func (h *Handler) beginPasswordChange(q *request) {
 		return
 	}
 	// Proving the current password is a guess at it like any sign-in, so it
-	// gets the same per-account budget. A key never reaches the hash: the
-	// service refuses it first.
-	if q.principal.IsSession() && !q.allowSignIn("user:"+q.principal.UserID) {
+	// spends the same per-account budget, the very bucket a sign-in does. A
+	// key never reaches the hash: the service refuses it first.
+	if !q.allowSessionSignIn() {
 		return
 	}
 	begun, err := h.Service.BeginPasswordChange(q.ctx(), q.principal, req)
@@ -185,7 +186,7 @@ func (h *Handler) replaceRecovery(q *request) {
 	}
 	// It proves the current password, a guess at it like any sign-in's, so
 	// it spends the account's budget as password/begin does.
-	if q.principal.IsSession() && !q.allowSignIn("user:"+q.principal.UserID) {
+	if !q.allowSessionSignIn() {
 		return
 	}
 	if err := h.Service.ReplaceRecovery(q.ctx(), q.principal, req); err != nil {
@@ -201,7 +202,7 @@ func (h *Handler) stepUp(q *request) {
 		q.fail(err)
 		return
 	}
-	if q.principal.IsSession() && !q.allowSignIn("user:"+q.principal.UserID) {
+	if !q.allowSessionSignIn() {
 		return
 	}
 	stepped, err := h.Service.StepUp(q.ctx(), q.principal, req)
@@ -389,6 +390,24 @@ func (h *Handler) providers(q *request) {
 // padding an address would buy five more guesses each time.
 func emailSubject(email string) string {
 	return "email:" + strings.ToLower(strings.TrimSpace(email))
+}
+
+// allowSessionSignIn applies the sign-in limits to a session's ceremony that
+// checks its person's secret: the address's, and the account's, keyed by the
+// person's stored address so that it is the very bucket a sign-in typing that
+// address spends. An account has one budget of guesses, whichever route they
+// come through; a bucket per route would add up to several. A key spends
+// nothing: the service refuses it before any hash.
+func (q *request) allowSessionSignIn() bool {
+	if !q.principal.IsSession() {
+		return true
+	}
+	address, err := q.h.Service.SessionAddress(q.ctx(), q.principal)
+	if err != nil {
+		q.fail(err)
+		return false
+	}
+	return q.allowSignIn(emailSubject(address))
 }
 
 // allowSignIn applies the sign-in limits, answering 429 with a Retry-After

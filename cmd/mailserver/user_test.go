@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +22,6 @@ import (
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/lockfile"
-	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
@@ -322,6 +322,33 @@ func terminalStdin(t *testing.T, typed string, hidden ...string) {
 	t.Cleanup(func() { stdin, stdinIsTerminal, readHidden = previous, wasTerminal, previousRead })
 }
 
+// captureOutput runs fn with standard output and standard error each read
+// into a string of its own.
+func captureOutput(t *testing.T, fn func() error) (stdout, stderr string, err error) {
+	t.Helper()
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		t.Fatal(perr)
+	}
+	prev := os.Stderr
+	os.Stderr = w
+	printed := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		printed <- string(b)
+	}()
+	stdout, err = captureStdout(t, fn)
+	os.Stderr = prev
+	if cerr := w.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	stderr = <-printed
+	if cerr := r.Close(); cerr != nil {
+		t.Fatal(cerr)
+	}
+	return stdout, stderr, err
+}
+
 // resetState is what a reset invitation changes for one person before it is
 // used: nothing of theirs, and how many reset invitations wait for them.
 func resetState(t *testing.T, db *store.Store, userID string) string {
@@ -346,13 +373,25 @@ func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(
 	laptop := authtest.SignIn(t, users, "ana@example.com")
 	before := resetState(t, db, ana.ID)
 
-	var logs bytes.Buffer
-	ctx := obs.WithLogger(t.Context(), obs.NewLoggerTo(&logs, "info", "json"))
-	out, err := captureStdout(t, func() error {
-		return userPassword(ctx, cfg, []string{"--bootstrap", "--email", "Ana@Example.com"})
+	// As an operator runs it: through the binary's entry, its configuration
+	// from the environment alone and the logger it builds, at the default
+	// level, which logs the operator's event.
+	onlyEnv(t, map[string]string{
+		"MAIL_DATA_DIR":           cfg.DataDir,
+		"MAIL_CREDENTIAL_KEY_HEX": strings.Repeat("5c", secrets.KeyLen),
+		"MAIL_PUBLIC_URL":         cfg.PublicURL,
+	})
+	t.Chdir(t.TempDir()) // and no .env
+	out, logs, err := captureOutput(t, func() error {
+		return run([]string{"user", "password", "--bootstrap", "--email", "Ana@Example.com"})
 	})
 	if err != nil {
 		t.Fatalf("user password --bootstrap: %v", err)
+	}
+	// Standard output is the link and nothing else, one line a script or a
+	// person takes whole; the log and the notes are on standard error.
+	if strings.Count(out, "\n") != 1 || !strings.HasSuffix(out, "\n") {
+		t.Fatalf("standard output is %q, want the link alone on one line", out)
 	}
 	link, err := url.Parse(strings.TrimSpace(out))
 	if err != nil || link.Host != "console.example" || link.RawQuery != "" {
@@ -378,9 +417,9 @@ func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(
 		t.Errorf("a session survived the reset: %v", err)
 	}
 	// The operator's event is in the log, and the code nowhere in it.
-	if got := logs.String(); !strings.Contains(got, "reset invitation made by the operator") || !strings.Contains(got, ana.ID) ||
-		strings.Contains(got, fragment.Get("reset")) {
-		t.Errorf("the log says %q", got)
+	if !strings.Contains(logs, "reset invitation made by the operator") || !strings.Contains(logs, ana.ID) ||
+		strings.Contains(logs, fragment.Get("reset")) {
+		t.Errorf("standard error says %q", logs)
 	}
 }
 

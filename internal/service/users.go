@@ -494,6 +494,23 @@ func (s *Service) StepUp(ctx context.Context, p Principal, req StepUpRequest) (S
 	return StepUp{AuthenticatedAt: at.Unix()}, nil
 }
 
+// SessionAddress is the address the session's person signs in with, as it is
+// stored (folded as auth.NormalizeEmail folds it), read now: what the
+// transport's sign-in limits key an account's attempts by, so that a session's
+// ceremonies that check a secret (password/begin, recovery, stepup) spend the
+// same budget as a sign-in that types the address. Empty for a key, which has
+// no person and reaches none of them.
+func (s *Service) SessionAddress(ctx context.Context, p Principal) (string, error) {
+	if !p.IsSession() {
+		return "", nil
+	}
+	user, err := s.users.Get(ctx, p.UserID)
+	if err != nil {
+		return "", fromUsers(err, "reading the account failed")
+	}
+	return user.Email, nil
+}
+
 // UpgradeLogin is the upgrade's one check of a password in clear, for a
 // person who signed up before the key scheme: it answers a ticket to enrol
 // with, never a session. An enrolled person's password, like every other

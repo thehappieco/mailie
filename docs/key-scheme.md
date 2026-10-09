@@ -1202,7 +1202,9 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   - **The challenge** refuses something that is not an address (`bad_request`), as no account can
     have it, and spends the sign-in limit of the client's address only: it checks no secret and
     hashes nothing. Every other ceremony spends that and, when it names an account (its address,
-    or the session's person), the account's.
+    or the session's person), the account's: one budget per account, keyed by its stored address
+    whichever way the request names it, so a sign-in, a step-up, a password change's first step and
+    a recovery code's replacement draw on the same guesses.
   - **Errors.** A secret that does not verify is `unauthorized` on the public routes (`login`,
     `recover/open`, `upgrade/login`) and `not_authorized` on a session's (`password/begin`,
     `recovery`, `stepup`), never saying which part failed; a key, wrap, auth key or proof outside

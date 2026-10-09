@@ -164,6 +164,21 @@ export async function loadLocalSession(): Promise<BrowserLogin | null> {
   }
 }
 
+/**
+ * The person the login this browser remembers is for, read without opening it
+ * and changing nothing: '' when it remembers none, or only one that expired,
+ * was cleared or is another origin's. Another tab's sign-in is remembered
+ * here as soon as it is stored.
+ */
+export async function rememberedPerson(): Promise<string> {
+  const stored = await transaction<StoredLogin | undefined>('readonly', (store, done) => {
+    const request = store.get(slot)
+    request.onsuccess = () => done(request.result as StoredLogin | undefined)
+  })
+  if (!stored || stored.origin !== currentOrigin() || !(stored.expiresAt > nowSeconds()) || typeof stored.userID !== 'string') return ''
+  return await localSessionWasCleared(stored.id) ? '' : stored.userID
+}
+
 export async function localSessionWasCleared(id: string): Promise<boolean> {
   return transaction<boolean>('readonly', (store, done) => {
     const request = store.get('revoked:' + id)

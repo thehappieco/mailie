@@ -209,7 +209,17 @@ func TestAStepUpOverRESTRefreshesOnlyItsOwnSession(t *testing.T) {
 }
 
 func TestASessionAloneCannotReplaceTheRecoveryCodeEvenRightAfterSignIn(t *testing.T) {
-	h := newHarness(t, false)
+	// The sign-in limits on a clock of their own: the refused guesses below
+	// spend the account's budget, as any guess at its password does
+	// (TestASignInAndASessionsCeremoniesSpendOneBudgetPerAccount), and a
+	// minute later it is whole again.
+	clock := &fakeClock{now: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
+	h := newHarnessWith(t, func(h *api.Handler) {
+		limits := ratelimit.DefaultSignIn(nil)
+		limits.PerIP.WithClock(clock.Now)
+		limits.PerSubject.WithClock(clock.Now)
+		h.SignInLimits = limits
+	}, serviceOptions{})
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
 	// Ana's session token, copied right after her sign-in: its step-up
 	// window is open, and its holder has neither her password nor her auth
@@ -246,6 +256,7 @@ func TestASessionAloneCannotReplaceTheRecoveryCodeEvenRightAfterSignIn(t *testin
 	}
 	// So the thief's code opens no recovery, and Ana's password and code
 	// still work.
+	clock.Advance(time.Minute)
 	resp := h.do(t, http.MethodPost, "/v1/auth/recover/open", "",
 		jsonOf(t, map[string]any{"email": "ana@example.com", "recovery_proof": theirs}))
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -352,6 +363,87 @@ func TestASignUpOverRESTNamesTheSealIDOpeningItsInvitationAnswered(t *testing.T)
 	decodeInto(t, resp, &s)
 	if resp.StatusCode != http.StatusCreated || s.User.SealID != opened.SealID {
 		t.Fatalf("the sign-up answered %d %+v, want the seal id %q", resp.StatusCode, s.User, opened.SealID)
+	}
+}
+
+func TestASignInAndASessionsCeremoniesSpendOneBudgetPerAccount(t *testing.T) {
+	// A step-up, a password change's first step and a recovery code's
+	// replacement are guesses at the same password a sign-in is. With a
+	// bucket each, whoever holds a session would get five guesses a minute
+	// through the sign-in and five more through each of them.
+	clock := &fakeClock{now: time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)}
+	h := newHarnessWith(t, func(h *api.Handler) {
+		limits := ratelimit.DefaultSignIn([]netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
+		limits.PerIP.WithClock(clock.Now)
+		limits.PerSubject.WithClock(clock.Now)
+		h.SignInLimits = limits
+	}, serviceOptions{})
+	// Every request from an address of its own: only the account's budget
+	// can run out.
+	sent := 0
+	post := func(path, token string, in map[string]any) int {
+		t.Helper()
+		sent++
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.server.URL+path, strings.NewReader(jsonOf(t, in)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.%d.%d", sent/250, 1+sent%250))
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := h.server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = resp.Body.Close() })
+		return resp.StatusCode
+	}
+	signIn := func(email string) int {
+		return post("/v1/auth/login", "", map[string]any{"email": email, "auth_key": secret("wrong")})
+	}
+	wrap := base64.RawURLEncoding.EncodeToString(authtest.Wrap(t))
+	people := 0
+	for _, c := range []struct {
+		path string
+		in   map[string]any
+	}{
+		{"/v1/auth/stepup", map[string]any{"auth_key": secret("wrong")}},
+		{"/v1/auth/password/begin", map[string]any{"current_auth_key": secret("wrong")}},
+		{"/v1/auth/recovery", map[string]any{"current_auth_key": secret("wrong"), "recovery_wrap": wrap, "recovery_proof": secret("code")}},
+	} {
+		person := func() (string, string) {
+			people++
+			email := fmt.Sprintf("person%d@example.com", people)
+			authtest.NewUser(t, h.store, email, auth.RoleMember)
+			return email, authtest.SignIn(t, h.users, email)
+		}
+		// Five sign-ins, then the session's ceremony; the address typed in
+		// another case is the same account.
+		email, session := person()
+		for i := range 5 {
+			if got := signIn(" " + strings.ToUpper(email)); got != http.StatusUnauthorized {
+				t.Fatalf("%s: sign-in %d: %d", c.path, i+1, got)
+			}
+		}
+		if got := post(c.path, session, c.in); got != http.StatusTooManyRequests {
+			t.Errorf("%s after five sign-ins: %d, want 429", c.path, got)
+		}
+		// And the other way round.
+		email, session = person()
+		for i := range 5 {
+			if got := post(c.path, session, c.in); got != http.StatusForbidden {
+				t.Fatalf("%s: guess %d: %d", c.path, i+1, got)
+			}
+		}
+		if got := signIn(email); got != http.StatusTooManyRequests {
+			t.Errorf("a sign-in after five guesses through %s: %d, want 429", c.path, got)
+		}
+	}
+	// The budget is the account's, not the routes': another person's is
+	// whole.
+	if got := signIn("someone@example.com"); got != http.StatusUnauthorized {
+		t.Errorf("another account was throttled too: %d", got)
 	}
 }
 

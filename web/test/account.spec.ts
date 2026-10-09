@@ -13,15 +13,18 @@ import { freshModules, now, stubPage } from './support'
 const PASSWORD = 'correct horse battery staple'
 const ANA = 'ana@example.test'
 const ANA_SEAL = 'b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4'
+const BEA = 'bea@example.test'
+const BEA_ID = 'usr_00000000000000b2'
+const BEA_SEAL = '0f4c2a1e-7d3b-4e8a-9c61-52b7e0d9a3f4'
 
 /** A fresh page: the session, the ceremonies, the vault and the errors of one module graph. */
 async function load() {
   await freshModules()
-  const [account, session, vault, errors, http] = await Promise.all([
+  const [account, session, vault, sessionVault, errors, http] = await Promise.all([
     import('../src/state/account'), import('../src/state/session'), import('../src/state/accountVault'),
-    import('../src/crypto/errors'), import('../src/api/http'),
+    import('../src/state/sessionVault'), import('../src/crypto/errors'), import('../src/api/http'),
   ])
-  return { ...account, ...session, vault, CeremonyError: errors.CeremonyError, ApiError: http.ApiError }
+  return { ...account, ...session, vault, sessionVault, CeremonyError: errors.CeremonyError, ApiError: http.ApiError }
 }
 
 /** Ana enrolled at her target, and at another salt (an address changed, a salt key replaced): made once, with the real derivation. */
@@ -308,6 +311,40 @@ describe('a signed-in person’s password and recovery code', { timeout: 40_000 
     // The password and the account key did not change.
     expect(person.authKey).toBe(before.authKey)
     expect(person.publicKey).toBe(before.publicKey)
+  })
+
+  it('shows the new code to its person even when their session ended while the server replaced it', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await s.signIn(ANA, PASSWORD)
+    // Signed out here, or in another tab, before the answer arrives: the server replaced the code all the same, and this is its only copy.
+    server.inFlight.set('/v1/auth/recovery', () => s.signOut())
+    await s.replaceRecoveryCode(PASSWORD)
+    expect(s.session.phase).toBe('signed-out')
+    expect(s.recoveryCode.reason).toBe('replaced')
+    expect((await recoveryKeys(s.recoveryCode.code)).proof).toBe(server.people.get(ANA)!.recoveryProof)
+  })
+
+  it('never shows it over another person signed in meanwhile, on this page or in the login this browser remembers', async () => {
+    const bea = await enrol(PASSWORD, { salt: targetOf(BEA), kdf: DEFAULT_KDF, seal_id: BEA_SEAL }, 'new')
+    for (const meanwhile of ['signs in here', 'signs in in another tab'] as const) {
+      const s = await load()
+      const server = accountServer()
+      server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+      server.people.set(BEA, stored(bea, targetOf(BEA), { id: BEA_ID, email: BEA, name: 'Bea', sealID: BEA_SEAL }))
+      await s.signIn(ANA, PASSWORD)
+      server.inFlight.set('/v1/auth/recovery', async () => {
+        await s.signOut()
+        if (meanwhile === 'signs in here') await s.signIn(BEA, PASSWORD)
+        else await s.sessionVault.saveLocalSession({ id: crypto.randomUUID(), token: 'bea-in-another-tab', expiresAt: now() + 3600, userID: BEA_ID })
+      })
+      await s.replaceRecoveryCode(PASSWORD)
+      expect(s.recoveryCode, meanwhile).toEqual({ code: '', reason: '' })
+      expect(s.identity(), meanwhile).toBe(meanwhile === 'signs in here' ? BEA_ID : '')
+      // Ana's code was replaced on the server: she replaces it again to see one.
+      expect(server.people.get(ANA)!.recoveryProof, meanwhile).not.toBe(atTarget.enrolment.recovery_proof)
+    }
   })
 
   it('says so when this browser does not hold the account key to wrap again, before deriving or sending anything', async () => {

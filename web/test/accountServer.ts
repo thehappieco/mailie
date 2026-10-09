@@ -87,9 +87,17 @@ export function accountServer() {
     })
   }
 
-  const fetch = serve(request => {
+  /**
+   * What happens while an answer is on its way, by path: run once, after the
+   * server answered and before the page has the answer.
+   */
+  const inFlight = new Map<string, () => unknown>()
+  const fetch = serve(async request => {
     const response = answer(request)
     response.headers.set('Date', new Date(serverNow() * 1000).toUTCString())
+    const meanwhile = inFlight.get(request.path)
+    inFlight.delete(request.path)
+    await meanwhile?.()
     return response
   })
   function answer({ path, body: raw, token }: { path: string; body?: unknown; token: string }): Response {
@@ -200,7 +208,7 @@ export function accountServer() {
   }
 
   return {
-    people, sessions, calls, fetch, clock,
+    people, sessions, calls, fetch, clock, inFlight,
     /** An invitation for an address, whose seal id the server draws now. */
     invite(email: string): string { const code = random(); invites.set(code, { email: normalise(email), sealID: crypto.randomUUID(), used: false }); return code },
     /** A reset link for a person. */

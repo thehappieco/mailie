@@ -396,7 +396,9 @@ their grant on it and their consent.
 ### Rate limits
 
 Sign-in and sign-up: 60 a minute per address (burst 20) and 5 a minute per email address, before
-any hashing; a password change, 5 a minute per person. Authenticated requests spend from a bucket
+any hashing. That second budget is the account's, whichever route spends it: a recovery, a reset,
+the upgrade's sign-in and a session's step-up, password change and recovery code replacement (keyed
+by the person's stored address) all draw on the same 5. Authenticated requests spend from a bucket
 per address (600 a minute, burst 60). A wrong key secret spends from a tight bucket for that key's
 prefix (30 a minute, burst 10), and a key whose prefix does not exist from a tight bucket for the
 address, consulted only once the prefix is not found. No failure is charged to the address as a
