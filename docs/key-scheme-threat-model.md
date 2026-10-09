@@ -149,7 +149,10 @@ the 10 minutes are counted from id.'s `auth_time`, so a silent sign-in opens non
 request, spec §5.7) or the recovery wrap; change the password or replace the recovery code, even
 within those 10 minutes (each needs the current auth key in its own request, spec §12.3 and
 §12.5: a recovery code a session could set would be a password it could set, through a recovery,
-spec §12.4); after those 10 minutes, do any of what the step-up guards (spec §11). A step-up proves
+spec §12.4); finish, with an auth key of its own, a ticket that was copied with it (a sign-in's
+re-derivation, which rides in the same answer as the session, or a password change's first step):
+each finishes only with the auth key it was issued to, sent again, which that answer never holds
+(spec §12.2, step 5, and §12.3); after those 10 minutes, do any of what the step-up guards (spec §11). A step-up proves
 the session's own person: the self-hosted one checks an auth key against that person's verifier
 only, and the hosted one refuses an id. sign-in whose issuer and `sub` are not the identity linked
 to that person, so signing in as oneself does not step up someone else's session. Without the
@@ -168,9 +171,19 @@ does: **a copied profile of a signed-in person holds their account key.**
 
 **After the session ends,** it depends on the edition (spec §7):
 
-- **Self-hosted:** the console wipes the vault at sign-out and whenever it finds no valid session,
-  an expired one included, since every sign-in opens the password wrap anyway. A browser whose
-  session ended holds nothing that opens without the password.
+- **Self-hosted:** the console restores the vault with its session at each page load, without
+  asking for the password, and wipes it at sign-out and whenever one of its pages finds no valid
+  session, an expired or revoked one included, since every sign-in opens the password wrap anyway.
+  Only a running page wipes it. **A browser closed while signed in keeps the record until the
+  console next runs in that profile**, whatever happens to the session meanwhile: a session that
+  expires (14 days at most), or that the person ends from another device ("sign out everywhere",
+  a password change, a recovery, a reset), wipes nothing in a browser that is not running the
+  console, and a copy of that profile taken before it runs again holds the account key, as a
+  signed-in one does. A thief who copies files and never opens the console is that case. Signing
+  out on the device before leaving it wipes the record then; for a device that may already have
+  been copied, the remedy is the reset (below). Once a page of the console has run in the profile
+  and found no session, the profile holds nothing that opens without the password, but for what a
+  wiped record leaves on disk (below).
 - **Hosted:** the vault outlives a session that merely expires, so that the next sign-in needs no
   product key, and id.'s own session in the same browser may sign the person in again silently:
   signing out of Mailie sends the person to id.'s sign-out, which asks whether to end id.'s
@@ -183,8 +196,14 @@ does: **a copied profile of a signed-in person holds their account key.**
 opens it; but the record (the AES key's bytes and the 48-byte ciphertext) may stay in the
 profile's files until the browser compacts its storage (Chromium's IndexedDB is LevelDB, where a
 delete writes a tombstone), and on an unencrypted disk after that. A forensic copy of the profile
-taken after sign-out may still yield the account key. Full-disk encryption is the person's remedy
-against that.
+taken after sign-out may still yield the account key.
+
+**What full-disk encryption covers.** A device taken while it is off, or a disk taken out of it,
+yields none of the profile's files without the disk's key: neither a record a closed browser kept
+(above) nor what a wiped one left behind. It covers nothing once the disk is unlocked: a device
+taken unlocked or asleep, or the files copied by whoever runs as the person on it (their
+operating-system account, malware, a backup of the profile), get the record as the browser does.
+Against those, signing out before leaving the device, and the reset, are the person's remedies.
 
 Changing the password does not change the account key. The remedy for an account key that may have
 been copied is the reset of spec §12.6, which replaces it and deletes the grants sealed to it,
@@ -372,7 +391,9 @@ sign-in's answer, or a device taken right after a sign-in) can do what the step-
 accomplice "read" with grant-shaped bytes, and write a mailbox key of its choosing, the first key of
 a keyless mailbox included. It cannot set the person's secrets: changing the password and replacing
 the recovery code each take the current auth key in their own request, since either would hand the
-holder the account for good, past the session's end. On a self-hosted server the window opens
+holder the account for good, past the session's end; and the re-derivation ticket that rides in
+the sign-in's answer, like a password change's, finishes only with the auth key it was issued to,
+sent again (spec §12.2, step 5). On a self-hosted server the window opens
 at a sign-in or a step-up that verified the person's secret; on the hosted service it opens only
 when id. says the person authenticated (`auth_time`), so a silent sign-in from id.'s session opens
 none. Not counting a sign-in as a step-up would close the window at the cost of a second password
@@ -399,9 +420,12 @@ prompt after every sign-in that keys mailboxes.
 The guarantees that need the server or the console's ceremonies are tested with the code that
 enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
 `internal/auth/accountkeys_test.go` (the step-up and its window, a step-up as another person or
-another id. identity, a silent sign-in, the current auth key a new recovery code needs, a recovery
-opened while its code is replaced, the upgrade's one-way flag, written-once columns, the targets of
-salts and parameters, the reset and its last-reader guard), `internal/api/accountkeys_test.go`
+another id. identity, a silent sign-in, the current auth key a new recovery code needs, a ticket
+that finishes only with the auth key that earned it, a ticket that is not one refused before any
+hash, a recovery opened while its code is replaced, the upgrade's one-way flag, written-once
+columns, the targets of salts and parameters, the reset and its last-reader guard),
+`internal/auth/users_test.go` (an invitation's address matched byte for byte, never folded),
+`internal/api/accountkeys_test.go`
 (no route answers a wrap to a session alone, nor lets one set a recovery code right after its
 sign-in, the challenge, the ceremonies over REST and their limits) and
 `internal/store/migrate_thirteen_test.go`. The console's half is tested in
@@ -412,7 +436,10 @@ clock, not the browser's; a wrap
 that does not open after an accepted auth key, and parameters outside the bounds, refused as
 security errors; every enrolment bound to the seal id the server answered; the re-derivation, the
 reset's target, the two-step password change, recovery, the password before a new recovery code;
-and the vault, opened only for the person named, wiped at sign-out and when no session is valid.
+an address remembered as soon as the server accepts a proof, a recovery or a change that fails
+after that included; and the vault, opened only for the person named, wiped at sign-out and when
+no session is valid, and kept for the page when the browser refuses its write. The sign-in form
+never says a password is not sent while the upgrade may send it (`web/test/signIn.page.spec.ts`).
 The rest comes in the next step of phase 3: that the step-up guards every key written, the first
 key of a keyless mailbox included; who may give "read" and supply the key; the deletion of
 grants. The specification's sections 11 and 12 are what those tests hold the server and the

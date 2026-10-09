@@ -456,8 +456,10 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 			return fmt.Errorf("auth: redeem invite: %w", err)
 		}
 		// Returning here rolls the UPDATE back, so a mistyped address does
-		// not spend the invite of the person it was really for.
-		if !strings.EqualFold(invited, email) {
+		// not spend the invite of the person it was really for. Both are
+		// normalised: equal means the same bytes (docs/key-scheme.md section
+		// 2), never a fold that takes U+017F for an s.
+		if invited != email {
 			return ErrInviteInvalid
 		}
 		if sealID != req.SealID {
@@ -524,7 +526,7 @@ func (u *Users) checkSignUp(ctx context.Context, codeHash []byte, email string) 
 	case err != nil:
 		return fmt.Errorf("auth: check invite: %w", err)
 	}
-	if !strings.EqualFold(invited, email) {
+	if invited != email {
 		return ErrInviteInvalid
 	}
 	if team != "" {
@@ -586,8 +588,8 @@ func (u *Users) AcceptInvite(ctx context.Context, userID, code string) (workspac
 			return fmt.Errorf("auth: accept invite: %w", err)
 		}
 		// Returning rolls the UPDATE back: the invite is still the person's
-		// it was made for.
-		if !strings.EqualFold(invited, email) {
+		// it was made for. Both addresses are as the server stores them.
+		if invited != email {
 			return ErrInviteInvalid
 		}
 		if err := u.workspaces.AddMemberTx(ctx, tx, team, userID, role, now); err != nil {

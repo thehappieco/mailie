@@ -15,8 +15,10 @@ import (
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
+	"github.com/thehappieco/mailie/internal/keyscheme"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func newUsers(t *testing.T) (*auth.Users, *store.Store, *time.Time) {
@@ -183,6 +185,48 @@ func TestAnInviteWorksOnceAndOnlyForItsEmail(t *testing.T) {
 	req.Email = "ana@example.com"
 	if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, auth.ErrInviteInvalid) {
 		t.Fatalf("an invite worked twice: %v", err)
+	}
+}
+
+func TestAnInviteIsForItsAddressExactlyNeverOneThatFoldsToIt(t *testing.T) {
+	// Unicode's simple case folding takes U+017F (ſ) for an s, and the final
+	// sigma for a sigma: a fold would let an invite for one address create an
+	// account at another, and leave the invited address's other invites
+	// waiting to create a second one (docs/key-scheme.md section 2).
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	owner := authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
+	for invited, folded := range map[string]string{
+		"sam@example.com": "\u017fam@example.com",
+		"σx@example.com":  "ςx@example.com",
+	} {
+		code := invite(t, users, invited, auth.RoleMember)
+		invite(t, users, invited, auth.RoleOwner)
+		if _, err := users.OpenSignUp(t.Context(), code, folded); !errors.Is(err, auth.ErrInviteInvalid) {
+			t.Errorf("an invite for %s opened for %q: %v", invited, folded, err)
+		}
+		req := auth.SignUpRequest{Invite: code, Email: folded, SealID: keyscheme.NewSealID(), Enrolment: authtest.Enrolment(t),
+			UserAgent: "test"}
+		if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, auth.ErrInviteInvalid) {
+			t.Errorf("an invite for %s signed up %q: %v", invited, folded, err)
+		}
+		if n := count(t, db, `SELECT count(*) FROM users WHERE email = ?`, folded); n != 0 {
+			t.Errorf("%q has an account", folded)
+		}
+		if n := count(t, db, `SELECT count(*) FROM invites WHERE email = ? AND used_at = 0`, invited); n != 2 {
+			t.Errorf("%s has %d invites waiting, want both", invited, n)
+		}
+	}
+
+	// Nor does a person whose address folds to a team invite's accept it.
+	sam := authtest.NewUser(t, db, "\u017fam@example.com", auth.RoleMember)
+	team := teamOf(t, db, owner.ID)
+	code, _ := teamInvite(t, users, "sam@example.com", team.ID, workspace.RoleAdmin)
+	if _, err := users.AcceptInvite(t.Context(), sam.ID, code); !errors.Is(err, auth.ErrInviteInvalid) {
+		t.Errorf("a team invite for sam@ was accepted by %q: %v", sam.Email, err)
+	}
+	if n := count(t, db, `SELECT count(*) FROM invites WHERE workspace_id = ? AND used_at = 0`, team.ID); n != 1 {
+		t.Errorf("the refused acceptance spent the invite")
 	}
 }
 

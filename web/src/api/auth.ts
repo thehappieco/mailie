@@ -83,11 +83,13 @@ export async function beginPasswordChange(token: string, currentAuthKey: string)
 }
 
 /**
- * Stores a new auth key and password wrap. A password change answers the
- * only session left, every other one having ended; a sign-in's
+ * Stores a new auth key and password wrap. current_auth_key is the auth key
+ * that earned the ticket (the change's first step, or the sign-in), sent
+ * again: the server finishes the ticket with no other. A password change
+ * answers the only session left, every other one having ended; a sign-in's
  * re-derivation answers nothing (204), and ends nothing.
  */
-export async function finishPasswordChange(token: string, input: { ticket: string; auth_key: string; kdf: KDFWire; password_wrap: string }): Promise<SessionReply | undefined> {
+export async function finishPasswordChange(token: string, input: { ticket: string; current_auth_key: string; auth_key: string; kdf: KDFWire; password_wrap: string }): Promise<SessionReply | undefined> {
   const reply = await request<unknown>('/v1/auth/password/finish', { token, body: input })
   return reply === undefined ? undefined : checked(reply, isSessionReply)
 }

@@ -126,7 +126,8 @@ presented has no minimum.
   open after the auth key was accepted is a security error, not a wrong password. When the account
   is not at its target (its address changed, or the default was raised) the answer adds `rederive
   {salt, kdf, ticket}`: the browser derives the same password under it and finishes with
-  `POST /v1/auth/password/finish`, and no session ends. An unknown address, a disabled person, a
+  `POST /v1/auth/password/finish`, sending again the auth key it signed in with
+  (`current_auth_key`), and no session ends. An unknown address, a disabled person, a
   person who has not enrolled and a person with no password cost the same work as a wrong auth key
   and get the same answer (`unauthorized`): an auth key is checked against a dummy verifier in all
   of them. At most two checks of people's secrets run at once.
@@ -142,7 +143,8 @@ presented has no minimum.
 - **Changing the password** is two steps: `POST /v1/auth/password/begin {current_auth_key}`
   answers the current password wrap, the target and a ticket only to the current auth key verified
   in that request (a session alone gets nothing); the browser wraps the same account key under the
-  new password and sends `POST /v1/auth/password/finish {ticket, auth_key, kdf, password_wrap}`.
+  new password and sends `POST /v1/auth/password/finish {ticket, current_auth_key, auth_key, kdf,
+  password_wrap}`, the same current auth key again.
   Every session of the person ends, and the reply is the one this browser goes on with; the account
   key, the grants and the recovery code do not change. A person without a password has no current
   one to prove, and the console does not offer the change (`user.has_password` is `false`).
@@ -150,7 +152,10 @@ presented has no minimum.
   seal id, the public key, the target and a ticket, only to the proof verified in that request;
   `POST /v1/auth/recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap,
   recovery_proof}` stores a new password and a new recovery code over the same account key, and
-  ends every session.
+  ends every session. The console then signs in with the new password; when that sign-in fails
+  (too many attempts, the network), the recovery is done all the same, and the form says so and
+  asks for the new password rather than for another recovery, which would only replace the code
+  it just showed.
 - **Replacing the recovery code.** `POST /v1/auth/recovery {current_auth_key, recovery_wrap,
   recovery_proof}` replaces the recovery code of a signed-in person, with their current auth key
   verified in that request under the account's sign-in limit, as `password/begin` is: a session
@@ -167,7 +172,9 @@ presented has no minimum.
   can ask for the password again before it calls such a route rather than after a refusal.
 - **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
   minutes, stored as SHA-256 and bound to the person (and, for a password change and a
-  re-derivation, the session). A ceremony that changes the password (a change, a re-derivation, a
+  re-derivation, the session and the auth key that earned the ticket, kept as SHA-256: whoever saw
+  only the answer that carried the ticket cannot finish it). A ticket that is not one costs no
+  Argon2id to refuse, and a refused one stays its own. A ceremony that changes the password (a change, a re-derivation, a
   recovery, a reset, an enrolment) spends every other ticket of the person; replacing the recovery
   code spends only the recoveries opened with the old code, and a password change or re-derivation
   in flight goes on, since the password it proved has not changed.
@@ -217,10 +224,13 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **The account key at rest** (`web/src/state/accountVault.ts`): the kit's key at rest under
   Mailie's profile, in IndexedDB beside the session's record, one per browser profile, bound to the
   person's seal id and public key. It is opened only for the person `GET /v1/auth/me` names (a
-  record of anyone else is wiped), and wiped at sign-out and whenever the page finds no valid
-  session (expired, revoked, ended by a password change, a recovery or a reset); an edition whose
-  key outlives a session that merely ends says so (`Edition.accountKey`). A browser that refuses
-  IndexedDB keeps it for the page only.
+  record of anyone else is wiped), and wiped at sign-out and whenever a page of the console finds
+  no valid session (expired, revoked, ended by a password change, a recovery or a reset); an
+  edition whose key outlives a session that merely ends says so (`Edition.accountKey`). Nothing
+  runs while the console is closed: a browser closed while signed in keeps the record until the
+  console next runs there, whatever happens to the session meanwhile ([`key-scheme-threat-model.md`](key-scheme-threat-model.md)
+  section 4.6). The page asks its own copy first, so a browser that refuses IndexedDB, or opens it
+  and refuses the write, keeps the key for the page only.
 - **The recovery code is shown once**, after a sign-up, a recovery, a reset link and the upgrade,
   and after the person replaces theirs, in a dialog that stays until they say they saved it
   (`components/RecoveryCodeDialog.vue`); nothing keeps it once it closes.
@@ -236,8 +246,9 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
 - **The upgrade.** The console remembers, per origin and per address as the server stores it, every
-  address that enrolled or proved an auth key in this browser (not wiped at sign-out; in the page's
-  own memory too, so a browser that refuses IndexedDB remembers until a reload). For a remembered
+  address that enrolled or proved an auth key or a recovery code in this browser, as soon as the
+  server accepts the proof, whatever fails after it (not wiped at sign-out; in the page's own memory
+  too, so a browser that refuses IndexedDB remembers until a reload). For a remembered
   address it refuses the challenge's `upgrade` and sends nothing, and tells the person to tell the
   server's administrator, who can send a reset link if the server was put back from an older copy;
   otherwise the password goes once to `upgrade/login`, and the same password, derived, to
@@ -612,7 +623,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension; `user.seal_id`, `user.public_key`, `session.authenticated_at` |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password/begin` | session | `{current_auth_key}` → `{password_wrap, salt, kdf, ticket}` |
-| `POST /v1/auth/password/finish` | session | `{ticket, auth_key, kdf, password_wrap}` → a new `Session` (a change: every other session ends), or 204 (a sign-in's re-derivation) |
+| `POST /v1/auth/password/finish` | session | `{ticket, current_auth_key, auth_key, kdf, password_wrap}` → a new `Session` (a change: every other session ends), or 204 (a sign-in's re-derivation); `current_auth_key` is the auth key that earned the ticket (`password/begin`'s, or the sign-in's) |
 | `POST /v1/auth/recovery` | session, current auth key | `{current_auth_key, recovery_wrap, recovery_proof}` → 204 |
 | `POST /v1/auth/stepup` | session | `{auth_key}` → `{authenticated_at}` |
 | `PUT /v1/auth/profile` | session | `{name}` → `User` |

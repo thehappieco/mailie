@@ -106,7 +106,8 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			{"begin a password change", http.MethodPost, "/v1/auth/password/begin", owner,
 				jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey})},
 			{"finish a password change", http.MethodPost, "/v1/auth/password/finish", owner, jsonOf(t, map[string]any{
-				"ticket": begun.Ticket, "auth_key": secret("changed"), "kdf": defaultKDF(), "password_wrap": wrap(),
+				"ticket": begun.Ticket, "current_auth_key": authtest.AuthKey, "auth_key": secret("changed"), "kdf": defaultKDF(),
+				"password_wrap": wrap(),
 			})},
 			{"open a reset invitation", http.MethodPost, "/v1/auth/reset/open", "",
 				jsonOf(t, map[string]any{"reset": resetCode, "email": "owner@example.com"})},

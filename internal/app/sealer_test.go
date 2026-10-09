@@ -116,3 +116,35 @@ func TestOnlyARootTheKeysDoNotOpenSendsTheOperatorToReplaceIt(t *testing.T) {
 		t.Fatalf("a root no configured key opens: %v", err)
 	}
 }
+
+func TestOnlyALostRootsAdviceSaysEveryMailboxIsAuthorizedAgain(t *testing.T) {
+	// The root and the salt key are sealed by the same sealer: a root whose
+	// key is lost leaves a salt key that does not open either, and the
+	// advice replaces both in one run. Replacing the salt key alone loses
+	// nothing: each account moves to its new salt at its next sign-in.
+	sealer := secretstest.New("configured")
+	for _, c := range []struct {
+		name, says string
+		err        error
+		authorized bool
+	}{
+		{"a root", "rewrap-credentials --new-send-hash-root --new-salt-key`", store.ErrSendHashRoot, true},
+		{"a root under another KMS key", "rewrap-credentials --new-send-hash-root --new-salt-key --kms-key-lost`",
+			errors.Join(store.ErrSendHashRoot, secrets.ErrSealedElsewhere), true},
+		{"a salt key", "rewrap-credentials --new-salt-key`", store.ErrKDFSaltKey, false},
+		{"a salt key under another KMS key", "rewrap-credentials --new-salt-key --kms-key-lost`",
+			errors.Join(store.ErrKDFSaltKey, secrets.ErrSealedElsewhere), false},
+	} {
+		advice := ExplainSealed(c.err, sealer).Error()
+		if !strings.Contains(advice, c.says) {
+			t.Errorf("%s: the advice does not say %q: %s", c.name, c.says, advice)
+		}
+		if strings.Contains(advice, "authorized again") != c.authorized {
+			t.Errorf("%s: the advice says every mailbox is authorized again: %v, want %v: %s", c.name,
+				!c.authorized, c.authorized, advice)
+		}
+		if !c.authorized && !strings.Contains(advice, "next sign-in") {
+			t.Errorf("%s: the advice does not say each account moves at its next sign-in: %s", c.name, advice)
+		}
+	}
+}

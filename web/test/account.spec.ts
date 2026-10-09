@@ -6,9 +6,10 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { toBase64URL } from '@thehappieco/kit/bytes'
 import { generateAccountKeys } from '@thehappieco/kit/account'
+import { IDBObjectStore } from 'fake-indexeddb'
 import { deriveKeys, enrol, openWrap, recoveryKeys, type Enrolled } from '../src/crypto/account'
 import { accountServer, DEFAULT_KDF, saltOf, targetOf, type Stored } from './accountServer'
-import { freshModules, now, stubPage } from './support'
+import { failure, freshModules, now, stubPage } from './support'
 
 const PASSWORD = 'correct horse battery staple'
 const ANA = 'ana@example.test'
@@ -46,6 +47,22 @@ function stored(made: Enrolled, salt: string, fields: Partial<Stored> = {}): Sto
 const same = (a: Uint8Array | null, b: Uint8Array) => a !== null && a.length === b.length && a.every((byte, i) => byte === b[i])
 /** Whether any request carried the password, under any field. */
 const sentPassword = (server: ReturnType<typeof accountServer>, password = PASSWORD) => server.calls.some(call => JSON.stringify(call.body).includes(password))
+/** Ana as a server put back from a copy older than her enrolment stores her: an old password, no account key. */
+const legacyAna = (password: string): Stored => ({ ...stored(atTarget, '', { legacyPassword: password }), publicKey: undefined, authKey: '' })
+
+/** Forgets, in this browser's storage, every address it saw enrol: what a page that never saw this person's sign-in starts from. */
+async function forgetEnrolledInStorage(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('mailie-browser-account', 1)
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const tx = request.result.transaction('enrolled', 'readwrite')
+      tx.objectStore('enrolled').clear()
+      tx.oncomplete = () => { request.result.close(); resolve() }
+      tx.onerror = () => reject(tx.error)
+    }
+  })
+}
 
 beforeEach(() => { stubPage() })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -139,6 +156,8 @@ describe('signing in', { timeout: 30_000 }, () => {
     const finish = server.calls[2]!.body
     expect(finish.kdf).toEqual(DEFAULT_KDF)
     expect(finish.auth_key).not.toBe(offTarget.enrolment.auth_key)
+    // The ticket finishes only with the auth key that signed in, which the answer carrying it never held.
+    expect(finish.current_auth_key).toBe(offTarget.enrolment.auth_key)
     expect(server.people.get(ANA)!.salt).toBe(targetOf(ANA))
     expect(s.session.phase).toBe('ready')
     expect([...server.sessions.values()].every(session => !session.ended)).toBe(true)
@@ -232,6 +251,26 @@ describe('recovering an account', { timeout: 30_000 }, () => {
     expect((await recoveryKeys(s.recoveryCode.code)).proof).toBe(person.recoveryProof)
   })
 
+  it('remembers the address, and says the recovery is done, when the sign-in after it fails', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    // The account's sign-in budget spent by the time the new password signs in.
+    server.refuseNext.set('/v1/auth/login', () => failure('rate_limited', 429))
+    await expect(s.recover({ email: ANA, code: atTarget.recoveryCode, password: 'my brand new password' })).resolves.toBe('sign-in-again')
+    expect(server.paths()).toEqual(['/v1/auth/recover/open', '/v1/auth/recover/finish', '/v1/auth/login'])
+    expect(s.session.phase).not.toBe('ready')
+    expect(s.recoveryCode.reason).toBe('recovered')
+    expect((await recoveryKeys(s.recoveryCode.code)).proof).toBe(server.people.get(ANA)!.recoveryProof)
+
+    // The next page, to a server that now asks for the upgrade: no password goes.
+    server.people.set(ANA, legacyAna('my brand new password'))
+    const next = await load()
+    await expect(next.signIn(ANA, 'my brand new password')).rejects.toMatchObject({ code: 'upgrade_refused' })
+    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
+    expect(sentPassword(server, 'my brand new password')).toBe(false)
+  })
+
   it('refuses something that is not a recovery code before asking the server', async () => {
     const s = await load()
     const server = accountServer()
@@ -268,12 +307,35 @@ describe('a signed-in person’s password and recovery code', { timeout: 40_000 
     await s.changePassword(PASSWORD, 'the next password of mine')
     expect(server.paths().slice(2)).toEqual(['/v1/auth/challenge', '/v1/auth/password/begin', '/v1/auth/password/finish'])
     expect(sentPassword(server) || sentPassword(server, 'the next password of mine')).toBe(false)
+    // The ticket finishes only with the current auth key that began the change.
+    expect(server.calls.at(-1)!.body.current_auth_key).toBe(atTarget.enrolment.auth_key)
     const person = server.people.get(ANA)!
     expect(person.publicKey).toBe(atTarget.enrolment.public_key)
     expect(person.recoveryProof).toBe(atTarget.enrolment.recovery_proof)
     expect(s.session.phase).toBe('ready')
     expect(s.session.authenticatedAt).toBe(before)
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, person.publicKey!), atTarget.accountKey)).toBe(true)
+  })
+
+  it('remembers the address once the current password is accepted, even when the change then fails', async () => {
+    const first = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await first.signIn(ANA, PASSWORD)
+    // A page that never saw this person sign in: the session restored, the browser's memory of the address gone.
+    await forgetEnrolledInStorage()
+    const s = await load()
+    await s.restore()
+    expect(s.session.phase).toBe('ready')
+    server.refuseNext.set('/v1/auth/password/finish', () => failure('unavailable', 503))
+    await expect(s.changePassword(PASSWORD, 'the next password of mine')).rejects.toMatchObject({ code: 'unavailable' })
+    expect(server.paths().slice(-2)).toEqual(['/v1/auth/password/begin', '/v1/auth/password/finish'])
+
+    server.people.set(ANA, legacyAna(PASSWORD))
+    const next = await load()
+    await expect(next.signIn(ANA, PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
+    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
+    expect(sentPassword(server)).toBe(false)
   })
 
   it('refuses a wrong current password without changing anything', async () => {
@@ -447,6 +509,21 @@ describe('the browser vault', () => {
     expect(next.session.phase).toBe('ready')
     expect(next.session.keyed).toBe(true)
     expect(next.session.authenticatedAt).toBeGreaterThan(0)
+  }, 30_000)
+
+  it('keeps the key this page holds when the browser opens its storage but refuses the write', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    // An older record of someone else in the slot, then every write refused: the storage is full.
+    await kept(s)
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('the storage is full', 'QuotaExceededError') })
+    await s.signIn(ANA, PASSWORD)
+    expect(s.session.keyed).toBe(true)
+    expect(same(await s.vault.accountKeyOf(ANA_SEAL, atTarget.enrolment.public_key), atTarget.accountKey)).toBe(true)
+    // What needs the key works from this page.
+    await s.replaceRecoveryCode(PASSWORD)
+    expect(s.recoveryCode.reason).toBe('replaced')
   }, 30_000)
 
   it('wipes a record of anyone else instead of opening it', async () => {

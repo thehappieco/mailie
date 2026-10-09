@@ -289,10 +289,20 @@ func TestAPasswordChangeNeedsTheCurrentAuthKeyAndEndsEverySession(t *testing.T) 
 	}
 
 	newKey := secret("a brand new password")
-	resp = h.do(t, http.MethodPost, "/v1/auth/password/finish", laptop.Token, jsonOf(t, map[string]any{
+	// The ticket and the session alone, as an answer's log holds them: the
+	// auth key that began the change is not there, and nothing changes.
+	finish := map[string]any{
 		"ticket": begun.Ticket, "auth_key": newKey, "kdf": defaultKDF(),
 		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
-	}))
+	}
+	for _, current := range []string{"", secret("another")} {
+		finish["current_auth_key"] = current
+		if resp := h.do(t, http.MethodPost, "/v1/auth/password/finish", laptop.Token, jsonOf(t, finish)); resp.StatusCode/100 != 4 {
+			t.Fatalf("finish with the current auth key %q: %d", current, resp.StatusCode)
+		}
+	}
+	finish["current_auth_key"] = authtest.AuthKey
+	resp = h.do(t, http.MethodPost, "/v1/auth/password/finish", laptop.Token, jsonOf(t, finish))
 	if resp.StatusCode != http.StatusOK {
 		code, message := decodeError(t, resp)
 		t.Fatalf("finish: %d %s %s", resp.StatusCode, code, message)

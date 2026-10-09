@@ -91,6 +91,8 @@ export async function signIn(email: string, password: string): Promise<PendingUp
   if (answer.upgrade) return upgrade(email, password)
   const keys = await deriveKeys(password, answer, 'presented')
   const reply = await auth.login(email, keys.authKey)
+  // The server accepted a proof: remembered now, whatever fails next (section 12.7, step 2).
+  await rememberEnrolled(email)
   let accountKey: Uint8Array
   try {
     accountKey = await openWrap('password', keys.wrapKey, reply.password_wrap, reply.user.seal_id!, reply.user.public_key!)
@@ -98,23 +100,26 @@ export async function signIn(email: string, password: string): Promise<PendingUp
     refuse(reply)
   }
   try {
-    await rederive(reply, password, accountKey)
+    await rederive(reply, password, accountKey, keys.authKey)
     await keepAccountKey(accountKey, keyOf(reply.user.public_key!), reply.user.seal_id!)
   } finally {
     accountKey.fill(0)
   }
   await beginSession(reply, true)
-  await rememberEnrolled(email)
   return null
 }
 
-/** The sign-in's re-derivation (section 12.2, step 5): nothing ends, and a failure only leaves it for the next sign-in. */
-async function rederive(reply: LoginReply, password: string, accountKey: Uint8Array): Promise<void> {
+/**
+ * The sign-in's re-derivation (section 12.2, step 5), finished with the auth
+ * key that signed in: nothing ends, and a failure only leaves it for the next
+ * sign-in.
+ */
+async function rederive(reply: LoginReply, password: string, accountKey: Uint8Array, currentAuthKey: string): Promise<void> {
   const target = reply.rederive
   if (!target) return
   try {
     const next = await rewrap(password, target, 'presented', accountKey, reply.user.seal_id!)
-    await auth.finishPasswordChange(reply.token, { ticket: target.ticket, ...next })
+    await auth.finishPasswordChange(reply.token, { ticket: target.ticket, current_auth_key: currentAuthKey, ...next })
   } catch { /* The account stays where it was; its next sign-in names the target again. */ }
 }
 
@@ -198,16 +203,27 @@ export async function resetPassword(input: { reset: string; email: string; passw
 }
 
 /**
+ * What a recovery that went through ended with: signed in with the new
+ * password, or recovered and not signed in, when the sign-in after it
+ * failed (too many attempts, the network). The new password works then, and
+ * the person signs in with it; recovering again would only replace the code
+ * just shown.
+ */
+export type Recovered = 'signed-in' | 'sign-in-again'
+
+/**
  * recover replaces a forgotten password with the recovery code (section
  * 12.4): the code's proof opens the recovery, the code's key opens the
  * account key, which is wrapped under the new password and a new code. Every
  * session of the person ends, and this browser signs in with the new
  * password; the new code is shown once.
  */
-export async function recover(input: { email: string; code: string; password: string }): Promise<void> {
+export async function recover(input: { email: string; code: string; password: string }): Promise<Recovered> {
   checkNewPassword(input.password)
   const keys = await recoveryKeys(input.code)
   const opened = await auth.openRecovery(input.email, keys.proof)
+  // The server accepted the code's proof: remembered now, whatever fails next (section 12.7, step 2).
+  await rememberEnrolled(input.email)
   const accountKey = await openWrap('recovery', keys.key, opened.recovery_wrap, opened.seal_id, opened.public_key)
   try {
     const next = await rewrap(input.password, opened, 'new', accountKey, opened.seal_id)
@@ -216,11 +232,17 @@ export async function recover(input: { email: string; code: string; password: st
     // Shown even if the sign-in below fails: the old code is gone.
     showRecoveryCode(recovery.code, 'recovered')
     // The new password, under the target the recovery stored: its auth key is the one just sent.
-    const reply = await auth.login(input.email, next.auth_key)
+    let reply: LoginReply
+    try {
+      reply = await auth.login(input.email, next.auth_key)
+    } catch {
+      // The recovery is done all the same: the person signs in with the new password.
+      return 'sign-in-again'
+    }
     if (!sameKey(reply.user, opened.seal_id, opened.public_key)) refuse(reply)
     await keepAccountKey(accountKey, keyOf(opened.public_key), opened.seal_id)
     await beginSession(reply, true)
-    await rememberEnrolled(input.email)
+    return 'signed-in'
   } finally {
     accountKey.fill(0)
   }
@@ -247,6 +269,8 @@ export async function changePassword(current: string, next: string): Promise<voi
   const answer = await auth.challenge(user.email)
   const keys = await deriveKeys(current, answer, 'presented')
   const begun = await authorized(token => auth.beginPasswordChange(token, keys.authKey))
+  // The server accepted the current auth key: remembered now, whatever fails next (section 12.7, step 2).
+  await rememberEnrolled(user.email)
   const accountKey = await openWrap('password', keys.wrapKey, begun.password_wrap, user.seal_id, user.public_key)
   try {
     // The key this browser kept, if any, must be the one the server's wrap holds.
@@ -255,14 +279,13 @@ export async function changePassword(current: string, next: string): Promise<voi
     kept?.fill(0)
     if (!same) throw new CeremonyError('security')
     const rewrapped = await rewrap(next, begun, 'new', accountKey, user.seal_id)
-    const reply = await authorized(token => auth.finishPasswordChange(token, { ticket: begun.ticket, ...rewrapped }))
+    const reply = await authorized(token => auth.finishPasswordChange(token, { ticket: begun.ticket, current_auth_key: keys.authKey, ...rewrapped }))
     if (!reply) throw new ApiError('invalid_response')
     await keepAccountKey(accountKey, keyOf(user.public_key), user.seal_id)
     await replaceSession(reply, true)
   } finally {
     accountKey.fill(0)
   }
-  await rememberEnrolled(user.email)
 }
 
 /**
@@ -305,9 +328,9 @@ export async function replaceRecoveryCode(password: string): Promise<void> {
     await authorized(token => auth.replaceRecovery(token, {
       current_auth_key: keys.authKey, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof,
     }))
+    await rememberEnrolled(user.email)
     if (await mayShowCodeOf(user.id)) showRecoveryCode(recovery.code, 'replaced')
   } finally {
     accountKey.fill(0)
   }
-  await rememberEnrolled(user.email)
 }

@@ -470,11 +470,16 @@ profile.
   person, only if its seal id and public key are the person's (`openBrowserVault` also recomputes
   the public half, kit §8). A record of anyone else is wiped, never opened; a record that does not
   open is `vault` (section 13), and is wiped too.
-- **On a self-hosted server** it is wiped at sign-out, in every tab, and whenever the page finds
+- **On a self-hosted server** it is restored with its session at each page load, without asking
+  for the password, and wiped at sign-out, in every tab, and whenever a page of the console finds
   no valid session: one that expired, was revoked, or was ended by a password change, a recovery
-  or a reset. Every self-hosted sign-in derives `K_wrap` and opens the password wrap anyway
-  (section 12.2), so a record kept past its session would save nothing, and would only wait for
-  whoever uses the browser next.
+  or a reset, found when the page loads, when the server refuses its session, or when the
+  session's expiry comes while the page is open. Every self-hosted sign-in derives `K_wrap` and
+  opens the password wrap anyway (section 12.2), so a record kept past its session would save
+  nothing, and would only wait for whoever uses the browser next. Only a running page wipes it:
+  a browser closed while signed in keeps the record until the console next runs in that profile,
+  whatever happens to the session meanwhile (it expires, or another device signs it out), and a
+  copy of the profile taken before then holds the account key (threat model, section 4.6).
 - **On the hosted service** it is wiped at sign-out, in every tab, and kept past a session that
   merely expires, so that the same person's next sign-in needs no product key (section 6.2). That
   record, and id.'s own session in the same browser, are a trade-off the threat model states
@@ -741,17 +746,23 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    for every other case). It answers the session, whose step-up time is now (section 11),
    `seal_id`, `public_key` and `password_wrap`; and, when the account's stored salt and parameters
    are not its target (section 5.3), the target `{salt, kdf}` and a re-derivation ticket (single
-   use, 10 minutes, bound to the person and that session, stored as SHA-256).
+   use, 10 minutes, bound to the person, that session and the auth key just verified, of which it
+   keeps SHA-256 of the 32 bytes; stored as SHA-256).
 4. The browser opens the wrap with `K_wrap` under `seal_id` and `public_key` (section 5.5): a wrap
    that does not open is a security error, not a wrong password, since the auth key was accepted.
-   It keeps the account key in the vault and records the address as enrolled (section 12.7).
+   It keeps the account key in the vault. It records the address as enrolled as soon as the server
+   has accepted the auth key, whatever fails after it (section 12.7).
 5. **Re-derivation.** If the answer named a target, the browser prepares the same password again,
    as presented, checks the target's parameters and salt (section 5.2), derives under them, wraps
-   the account key under the new `K_wrap`, and sends `password/finish {ticket, auth_key, kdf,
-   password_wrap}` (section 12.3). The server checks that `kdf` is its current default, and stores
-   the target, the new verifier and the new wrap. The password, the account key, the grants and
-   the recovery wrap do not change, and no session ends. If the step does not happen (the tab
-   closes), the next sign-in asks again.
+   the account key under the new `K_wrap`, and sends `password/finish {ticket, current_auth_key,
+   auth_key, kdf, password_wrap}` (section 12.3), where `current_auth_key` is the auth key of
+   step 2, sent again. The server refuses, before any hash and leaving the ticket unused, a
+   `current_auth_key` whose SHA-256 is not the one kept with the ticket: the ticket rides in the
+   same answer as the session, and whoever saw only that answer (a proxy's log) must not set the
+   password with it (threat model, sections 4.5 and 5.12). It checks that `kdf` is its current
+   default, and stores the target, the new verifier and the new wrap. The password, the account
+   key, the grants and the recovery wrap do not change, and no session ends. If the step does not
+   happen (the tab closes), the next sign-in asks again.
 
 ### 12.3 Changing the password
 
@@ -760,31 +771,38 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
 2. `password/begin {current_auth_key}` on the session → `{password_wrap, salt, kdf, ticket}`: the
    current wrap and the account's target, answered only to a current auth key verified in this
    request, under the sign-in rate limits; the ticket is single use, 10 minutes, bound to the
-   person and the session, stored as SHA-256. A session alone gets nothing (section 5.7).
+   person, the session and that current auth key (SHA-256 of its 32 bytes, kept with the ticket),
+   stored as SHA-256. A session alone gets nothing (section 5.7). The browser records the address
+   as enrolled once this answers (section 12.7).
 3. The browser opens the wrap with the current `K_wrap` (and, when the vault holds the account
    key, compares the two), prepares the new password as new (section 5.1), checks the target's
    parameters and salt, derives under them, and wraps the same account key under the new
    `K_wrap`.
-4. `password/finish {ticket, auth_key, kdf, password_wrap}`. The server checks that `kdf` is its
-   current default, and stores the target, the new verifier and the new wrap; the account key, its
-   public key, the grants and the recovery wrap do not change. Other sessions end, as today, unless
-   the ticket is a sign-in's re-derivation (section 12.2, step 5). The browser records the address
-   as enrolled.
+4. `password/finish {ticket, current_auth_key, auth_key, kdf, password_wrap}`, with the
+   `current_auth_key` of step 2. The server refuses, before any hash and leaving the ticket
+   unused, a `current_auth_key` the ticket was not issued to: a session and the answer of step 2,
+   copied, set nothing. It checks that `kdf` is its current default, and stores the target, the
+   new verifier and the new wrap; the account key, its public key, the grants and the recovery
+   wrap do not change. Other sessions end, as today, unless the ticket is a sign-in's
+   re-derivation (section 12.2, step 5).
 
 ### 12.4 Recovery
 
 1. `recover/open {email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf,
    ticket}`, for `normalise(email)` and only against the stored proof (a dummy for every other
    case); `salt` and `kdf` are the account's target (section 5.3); `ticket` is single use,
-   10 minutes, stored as SHA-256.
+   10 minutes, stored as SHA-256. The browser records the address as enrolled once this answers
+   (section 12.7).
 2. The browser opens the recovery wrap with `K_rwrap` (section 5.6), prepares a new password as
    new, checks the target's parameters and salt, derives under them, wraps the same account key
    under the new `K_wrap`, makes a **new** recovery code and wraps the account key under it.
 3. `recover/finish {ticket, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}`. The
    server checks that `kdf` is its current default and stores the target with the rest. The
    account key is unchanged, so every grant still opens. Every session ends, and the person signs
-   in with the new password (section 12.2). The browser shows the new code once and records the
-   address as enrolled.
+   in with the new password (section 12.2). The browser shows the new code once. A sign-in after
+   it that fails (the account's rate limit, the network) leaves the recovery done: the browser
+   says so and asks for the new password, never for another recovery, which would only replace
+   the code it just showed.
 
 ### 12.5 Replacing the recovery code
 
@@ -846,8 +864,8 @@ password reaches the server **one last time**:
    and `normalise(address)` (section 2), so that every spelling the server takes for one account
    is one record (IndexedDB, not wiped at sign-out; and the page's own memory, never cleared, so
    that a browser that refuses IndexedDB still remembers until a reload). It records an address
-   after every ceremony in this browser in which the account enrolled or the server accepted a
-   zero-knowledge proof for it: signing up, signing in, changing the password, a recovery,
+   in every ceremony in this browser in which the account enrolled or the server accepted a
+   zero-knowledge proof for it, as soon as the server has accepted it, whatever fails after it: signing up, signing in, changing the password, a recovery,
    replacing the recovery code, a reset invitation, this upgrade, and a step-up (sections 11, 12.1
    to 12.6). **If it remembers this address as enrolled, it refuses an `upgrade` answer and never
    sends the password**; it tells the person to tell the server's administrator, since a server
@@ -1244,3 +1262,19 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     that stores the code. `recover/open` likewise checks again, in the transaction that issues the
     ticket, that the proof it verified is still the stored one, so a recovery opened while its
     code is replaced gets no ticket. No byte changed.
+  - **A ticket that rides in an answer finishes only with the auth key that earned it** (sections
+    12.2 and 12.3), where the first text named `password/finish {ticket, auth_key, kdf,
+    password_wrap}`. Found in review: a sign-in's re-derivation ticket is in the same answer as
+    the session, and a password change's in the answer to `password/begin`, so whoever saw only
+    that answer (a proxy's log) could finish either with an auth key of their own and sign in as
+    the person for good, which the threat model (sections 4.5 and 5.12) says a copied session
+    cannot. The server keeps SHA-256 of the auth key it verified with the ticket
+    (`auth_tickets.proof`), and `password/finish` carries that key again as `current_auth_key`;
+    another is refused before any hash, and leaves the ticket unused. The console sends the key it
+    derived for the sign-in or the first step. `recover/finish` and `upgrade/enrol` likewise
+    refuse a ticket that is not theirs before the two hashes they cost, as `reset` does a code. An
+    invitation's or a reset's address is compared with the request's as both are stored
+    (section 2), byte for byte, never by a case fold that takes U+017F for an `s`. The console
+    records an address as enrolled as soon as the server accepts a proof (section 12.7), not once
+    the whole ceremony has succeeded, and a recovery whose sign-in after it fails is reported
+    done. Section 7 now says what a browser closed while signed in keeps. No byte changed.

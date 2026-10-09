@@ -32,7 +32,10 @@ import PasswordInput from './PasswordInput.vue'
 // seconds by design. Besides signing in and up: recovering an account with
 // its recovery code, a reset link from the operator (#reset=…), and the
 // one-time upgrade of an account made before the key scheme, which asks for
-// a new password only when the old one cannot be used as it is.
+// a new password only when the old one cannot be used as it is. That upgrade
+// is the one exception: a sign-in the server answers with it sends the old
+// password, once, so the sign-in form never says a password is never sent;
+// the forms that choose a new password do, and it always holds there.
 const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | null }>()
 const legal = edition().legal
 const teams = edition().teams === true
@@ -48,6 +51,8 @@ const name = ref('')
 const password = ref('')
 const confirm = ref('')
 const code = ref('')
+/** A recovery that went through, whose sign-in after it did not: the new password works. */
+const recovered = ref(false)
 const returning = pendingOAuthReturn()
 /** An upgrade whose old password cannot be used as it is: the person chooses a new one (mode upgrade). */
 let pending: PendingUpgrade | null = null
@@ -89,6 +94,7 @@ function switchTo(next: Mode) {
   mode.value = next
   problem.value = null
   mismatch.value = false
+  recovered.value = false
   password.value = ''
   confirm.value = ''
   code.value = ''
@@ -108,6 +114,7 @@ async function submit(event: SubmitEvent) {
   if (values.has('recovery-code')) code.value = String(values.get('recovery-code') ?? '')
   problem.value = null
   mismatch.value = false
+  recovered.value = false
   if (choosing.value && password.value !== confirm.value) { mismatch.value = true; return }
   busy.value = true
   const op = operation.value
@@ -120,7 +127,10 @@ async function submit(event: SubmitEvent) {
       await resetPassword({ reset: props.reset.reset, email: props.reset.email, password: password.value }, resetOpening)
       dropReset()
     } else if (mode.value === 'recover') {
-      await recover({ email: email.value, code: code.value, password: password.value })
+      if (await recover({ email: email.value, code: code.value, password: password.value }) === 'sign-in-again') {
+        mode.value = 'sign-in'
+        recovered.value = true
+      }
     } else if (mode.value === 'upgrade' && pending) {
       await finishUpgrade(pending, password.value)
       pending = null
@@ -162,7 +172,8 @@ async function submit(event: SubmitEvent) {
         <p v-else-if="mode === 'upgrade'" class="sub">{{ t('Your password has characters this server no longer accepts. Choose a new one to finish signing in.') }}</p>
         <p v-else class="sub">{{ t('Your email accounts, connected in one place. Sign in to continue.') }}</p>
 
-        <p v-if="session.notice === 'expired' && mode === 'sign-in'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
+        <p v-if="session.notice === 'expired' && mode === 'sign-in' && !recovered" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
+        <p v-if="recovered && mode === 'sign-in'" class="note" role="status">{{ t('Your account is recovered. Sign in with your new password.') }}</p>
         <p v-if="returning" class="note" role="status">{{ t('Sign in to finish connecting your email account.') }}</p>
         <p v-if="teams && invitation && mode === 'sign-in'" class="note">{{ t('Once you are signed in, you can accept the invitation to join a team.') }}</p>
         <div v-if="problemText" class="alert" role="alert">{{ problemText }}</div>
@@ -198,7 +209,7 @@ async function submit(event: SubmitEvent) {
             <span v-if="busy" class="loading-spinner inline" aria-hidden="true" />
             {{ action }}
           </button>
-          <p v-if="busy" class="hint working" role="status">{{ t('Your password is processed here, in this browser, and never sent. This takes a few seconds.') }}</p>
+          <p v-if="busy" class="hint working" role="status">{{ choosing ? t('Your password is processed here, in this browser, and never sent. This takes a few seconds.') : t('This takes a few seconds.') }}</p>
           <p v-if="mode === 'sign-up' && legal?.signUp" class="consent"><component :is="legal.signUp" /></p>
         </form>
 

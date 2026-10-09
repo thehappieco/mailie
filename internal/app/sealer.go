@@ -135,31 +135,36 @@ func openKDFSaltKey(ctx context.Context, db *store.Store, sealer secrets.Sealer)
 // (secrets.ErrSealedElsewhere) was most likely sealed under another KMS key
 // or another MAIL_ENV, which nothing given beside the key can open and no
 // rewrap can move: the way back is the settings that sealed it, and only a
-// key lost for good is a reason to replace the root. Any other value that
-// does not open needs the key that sealed it given as well.
+// key lost for good is a reason to replace it. Any other value that does not
+// open needs the key that sealed it given as well.
+//
+// The daemon opens the send-hash root first and the salt key after it, both
+// sealed by the same sealer: a root whose key is lost leaves, as a rule, a
+// salt key that does not open either, so the root's advice replaces both in
+// one run, which refuses to replace a salt key that still opens.
 func ExplainSealed(err error, sealer secrets.Sealer) error {
-	replace := "--new-send-hash-root"
-	if errors.Is(err, store.ErrKDFSaltKey) {
-		replace = "--new-salt-key"
+	salt := errors.Is(err, store.ErrKDFSaltKey)
+	replace, after := "--new-send-hash-root --new-salt-key", "replaces the root and the salt key (leave out "+
+		"--new-salt-key if the salt key still opens: it is never replaced then), and every mailbox has to be "+
+		"authorized again"
+	if salt {
+		replace, after = "--new-salt-key", "replaces it, and each account moves to its new salt at its next sign-in"
 	}
 	switch {
 	case errors.Is(err, secrets.ErrSealedElsewhere):
 		return fmt.Errorf("%w; configured to seal with %s, which does not unwrap it: it was sealed under "+
 			"another MAIL_CREDENTIAL_KMS_KEY_ARN or another MAIL_ENV. Set both back to the values that sealed it "+
 			"and start again; `mailserver rewrap-credentials` cannot move it. Only if that KMS key is lost for "+
-			"good, `mailserver rewrap-credentials %s --kms-key-lost`, with the daemon stopped, "+
-			"replaces it, and every mailbox has to be authorized again "+
-			"(docs/self-hosting.md, \"Credentials under AWS KMS\")", err, sealer.Describe(), replace)
-	case errors.Is(err, store.ErrKDFSaltKey):
+			"good, `mailserver rewrap-credentials %s --kms-key-lost`, with the daemon stopped, %s "+
+			"(docs/self-hosting.md, \"Credentials under AWS KMS\")", err, sealer.Describe(), replace, after)
+	case salt:
 		return fmt.Errorf("%w; configured to seal with %s: give it the key the salt key was sealed with "+
 			"as well, then run `mailserver rewrap-credentials`; if that key is lost for good, `mailserver "+
-			"rewrap-credentials --new-salt-key`, with the daemon stopped, replaces it, and each account "+
-			"moves to its new salt at its next sign-in", err, sealer.Describe())
+			"rewrap-credentials %s`, with the daemon stopped, %s", err, sealer.Describe(), replace, after)
 	case errors.Is(err, store.ErrSendHashRoot):
 		return fmt.Errorf("%w; configured to seal with %s: give it the key the root was sealed with "+
 			"as well, then run `mailserver rewrap-credentials`; if that key is lost for good, `mailserver "+
-			"rewrap-credentials --new-send-hash-root`, with the daemon stopped, replaces the root, and every "+
-			"mailbox has to be authorized again", err, sealer.Describe())
+			"rewrap-credentials %s`, with the daemon stopped, %s", err, sealer.Describe(), replace, after)
 	}
 	return err
 }

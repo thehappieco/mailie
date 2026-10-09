@@ -205,7 +205,7 @@ func TestAKMSErrorThatIsNotAboutTheRootNeverCountsAsALostKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := openSendHashRoot(t.Context(), db, other); !errors.Is(err, store.ErrSendHashRoot) ||
-		!strings.Contains(err.Error(), "--new-send-hash-root --kms-key-lost") || !strings.Contains(err.Error(), testKMSKeyARN) {
+		!strings.Contains(err.Error(), "--new-send-hash-root --new-salt-key --kms-key-lost") || !strings.Contains(err.Error(), testKMSKeyARN) {
 		t.Fatalf("a root another key sealed: %v", err)
 	}
 }
@@ -236,7 +236,7 @@ func TestADaemonWhoseMAIL_ENVChangedIsToldToPutItBackNotToGiveAnotherKey(t *test
 		t.Fatalf("a root sealed under dev, started under prod: %v", err)
 	}
 	for _, says := range []string{
-		"MAIL_ENV", "Set both back", "--new-send-hash-root --kms-key-lost",
+		"MAIL_ENV", "Set both back", "--new-send-hash-root --new-salt-key --kms-key-lost",
 		"it was sealed with " + dev.Describe(), prod.Describe(),
 	} {
 		if !strings.Contains(err.Error(), says) {

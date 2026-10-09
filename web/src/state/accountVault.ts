@@ -7,9 +7,11 @@
 // and public key, in IndexedDB beside the session's record
 // (state/sessionVault.ts), one per browser profile. It is opened only for the
 // person the server says is signed in: a record of anyone else is wiped,
-// never opened. It is never sent anywhere. When the browser refuses
-// IndexedDB (a private window), the record is kept in this page's memory
-// only, and a reload forgets it.
+// never opened. It is never sent anywhere. This page also keeps the newest
+// record it wrote in its own memory, and asks that copy first: a browser that
+// refuses IndexedDB (a private window), or opens it and then refuses the
+// write (its storage full), keeps the key for this page only, and a reload
+// forgets it.
 //
 // The memory of enrolled addresses is the upgrade's defence (section 12.7):
 // an address this browser saw enrol in the key scheme never sends its
@@ -105,10 +107,12 @@ function belongsTo(record: VaultRecord, sealID: string, publicKey: string): bool
  * accountKeyOf opens the vault for the person the server names (their seal
  * id and public key, as GET /v1/auth/me answers them) and returns the raw
  * account key, which the caller zeroes, or null when this browser holds none
- * of theirs. A record of anyone else, and one that does not open, is wiped.
+ * of theirs. The record this page wrote comes first, when it is theirs: the
+ * slot may hold an older one, if the write was refused. A record of anyone
+ * else, and one that does not open, is wiped.
  */
 export async function accountKeyOf(sealID: string, publicKey: string): Promise<Bytes | null> {
-  const record = await storedRecord()
+  const record = held !== null && belongsTo(held, sealID, publicKey) ? held : await storedRecord()
   if (!record) return null
   if (!belongsTo(record, sealID, publicKey)) {
     await wipeAccountKey()

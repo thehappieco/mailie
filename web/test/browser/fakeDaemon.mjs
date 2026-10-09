@@ -195,10 +195,11 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     Object.assign(user, await enrolment(user.password, user.salt, user.seal_id))
     return user
   }
-  const ticketOf = (purpose, user, salt, sessionToken) => {
-    // As the daemon's: base64url of 32 random bytes.
+  const ticketOf = (purpose, user, salt, sessionToken, authKey) => {
+    // As the daemon's: base64url of 32 random bytes; a password change's is
+    // bound to the session and to the auth key that earned it.
     const value = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url')
-    tickets.set(value, { purpose, user, salt, token: sessionToken })
+    tickets.set(value, { purpose, user, salt, token: sessionToken, authKey })
     return value
   }
   const takeTicket = (value, ...purposes) => {
@@ -332,11 +333,14 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       if (path === '/v1/auth/password/begin' && method === 'POST') {
         if (!user.authKey || body().current_auth_key !== user.authKey) return fail(403, 'not_authorized')
         const salt = targetOf(user.email)
-        return json({ password_wrap: user.passwordWrap, salt, kdf: KDF, ticket: ticketOf('password', user, salt, header.replace(/^Bearer /, '')) })
+        return json({ password_wrap: user.passwordWrap, salt, kdf: KDF, ticket: ticketOf('password', user, salt, header.replace(/^Bearer /, ''), user.authKey) })
       }
       if (path === '/v1/auth/password/finish' && method === 'POST') {
+        // Only with the auth key that earned the ticket, which stays its own otherwise.
+        const held = tickets.get(body().ticket)
+        if (!held || held.token !== header.replace(/^Bearer /, '') || held.authKey !== body().current_auth_key) return fail(403, 'not_authorized')
         const ticket = takeTicket(body().ticket, 'password', 'rederive')
-        if (!ticket || ticket.token !== header.replace(/^Bearer /, '')) return fail(403, 'not_authorized')
+        if (!ticket) return fail(403, 'not_authorized')
         store(user, body(), ticket.salt)
         if (ticket.purpose === 'rederive') return route.fulfill({ status: 204 })
         // A change ends every session; the new one is as old as this one's step-up.

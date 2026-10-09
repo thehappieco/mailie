@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -247,7 +248,8 @@ func TestASignInOffTargetNamesItAndItsReDerivationEndsNoSession(t *testing.T) {
 	sid := sessionOf(t, moved, login.Token)
 	newKey := secretOf("re-derived")
 	changed, err := moved.FinishPasswordChange(t.Context(), ana.ID, sid, auth.NewPassword{
-		Ticket: login.Rederive.Ticket, AuthKey: newKey, KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+		Ticket: login.Rederive.Ticket, CurrentAuthKey: authtest.AuthKey, AuthKey: newKey, KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t),
 	}, "test")
 	if err != nil || changed.Rotated || changed.Token != "" {
 		t.Fatalf("the re-derivation = %+v, %v; want nothing rotated", changed, err)
@@ -268,6 +270,139 @@ func TestASignInOffTargetNamesItAndItsReDerivationEndsNoSession(t *testing.T) {
 	}
 	if c, err := moved.Challenge(t.Context(), "ana@example.com"); err != nil || !bytes.Equal(c.Salt, login.Rederive.Salt) {
 		t.Errorf("the challenge answers %x, want the target %x", c.Salt, login.Rederive.Salt)
+	}
+}
+
+// countedKDF makes Argon2id cheap for the rest of the test, as cheapKDF does,
+// and counts the derivations.
+func countedKDF(t *testing.T) *atomic.Int64 {
+	t.Helper()
+	var n atomic.Int64
+	auth.SetDeriveKeyForTest(t, func(password, salt []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+		n.Add(1)
+		return argon2.IDKey(password, salt, 1, 8, 1, keyLen)
+	})
+	return &n
+}
+
+func TestATicketInAnAnswerFinishesOnlyWithTheAuthKeyThatEarnedIt(t *testing.T) {
+	// A sign-in's re-derivation ticket rides in the same answer as the
+	// session, and a password change's in the answer to its first step:
+	// whoever saw only that answer (a proxy's log) holds the session and the
+	// ticket, not the auth key. With them alone, it must set no password.
+	derivations := countedKDF(t)
+	users, db, clock := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	// Another salt key: an account off its target, whose sign-in names it.
+	moved := auth.NewUsersWithClock(db, func() time.Time { return *clock })
+	rederive := func() (string, string) {
+		login, err := moved.Login(t.Context(), "ana@example.com", authtest.AuthKey, "test")
+		if err != nil || login.Rederive == nil {
+			t.Fatalf("a sign-in off target: %+v, %v", login.Rederive, err)
+		}
+		return login.Rederive.Ticket, sessionOf(t, moved, login.Token)
+	}
+	change := func() (string, string) {
+		laptop := sessionOf(t, users, authtest.SignIn(t, users, "ana@example.com"))
+		begun, err := users.BeginPasswordChange(t.Context(), ana.ID, laptop, authtest.AuthKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return begun.Ticket, laptop
+	}
+
+	for _, c := range []struct {
+		name  string
+		start func() (ticket, session string)
+		users *auth.Users
+	}{
+		{"a sign-in's re-derivation", rederive, moved},
+		{"a password change", change, users},
+	} {
+		ticket, session := c.start()
+		before := userRow(t, db, ana.ID)
+		finish := auth.NewPassword{Ticket: ticket, AuthKey: secretOf("the proxy's own"), KDF: auth.DefaultKDF,
+			PasswordWrap: authtest.Wrap(t)}
+		for name, current := range map[string]string{
+			"another auth key":   secretOf("guess"),
+			"the new auth key":   finish.AuthKey,
+			"the recovery proof": authtest.RecoveryProof,
+			"no key at all":      "",
+		} {
+			finish.CurrentAuthKey = current
+			derivations.Store(0)
+			_, err := c.users.FinishPasswordChange(t.Context(), ana.ID, session, finish, "test")
+			if current == "" {
+				if !errors.Is(err, auth.ErrMalformedSecret) {
+					t.Errorf("%s with no current auth key: %v", c.name, err)
+				}
+			} else if !errors.Is(err, auth.ErrTicketInvalid) {
+				t.Errorf("%s finished with %s: %v", c.name, name, err)
+			}
+			if n := derivations.Load(); n != 0 {
+				t.Errorf("%s refused with %s after %d derivations, want none", c.name, name, n)
+			}
+		}
+		if userRow(t, db, ana.ID) != before {
+			t.Fatalf("%s: a refused finish stored something", c.name)
+		}
+		// The ticket stays its own: the browser that earned it finishes.
+		finish.CurrentAuthKey = authtest.AuthKey
+		if _, err := c.users.FinishPasswordChange(t.Context(), ana.ID, session, finish, "test"); err != nil {
+			t.Fatalf("%s with the auth key that earned it: %v", c.name, err)
+		}
+		// Back to Ana's own password, off target again, for the next case.
+		if _, err := db.Writer().ExecContext(t.Context(), `UPDATE users SET auth_verifier = ?, kdf_salt = ? WHERE id = ?`,
+			mustVerifier(t, authtest.AuthKey), mustSalt(t, authtest.SaltKey, "ana@example.com"), ana.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testing.T) {
+	derivations := countedKDF(t)
+	users, db, _ := newUsers(t)
+	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
+	opened, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	upgrade, err := users.LegacySignIn(t.Context(), "old@example.com", authtest.Password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	made := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	recover := func(ticket string) error {
+		return users.FinishRecovery(t.Context(), auth.RecoveryFinish{
+			Ticket: ticket, AuthKey: secretOf("x"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+			RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
+		})
+	}
+	enrol := func(ticket string) error {
+		_, _, _, err := users.Enrol(t.Context(), ticket, authtest.Enrolment(t), "test")
+		return err
+	}
+	for name, try := range map[string]func() error{
+		"a recovery with a made-up ticket":      func() error { return recover(made) },
+		"a recovery with an enrolment's ticket": func() error { return recover(upgrade.Ticket) },
+		"an enrolment with a made-up ticket":    func() error { return enrol(made) },
+		"an enrolment with a recovery's ticket": func() error { return enrol(opened.Ticket) },
+	} {
+		derivations.Store(0)
+		if err := try(); !errors.Is(err, auth.ErrTicketInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+		if n := derivations.Load(); n != 0 {
+			t.Errorf("%s was refused after %d derivations, want none", name, n)
+		}
+	}
+	// Both tickets are still their own.
+	if err := recover(opened.Ticket); err != nil {
+		t.Errorf("the recovery's own ticket: %v", err)
+	}
+	if err := enrol(upgrade.Ticket); err != nil {
+		t.Errorf("the enrolment's own ticket: %v", err)
 	}
 }
 
@@ -301,7 +436,9 @@ func TestAPasswordChangeNeedsTheCurrentAuthKeyAndEndsEverySession(t *testing.T) 
 	}
 	// The ticket is this session's: the phone cannot finish the laptop's.
 	newKey := secretOf("brand new")
-	finish := auth.NewPassword{Ticket: begun.Ticket, AuthKey: newKey, KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t)}
+	finish := auth.NewPassword{
+		Ticket: begun.Ticket, CurrentAuthKey: authtest.AuthKey, AuthKey: newKey, KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+	}
 	if _, err := users.FinishPasswordChange(t.Context(), ana.ID, sessionOf(t, users, phone), finish, "test"); !errors.Is(err, auth.ErrTicketInvalid) {
 		t.Fatalf("another session finished the change: %v", err)
 	}
@@ -349,7 +486,10 @@ func TestATicketWorksOnceForItsPersonCeremonyAndTenMinutesOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A recovery's ticket is no password change's.
-	finish := auth.NewPassword{Ticket: opened.Ticket, AuthKey: secretOf("x"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t)}
+	finish := auth.NewPassword{
+		Ticket: opened.Ticket, CurrentAuthKey: authtest.AuthKey, AuthKey: secretOf("x"), KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t),
+	}
 	if _, err := users.FinishPasswordChange(t.Context(), ana.ID, sid, finish, "test"); !errors.Is(err, auth.ErrTicketInvalid) {
 		t.Errorf("a recovery's ticket finished a password change: %v", err)
 	}
@@ -535,7 +675,8 @@ func TestReplacingTheRecoveryCodeEndsARecoveryOpenedWithTheOldOne(t *testing.T) 
 		t.Errorf("the person's own password stopped working: %v", err)
 	}
 	if _, err := users.FinishPasswordChange(t.Context(), ana.ID, sid, auth.NewPassword{
-		Ticket: begun.Ticket, AuthKey: secretOf("changed"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+		Ticket: begun.Ticket, CurrentAuthKey: authtest.AuthKey, AuthKey: secretOf("changed"), KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t),
 	}, "test"); err != nil {
 		t.Errorf("a password change begun before the replacement could not finish: %v", err)
 	}

@@ -416,7 +416,7 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey))
 	ticket, _ := begun["ticket"].(string)
 	capture("session", http.StatusOK, http.MethodPost, "/v1/auth/password/finish", token, jsonOf(t, map[string]any{
-		"ticket": ticket, "auth_key": authtest.AuthKey, "kdf": defaultKDF(),
+		"ticket": ticket, "current_auth_key": authtest.AuthKey, "auth_key": authtest.AuthKey, "kdf": defaultKDF(),
 		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
 	}))
 }

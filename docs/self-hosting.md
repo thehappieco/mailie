@@ -46,7 +46,7 @@ A server needs at least these:
 
 | Variable | On a server |
 |---|---|
-| `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, and the send-hash root. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
+| `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, the send-hash root and the salt key. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
 | `MAIL_PUBLIC_URL` | The `https://` origin people reach the console at, such as `https://mail.example.org`: no path, no trailing slash. Invite links and the web OAuth redirect (`<MAIL_PUBLIC_URL>/oauth/return`) are built from it, never from a request's `Host`. |
 | `MAIL_ENV` | `prod`: logs in JSON, and refuses an `http://` `MAIL_PUBLIC_URL` and the settings that would leak a token. |
 | `MAIL_TRUSTED_PROXIES` | The address the daemon sees your reverse proxy connect from (see [below](#the-proxys-address)). Without it every client shares one rate limit. |
@@ -479,9 +479,12 @@ header names neither, so the daemon, given the new one, does not open what the o
 no key given beside it can. It stops at start and says so, naming what sealed the send-hash root:
 put `MAIL_CREDENTIAL_KMS_KEY_ARN` and `MAIL_ENV` back to those values, and everything opens again.
 `rewrap-credentials` refuses too, rather than report everything as already sealed, and
-`rewrap-credentials --new-send-hash-root` does not replace such a root (which would forget every
-send record of a root that still opens) unless `--kms-key-lost` says that the key that sealed it
-is lost for good; every mailbox then has to be authorized again.
+`rewrap-credentials --new-send-hash-root --new-salt-key` does not replace such a root and salt key
+(which would forget every send record of a root that still opens) unless `--kms-key-lost` says
+that the key that sealed them is lost for good; every mailbox then has to be authorized again, and
+each person moves to their new salt at their next sign-in. The one command replaces both, which
+the same key sealed; it refuses to replace a salt key that still opens, and is then run without
+`--new-salt-key`.
 
 ### Going back to the hex key
 
@@ -645,7 +648,10 @@ credential is, so a rotation of the key no longer changes it.
   where it used to start and fail on each mailbox. Give it the key. If that key is lost for good,
   `mailserver rewrap-credentials --new-send-hash-root`, with the daemon stopped, puts a new root in
   place and touches nothing else; every mailbox then has to be authorized again, as before. It
-  replaces only a root no configured key opens, and refuses one that opens.
+  replaces only a root no configured key opens, and refuses one that opens. From the release that
+  brings the key scheme on, the salt key is sealed beside the root, and a lost key takes both:
+  `--new-send-hash-root --new-salt-key` replaces them in one run
+  ([below](#passwords-the-server-never-receives-migration-0013)).
 - **`rewrap-credentials` re-seals the root** with the credentials, under the active key.
 
 ### Passwords the server never receives (migration 0013)
@@ -677,7 +683,10 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   key that sealed it, as for the root; `rewrap-credentials` re-seals it with the credentials, and
   if its key is lost for good, `mailserver rewrap-credentials --new-salt-key`, with the daemon
   stopped, puts a new one in place: everyone keeps signing in, and moves to their new salt at
-  their next sign-in. A daemon whose people sign in only through an extension makes none.
+  their next sign-in. A key lost for good (a backup restored without it, a KMS key deleted) has
+  sealed the send-hash root too: `mailserver rewrap-credentials --new-send-hash-root
+  --new-salt-key` (with `--kms-key-lost` for a KMS key) replaces both in one run, and the daemon
+  starts. A daemon whose people sign in only through an extension makes none.
 - **A forgotten password** is the recovery code's to replace, in the console. A person who lost
   both now gets a **reset invitation** rather than a password set for them: see
   [A forgotten password](#a-forgotten-password).

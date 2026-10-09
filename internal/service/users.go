@@ -141,7 +141,8 @@ type LoginRequest struct {
 
 // Rederive is a target a sign-in names when the account is not at it: the
 // browser derives the same password under it and finishes with
-// POST /v1/auth/password/finish and this ticket. No session ends.
+// POST /v1/auth/password/finish, this ticket and the auth key it signed in
+// with. No session ends.
 type Rederive struct {
 	Salt   string `json:"salt"`
 	KDF    KDF    `json:"kdf"`
@@ -174,12 +175,15 @@ type PasswordBegin struct {
 
 // PasswordFinishRequest stores the new auth key and password wrap: of a
 // password change (the ticket of PasswordBegin) or of a sign-in's
-// re-derivation (the ticket of Login's Rederive).
+// re-derivation (the ticket of Login's Rederive). CurrentAuthKey is the auth
+// key that earned the ticket (the change's current_auth_key, or the
+// sign-in's auth_key), presented again: the ticket finishes with no other.
 type PasswordFinishRequest struct {
-	Ticket       string `json:"ticket"`
-	AuthKey      string `json:"auth_key"`
-	KDF          KDF    `json:"kdf"`
-	PasswordWrap string `json:"password_wrap"`
+	Ticket         string `json:"ticket"`
+	CurrentAuthKey string `json:"current_auth_key"`
+	AuthKey        string `json:"auth_key"`
+	KDF            KDF    `json:"kdf"`
+	PasswordWrap   string `json:"password_wrap"`
 }
 
 // RecoverOpenRequest proves a recovery code, as its proof, for an address.
@@ -409,7 +413,7 @@ func (s *Service) FinishPasswordChange(ctx context.Context, p Principal, req Pas
 		return Session{}, false, err
 	}
 	changed, err := s.users.FinishPasswordChange(ctx, p.UserID, p.SessionID, auth.NewPassword{
-		Ticket: req.Ticket, AuthKey: req.AuthKey, KDF: kdfOf(req.KDF), PasswordWrap: wrap,
+		Ticket: req.Ticket, CurrentAuthKey: req.CurrentAuthKey, AuthKey: req.AuthKey, KDF: kdfOf(req.KDF), PasswordWrap: wrap,
 	}, userAgent)
 	if err != nil {
 		return Session{}, false, fromUsers(err, "changing the password failed")

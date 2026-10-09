@@ -6,11 +6,13 @@ import (
 	"encoding/base64"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	"golang.org/x/oauth2"
 
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/app"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
@@ -262,6 +264,43 @@ func TestANewSaltKeyReplacesOnlyASaltKeyNoConfiguredKeyOpens(t *testing.T) {
 	}
 	if err := rewrapCommand(t.Context(), cfg, []string{"--kms-key-lost"}); err == nil {
 		t.Error("--kms-key-lost alone was accepted")
+	}
+}
+
+func TestADatabaseWhoseKeyIsLostStartsAfterTheOneCommandItsRefusalNames(t *testing.T) {
+	// A backup put into service without its credential key: the root and the
+	// salt key, sealed by the same key, open with neither. What the refusal
+	// tells the operator to run replaces both, and the next start opens them.
+	cfg := localConfig(t)
+	cfg.Credentials = config.Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{1: keyOf(0xA1)}}
+	lost, err := secrets.NewKeyring(1, map[uint8][]byte{1: keyOf(0xA1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSealedDatabase(t, cfg, lost)
+	cfg.Credentials = config.Credentials{ActiveKeyID: 2, Keys: map[uint8][]byte{2: keyOf(0xD4)}}
+	sealer, err := secrets.NewKeyring(2, map[uint8][]byte{2: keyOf(0xD4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = d.db.SendHashRoot(t.Context(), sealer)
+	if !errors.Is(err, store.ErrSendHashRoot) {
+		t.Fatalf("the root under a lost key: %v", err)
+	}
+	advice := app.ExplainSealed(err, sealer).Error()
+	_, command, found := strings.Cut(advice, "if that key is lost for good, `mailserver rewrap-credentials")
+	command, _, closed := strings.Cut(command, "`")
+	if !found || !closed {
+		t.Fatalf("the refusal names no command: %s", advice)
+	}
+	if err := rewrapCommand(t.Context(), cfg, strings.Fields(command)); err != nil {
+		t.Fatalf("rewrap-credentials%s: %v", command, err)
+	}
+	if _, _, err := d.db.SendHashRoot(t.Context(), sealer); err != nil {
+		t.Errorf("the root after rewrap-credentials%s: %v", command, err)
+	}
+	if _, _, err := d.db.KDFSaltKey(t.Context(), sealer); err != nil {
+		t.Errorf("the salt key after rewrap-credentials%s: %v", command, err)
 	}
 }
 

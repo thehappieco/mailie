@@ -40,7 +40,8 @@ export interface Stored {
   legacyPassword?: string
 }
 
-interface Ticket { purpose: 'password' | 'rederive' | 'recover' | 'enrol'; userID: string; token?: string; salt: string }
+/** A ticket: a password change's and a re-derivation's are bound to a session (token) and to the auth key that earned it (authKey). */
+interface Ticket { purpose: 'password' | 'rederive' | 'recover' | 'enrol'; userID: string; token?: string; authKey?: string; salt: string }
 interface Session { userID: string; authenticatedAt: number; ended?: boolean }
 
 export interface Call { path: string; body: Record<string, unknown>; token: string }
@@ -92,8 +93,13 @@ export function accountServer() {
    * server answered and before the page has the answer.
    */
   const inFlight = new Map<string, () => unknown>()
+  /** What the server answers instead, once, by path, before it does anything: a refusal (too many attempts, say). */
+  const refuseNext = new Map<string, () => Response>()
   const fetch = serve(async request => {
-    const response = answer(request)
+    const refusal = refuseNext.get(request.path)
+    refuseNext.delete(request.path)
+    if (refusal) calls.push({ path: request.path, body: (request.body ?? {}) as Record<string, unknown>, token: request.token })
+    const response = refusal ? refusal() : answer(request)
     response.headers.set('Date', new Date(serverNow() * 1000).toUTCString())
     const meanwhile = inFlight.get(request.path)
     inFlight.delete(request.path)
@@ -114,7 +120,7 @@ export function accountServer() {
         if (!person || person.legacyPassword || body.auth_key !== person.authKey) return failure('unauthorized', 401)
         const reply = open(person)
         const target = targetOf(person.email)
-        const rederive = person.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: person.id, token: reply.token, salt: target }) }
+        const rederive = person.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: person.id, token: reply.token, authKey: person.authKey, salt: target }) }
         return json({ ...reply, password_wrap: person.passwordWrap, ...(rederive ? { rederive } : {}) })
       }
       case '/v1/auth/signup/open': {
@@ -181,10 +187,13 @@ export function accountServer() {
         return new Response(null, { status: 204 })
       case '/v1/auth/password/begin':
         if (body.current_auth_key !== signedIn.authKey) return failure('not_authorized', 403)
-        return json({ password_wrap: signedIn.passwordWrap, salt: targetOf(signedIn.email), kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'password', userID: signedIn.id, token, salt: targetOf(signedIn.email) }) })
+        return json({ password_wrap: signedIn.passwordWrap, salt: targetOf(signedIn.email), kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'password', userID: signedIn.id, token, authKey: signedIn.authKey, salt: targetOf(signedIn.email) }) })
       case '/v1/auth/password/finish': {
+        // The ticket finishes only with the auth key that earned it, and stays its own otherwise.
+        const held = tickets.get(String(body.ticket))
+        if (!held || held.token !== token || held.authKey !== body.current_auth_key) return failure('not_authorized', 403)
         const t = take(body.ticket, 'password', 'rederive')
-        if (!t || t.token !== token) return failure('not_authorized', 403)
+        if (!t) return failure('not_authorized', 403)
         Object.assign(signedIn, { salt: t.salt, authKey: body.auth_key, passwordWrap: body.password_wrap })
         if (t.purpose === 'rederive') return new Response(null, { status: 204 })
         const stepUp = session!.authenticatedAt
@@ -208,7 +217,7 @@ export function accountServer() {
   }
 
   return {
-    people, sessions, calls, fetch, clock, inFlight,
+    people, sessions, calls, fetch, clock, inFlight, refuseNext,
     /** An invitation for an address, whose seal id the server draws now. */
     invite(email: string): string { const code = random(); invites.set(code, { email: normalise(email), sealID: crypto.randomUUID(), used: false }); return code },
     /** A reset link for a person. */
