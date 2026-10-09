@@ -65,7 +65,7 @@ func TestTheServerStoresNeitherTheAuthKeyNorTheProofButTheirHashes(t *testing.T)
 	users, db, _ := newUsers(t)
 	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
-	req := signUpRequest(t, code, "ana@example.com")
+	req := signUpRequest(t, users, code, "ana@example.com")
 	_, _, ana, err := users.SignUp(t.Context(), req)
 	if err != nil {
 		t.Fatal(err)
@@ -97,6 +97,52 @@ func TestTheServerStoresNeitherTheAuthKeyNorTheProofButTheirHashes(t *testing.T)
 	want, err := keyscheme.DecoySalt(authtest.SaltKey, "ana@example.com")
 	if err != nil || !bytes.Equal(salt, want) || (auth.KDF{M: m, T: tt, P: p}) != auth.DefaultKDF {
 		t.Errorf("stored salt %x and m=%d t=%d p=%d, want the target %x and the default", salt, m, tt, p, want)
+	}
+}
+
+func TestASignUpGivesThePersonTheSealIDOpeningItsInvitationAnswered(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
+	code := invite(t, users, "ana@example.com", auth.RoleMember)
+
+	if _, err := users.OpenSignUp(t.Context(), code, "bob@example.com"); !errors.Is(err, auth.ErrInviteInvalid) {
+		t.Fatalf("an invitation opened for another address: %v", err)
+	}
+	opened, err := users.OpenSignUp(t.Context(), code, " Ana@Example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !keyscheme.ValidSealID(opened.SealID) || !bytes.Equal(opened.Salt, mustSalt(t, authtest.SaltKey, "ana@example.com")) ||
+		opened.KDF != auth.DefaultKDF {
+		t.Fatalf("the invitation opened %+v; want a seal id and the address's target", opened)
+	}
+	// Opened again, in another tab, it answers the same: the wraps a browser
+	// bound to either are the person's.
+	again, err := users.OpenSignUp(t.Context(), code, "ana@example.com")
+	if err != nil || again.SealID != opened.SealID {
+		t.Fatalf("opened again: %q, %v; want %q", again.SealID, err, opened.SealID)
+	}
+	req := auth.SignUpRequest{Invite: code, Email: "ana@example.com", Enrolment: authtest.Enrolment(t), UserAgent: "test"}
+	for name, seal := range map[string]string{"none": "", "another": keyscheme.NewSealID(), "malformed": "not-a-uuid"} {
+		req.SealID = seal
+		if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, auth.ErrSealIDNotOpened) {
+			t.Errorf("a sign-up bound to %s seal id: %v", name, err)
+		}
+	}
+	if n := count(t, db, `SELECT count(*) FROM invites WHERE used_at = 0`); n != 1 {
+		t.Fatalf("a refused sign-up spent the invitation")
+	}
+	req.SealID = opened.SealID
+	_, _, ana, err := users.SignUp(t.Context(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ana.SealID != opened.SealID || !strings.Contains(userRow(t, db, ana.ID), opened.SealID) {
+		t.Errorf("the person has the seal id %q, want %q", ana.SealID, opened.SealID)
+	}
+	if _, err := users.OpenSignUp(t.Context(), code, "ana@example.com"); !errors.Is(err, auth.ErrInviteInvalid) {
+		t.Errorf("a used invitation still opens: %v", err)
 	}
 }
 
@@ -393,6 +439,47 @@ func TestReplacingTheRecoveryCodeNeedsAFreshStepUp(t *testing.T) {
 	}
 }
 
+func TestReplacingTheRecoveryCodeEndsARecoveryOpenedWithTheOldOne(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	sid := sessionOf(t, users, authtest.SignIn(t, users, "ana@example.com"))
+	// Whoever holds the old code opens a recovery; the person, signed in,
+	// then replaces the code they no longer trust.
+	opened, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A password change in flight proved the password, which this does not
+	// change.
+	begun, err := users.BeginPasswordChange(t.Context(), ana.ID, sid, authtest.AuthKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := users.ReplaceRecovery(t.Context(), ana.ID, sid, authtest.Wrap(t), secretOf("replaced")); err != nil {
+		t.Fatal(err)
+	}
+	before := userRow(t, db, ana.ID)
+	err = users.FinishRecovery(t.Context(), auth.RecoveryFinish{
+		Ticket: opened.Ticket, AuthKey: secretOf("taken over"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+		RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("theirs"),
+	})
+	if !errors.Is(err, auth.ErrTicketInvalid) {
+		t.Fatalf("a recovery opened with the replaced code finished: %v", err)
+	}
+	if userRow(t, db, ana.ID) != before {
+		t.Error("the refused recovery stored something")
+	}
+	if _, err := users.Login(t.Context(), "ana@example.com", authtest.AuthKey, "test"); err != nil {
+		t.Errorf("the person's own password stopped working: %v", err)
+	}
+	if _, err := users.FinishPasswordChange(t.Context(), ana.ID, sid, auth.NewPassword{
+		Ticket: begun.Ticket, AuthKey: secretOf("changed"), KDF: auth.DefaultKDF, PasswordWrap: authtest.Wrap(t),
+	}, "test"); err != nil {
+		t.Errorf("a password change begun before the replacement could not finish: %v", err)
+	}
+}
+
 func TestAStepUpProvesOnlyTheSessionsOwnPerson(t *testing.T) {
 	cheapKDF(t)
 	users, db, clock := newUsers(t)
@@ -529,14 +616,20 @@ func TestTheUpgradeChecksTheOldPasswordOnceAndNeverAgain(t *testing.T) {
 	if _, err := users.LegacySignIn(t.Context(), "old@example.com", "not the password"); !errors.Is(err, auth.ErrBadCredentials) {
 		t.Fatalf("a wrong password: %v", err)
 	}
-	ticket, err := users.LegacySignIn(t.Context(), " OLD@example.com", authtest.Password)
+	upgrade, err := users.LegacySignIn(t.Context(), " OLD@example.com", authtest.Password)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A ticket, not a session.
+	// A ticket, not a session, with what the browser binds the new wraps to
+	// and derives under: the person's seal id and the address's target.
 	if n := liveSessions(t, db, old.ID); n != 0 {
 		t.Fatalf("the upgrade's check opened %d sessions", n)
 	}
+	if upgrade.SealID != old.SealID || !bytes.Equal(upgrade.Salt, mustSalt(t, authtest.SaltKey, "old@example.com")) ||
+		upgrade.KDF != auth.DefaultKDF {
+		t.Fatalf("the upgrade's ticket came with %q, %x, %+v", upgrade.SealID, upgrade.Salt, upgrade.KDF)
+	}
+	ticket := upgrade.Ticket
 	in := authtest.Enrolment(t)
 	token, session, user, err := users.Enrol(t.Context(), ticket, in, "test")
 	if err != nil {
@@ -713,6 +806,114 @@ func TestAResetOfATeamMailboxsLastReaderNeedsForce(t *testing.T) {
 	}
 	if _, _, _, err := users.CompleteReset(t.Context(), code, "ana@example.com", authtest.Enrolment(t), "test"); err != nil {
 		t.Fatalf("a forced reset: %v", err)
+	}
+}
+
+func TestAResetOfTheOnlyMemberOfATeamWhoReadsItsMailboxNeedsForce(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+	// Alone in her team: closing her account would take the team with it,
+	// but a reset leaves both, and the mailbox with nobody who can read it.
+	team := teamOf(t, db, ana.ID)
+	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+
+	var blocked *auth.BlockedError
+	if _, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli"); !errors.As(err, &blocked) ||
+		len(blocked.LastReaderOf) != 1 || blocked.LastReaderOf[0] != mailbox {
+		t.Fatalf("a reset of the only member, the mailbox's last reader: %v", err)
+	}
+	code, _, err := users.CreateReset(t.Context(), ana.ID, true, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := users.CompleteReset(t.Context(), code, "ana@example.com", authtest.Enrolment(t), "test"); err != nil {
+		t.Fatalf("a forced reset: %v", err)
+	}
+}
+
+func TestAResetLinkAnswersTheTargetItsResetStores(t *testing.T) {
+	cheapKDF(t)
+	_, db, clock := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	// Another salt key: ana's account is off its target, as a replaced salt
+	// key or an address the operator corrected leaves it.
+	users := auth.NewUsersWithClock(db, func() time.Time { return *clock })
+	before, err := users.Challenge(t.Context(), "ana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, try := range map[string]struct{ code, email string }{
+		"another address": {code, "bob@example.com"},
+		"another code":    {base64.RawURLEncoding.EncodeToString(make([]byte, 32)), "ana@example.com"},
+		"no code":         {"", "ana@example.com"},
+	} {
+		if _, err := users.OpenReset(t.Context(), try.code, try.email); !errors.Is(err, auth.ErrResetInvalid) {
+			t.Errorf("%s: %v, want ErrResetInvalid", name, err)
+		}
+	}
+	target, err := users.OpenReset(t.Context(), code, " Ana@Example.com ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.SealID != ana.SealID {
+		t.Errorf("the reset link answered the seal id %q, want the person's own %q", target.SealID, ana.SealID)
+	}
+	// The challenge answers the salt the account stores now; the new
+	// password is derived under the target, which is what the reset stores.
+	if bytes.Equal(target.Salt, before.Salt) || target.KDF != auth.DefaultKDF {
+		t.Fatalf("the reset link answered %x %+v; the challenge %x: want the target, not the stored salt", target.Salt,
+			target.KDF, before.Salt)
+	}
+	if _, _, _, err := users.CompleteReset(t.Context(), code, "ana@example.com", authtest.Enrolment(t), "test"); err != nil {
+		t.Fatal(err)
+	}
+	after, err := users.Challenge(t.Context(), "ana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after.Salt, target.Salt) || after.KDF != target.KDF {
+		t.Errorf("after the reset the challenge answers %x %+v, want what the link answered, %x %+v", after.Salt,
+			after.KDF, target.Salt, target.KDF)
+	}
+	login, err := users.Login(t.Context(), "ana@example.com", authtest.AuthKey, "test")
+	if err != nil || login.Rederive != nil {
+		t.Errorf("the next sign-in: %+v, %v; want one at the target", login.Rederive, err)
+	}
+	if _, err := users.OpenReset(t.Context(), code, "ana@example.com"); !errors.Is(err, auth.ErrResetInvalid) {
+		t.Errorf("a used reset link still opens: %v", err)
+	}
+}
+
+func TestAResetLinkRefusesTheLastReaderBeforeAPasswordIsChosen(t *testing.T) {
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	team := teamOf(t, db, ana.ID)
+	addMember(t, db, team.ID, bea.ID)
+	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+	grantRead(t, db, mailbox, bea.ID)
+	code, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeRead(t, db, mailbox, bea.ID)
+	var blocked *auth.BlockedError
+	if _, err := users.OpenReset(t.Context(), code, "ana@example.com"); !errors.As(err, &blocked) ||
+		len(blocked.LastReaderOf) != 1 || blocked.LastReaderOf[0] != mailbox {
+		t.Fatalf("a reset link of the last reader opened: %v", err)
+	}
+	forced, _, err := users.CreateReset(t.Context(), ana.ID, true, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := users.OpenReset(t.Context(), forced, "ana@example.com"); err != nil {
+		t.Errorf("a forced reset link did not open: %v", err)
 	}
 }
 

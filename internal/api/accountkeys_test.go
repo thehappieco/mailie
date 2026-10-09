@@ -91,7 +91,7 @@ func TestTheChallengeAnswersAnAccountsAddressAsOneWithoutAnAccount(t *testing.T)
 
 func TestTheUpgradeOverRESTTakesThePasswordOnceAndNeverAgain(t *testing.T) {
 	h := newHarness(t, false)
-	authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
+	old := authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
 	resp := h.do(t, http.MethodPost, "/v1/auth/challenge", "", `{"email":"old@example.com"}`)
 	if text := body(t, resp); !strings.Contains(text, `"upgrade":true`) {
 		t.Fatalf("the challenge for an account not upgraded: %s", text)
@@ -102,16 +102,22 @@ func TestTheUpgradeOverRESTTakesThePasswordOnceAndNeverAgain(t *testing.T) {
 		return resp.StatusCode, body(t, resp)
 	}
 	status, text := upgradeLogin("old@example.com", authtest.Password)
-	var ticket struct{ Ticket string }
-	if status != http.StatusOK || !decodeText(text, &ticket) || ticket.Ticket == "" || strings.Contains(text, "token") {
-		t.Fatalf("the upgrade's sign-in answered %d %s, want a ticket and no session", status, text)
+	var ticket struct {
+		Ticket string `json:"ticket"`
+		SealID string `json:"seal_id"`
+		Salt   string `json:"salt"`
+	}
+	if status != http.StatusOK || !decodeText(text, &ticket) || ticket.Ticket == "" || ticket.SealID != old.SealID ||
+		len(ticket.Salt) != 22 || strings.Contains(text, "token") {
+		t.Fatalf("the upgrade's sign-in answered %d %s, want a ticket, the seal id and the target, and no session", status, text)
 	}
 	newKey := secret("upgraded")
 	resp = h.do(t, http.MethodPost, "/v1/auth/upgrade/enrol", "",
 		jsonOf(t, enrolment(t, newKey, secret("code"), map[string]any{"ticket": ticket.Ticket})))
 	var s sessionReply
 	decodeInto(t, resp, &s)
-	if resp.StatusCode != http.StatusOK || s.Token == "" || s.AuthenticatedAt == 0 || s.User.PublicKey == "" {
+	if resp.StatusCode != http.StatusOK || s.Token == "" || s.AuthenticatedAt == 0 || s.User.PublicKey == "" ||
+		s.User.SealID != ticket.SealID {
 		t.Fatalf("the enrolment answered %d %+v", resp.StatusCode, s)
 	}
 	// From then on: no upgrade in the challenge, and the password in clear
@@ -219,8 +225,23 @@ func TestAResetLinkOverRESTGivesANewAccountKeyAndEndsEverySession(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The link answers what the new password is derived under, and only
+	// for its own address.
+	if resp := h.do(t, http.MethodPost, "/v1/auth/reset/open", "",
+		jsonOf(t, map[string]any{"reset": code, "email": "bob@example.com"})); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("a reset link opened for another address: %d", resp.StatusCode)
+	}
+	resp := h.do(t, http.MethodPost, "/v1/auth/reset/open", "", jsonOf(t, map[string]any{"reset": code, "email": "ana@example.com"}))
+	var opened struct {
+		Salt string         `json:"salt"`
+		KDF  map[string]any `json:"kdf"`
+	}
+	decodeInto(t, resp, &opened)
+	if resp.StatusCode != http.StatusOK || len(opened.Salt) != 22 || jsonOf(t, opened.KDF) != jsonOf(t, defaultKDF()) {
+		t.Fatalf("the reset link opened %d %+v", resp.StatusCode, opened)
+	}
 	newKey := secret("after the reset")
-	resp := h.do(t, http.MethodPost, "/v1/auth/reset", "",
+	resp = h.do(t, http.MethodPost, "/v1/auth/reset", "",
 		jsonOf(t, enrolment(t, newKey, secret("new code"), map[string]any{"reset": code, "email": "bob@example.com"})))
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("a reset link used for another address: %d", resp.StatusCode)
@@ -236,6 +257,52 @@ func TestAResetLinkOverRESTGivesANewAccountKeyAndEndsEverySession(t *testing.T) 
 		t.Errorf("a session survived the reset: %d", status)
 	}
 	h.signInWith(t, "ana@example.com", newKey)
+	// What the challenge answers now is what the link answered: the
+	// password chosen under it signs in again from any browser.
+	resp = h.do(t, http.MethodPost, "/v1/auth/challenge", "", `{"email":"ana@example.com"}`)
+	var challenged struct {
+		Salt string `json:"salt"`
+	}
+	decodeInto(t, resp, &challenged)
+	if challenged.Salt != opened.Salt {
+		t.Errorf("after the reset the challenge answers %q, the link answered %q", challenged.Salt, opened.Salt)
+	}
+}
+
+func TestASignUpOverRESTNamesTheSealIDOpeningItsInvitationAnswered(t *testing.T) {
+	h := newHarness(t, false)
+	code, _, err := h.users.CreateInvite(t.Context(), auth.NewInvite{Email: "new@example.com", Role: auth.RoleMember, CreatedBy: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp := h.do(t, http.MethodPost, "/v1/auth/signup/open", "",
+		jsonOf(t, map[string]any{"invite": code, "email": "other@example.com"})); resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("an invitation opened for another address: %d", resp.StatusCode)
+	}
+	resp := h.do(t, http.MethodPost, "/v1/auth/signup/open", "", jsonOf(t, map[string]any{"invite": code, "email": "new@example.com"}))
+	var opened struct {
+		Salt   string         `json:"salt"`
+		KDF    map[string]any `json:"kdf"`
+		SealID string         `json:"seal_id"`
+	}
+	decodeInto(t, resp, &opened)
+	if resp.StatusCode != http.StatusOK || len(opened.Salt) != 22 || opened.SealID == "" ||
+		jsonOf(t, opened.KDF) != jsonOf(t, defaultKDF()) {
+		t.Fatalf("the invitation opened %d %+v", resp.StatusCode, opened)
+	}
+	signUp := func(seal string) *http.Response {
+		return h.do(t, http.MethodPost, "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
+			map[string]any{"invite": code, "email": "new@example.com", "name": "New", "seal_id": seal})))
+	}
+	if resp := signUp(""); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("a sign-up bound to no seal id: %d, want 409", resp.StatusCode)
+	}
+	resp = signUp(opened.SealID)
+	var s sessionReply
+	decodeInto(t, resp, &s)
+	if resp.StatusCode != http.StatusCreated || s.User.SealID != opened.SealID {
+		t.Fatalf("the sign-up answered %d %+v, want the seal id %q", resp.StatusCode, s.User, opened.SealID)
+	}
 }
 
 func TestTheRecoveryAndTheUpgradeAreRateLimitedPerAccount(t *testing.T) {

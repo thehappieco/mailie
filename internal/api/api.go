@@ -64,7 +64,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// clear, which exists in the release that brings the key scheme only.
 	mux.Handle("POST /v1/auth/challenge", h.public(opts(), h.challenge))
 	mux.Handle("POST /v1/auth/login", h.public(opts(), h.signIn))
+	mux.Handle("POST /v1/auth/signup/open", h.public(opts(), h.openSignUp))
 	mux.Handle("POST /v1/auth/signup", h.public(opts(), h.signUp))
+	mux.Handle("POST /v1/auth/reset/open", h.public(opts(), h.openReset))
 	mux.Handle("POST /v1/auth/reset", h.public(opts(), h.completeReset))
 	mux.Handle("POST /v1/auth/recover/open", h.public(opts(), h.openRecovery))
 	mux.Handle("POST /v1/auth/recover/finish", h.public(opts(), h.finishRecovery))

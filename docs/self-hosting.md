@@ -382,9 +382,11 @@ sealed under `MAIL_CREDENTIAL_KEY_HEX`, a key in the server's environment. With
 key wraps (a `THCSEAL` envelope), and the key never leaves KMS: the database, its backups and the
 server's environment open nothing without a call to KMS that the key policy allows and CloudTrail
 records. Every call carries the encryption context `{service: mailie, env: <MAIL_ENV>, purpose,
-ref}`: the purpose is `credential/oauth-token`, `credential/password` or `send/hash-root`, and the
-ref is the mailbox's id (random, never derived from an address) or the meta row of the root. An
-envelope opens only for its own context, so one moved to another mailbox, field or env does not.
+ref}`: the purpose is `credential/oauth-token`, `credential/password`, `send/hash-root` or
+`auth/kdf-salt-key` (the salt key, the key of the salts passwords are derived under), and the ref
+is the mailbox's id (random, never derived from an address) or the meta row of the root or of the
+salt key. An envelope opens only for its own context, so one moved to another mailbox, field or env
+does not.
 
 - **The key.** A symmetric KMS key (`SYMMETRIC_DEFAULT`, `ENCRYPT_DECRYPT`). Give the daemon its
   full ARN, `arn:aws:kms:<region>:<account>:key/<id>`, never an alias, which whoever may update
@@ -414,7 +416,9 @@ envelope opens only for its own context, so one moved to another mailbox, field 
       "StringEquals": {
         "kms:EncryptionContext:service": "mailie",
         "kms:EncryptionContext:env": "prod",
-        "kms:EncryptionContext:purpose": ["credential/oauth-token", "credential/password", "send/hash-root"]
+        "kms:EncryptionContext:purpose": [
+          "credential/oauth-token", "credential/password", "send/hash-root", "auth/kdf-salt-key"
+        ]
       },
       "Null": { "kms:EncryptionContext:ref": "false" }
     }
@@ -422,7 +426,10 @@ envelope opens only for its own context, so one moved to another mailbox, field 
   ```
 
   Give the credentials a key of their own, not the backups' key, on which the server must never be
-  allowed to decrypt ([`backup.md`](backup.md)).
+  allowed to decrypt ([`backup.md`](backup.md)). A server already under KMS adds
+  `auth/kdf-salt-key` to this condition **before** it upgrades to the release that brings the key
+  scheme ([below](#passwords-the-server-never-receives-migration-0013)): that release's first start
+  seals the salt key under it, and stops, refused by KMS, while the policy does not allow it.
 
 A KMS error that says nothing about an envelope (KMS not reached, throttling, a denied call, a
 disabled key) stops the start too, but it is never taken for a lost key: nothing tells you to
@@ -661,18 +668,24 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   invitation from you (below).
 - **New passwords have at least twelve characters**; one chosen before keeps working, however
   short.
-- **Nothing needs configuring.** The first start makes a **salt key**, the key of the salt every
-  address's password is derived under, and keeps it in the database sealed under the credential
-  key as the send-hash root is (`meta.kdf_salt_key`). The daemon refuses to start without the key
-  that sealed it, as for the root; `rewrap-credentials` re-seals it with the credentials, and if
-  its key is lost for good, `mailserver rewrap-credentials --new-salt-key`, with the daemon
+- **Nothing needs configuring, but on a server under AWS KMS.** The first start makes a **salt
+  key**, the key of the salt every address's password is derived under, and keeps it in the
+  database sealed under the credential key as the send-hash root is (`meta.kdf_salt_key`). Under
+  a KMS key ([above](#credentials-under-aws-kms)) it is sealed for the purpose
+  `auth/kdf-salt-key`: add that purpose to the key policy's condition **before** you upgrade, or
+  the new version stops at its first start, refused by KMS. The daemon refuses to start without the
+  key that sealed it, as for the root; `rewrap-credentials` re-seals it with the credentials, and
+  if its key is lost for good, `mailserver rewrap-credentials --new-salt-key`, with the daemon
   stopped, puts a new one in place: everyone keeps signing in, and moves to their new salt at
   their next sign-in. A daemon whose people sign in only through an extension makes none.
 - **A forgotten password** is the recovery code's to replace, in the console. A person who lost
   both now gets a **reset invitation** rather than a password set for them: see
   [A forgotten password](#a-forgotten-password).
-- **Sessions open at the upgrade stay open,** with no step-up time: what gives access asks for the
-  password again on them. Changing the password ends every session, as before.
+- **Sessions open at the upgrade stay open,** with no step-up time. The person enrols at their next
+  sign-in; until then the console asks them to sign in again for what needs their account key
+  (changing the password or the recovery code). In this release the step-up guards only replacing
+  the recovery code; giving access asks for it once mailboxes have keys, the key scheme's next
+  step. Changing the password ends every session, as before.
 - **The API.** `POST /v1/auth/login` takes `{email, auth_key}`; `POST /v1/auth/signup` an
   enrolment; `POST /v1/auth/password` is gone, replaced by `/v1/auth/password/begin` and
   `/finish`; new routes answer the challenge, recovery, step-up, the reset invitation and the
@@ -738,9 +751,9 @@ their sessions end then, and everything sealed to their old key goes (from the n
 personal mailboxes then need a new key, and a team's mailboxes a reader to give them theirs again).
 Until the link is used, nothing of theirs changes; a newer one replaces it.
 
-It refuses, naming the mailboxes, while the person is the last who can read a team mailbox:
-nobody could give them read again. Have another member given read first, or, when the old key is
-truly lost, pass `--force`.
+It refuses, naming the mailboxes, while the person is the last who can read a team mailbox, even
+in a team they are alone in: nobody could give them read again. Have another member given read
+first, or, when the old key is truly lost, pass `--force`.
 
 ```sh
 # Compose, from deploy/:

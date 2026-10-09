@@ -110,6 +110,7 @@ func TestAnExtensionSignsPeopleInWhereExternalSignInOnlyTurnsPasswordsOff(t *tes
 	for _, call := range []struct{ path, token, body string }{
 		{"/v1/auth/challenge", "", `{"email":"ana@example.com"}`},
 		{"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey)},
+		{"/v1/auth/signup/open", "", fmt.Sprintf(`{"invite":%q,"email":"new@example.com"}`, code)},
 		{"/v1/auth/signup", "", signUpBody(t, code)},
 		{"/v1/auth/password/begin", ana, fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey)},
 		{"/v1/auth/stepup", ana, fmt.Sprintf(`{"auth_key":%q}`, authtest.AuthKey)},

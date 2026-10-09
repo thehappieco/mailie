@@ -110,6 +110,21 @@ func defaultKDF() map[string]any {
 	return map[string]any{"alg": "argon2id", "m": auth.DefaultKDF.M, "t": auth.DefaultKDF.T, "p": auth.DefaultKDF.P}
 }
 
+// openInvite opens an invitation as a browser does before it signs up, and
+// returns the seal id it answered, or "" when it does not open.
+func openInvite(t *testing.T, h *harness, code, email string) string {
+	t.Helper()
+	resp := h.do(t, http.MethodPost, "/v1/auth/signup/open", "", jsonOf(t, map[string]any{"invite": code, "email": email}))
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	var opened struct {
+		SealID string `json:"seal_id"`
+	}
+	decodeInto(t, resp, &opened)
+	return opened.SealID
+}
+
 // secret is base64url of 32 bytes made from a label: an auth key or a proof.
 func secret(label string) string {
 	return base64.RawURLEncoding.EncodeToString([]byte(strings.Repeat(label, 32)[:32]))
@@ -351,7 +366,8 @@ func TestAnInviteLinkSignsUpItsAddressOnce(t *testing.T) {
 
 	signUp := func(email string) *http.Response {
 		return h.do(t, http.MethodPost, "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
-			map[string]any{"invite": fragment.Get("invite"), "email": email, "name": "Ana"})))
+			map[string]any{"invite": fragment.Get("invite"), "email": email, "name": "Ana",
+				"seal_id": openInvite(t, h, fragment.Get("invite"), email)})))
 	}
 	if resp := signUp("mallory@example.com"); resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("another address used the invite: %d", resp.StatusCode)

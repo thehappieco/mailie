@@ -654,7 +654,8 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 
 // ReplaceRecovery replaces the recovery wrap and its proof of a session's
 // person, who made a new recovery code over the account key their browser
-// holds. It needs a fresh step-up (docs/key-scheme.md section 12.5).
+// holds. It needs a fresh step-up (docs/key-scheme.md section 12.5). Every
+// recovery the person has open, opened with the old code, ends with it.
 func (u *Users) ReplaceRecovery(ctx context.Context, userID, sessionID string, recoveryWrap []byte, proof string) error {
 	if err := checkSecretText(proof); err != nil {
 		return err
@@ -681,6 +682,14 @@ func (u *Users) ReplaceRecovery(ctx context.Context, userID, sessionID string, r
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE users SET recovery_wrap = ?, recovery_verifier = ?, updated_at = ? WHERE id = ?`,
 			recoveryWrap, verifier, u.now().Unix(), userID); err != nil {
+			return fmt.Errorf("auth: replace the recovery code: %w", err)
+		}
+		// A recovery opened with the code just replaced must not finish: it
+		// would set a password with a code its person has put aside. A
+		// password change or a re-derivation in flight proved the password,
+		// which has not changed, and goes on.
+		if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tickets WHERE user_id = ? AND purpose = ?`,
+			userID, ticketRecover); err != nil {
 			return fmt.Errorf("auth: replace the recovery code: %w", err)
 		}
 		return nil
@@ -824,25 +833,35 @@ func (u *Users) ExternalStepUp(ctx context.Context, userID, sessionID, issuer, s
 	})
 }
 
+// UpgradeTicket is what the upgrade's check of an old password answers: the
+// ticket to enrol with, the person's seal id to bind the wraps to, and the
+// target to derive under, which the ticket carries and Enrol stores.
+type UpgradeTicket struct {
+	Target
+	Ticket string
+	SealID string
+}
+
 // LegacySignIn is the upgrade's one last check of a password in clear
 // (docs/key-scheme.md section 12.7): an active person whom the server still
 // checks a password for, and has not enrolled, gets a ticket to enrol with
-// (Enrol) when the password matches their old hash, under the old rules. It
-// answers no session. Every other case, an enrolled person's included, is
+// (Enrol) when the password matches their old hash, under the old rules,
+// with their seal id and the target the ticket carries. It answers no
+// session. Every other case, an enrolled person's included, is
 // ErrBadCredentials after the same derivation: the server never checks a
 // password in clear for anyone who has enrolled. It exists in the release
 // that brings the scheme only.
-func (u *Users) LegacySignIn(ctx context.Context, email, password string) (string, error) {
+func (u *Users) LegacySignIn(ctx context.Context, email, password string) (UpgradeTicket, error) {
 	email = keyscheme.NormaliseAddress(email)
 	var (
-		id, status, hash string
-		enrolled         int64
+		id, status, hash, sealID string
+		enrolled                 int64
 	)
 	err := u.store.Reader().QueryRowContext(ctx,
-		`SELECT id, status, password_hash, zk_enrolled_at FROM users WHERE email = ?`, email,
-	).Scan(&id, &status, &hash, &enrolled)
+		`SELECT id, status, password_hash, zk_enrolled_at, seal_id FROM users WHERE email = ?`, email,
+	).Scan(&id, &status, &hash, &enrolled, &sealID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("auth: sign in: %w", err)
+		return UpgradeTicket{}, fmt.Errorf("auth: sign in: %w", err)
 	}
 	legacy := err == nil && status == userActive && enrolled == 0 && hash != ""
 	against := dummyPasswordHash
@@ -851,16 +870,16 @@ func (u *Users) LegacySignIn(ctx context.Context, email, password string) (strin
 	}
 	ok, err := verifyPassword(ctx, password, against)
 	if err != nil {
-		return "", err
+		return UpgradeTicket{}, err
 	}
 	if !legacy || !ok {
-		return "", ErrBadCredentials
+		return UpgradeTicket{}, ErrBadCredentials
 	}
 	target, err := u.target(email)
 	if err != nil {
-		return "", err
+		return UpgradeTicket{}, err
 	}
-	var ticket string
+	out := UpgradeTicket{Target: target, SealID: sealID}
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
 		var (
 			standing, current string
@@ -874,13 +893,13 @@ func (u *Users) LegacySignIn(ctx context.Context, email, password string) (strin
 			return ErrBadCredentials
 		}
 		var err error
-		ticket, err = issueTicketTx(ctx, tx, id, "", ticketEnrol, target, u.now())
+		out.Ticket, err = issueTicketTx(ctx, tx, id, "", ticketEnrol, target, u.now())
 		return err
 	})
 	if err != nil {
-		return "", err
+		return UpgradeTicket{}, err
 	}
-	return ticket, nil
+	return out, nil
 }
 
 // Enrol finishes the upgrade: with the ticket LegacySignIn answered, it
@@ -962,8 +981,8 @@ type Reset struct {
 //
 // Deleting a person's grants takes "read" from them, so without force it is
 // refused, with a BlockedError naming the mailboxes, while the person is the
-// last reader of a team mailbox: the test closing a person uses
-// (workspace.BlocksTx). Completing it checks again, unless it was forced.
+// last reader of a team mailbox, whether or not anyone else belongs to the
+// team (resetBlocksTx). Completing it checks again, unless it was forced.
 func (u *Users) CreateReset(ctx context.Context, userID string, force bool, createdBy string) (string, Reset, error) {
 	raw := make([]byte, resetCodeBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -1002,17 +1021,79 @@ func (u *Users) CreateReset(ctx context.Context, userID string, force bool, crea
 }
 
 // resetBlocksTx refuses a reset of a person who is the last reader of a team
-// mailbox, as closing them is refused (BlockedError, with only the
-// mailboxes).
+// mailbox (BlockedError, with only the mailboxes). Not the test closing a
+// person uses (workspace.BlocksTx), which leaves out a team whose only member
+// is the person, since that team goes with them: a reset leaves the person
+// and every team of theirs standing, and a team mailbox it took "read" from
+// could then never be read again.
 func resetBlocksTx(ctx context.Context, tx *sql.Tx, userID string) error {
-	blocks, err := workspace.BlocksTx(ctx, tx, userID)
+	last, err := workspace.LastReaderOfTx(ctx, tx, userID)
 	if err != nil {
 		return err
 	}
-	if len(blocks.LastReaderOf) > 0 {
-		return &BlockedError{Blocks: workspace.Blocks{LastReaderOf: blocks.LastReaderOf}}
+	if len(last) > 0 {
+		return &BlockedError{Blocks: workspace.Blocks{LastReaderOf: last}}
 	}
 	return nil
+}
+
+// OpenReset checks a reset invitation for the address its link names and
+// answers the person's seal id, and the target their new password is
+// derived under: the
+// address's salt and the server's default parameters, exactly what
+// CompleteReset stores. Not what a challenge answers, which for an account
+// off its target is the salt it stores now (docs/key-scheme.md section 5.3):
+// a password derived under that, stored as the target, would never sign in.
+// A link that is not valid is ErrResetInvalid, as CompleteReset's; one issued
+// without force for a person who has become a team mailbox's last reader is
+// a BlockedError here already, before anyone chooses a password. It changes
+// nothing.
+func (u *Users) OpenReset(ctx context.Context, code, email string) (ResetOpening, error) {
+	email, err := NormalizeEmail(email)
+	if err != nil {
+		return ResetOpening{}, err
+	}
+	codeHash, ok := hashResetCode(code)
+	if !ok {
+		return ResetOpening{}, ErrResetInvalid
+	}
+	tx, err := u.store.Reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ResetOpening{}, fmt.Errorf("auth: check reset: %w", err)
+	}
+	//nolint:errcheck // a read-only transaction: nothing to keep or undo
+	defer func() { _ = tx.Rollback() }()
+	var (
+		userID string
+		forced bool
+		out    ResetOpening
+	)
+	err = tx.QueryRowContext(ctx, `SELECT r.user_id, r.forced, p.seal_id FROM reset_invites r JOIN users p ON p.id = r.user_id
+		WHERE r.code_hash = ? AND r.expires_at > ? AND p.email = ? AND p.status = ?`,
+		codeHash, u.now().Unix(), email, userActive).Scan(&userID, &forced, &out.SealID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ResetOpening{}, ErrResetInvalid
+	case err != nil:
+		return ResetOpening{}, fmt.Errorf("auth: check reset: %w", err)
+	}
+	if !forced {
+		if err := resetBlocksTx(ctx, tx, userID); err != nil {
+			return ResetOpening{}, err
+		}
+	}
+	if out.Target, err = u.target(email); err != nil {
+		return ResetOpening{}, err
+	}
+	return out, nil
+}
+
+// ResetOpening is what opening a reset invitation answers: the target the
+// new password is derived under, and the person's seal id, which never
+// changes, to bind the new wraps to.
+type ResetOpening struct {
+	Target
+	SealID string
 }
 
 // ResetLink is the address a reset invitation opens: the console's origin,
@@ -1022,7 +1103,8 @@ func ResetLink(publicURL, code, email string) string {
 }
 
 // CompleteReset redeems a reset invitation: the person's browser made a new
-// account key, password and recovery code, and in one transaction the server
+// account key, password and recovery code, derived under the target OpenReset
+// answered (which this stores), and in one transaction the server
 // replaces the public key (the one replacement of a key written once), the
 // verifiers and the wraps, deletes every grant sealed to the old key and
 // every platform wrap of the person, ends their sessions and every ticket,

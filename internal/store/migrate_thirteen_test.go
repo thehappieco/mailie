@@ -15,6 +15,7 @@ var thirteenNewColumns = map[string][]string{
 	"users": {"auth_verifier", "kdf_m", "kdf_p", "kdf_salt", "kdf_t", "key_replaced_at", "password_wrap",
 		"public_key", "recovery_verifier", "recovery_wrap", "seal_id", "zk_enrolled_at"},
 	"sessions": {"authenticated_at", "stepup_mark_at"},
+	"invites":  {"seal_id"},
 }
 
 var lowercaseUUIDv4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)

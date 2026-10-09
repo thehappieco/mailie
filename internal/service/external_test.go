@@ -53,6 +53,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		calls := map[string]error{}
 		_, calls["answer a challenge"] = f.svc.Challenge(ctx, service.ChallengeRequest{Email: "owner@example.com"})
 		_, calls["sign in with a password"] = f.svc.Login(ctx, service.LoginRequest{Email: "owner@example.com", AuthKey: authtest.AuthKey}, "test")
+		_, calls["open an invitation"] = f.svc.OpenSignUp(ctx, service.SignUpOpenRequest{Invite: signUpCode, Email: "new@example.com"})
 		_, calls["sign up with an invitation"] = f.svc.SignUp(ctx, service.SignUpRequest{
 			Invite: signUpCode, Email: "new@example.com", Name: "New", Enrolment: wireEnrolment(t)}, "test")
 		_, calls["accept a team invitation"] = f.svc.AcceptInvite(ctx, member, service.AcceptInviteRequest{Invite: joinCode})

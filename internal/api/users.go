@@ -61,6 +61,25 @@ func (h *Handler) signIn(q *request) {
 	q.write(http.StatusOK, login)
 }
 
+func (h *Handler) openSignUp(q *request) {
+	var req service.SignUpOpenRequest
+	if err := q.decode(&req); err != nil {
+		q.fail(err)
+		return
+	}
+	// The address's limit only, as the challenge's: it hashes nothing, and
+	// an invitation's code is 32 random bytes.
+	if !q.allowSignIn("") {
+		return
+	}
+	opened, err := h.Service.OpenSignUp(q.ctx(), req)
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.write(http.StatusOK, opened)
+}
+
 func (h *Handler) signUp(q *request) {
 	var req service.SignUpRequest
 	if err := q.decode(&req); err != nil {
@@ -226,6 +245,25 @@ func (h *Handler) upgradeEnrol(q *request) {
 		return
 	}
 	q.write(http.StatusOK, session)
+}
+
+func (h *Handler) openReset(q *request) {
+	var req service.ResetOpenRequest
+	if err := q.decode(&req); err != nil {
+		q.fail(err)
+		return
+	}
+	// The address's limit only, as the challenge's: it hashes nothing, and
+	// a reset code is 32 random bytes, which no guess finds.
+	if !q.allowSignIn("") {
+		return
+	}
+	opened, err := h.Service.OpenReset(q.ctx(), req)
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.write(http.StatusOK, opened)
 }
 
 func (h *Handler) completeReset(q *request) {

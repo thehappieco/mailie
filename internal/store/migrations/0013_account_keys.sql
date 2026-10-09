@@ -43,6 +43,10 @@
 --     carries the target the browser derives under.
 --   - reset_invites: the reset invitations `user password --bootstrap`
 --     prints (section 12.6), seven days, stored as SHA-256, used once.
+--   - invites.seal_id: the seal id of the person an invitation signs up,
+--     drawn by the server once, when the person's browser first opens the
+--     invitation (section 12.1), so that the wraps it sends with the sign-up
+--     are bound to the seal id the person gets; '' until then.
 
 ALTER TABLE users ADD COLUMN seal_id TEXT NOT NULL DEFAULT '';
 UPDATE users SET seal_id =
@@ -117,6 +121,9 @@ WHEN OLD.zk_enrolled_at <> 0 AND NEW.zk_enrolled_at IS NOT OLD.zk_enrolled_at
 BEGIN
   SELECT RAISE(ABORT, 'enrolment in the key scheme is one way');
 END;
+
+ALTER TABLE invites ADD COLUMN seal_id TEXT NOT NULL DEFAULT '' CHECK (seal_id = '' OR seal_id GLOB
+  '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-4[0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]');
 
 ALTER TABLE sessions ADD COLUMN authenticated_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE sessions ADD COLUMN stepup_mark_at INTEGER NOT NULL DEFAULT 0;

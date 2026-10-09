@@ -28,10 +28,16 @@ func newUsers(t *testing.T) (*auth.Users, *store.Store, *time.Time) {
 	return users, s, clock
 }
 
-// signUpRequest is a sign-up request for an invite, with a fresh enrolment.
-func signUpRequest(t *testing.T, code, email string) auth.SignUpRequest {
+// signUpRequest is a sign-up request for an invite, with a fresh enrolment
+// bound to the seal id opening it answers, as a browser's is; an invite that
+// does not open for the address gets none, and is refused when used.
+func signUpRequest(t *testing.T, users *auth.Users, code, email string) auth.SignUpRequest {
 	t.Helper()
-	return auth.SignUpRequest{Invite: code, Email: email, Enrolment: authtest.Enrolment(t), UserAgent: "test"}
+	req := auth.SignUpRequest{Invite: code, Email: email, Enrolment: authtest.Enrolment(t), UserAgent: "test"}
+	if opened, err := users.OpenSignUp(t.Context(), code, email); err == nil {
+		req.SealID = opened.SealID
+	}
+	return req
 }
 
 // cheapKDF stands in for Argon2id where a test is about what is hashed and
@@ -161,12 +167,12 @@ func TestAnInviteWorksOnceAndOnlyForItsEmail(t *testing.T) {
 	authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
 
-	req := signUpRequest(t, code, "mallory@example.com")
+	req := signUpRequest(t, users, code, "mallory@example.com")
 	if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, auth.ErrInviteInvalid) {
 		t.Fatalf("another address redeemed the invite: %v", err)
 	}
 	// Refusing the wrong address must not have spent it.
-	req.Email = "Ana@Example.com"
+	req = signUpRequest(t, users, code, "Ana@Example.com")
 	_, _, user, err := users.SignUp(t.Context(), req)
 	if err != nil {
 		t.Fatalf("the invited address could not sign up: %v", err)
@@ -187,7 +193,7 @@ func TestAnExpiredInviteIsRefused(t *testing.T) {
 	code := invite(t, users, "ana@example.com", auth.RoleMember)
 
 	*clock = clock.Add(auth.InviteTTL + time.Second)
-	_, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, "ana@example.com"))
+	_, _, _, err := users.SignUp(t.Context(), signUpRequest(t, users, code, "ana@example.com"))
 	if !errors.Is(err, auth.ErrInviteInvalid) {
 		t.Fatalf("err = %v, want ErrInviteInvalid", err)
 	}
@@ -204,7 +210,7 @@ func TestTheFirstSignUpIsNoOwnerUnlessInvitedAsOne(t *testing.T) {
 
 	signUp := func(code, email string) auth.User {
 		t.Helper()
-		_, _, user, err := users.SignUp(t.Context(), signUpRequest(t, code, email))
+		_, _, user, err := users.SignUp(t.Context(), signUpRequest(t, users, code, email))
 		if err != nil {
 			t.Fatalf("sign up %s: %v", email, err)
 		}
@@ -246,13 +252,13 @@ func TestAnEnrolmentOutOfShapeIsRefusedBeforeTheInviteIsSpent(t *testing.T) {
 			e.RecoveryWrap = e.RecoveryWrap[:60]
 		}, auth.ErrInvalidWrap},
 	} {
-		req := signUpRequest(t, code, "ana@example.com")
+		req := signUpRequest(t, users, code, "ana@example.com")
 		c.change(&req.Enrolment)
 		if _, _, _, err := users.SignUp(t.Context(), req); !errors.Is(err, c.want) {
 			t.Errorf("%s: err = %v, want %v", name, err, c.want)
 		}
 	}
-	if _, _, _, err := users.SignUp(t.Context(), signUpRequest(t, code, "ana@example.com")); err != nil {
+	if _, _, _, err := users.SignUp(t.Context(), signUpRequest(t, users, code, "ana@example.com")); err != nil {
 		t.Fatalf("the invite did not survive the refused attempts: %v", err)
 	}
 }

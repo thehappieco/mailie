@@ -58,9 +58,10 @@ verifier is the same offline oracle.
 - A console session is a bearer token, never a cookie. Signing in proves an auth key, never a
   password; a password wrap is answered only to an auth key verified in the same request and a
   recovery wrap only to a recovery proof, never to a session alone. Every way a sign-in can fail
-  costs the same work and gets the same answer. Giving access, writing keys and replacing the
-  recovery code need the person's secret proved within the last ten minutes (a sign-in or a
-  step-up), on that session.
+  costs the same work and gets the same answer. Replacing the recovery code needs the person's
+  secret proved within the last ten minutes (a sign-in or a step-up), on that session. Giving
+  "read" and writing a mailbox's keys will need the same once mailboxes have keys, the key
+  scheme's next step; until then access is given as before, without one.
 - In the release that brings the key scheme only, a person who signed up before it sends their
   password in clear one last time, at their next sign-in, and a challenge says, to anyone, that such
   an address has an account not yet upgraded. Enrolment is one way: the server then refuses their

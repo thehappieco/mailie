@@ -46,6 +46,11 @@ var ErrInviteNotFound = errors.New("auth: no such pending invite")
 // addresses do.
 var ErrInviteJoinsOnly = errors.New("auth: this invite adds an existing account to a team and creates none")
 
+// ErrSealIDNotOpened is a sign-up whose wraps are bound to a seal id other
+// than the one opening its invitation answered (OpenSignUp), or that never
+// opened it: the person would get a seal id their wraps do not open under.
+var ErrSealIDNotOpened = errors.New("auth: bind the account key to the seal id the invitation answers")
+
 // Invite is an invite as its creator sees it. The code is not here: it exists
 // once, in the link returned when the invite is made.
 //
@@ -296,11 +301,69 @@ func InviteLink(publicURL, code, email string) string {
 // their account key and derived their auth key (docs/key-scheme.md section
 // 12.1); the password never comes.
 type SignUpRequest struct {
-	Invite    string
-	Email     string
-	Name      string
+	Invite string
+	Email  string
+	Name   string
+	// SealID is the seal id the browser bound the wraps to: the one
+	// OpenSignUp answered for this invitation, which the person gets.
+	SealID    string
 	Enrolment Enrolment
 	UserAgent string
+}
+
+// SignUpOpening is what opening an invitation answers: the target the new
+// password is derived under, and the seal id of the person it signs up.
+type SignUpOpening struct {
+	Target
+	SealID string
+}
+
+// OpenSignUp checks an invitation for the address its link names before its
+// person chooses a password, as SignUp will (ErrInviteInvalid,
+// ErrInviteJoinsOnly, ErrEmailTaken), and answers what their browser binds
+// and derives under (docs/key-scheme.md section 12.1): the address's target,
+// and the seal id the server draws for the person the invitation will
+// create, once, kept with the invitation, so that the wraps the browser
+// sends with the sign-up are bound to the seal id the person gets. Opening
+// it again answers the same seal id. Nothing else changes.
+func (u *Users) OpenSignUp(ctx context.Context, code, email string) (SignUpOpening, error) {
+	email, err := NormalizeEmail(email)
+	if err != nil {
+		return SignUpOpening{}, err
+	}
+	codeHash, ok := hashInviteCode(code)
+	if !ok {
+		return SignUpOpening{}, ErrInviteInvalid
+	}
+	if err := u.checkSignUp(ctx, codeHash, email); err != nil {
+		return SignUpOpening{}, err
+	}
+	target, err := u.target(email)
+	if err != nil {
+		return SignUpOpening{}, err
+	}
+	out := SignUpOpening{Target: target}
+	err = u.store.Write(ctx, func(tx *sql.Tx) error {
+		now := u.now().Unix()
+		if _, err := tx.ExecContext(ctx, `UPDATE invites SET seal_id = ?
+			  WHERE code_hash = ? AND used_at = 0 AND expires_at > ? AND seal_id = ''`,
+			keyscheme.NewSealID(), codeHash, now); err != nil {
+			return fmt.Errorf("auth: open invite: %w", err)
+		}
+		err := tx.QueryRowContext(ctx, `SELECT seal_id FROM invites WHERE code_hash = ? AND used_at = 0 AND expires_at > ?`,
+			codeHash, now).Scan(&out.SealID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrInviteInvalid
+		}
+		if err != nil {
+			return fmt.Errorf("auth: open invite: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return SignUpOpening{}, err
+	}
+	return out, nil
 }
 
 // SignUp redeems an invite: it creates the account, enrolled in the key
@@ -323,8 +386,11 @@ type SignUpRequest struct {
 // other team invite is ErrInviteJoinsOnly here, whether the address has an
 // account or not, and stays unspent for its person to accept signed in.
 //
-// The answer's User carries the seal id drawn now and the public key, for
-// the browser to keep the account key under (docs/key-scheme.md section 7).
+// The person's seal id is the one opening the invitation drew (OpenSignUp),
+// which the browser bound the wraps to and names in SealID; anything else is
+// ErrSealIDNotOpened, and spends nothing. The answer's User carries it and
+// the public key, for the browser to keep the account key under
+// (docs/key-scheme.md section 7).
 func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session, User, error) {
 	email, err := NormalizeEmail(req.Email)
 	if err != nil {
@@ -347,6 +413,11 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 	if err := u.checkSignUp(ctx, codeHash, email); err != nil {
 		return "", Session{}, User{}, err
 	}
+	// After the invitation's own refusals, which say more: a browser that
+	// could not open it has no seal id to send.
+	if !keyscheme.ValidSealID(req.SealID) {
+		return "", Session{}, User{}, ErrSealIDNotOpened
+	}
 	hashed, err := hashVerifiers(ctx, req.Enrolment.AuthKey, req.Enrolment.RecoveryProof)
 	if err != nil {
 		return "", Session{}, User{}, err
@@ -362,7 +433,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 
 	now := u.now().UTC().Truncate(time.Second)
 	user := User{
-		ID: userID, Email: email, Name: name, HasPassword: true, Enrolled: true, SealID: keyscheme.NewSealID(),
+		ID: userID, Email: email, Name: name, HasPassword: true, Enrolled: true, SealID: req.SealID,
 		PublicKey: req.Enrolment.PublicKey, PasswordChangedAt: now, CreatedAt: now, UpdatedAt: now,
 	}
 	in := req.Enrolment
@@ -370,14 +441,14 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 	var session Session
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
 		var (
-			invited, team, createdBy string
-			teamRole                 workspace.Role
+			invited, team, createdBy, sealID string
+			teamRole                         workspace.Role
 		)
 		err := tx.QueryRowContext(ctx,
 			`UPDATE invites SET used_at = ?, used_by = ?
 			  WHERE code_hash = ? AND used_at = 0 AND expires_at > ?
-			  RETURNING email, role, coalesce(workspace_id, ''), workspace_role, created_by`,
-			now.Unix(), userID, codeHash, now.Unix()).Scan(&invited, &user.Role, &team, &teamRole, &createdBy)
+			  RETURNING email, role, coalesce(workspace_id, ''), workspace_role, created_by, seal_id`,
+			now.Unix(), userID, codeHash, now.Unix()).Scan(&invited, &user.Role, &team, &teamRole, &createdBy, &sealID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrInviteInvalid
 		}
@@ -388,6 +459,9 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 		// not spend the invite of the person it was really for.
 		if !strings.EqualFold(invited, email) {
 			return ErrInviteInvalid
+		}
+		if sealID != req.SealID {
+			return ErrSealIDNotOpened
 		}
 		// Read again here, in the transaction that counts: an owner demoted
 		// or disabled since the pre-check no longer vouches for anyone.

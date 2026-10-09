@@ -243,10 +243,17 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   salt; it never makes or opens a key. `users.public_key` is written once (only a reset, which
   deletes every grant sealed to the old key, replaces it), `seal_id` never changes, and enrolment
   (`zk_enrolled_at`) is one way, with no password hash beside it: the schema holds all three.
-  Giving access, writing keys and replacing the recovery code need a step-up within ten minutes on
-  that session (a sign-in counts; the hosted one is id.'s `auth_time`, never the sign-in's
-  moment). The upgrade's password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists
-  in the release that brings the scheme only. New passwords have at least twelve code points.
+  Replacing the recovery code needs a step-up within ten minutes on that session (a sign-in counts;
+  the hosted one is id.'s `auth_time`, never the sign-in's moment); giving `read` with a grant and
+  writing mailbox keys will need the same once mailboxes have keys (phase 3's next step), and
+  until then nothing else asks for one. Every enrolment is told the seal id and the target before
+  it seals: `signup/open` (the seal id drawn once per invitation, which `signup` must name),
+  `reset/open` and `upgrade/login`; a reset's new password is derived under what `reset/open`
+  answers (the target the reset stores), never the challenge's answer; without `--force` a reset
+  refuses the last reader of any team mailbox, a team they are alone in included (closing a person
+  leaves that team out: it goes with them). The upgrade's password in clear
+  (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists in the release that brings the scheme
+  only. New passwords have at least twelve code points.
 - **An external identity never takes over a person.** Accounts are never linked by matching
   addresses: a first sign-in through an extension only creates a new person, and an address that
   already has one here is `conflict`, with nothing created or linked.

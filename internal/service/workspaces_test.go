@@ -1151,8 +1151,11 @@ func TestAMemberCannotMintAnAccountThroughATeamInvite(t *testing.T) {
 		return values.Get("invite")
 	}
 	signUp := func(code string) (service.Session, error) {
+		// Opened first, as a browser does; one that does not open is
+		// refused again by the sign-up, for its own reason.
+		opened, _ := f.svc.OpenSignUp(ctx, service.SignUpOpenRequest{Invite: code, Email: "alice@example.com"})
 		return f.svc.SignUp(ctx, service.SignUpRequest{Invite: code, Email: "alice@example.com", Name: "Alice",
-			Enrolment: wireEnrolment(t)}, "test")
+			SealID: opened.SealID, Enrolment: wireEnrolment(t)}, "test")
 	}
 
 	owner, err := f.svc.CreateInvite(ctx, admin(), service.InviteRequest{Email: "alice@example.com", Role: "owner"})

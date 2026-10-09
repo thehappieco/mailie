@@ -35,6 +35,12 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Opened at the repository, so that both daemons are asked to sign
+		// up with the seal id a browser would bind to.
+		signUpOpened, err := h.users.OpenSignUp(t.Context(), signUpCode, "new@example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
 		joinCode, _, err := h.users.CreateInvite(t.Context(), auth.NewInvite{
 			Email: "member@example.com", WorkspaceID: team.ID, WorkspaceRole: "member", CreatedBy: "cli",
 		})
@@ -74,8 +80,10 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			{"answer a challenge", http.MethodPost, "/v1/auth/challenge", "", `{"email":"owner@example.com"}`},
 			{"sign in", http.MethodPost, "/v1/auth/login", "",
 				jsonOf(t, map[string]any{"email": "owner@example.com", "auth_key": authtest.AuthKey})},
+			{"open an invitation", http.MethodPost, "/v1/auth/signup/open", "",
+				jsonOf(t, map[string]any{"invite": signUpCode, "email": "new@example.com"})},
 			{"sign up", http.MethodPost, "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
-				map[string]any{"invite": signUpCode, "email": "new@example.com", "name": "New"}))},
+				map[string]any{"invite": signUpCode, "email": "new@example.com", "name": "New", "seal_id": signUpOpened.SealID}))},
 			{"accept a team invitation", http.MethodPost, "/v1/auth/invites/accept", member, fmt.Sprintf(`{"invite":%q}`, joinCode)},
 			{"invite to the instance", http.MethodPost, "/v1/users/invites", owner, `{"email":"x@example.com"}`},
 			{"invite to the instance with a key", http.MethodPost, "/v1/users/invites", key, `{"email":"y@example.com"}`},
@@ -92,7 +100,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			{"the upgrade's sign-in", http.MethodPost, "/v1/auth/upgrade/login", "",
 				jsonOf(t, map[string]any{"email": "old@example.com", "password": authtest.Password})},
 			{"the upgrade's enrolment", http.MethodPost, "/v1/auth/upgrade/enrol", "",
-				jsonOf(t, enrolment(t, secret("upgraded"), secret("upgraded code"), map[string]any{"ticket": upgrade}))},
+				jsonOf(t, enrolment(t, secret("upgraded"), secret("upgraded code"), map[string]any{"ticket": upgrade.Ticket}))},
 			{"replace the recovery code", http.MethodPost, "/v1/auth/recovery", owner,
 				jsonOf(t, map[string]any{"recovery_wrap": wrap(), "recovery_proof": secret("replaced")})},
 			{"begin a password change", http.MethodPost, "/v1/auth/password/begin", owner,
@@ -100,6 +108,8 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			{"finish a password change", http.MethodPost, "/v1/auth/password/finish", owner, jsonOf(t, map[string]any{
 				"ticket": begun.Ticket, "auth_key": secret("changed"), "kdf": defaultKDF(), "password_wrap": wrap(),
 			})},
+			{"open a reset invitation", http.MethodPost, "/v1/auth/reset/open", "",
+				jsonOf(t, map[string]any{"reset": resetCode, "email": "owner@example.com"})},
 			{"a reset invitation", http.MethodPost, "/v1/auth/reset", "", jsonOf(t, enrolment(t, secret("reset"),
 				secret("reset code"), map[string]any{"reset": resetCode, "email": "owner@example.com"}))},
 		} {

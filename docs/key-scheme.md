@@ -97,8 +97,11 @@ AES-GCM is AES-256-GCM with a 12-byte nonce and a 16-byte tag. In addition:
 
 Every person has a **seal id**, `users.seal_id`: a random UUIDv4 the server draws when the person
 is created (and, for the people who exist when phase 3 is deployed, in the migration that adds the
-column). It is unique and never changes; the schema refuses an update. It is not secret: the
-server hands it to the person's browser with their other key material.
+column). For a person who signs up by invitation it is drawn once, when their browser first opens
+the invitation, and kept with it, so that the wraps the browser sends with the sign-up are bound
+to the seal id the person gets (section 12.1). It is unique and never changes; the schema refuses
+an update. It is not secret: the server hands it to the person's browser with their other key
+material.
 
 It is what every wrap and grant binds the person by. Not the address: an address changes (id.
 reports a new verified one, an operator corrects one) and a binding to it would need a re-wrap at a
@@ -708,16 +711,21 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
 
 ### 12.1 Signing up by invitation (self-hosted)
 
-1. `challenge {email}` → `{salt, kdf}`: `salt(email)` and the default parameters, the address's
-   target (section 5.3).
+1. `signup/open {invite, email}` → `{salt, kdf, seal_id}`: `salt(email)` and the default
+   parameters, the address's target (section 5.3), which is what a challenge answers an address
+   without an account; and the seal id of the person the invitation will create, drawn by the
+   server the first time it is opened and kept with the invitation (section 3.1). The server
+   checks the invitation as the sign-up will, and changes nothing else.
 2. The browser prepares the new password (at least 12 code points), derives `auth_key` and
-   `K_wrap`, makes the account key and a recovery code, and seals the password and recovery wraps.
-3. `signup {invite, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`.
-   The server checks the invitation as today (it names `normalise(email)`), that `kdf` is its
-   current default, the public key and the wraps' shapes, and stores section 5.7's columns with
-   the account's target (`salt(normalise(email))`, the salt the browser derived with, since
-   `salt` normalises), `seal_id` drawn now and `zk_enrolled_at` set. The answer carries the
-   session, whose step-up time is now (section 11), the seal id and the public key.
+   `K_wrap`, makes the account key and a recovery code, and seals the password and recovery wraps
+   under that seal id.
+3. `signup {invite, email, seal_id, auth_key, kdf, public_key, password_wrap, recovery_wrap,
+   recovery_proof}`. The server checks the invitation as today (it names `normalise(email)`), that
+   `seal_id` is the one step 1 answered for it, that `kdf` is its current default, the public key
+   and the wraps' shapes, and stores section 5.7's columns with the account's target
+   (`salt(normalise(email))`, the salt the browser derived with, since `salt` normalises), that
+   seal id and `zk_enrolled_at` set. The answer carries the session, whose step-up time is now
+   (section 11), the seal id and the public key.
 4. The browser shows the recovery code once, keeps the account key in the vault, and records the
    address as enrolled (section 12.7).
 
@@ -784,23 +792,30 @@ it; `recovery {recovery_wrap, recovery_proof}` replaces both.
 `mailserver user password --bootstrap` becomes a **reset invitation**: a single-use link for the
 person, like an invitation (7 days, the code in the fragment, stored as SHA-256). Nothing remote
 sets someone's password, as today. Opening it is section 12.1 with the reset code instead of an
-invitation, step 4 included, and it gives the person a **new** password, recovery code and
-account key. In one transaction the server replaces `users.public_key` (the one replacement of a
-written-once key), the verifiers and wraps, and **deletes every grant sealed to the old key** and
+invitation, step 4 included, but for its step 1: the browser asks `reset/open {reset, email}` →
+`{salt, kdf, seal_id}`, the account's target (section 5.3) and the person's seal id, which does
+not change. Not a challenge, which answers an account off its target the salt it stores now: the
+reset stores the target, so a password derived under the challenge's answer would never sign in
+again. It gives the person a **new** password, recovery code and account key. In one transaction
+the server replaces `users.public_key` (the one replacement of a written-once key), the verifiers
+and wraps, and **deletes every grant sealed to the old key** and
 every platform wrap of the person, and ends their sessions. Their personal mailboxes then open
 only once they write them a new key (section 12.12); a team's mailboxes, on which they keep the
 flag, once a reader supplies them the key (section 12.13).
 
 **The last reader.** Deleting a person's grants takes "read" from them on every mailbox that has a
 key (section 12.13), and a team mailbox left with no reader can never be given a key again
-(section 12.12). So the reset holds the core's last-reader rule (`docs/workspaces.md`), with the
-test that closing a person uses: `mailserver user password --bootstrap` refuses, naming the
-mailboxes, when the person is the last reader (the flag and a grant at the current epoch) of any
-team mailbox, unless it is given `--force`, which the invitation records. Completing an invitation
-issued without force checks again in its transaction, and refuses if the person has become such a
-last reader since; the operator then has someone else given "read" first, or issues it again with
-force. Force fits a key that is truly lost, whose grants open nothing anyway; when the reset is a
-precaution against a copied key (threat model, section 4.6), another reader comes first.
+(section 12.12). So the reset holds the core's last-reader rule (`docs/workspaces.md`):
+`mailserver user password --bootstrap` refuses, naming the mailboxes, when the person is the last
+reader (the flag and a grant at the current epoch) of any team mailbox, unless it is given
+`--force`, which the invitation records. Any team mailbox: the test closing a person uses leaves
+out a team whose only member is the person, since that team goes with them, but a reset leaves the
+person and every team of theirs standing. Opening an invitation issued without force
+(`reset/open`) and completing it check again, the second in its transaction, and refuse if the
+person has become such a last reader since; the operator then has someone else given "read" first,
+or issues it again with force. Force fits a key that is truly lost, whose grants open nothing
+anyway; when the reset is a precaution against a copied key (threat model, section 4.6), another
+reader comes first.
 
 The hosted service's equivalent, a person whose platform wrap no longer opens because id. issued
 them a new root (they lost both id.'s password and its recovery code, which by design loses what
@@ -826,13 +841,14 @@ password reaches the server **one last time**:
    phase 3. The console's tests hold the memory to another spelling of a remembered address
    (another case, surrounding white space) being refused too.
 3. The server checks the password against the old hash, under the old rules and rate limits, and
-   answers a single-use enrolment ticket (10 minutes, bound to the person, stored as SHA-256),
-   not a session.
+   answers a single-use enrolment ticket (10 minutes, bound to the person, stored as SHA-256), the
+   person's seal id, and the target the ticket carries (the salt of step 1 and the default
+   parameters), not a session.
 4. The browser prepares the same password as a presented one (no new minimum). If the profile
    refuses it (a control character, more than 256 code points, section 5.1), the person chooses a
-   new one, prepared as new. It derives with the salt of step 1, makes the account key and a
-   recovery code, and sends `upgrade/enrol {ticket, auth_key, kdf, public_key, password_wrap,
-   recovery_wrap, recovery_proof}`.
+   new one, prepared as new. It derives under the target of step 3, makes the account key and a
+   recovery code, seals the wraps under the seal id of step 3, and sends `upgrade/enrol {ticket,
+   auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`.
 5. In one transaction the server stores section 5.7's columns, sets `zk_enrolled_at` (one way: the
    schema refuses setting it back), **clears the old password hash**, ends the person's other
    sessions and opens one, whose step-up time is now (section 11).
@@ -1138,19 +1154,27 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     (`rewrap-credentials --new-salt-key [--kms-key-lost]`), which moves every account off its
     target until its next sign-in. A daemon whose people sign in only through an extension makes
     none.
-  - **Routes.** `POST /v1/auth/challenge`, `login`, `signup`, `password/begin` and
-    `password/finish`, `recover/open` and `recover/finish`, `recovery`, `stepup`,
-    `upgrade/login` and `upgrade/enrol`, as section 12 names them; and `POST /v1/auth/reset
-    {reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` for
-    section 12.6, "section 12.1 with the reset code instead of an invitation", whose link is
-    `#reset=…&email=…`. `upgrade/login` answers `{ticket}` alone. `password/finish` answers the
-    new session of a password change, and nothing (`204`) for a sign-in's re-derivation.
+  - **Routes.** `POST /v1/auth/challenge`, `login`, `signup/open` and `signup`, `password/begin`
+    and `password/finish`, `recover/open` and `recover/finish`, `recovery`, `stepup`,
+    `upgrade/login` and `upgrade/enrol`, as section 12 names them; and `POST /v1/auth/reset/open
+    {reset, email}` → `{salt, kdf, seal_id}` and `POST /v1/auth/reset {reset, email, auth_key, kdf,
+    public_key, password_wrap, recovery_wrap, recovery_proof}` for section 12.6, "section 12.1 with
+    the reset code instead of an invitation", whose link is `#reset=…&email=…`. `reset/open` is
+    that ceremony's step 1: it answers the account's target, which the reset stores, where a
+    challenge would answer an account off its target the salt it stores now. Every enrolment is
+    told the seal id before it seals a wrap: `signup/open` (section 12.1) answers the one drawn for
+    the invitation, which `signup` must name; `reset/open` and `upgrade/login` the person's own.
+    `upgrade/login` answers `{ticket, seal_id, salt, kdf}`, never a session. `password/finish`
+    answers the new session of a password change, and nothing (`204`) for a sign-in's
+    re-derivation.
     `GET /v1/auth/me` names the person's `seal_id` and `public_key` and the session's
     `authenticated_at`, for the vault (section 7) and for asking for a step-up before a refusal.
   - **Tickets** carry the target they were issued with, and a finish stores that target, never one
     recomputed then (an address changed between the two halves would otherwise store a salt the
     browser did not derive with); `kdf` must be both the server's current default and the
-    ticket's. A ceremony that changes a person's secrets deletes their other tickets.
+    ticket's. A ceremony that changes a person's password deletes their other tickets; replacing
+    the recovery code (section 12.5) deletes their recoveries opened with the old code, and leaves
+    a password change or a re-derivation in flight, which proved the password it does not change.
   - **A password change's new session keeps the step-up time of the session it replaces**:
     section 11 does not list a change among what sets the time, so it opens no window of its own.
   - **The challenge** refuses something that is not an address (`bad_request`), as no account can
@@ -1165,8 +1189,10 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     valid are `not_authorized`; a reset that would take the last reader is `conflict`.
   - **Verifiers** are hashed in the slots of people's secrets (two at once, the old passwords'),
     not those of API keys, so a burst of sign-ins cannot starve key checks.
-  - **The seal id** of a new person is drawn by the code (`NewSealID`); a row written without one
-    gets one drawn by the schema, as the migration draws them for the people who exist. The
+  - **The seal id** of a new person is drawn by the code (`NewSealID`): for a sign-up by
+    invitation, when the invitation is first opened, kept in `invites.seal_id` and refused at the
+    sign-up unless the request names it (`409`, open the invitation again); a row written without
+    one gets one drawn by the schema, as the migration draws them for the people who exist. The
     schema refuses changing a seal id, any change of `public_key` that does not move
     `key_replaced_at` forward in the same statement (the reset's), and any change of
     `zk_enrolled_at` once set; an enrolled row has every column of section 5.7 and no password
@@ -1175,10 +1201,12 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     disabled person, whose link works only once they are enabled again, and disabling a person
     deletes their reset invitations and tickets. Completing it enrols a person who was not (an old
     password, or none, for a person who signs in through an extension) and clears any old
-    password hash. Its last-reader test is the one closing a person uses (section 12.6): until
-    mailboxes have keys (the next step of phase 3), that test is the flag alone, the rule of a
-    mailbox without a key (section 12.13), so it refuses resets that would take "read" from
-    nobody yet; `--force` goes ahead.
+    password hash. Its last-reader test is section 12.6's, the last reader of any team mailbox, a
+    team the person is alone in included (`workspace.LastReaderOfTx`), and not the one closing a
+    person uses, which leaves such a team out because it goes with them: until mailboxes have keys
+    (the next step of phase 3), that test is the flag alone, the rule of a mailbox without a key
+    (section 12.13), so it refuses resets that would take "read" from nobody yet; `--force` goes
+    ahead.
   - **The hosted step-up's mark** is a column of the session (`sessions.stepup_mark_at`); a new
     mark replaces one not yet used. A sign-in through id. whose `auth_time` is after the server's
     now takes now (section 12.8: "at most its own now"); a step-up whose `auth_time` is after now

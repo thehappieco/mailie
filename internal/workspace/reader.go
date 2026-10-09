@@ -66,6 +66,16 @@ func lastReaderOf(ctx context.Context, q querier, userID, workspaceID string, ac
 	return listIDs(ctx, q, query+` ORDER BY a.created_at, a.rowid`, args...)
 }
 
+// LastReaderOfTx lists, inside the caller's transaction, the team mailboxes
+// userID is the only reader of, in every team: what a change that takes
+// "read" from a person who stays, in teams that stay with them, must not
+// leave behind (the reset of their account key, docs/key-scheme.md section
+// 12.6). Unlike BlocksTx's LastReaderOf, a team whose only member is the
+// person counts, since nothing takes it away with them.
+func LastReaderOfTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
+	return lastReaderOf(ctx, tx, userID, "", nil, false)
+}
+
 // HasReaderTx reports, inside the caller's transaction, whether a mailbox
 // has a reader: whether anyone could ever read what syncing it would store.
 func HasReaderTx(ctx context.Context, tx *sql.Tx, accountID string) (bool, error) {

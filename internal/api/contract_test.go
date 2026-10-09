@@ -80,9 +80,9 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// address, which is the same with or without an account, and the
 	// sign-in with the auth key derived under it.
 	capture("challenge", http.StatusOK, http.MethodPost, "/v1/auth/challenge", "", `{"email":"ana@example.com"}`)
-	session := capture("session", http.StatusOK, http.MethodPost, "/v1/auth/login", "",
+	login := capture("login", http.StatusOK, http.MethodPost, "/v1/auth/login", "",
 		fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey))
-	token, _ := session["token"].(string)
+	token, _ := login["token"].(string)
 
 	capture("me", http.StatusOK, http.MethodGet, "/v1/auth/me", token, "")
 	capture("stepup", http.StatusOK, http.MethodPost, "/v1/auth/stepup", token,
@@ -328,9 +328,13 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Opening an invitation answers what the browser binds and derives
+	// under; the sign-up names the seal id it answered.
+	opened := capture("signup_open", http.StatusOK, http.MethodPost, "/v1/auth/signup/open", "",
+		fmt.Sprintf(`{"invite":%q,"email":"bea@example.com"}`, fragment.Get("invite")))
 	signedUp := capture("", http.StatusCreated, http.MethodPost, "/v1/auth/signup", "",
 		jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
-			map[string]any{"invite": fragment.Get("invite"), "email": "bea@example.com", "name": "Bea Lima"})))
+			map[string]any{"invite": fragment.Get("invite"), "email": "bea@example.com", "name": "Bea Lima", "seal_id": opened["seal_id"]})))
 	beaID, _ := signedUp["user"].(map[string]any)["id"].(string)
 	carol := authtest.NewUser(t, h.store, "carol@example.com", auth.RoleMember)
 	toCarol := capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
@@ -396,6 +400,25 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("challenge_upgrade", http.StatusOK, http.MethodPost, "/v1/auth/challenge", "", `{"email":"eve@example.com"}`)
 	capture("upgrade_ticket", http.StatusOK, http.MethodPost, "/v1/auth/upgrade/login", "",
 		fmt.Sprintf(`{"email":"eve@example.com","password":%q}`, authtest.Password))
+
+	// A reset link answers the target the new password is derived under.
+	resetCode, _, err := h.users.CreateReset(t.Context(), dee.ID, true, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture("reset_open", http.StatusOK, http.MethodPost, "/v1/auth/reset/open", "",
+		fmt.Sprintf(`{"reset":%q,"email":"dee@example.com"}`, resetCode))
+
+	// A plain session, as signing up, a reset, the upgrade's enrolment and
+	// a password change answer it: here a password change, which ends
+	// every session ana had, so it comes last.
+	begun := capture("", http.StatusOK, http.MethodPost, "/v1/auth/password/begin", token,
+		fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey))
+	ticket, _ := begun["ticket"].(string)
+	capture("session", http.StatusOK, http.MethodPost, "/v1/auth/password/finish", token, jsonOf(t, map[string]any{
+		"ticket": ticket, "auth_key": authtest.AuthKey, "kdf": defaultKDF(),
+		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
+	}))
 }
 
 // capsWithoutUIDPlus is a server with MOVE and without UIDPLUS: a move

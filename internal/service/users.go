@@ -105,11 +105,30 @@ type Enrolment struct {
 	RecoveryProof string `json:"recovery_proof"`
 }
 
-// SignUpRequest is the form an invite link opens.
+// SignUpOpenRequest opens an invitation before its person chooses a
+// password: the code and the address its link carries.
+type SignUpOpenRequest struct {
+	Invite string `json:"invite"`
+	Email  string `json:"email"`
+}
+
+// SignUpOpen is what the browser binds and derives under to sign up with an
+// invitation: the address's target (a salt, base64url of 16 bytes, and the
+// parameters), and the seal id the person will have, which the server drew
+// for the invitation.
+type SignUpOpen struct {
+	Salt   string `json:"salt"`
+	KDF    KDF    `json:"kdf"`
+	SealID string `json:"seal_id"`
+}
+
+// SignUpRequest is the form an invite link opens, with the seal id opening
+// it answered, which the wraps are bound to.
 type SignUpRequest struct {
 	Invite string `json:"invite"`
 	Email  string `json:"email"`
 	Name   string `json:"name"`
+	SealID string `json:"seal_id"`
 	Enrolment
 }
 
@@ -219,9 +238,13 @@ type UpgradeLoginRequest struct {
 }
 
 // UpgradeTicket is what the old password proves: a ticket to enrol with,
-// not a session.
+// not a session, the person's seal id to bind the wraps to, and the target
+// to derive under, which the enrolment stores.
 type UpgradeTicket struct {
 	Ticket string `json:"ticket"`
+	SealID string `json:"seal_id"`
+	Salt   string `json:"salt"`
+	KDF    KDF    `json:"kdf"`
 }
 
 // UpgradeEnrolRequest enrols the person the ticket names.
@@ -230,8 +253,26 @@ type UpgradeEnrolRequest struct {
 	Enrolment
 }
 
+// ResetOpenRequest checks a reset invitation before its person chooses a
+// password: the code and the address its link carries.
+type ResetOpenRequest struct {
+	Reset string `json:"reset"`
+	Email string `json:"email"`
+}
+
+// ResetOpen is the salt (base64url, 16 bytes) and the parameters a reset's
+// new password is derived under: the account's target, which the reset
+// stores, and not what a challenge answers for an account off its target;
+// and the person's seal id, which never changes, to bind the new wraps to.
+type ResetOpen struct {
+	Salt   string `json:"salt"`
+	KDF    KDF    `json:"kdf"`
+	SealID string `json:"seal_id"`
+}
+
 // ResetRequest redeems a reset invitation (docs/key-scheme.md section 12.6):
-// the code and the address its link carries, and a new enrolment.
+// the code and the address its link carries, and a new enrolment derived
+// under what OpenReset answered.
 type ResetRequest struct {
 	Reset string `json:"reset"`
 	Email string `json:"email"`
@@ -280,6 +321,20 @@ func (s *Service) Challenge(ctx context.Context, req ChallengeRequest) (Challeng
 	return Challenge{Salt: b64(c.Salt), KDF: presentKDF(c.KDF), Upgrade: c.Upgrade}, nil
 }
 
+// OpenSignUp checks an invitation as signing up will, before its person
+// chooses a password, and answers what their browser binds and derives
+// under. Refused where people sign in only through an extension.
+func (s *Service) OpenSignUp(ctx context.Context, req SignUpOpenRequest) (SignUpOpen, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return SignUpOpen{}, err
+	}
+	opened, err := s.users.OpenSignUp(ctx, req.Invite, req.Email)
+	if err != nil {
+		return SignUpOpen{}, fromUsers(err, "opening the invitation failed")
+	}
+	return SignUpOpen{Salt: b64(opened.Salt), KDF: presentKDF(opened.KDF), SealID: opened.SealID}, nil
+}
+
 // SignUp redeems an invite: it creates the account, enrolled in the key
 // scheme, and signs it in. Refused where people sign in only through an
 // extension.
@@ -292,7 +347,7 @@ func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent strin
 		return Session{}, err
 	}
 	token, session, user, err := s.users.SignUp(ctx, auth.SignUpRequest{
-		Invite: req.Invite, Email: req.Email, Name: req.Name, Enrolment: in, UserAgent: userAgent,
+		Invite: req.Invite, Email: req.Email, Name: req.Name, SealID: req.SealID, Enrolment: in, UserAgent: userAgent,
 	})
 	if err != nil {
 		return Session{}, fromUsers(err, "creating the account failed")
@@ -447,7 +502,9 @@ func (s *Service) UpgradeLogin(ctx context.Context, req UpgradeLoginRequest) (Up
 	if err != nil {
 		return UpgradeTicket{}, fromSecret(err, CodeUnauthorized, "email or password is wrong", "signing in failed")
 	}
-	return UpgradeTicket{Ticket: ticket}, nil
+	return UpgradeTicket{
+		Ticket: ticket.Ticket, SealID: ticket.SealID, Salt: b64(ticket.Salt), KDF: presentKDF(ticket.KDF),
+	}, nil
 }
 
 // UpgradeEnrol enrols the person the upgrade's ticket names: from then on the
@@ -466,6 +523,21 @@ func (s *Service) UpgradeEnrol(ctx context.Context, req UpgradeEnrolRequest, use
 		return Session{}, fromUsers(err, "enrolling failed")
 	}
 	return presentSession(token, session, user), nil
+}
+
+// OpenReset checks a reset invitation and answers what its new password is
+// derived under. A link that is not valid, and one that would take the last
+// reader of a team mailbox, are refused as the reset itself would refuse
+// them, before anyone types a password.
+func (s *Service) OpenReset(ctx context.Context, req ResetOpenRequest) (ResetOpen, error) {
+	if err := s.passwordsInUse(); err != nil {
+		return ResetOpen{}, err
+	}
+	opened, err := s.users.OpenReset(ctx, req.Reset, req.Email)
+	if err != nil {
+		return ResetOpen{}, fromUsers(err, "opening the reset link failed")
+	}
+	return ResetOpen{Salt: b64(opened.Salt), KDF: presentKDF(opened.KDF), SealID: opened.SealID}, nil
 }
 
 // CompleteReset redeems a reset invitation: the person gets a new password,
@@ -621,6 +693,8 @@ func fromUsers(err error, what string) error {
 	case errors.As(err, &blocked):
 		return E(CodeConflict, "this reset would leave a team mailbox nobody can read: "+
 			"have someone else given read on it first, or ask the operator for a reset with force", err)
+	case errors.Is(err, auth.ErrSealIDNotOpened):
+		return E(CodeConflict, "open the invitation again and bind the account key to the seal id it answers", err)
 	case errors.Is(err, auth.ErrTicketInvalid):
 		return E(CodeNotAuthorized, "that step is not valid any more: it was used, has expired, or belongs to "+
 			"another sign-in; start again", err)
