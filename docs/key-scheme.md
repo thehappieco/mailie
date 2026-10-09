@@ -835,9 +835,10 @@ password reaches the server **one last time**:
    in the vault.
 
 From then on the server refuses a password in clear for the person, answering as for a wrong one,
-and the browser never sends one to an address it remembers. The legacy route and `upgrade` are
-removed in a later release, announced in the release notes (`docs/self-hosting.md`); after that no
-browser sends a password at all. The residual, a server that pretends an enrolled account is not
+and the browser never sends one to an address it remembers. The legacy route and `upgrade` exist in
+one release only, the one that brings this scheme, and are removed in the next, announced in the
+release notes (`docs/self-hosting.md`); a person who has not signed in by then gets a reset
+invitation from the operator (section 12.6). After that no browser sends a password at all. The residual, a server that pretends an enrolled account is not
 to a browser that does not remember it, is in the threat model.
 
 ### 12.8 Signing in on the hosted service
@@ -1047,29 +1048,30 @@ and will point back here.
 
 ## 17. Open questions
 
-Decisions this specification leaves to the owner or to a later step, each without a byte that
-depends on it:
+Decisions this specification left to the owner or to a later step, each without a byte that
+depends on it. Those settled on 2026-10-09 say so.
 
-1. **Where `K_salt` lives.** A server secret kept in the database under the credential sealer, as
-   the send-hash root is, is proposed; an operator-provided variable is the alternative.
+1. **Where `K_salt` lives.** Settled: a server secret kept in the database under the credential
+   sealer, as the send-hash root is, never an operator-provided variable.
 2. **The hosted service's lost key.** What starts the replacement of section 12.6 when a person's
    platform wrap no longer opens (a new root at id.), and how a new product-key epoch is handled
    when the vault holds the account key (re-wrap) and when it does not.
-3. **The new-password minimum.** Twelve code points (the platform's) instead of today's ten.
-4. **The open console and the kit's names.** The console's sources now import the kit by its
-   package name, which `web/test/hosted.ts` sets aside as code; whether the open console's build
-   may also carry the platform profile's labels, should a future import need them, is the owner's
-   call (today's module carries none).
-5. **The upgrade's oracle.** Until the legacy route is removed, a challenge's `upgrade` answer says
-   which addresses have accounts not yet upgraded (section 12.7; threat model, section 5.5). How
-   long that window stays open, and whether it is acceptable meanwhile, is the owner's call.
+3. **The new-password minimum.** Settled by the owner: twelve code points, the platform's (section
+   5.1), for new passwords only.
+4. **The open console and the kit's names.** Settled: the console's sources import the kit by its
+   package name, which `web/test/hosted.ts` sets aside as code, and the open console's build carries
+   none of the platform profile's labels; a future import that would need them is a question for
+   the owner first.
+5. **The upgrade's oracle.** Settled by the owner: the legacy route and the `upgrade` answer exist in
+   one release only and leave in the next (section 12.7), with the release notes saying so; the
+   oracle lasts that long.
 6. **What browsers remember of keys (phase 4).** Whether browsers pin the public keys they seal
    grants to (threat model, section 5.3) and remember a mailbox's keys across epochs (section 5.4):
    the defences left against a server or a database writer that substitutes a person's key or
    writes a mailbox a new epoch with a key of its own.
-7. **The kit's Appendix D.** Asking the kit to record Mailie's `user_id` rule (the seal id, never
-   the `sub`; section 6.1), so that a tool built from the kit alone takes the user id from Mailie's
-   export.
+7. **The kit's Appendix D.** Asked on 2026-10-09: the kit's v0.7.0 takes Mailie's profile, frozen
+   from this specification's vectors, and its Appendix D records Mailie's `user_id` rule (the seal
+   id, never the `sub`; section 6.1).
 
 ## Appendix A. The Mailie profile
 
@@ -1115,4 +1117,6 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
 
 ## Appendix C. Changes
 
-- Version 1 (2026-10-09): first version, before any server or console code of phase 3.
+- Version 1 (2026-10-09): first version, before any server or console code of phase 3. The same
+  day, the owner settled the new-password minimum (twelve) and the upgrade's window (one release),
+  and `K_salt`'s home and the open console's names were settled (section 17); no byte changed.
