@@ -15,3 +15,10 @@ paths = [
  '''internal/api/testdata/contract/send_status\.json$''',
  '''internal/api/testdata/contract/key_sends\.json$'''
 ]
+
+[[allowlists]]
+description = "The key scheme's golden vectors and the specification's worked example: keys, wraps and grants derived from fixed test seeds, which protect nothing"
+paths = [
+ '''internal/keyscheme/testdata/[a-z-]+\.json$''',
+ '''docs/key-scheme\.md$'''
+]
