@@ -24,12 +24,11 @@
 // memory was the upgrade's defence (section 12.7): an address it held never
 // sent its password in clear again. The upgrade left in the release after
 // the one that brought the key scheme, and with it every request that could
-// carry a password, so the memory defended nothing, and it is gone with its
-// store: version 2 of the database deletes the store of version 1, and the
-// addresses in it, the first time a page of this release opens it. A page of
-// the release before, still open in another tab, then finds the database
-// newer than the one it asks for, and keeps the key in its own memory only,
-// as in a browser that refuses IndexedDB, until it is reloaded.
+// carry a password, so the memory defended nothing, and nothing writes it.
+// Its store stays in the database, which stays at version 1, so that a page
+// of the release before, still open in another tab, opens it as it did and
+// still wipes the key at sign-out; what the store holds (addresses) is
+// cleared the first time a page of this release opens the database.
 
 import { toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
 import { isMailieError, openBrowserVault, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope, type PrivateKey } from '../crypto/mailie'
@@ -62,11 +61,16 @@ interface VaultRecord {
 }
 
 const database = 'mailie-browser-account'
-/** Version 2: the vault alone; version 1 also kept the enrolled addresses (formerEnrolledStore). */
-const version = 2
+/**
+ * Version 1, as the release that brought the key scheme opened it: a page of
+ * that release still open in another tab must open it to wipe the key.
+ */
+const version = 1
 const vaultStore = 'vault'
-/** Version 1's store of the addresses this browser saw enrol, for the upgrade: deleted at the upgrade to version 2, never written. */
+/** The store of the addresses the release before saw enrol, for the upgrade: kept for its pages, never written, cleared once. */
 const formerEnrolledStore = 'enrolled'
+/** Whether this page cleared what the release before remembered in formerEnrolledStore. */
+let formerCleared = false
 const slot = 'current'
 
 /** The record kept for this page when IndexedDB is refused; also the newest one this page wrote. */
@@ -84,12 +88,23 @@ function openDB(): Promise<IDBDatabase> {
     if (typeof indexedDB === 'undefined') { reject(new Error('browser storage unavailable')); return }
     const request = indexedDB.open(database, version)
     request.onupgradeneeded = () => {
-      // A new browser gets the vault; one of version 1 keeps its vault, and its record, and loses the enrolled addresses.
+      // A new browser gets both stores, as the release before made them, so its pages find what they expect.
       const db = request.result
       if (!db.objectStoreNames.contains(vaultStore)) db.createObjectStore(vaultStore)
-      if (db.objectStoreNames.contains(formerEnrolledStore)) db.deleteObjectStore(formerEnrolledStore)
+      if (!db.objectStoreNames.contains(formerEnrolledStore)) db.createObjectStore(formerEnrolledStore)
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      const db = request.result
+      // The addresses the release before remembered go, once per page; a failure leaves them for the next page.
+      if (!formerCleared && db.objectStoreNames.contains(formerEnrolledStore)) {
+        try {
+          const clearing = db.transaction(formerEnrolledStore, 'readwrite')
+          clearing.objectStore(formerEnrolledStore).clear()
+          clearing.oncomplete = () => { formerCleared = true }
+        } catch { /* Left for the next page. */ }
+      }
+      resolve(db)
+    }
     request.onerror = () => reject(request.error)
     request.onblocked = () => reject(new Error('browser storage blocked'))
   })

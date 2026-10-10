@@ -1514,10 +1514,11 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   - **The console** sends no password in any request: its sign-in derives and sends the auth key
     whatever the challenge answers, an `upgrade` member included, which it ignores; its strict
     contract check refuses one. The memory of enrolled addresses (section 12.7) defended only the
-    upgrade, so it is removed with its IndexedDB store: the browser vault's database moves to
-    version 2, whose first opening deletes the `enrolled` store and keeps the vault and its
-    record; a page of the release before, still open, then finds the database newer than it asks
-    for and keeps the account key in its own memory only, until it is reloaded. Sections 12.1 to
+    upgrade, so nothing writes it any more: the browser vault's database stays at version 1, its
+    `enrolled` store kept and cleared the first time a page of this release opens it, so that a
+    page of the release before, still open in another tab, opens the database as it did and still
+    wipes the account key at sign-out (a move to version 2 would have kept it from opening it, and
+    the key at rest after its sign-out; found in review). Sections 12.1 to
     12.4 no longer record an address, and the error `upgrade_refused` is gone. The sign-in form,
     which never said a password stays in the browser while the upgrade could send one, now says so
     as the forms that choose a new password do. The earlier entries of this appendix that name the

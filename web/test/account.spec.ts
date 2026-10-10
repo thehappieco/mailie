@@ -459,7 +459,7 @@ describe('the browser vault', () => {
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, pair.publicText), pair.privateKey)).toBe(true)
   })
 
-  it('drops the addresses an older console remembered, with their store, and keeps the account key it kept', async () => {
+  it('forgets the addresses an older console remembered, keeps the account key it kept, and keeps the database its pages open', async () => {
     // The database as the release that brought the key scheme left it: version 1, the vault and the enrolled addresses.
     const pair = await generateAccountKeys()
     const record = {
@@ -483,10 +483,28 @@ describe('the browser vault', () => {
     })
     const s = await load()
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, record.publicKey), pair.privateKey)).toBe(true)
-    const db = await openVaultDatabase()
-    expect(db.version).toBe(2)
-    expect([...db.objectStoreNames]).toEqual(['vault'])
+    // A page of the release before opens the same database, at version 1, and can still wipe the key.
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open('mailie-browser-account', 1)
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => resolve(request.result)
+    })
+    expect(db.version).toBe(1)
+    expect([...db.objectStoreNames].sort()).toEqual(['enrolled', 'vault'])
+    const remembered = await new Promise<number>((resolve, reject) => {
+      const count = db.transaction('enrolled').objectStore('enrolled').count()
+      count.onsuccess = () => resolve(count.result)
+      count.onerror = () => reject(count.error)
+    })
+    expect(remembered).toBe(0)
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('vault', 'readwrite')
+      tx.objectStore('vault').delete('current')
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
     db.close()
+    expect(await (await load()).vault.accountKeyOf(ANA_SEAL, record.publicKey)).toBeNull()
   })
 
   it('wipes the account key at sign-out', async () => {

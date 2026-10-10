@@ -71,8 +71,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `Principal.IsInstance` means the operator workspace's. Also the console's people: users (instance
   roles `owner`/`member`; a password the server never receives: the key scheme's ceremonies,
   `accountkeys.go`, store an auth verifier, the account public key written once, the password and
-  recovery wraps, the target salt and parameters; an old server-side password hash is checked only
-  by the upgrade, once), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
+  recovery wraps, the target salt and parameters; an old server-side password hash of a person who
+  never enrolled is checked by nothing, and a reset invitation clears it), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
   never extended, with a step-up time), the ceremonies' single-use tickets and reset invitations,
   and single-use invites, to the instance or into a team.
   External identities (issuer + subject, linked only to the new person a first sign-in with a
@@ -258,15 +258,16 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   key and seals every grant (`web/src/crypto/mailbox.ts`); the server checks their shapes, writes
   each key and grant once, and never receives a private key. Every enrolment
   is told the seal id and the target before it seals: `signup/open` (the seal id drawn once per
-  invitation, which `signup` must name), `reset/open` and `upgrade/login`; a reset's new password is
+  invitation, which `signup` must name) and `reset/open`; a reset's new password is
   derived under what `reset/open` answers (the target the reset stores), never the challenge's
   answer; without `--force` a reset refuses the last reader of any team mailbox that has a key (it
   deletes the person's grants; on a keyless mailbox they keep reading by the flag), a team they are
   alone in included (closing a person leaves that team out: it goes with them). The upgrade's
-  password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists in the release that
-  brings the scheme only. New passwords have at least twelve code points. The console's half
+  password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) existed in the release that
+  brought the scheme only and is gone: a person who never enrolled signs in again only through a
+  reset invitation. New passwords have at least twelve code points. The console's half
   (`web/src/crypto/account.ts`, `web/src/state/account.ts`) derives in the kit's worker, sends no
-  password but the upgrade's, never to an address it saw enrol, and keeps the account key only in
+  password in any request, and keeps the account key only in
   the browser vault (`web/src/state/accountVault.ts`), wiped at sign-out and whenever no session is
   valid.
 - **An external identity never takes over a person.** Accounts are never linked by matching
