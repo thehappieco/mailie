@@ -91,8 +91,8 @@ settled meanwhile (a sign-out, another person) is not settled again by its late 
 called after awaits, outside the click that started the flow, so a window it opens needs a click of
 its own. `copy.stepUpHint` words the sentence beside a guarded write, which the core's names the
 password; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
-failures, whose core words send a person to the administrator for a reset link. The open edition
-sets none of these.
+failures (the core's say to sign in again here, and, for `not_enrolled`, to ask the administrator
+for a reset link). The open edition sets none of these.
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`

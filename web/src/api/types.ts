@@ -39,8 +39,9 @@ export interface User {
   seal_id?: string
   /**
    * The person's account public key, base64url of 32 bytes, written once at
-   * their enrolment; absent before (a person from before the key scheme who
-   * never enrolled, or one who signs in only another way). The browser
+   * their enrolment; absent only for a person from before the key scheme who
+   * never enrolled (one who signs in through an extension gets a session only
+   * once their key is written, docs/key-scheme.md section 12.10). The browser
    * compares the key it opens with it.
    */
   public_key?: string
