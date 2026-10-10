@@ -409,8 +409,8 @@ wrap = 0x03 || nonce (12) || AES-256-GCM(K_pw, nonce, account key (32), aad)    
   byte of the kit moves. But whatever opens a Mailie platform wrap outside the console, such as the
   command-line tool that kit §6.8 and platform decision 0015 have open a product's export from the
   key bundle, must take the user id from the export and never assume the sub: **Mailie's export
-  carries each person's seal id beside their platform wrap.** Recording the rule in the kit's
-  Appendix D is asked of the kit (section 17).
+  carries each person's seal id beside their platform wrap.** The kit's Appendix D records the
+  rule since v0.7.0 (section 17).
 - **Sealing and opening** are the kit's, unchanged: sealing refuses an account key whose public
   half is not the binding's and self-tests; opening checks 61 bytes and `0x03`, the tag, and that
   the opened key's public half is the binding's. Every refusal is `platform_wrap`. Products stay
