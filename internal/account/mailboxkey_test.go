@@ -170,6 +170,44 @@ func TestALinkThatCannotBeKeyedStoresNoMailbox(t *testing.T) {
 	}
 }
 
+func TestALinkStoresNothingForAPersonNoLongerActive(t *testing.T) {
+	// The rule the service installs runs in the transaction that would store
+	// the mailbox, its key and its linker's grant, after the login: a person
+	// switched off by then gets nothing stored, on either path.
+	const address, password = "ana@icloud.com", "abcd-efgh-ijkl-mnop"
+	registry, repo, db := keyRegistry(t, address, password)
+	users := auth.NewUsers(db)
+	registry.CheckOwnersWith(users.RequireActiveTx)
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
+	if _, err := users.Disable(t.Context(), ana.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, req := range []account.AddRequest{
+		{Email: address, Provider: provider.KindIMAP, ICloud: true, Password: password, LinkerID: ana.ID},
+		{Email: "ana@gmail.com", Provider: provider.KindGmail, Flow: account.FlowPasted, LinkerID: ana.ID},
+	} {
+		key := authtest.LinkKey(t)
+		req.Key = &key
+		if _, _, err := registry.Add(t.Context(), req); !errors.Is(err, account.ErrOwnerInactive) {
+			t.Errorf("linking %s for a disabled person: %v, want %v", req.Email, err, account.ErrOwnerInactive)
+		}
+	}
+	list, err := repo.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 0 {
+		t.Errorf("%d mailboxes stored for a disabled person", len(list))
+	}
+	var keys int
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM mailbox_keys`).Scan(&keys); err != nil {
+		t.Fatal(err)
+	}
+	if keys != 0 {
+		t.Errorf("%d mailbox keys stored for a disabled person", keys)
+	}
+}
+
 func TestAKeyedMailboxShowsAMemberWaitingForTheKeyItsCardAndNothingToRead(t *testing.T) {
 	f := newVisibility(t)
 	ana := f.person("ana@example.org")

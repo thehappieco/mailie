@@ -1076,9 +1076,10 @@ value except the columns named.
 [Mailbox keys and sealed grants](#mailbox-keys-and-sealed-grants), their triggers and indexes, and
 nothing else. No row of a schema-13 database changes, and **every mailbox stays without a key**,
 read by the flag as before, until a person who reads it and has enrolled writes its first key from
-the console (section 12.14), which it does right after a sign-in. From that first key on, a member
-who held the flag without an account key (one who has not upgraded) waits for the key until a
-reader supplies it once they enrol. Operator mailboxes stay without a key. The tests in
+the console (section 12.14): right after their next sign-in, while it counts as a step-up, or
+from the mailbox behind a step-up, never on reopening an older session. From that first key on, a
+member who held the flag without an account key (one who has not upgraded) waits for the key until
+a reader supplies it once they enrol. Operator mailboxes stay without a key. The tests in
 `internal/store/migrate_fourteen_test.go` hold every table's rows and columns as they were, both
 new tables empty, and each refusal of the schema.
 
@@ -1282,24 +1283,29 @@ Test names state the guarantee. At least:
 - Mailbox keys (phase 3, step 4): the one rule,
   `TestAKeylessMailboxIsReadByTheFlagAlone`, `TestAMemberWithTheFlagButNoGrantDoesNotReadAKeyedMailbox`,
   `TestTheLastReaderOfAKeyedTeamMailboxCountsOnlyGrantHolders`,
-  `TestATeamMailboxWithAKeySyncsOnlyWhileSomeoneHoldsItsGrant` and
-  `TestAKeyedMailboxShowsAMemberWaitingForTheKeyItsCardAndNothingToRead`; writing,
+  `TestATeamMailboxWithAKeySyncsOnlyWhileSomeoneHoldsItsGrant`,
+  `TestAKeyedMailboxShowsAMemberWaitingForTheKeyItsCardAndNothingToRead` and
+  `TestAMemberWaitingForTheKeyIsRefusedTheAccessRoutesNotToldTheMailboxIsMissing`; writing,
   `TestAPersonLinksAMailboxWithItsKeyOnThePasswordAndTheOAuthPaths`,
   `TestALinkWithoutItsKeyOrWithAMalformedOneStoresNothing`,
-  `TestAPersonWithoutAnAccountKeyCannotLinkAMailbox`,
+  `TestAPersonWithoutAnAccountKeyCannotLinkAMailbox`, `TestALinkStoresNothingForAPersonNoLongerActive`,
   `TestReadOnAKeyedMailboxIsGivenWithTheRecipientsGrantAndRefusedWithout`,
   `TestReadIsGivenByTheFlagAloneToAMemberWithoutAnAccountKeyWhoThenWaitsForTheKey`,
-  `TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt`, `TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt`,
+  `TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt`, `TestOnlySomeoneWhoReadsAKeyedMailboxGivesAKeyReadOnIt`,
+  `TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt`,
   `TestTheFirstKeyOfAMailboxComesWithAGrantForEveryoneWhoReadsItWithAnAccountKey`,
   `TestOnlyAPersonalMailboxsPersonWritesItANewKeyAndItsOlderGrantsGo` and
   `TestAMailboxKeyIsWrittenOnce`; taking, `TestTakingReadDeletesTheGrantsInTheSameTransaction`,
   `TestDisablingAPersonDeletesTheirGrantsAndKeepsTheirFlags`,
   `TestAResetDeletesEveryGrantOfThePersonAndKeepsTheirFlags` and
-  `TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesThemBack`; the step-up,
-  `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes` and `TestChangingFlagsWithoutAGrantNeedsNoStepUp`;
-  and the boundary, `TestNoMailboxPrivateKeyReachesTheDatabase`, `TestAKeySeesNoMailboxKeyAndWaitsForNone`,
-  `TestAKeysListAccountsCarriesNoMailboxKey` (MCP) and `TestTheMailboxKeyRoutesAreThinOverTheService`
-  (REST, no route taking a private key).
+  `TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesThemBack` (their personal
+  mailbox keeps syncing meanwhile); the event stream, `TestAStreamHearsAFirstKeyTakeReadFromAReaderWithoutAnAccountKey`
+  and `TestAStreamHearsTheSuppliedKeyGiveRead`; the step-up,
+  `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes`, `TestALinkWhoseStepUpEndedDuringItsLoginStoresNothing`
+  and `TestChangingFlagsWithoutAGrantNeedsNoStepUp`; and the boundary,
+  `TestNoMailboxPrivateKeyReachesTheDatabase`, `TestAKeySeesNoMailboxKeyAndWaitsForNone`,
+  `TestAKeysListAccountsCarriesNoMailboxKey` (MCP), `TestTheMailboxKeyRoutesAreThinOverTheService` and
+  `TestNoRouteTakesAMailboxPrivateKey` (REST, no route taking a private key).
 
 ## Conflicts and resolutions
 

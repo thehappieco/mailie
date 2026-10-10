@@ -352,6 +352,41 @@ func TestReadIsGivenByTheFlagAloneToAMemberWithoutAnAccountKeyWhoThenWaitsForThe
 	}
 }
 
+func TestAMemberWaitingForTheKeyIsRefusedTheAccessRoutesNotToldTheMailboxIsMissing(t *testing.T) {
+	// A member who holds the read flag and waits for the key sees the
+	// mailbox's card, so changing who holds what on it is not_authorized
+	// for them, as for any member who holds a grant; only someone who holds
+	// nothing on it is told it does not exist.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
+		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, cy.UserID, readFlag("")); err != nil {
+		t.Fatal(err)
+	}
+	if a := accessOf(t, f, cy, shared); a.Access.Read || a.Access.Act || !a.Access.WaitingKey {
+		t.Fatalf("Cy holds the flag and waits for the key: %+v", a.Access)
+	}
+	for _, c := range []struct {
+		who  string
+		p    service.Principal
+		want service.Code
+	}{
+		{"Cy (waiting for the key)", cy, service.CodeNotAuthorized},
+		{"Bea (holding nothing)", tm.bea, service.CodeNotFound},
+	} {
+		_, err := f.svc.SetAccess(t.Context(), c.p, shared, tm.ana.UserID, grantRequest(true, false, false, false))
+		wantCode(t, c.who+" setting Ana's access", err, c.want)
+		err = f.svc.RevokeAccess(t.Context(), c.p, shared, tm.ana.UserID, workspace.Flags{Send: true})
+		wantCode(t, c.who+" taking Ana's send", err, c.want)
+	}
+}
+
 func TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt(t *testing.T) {
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
@@ -373,6 +408,46 @@ func TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt(t *testing.T) {
 	wantCode(t, "an admin waiting for the key giving read", err, service.CodeNotAuthorized)
 	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, dan.UserID, readFlag(key.sealTo(t, f, dan.UserID))); err != nil {
 		t.Fatalf("Ana, who reads it, giving Dan read: %v", err)
+	}
+}
+
+func TestOnlySomeoneWhoReadsAKeyedMailboxGivesAKeyReadOnIt(t *testing.T) {
+	// A key reads by what it holds and needs no grant: giving it read is
+	// giving read, and passes only from a person who reads the mailbox now
+	// by the one rule (docs/key-scheme.md section 12.13), never from one who
+	// holds the flag and waits for the key.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	shared, key := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
+	f.exec(t, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage, granted_by, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 0, 0, 0, ?, 0, 0)`, shared, tm.id, carol.UserID, tm.ana.UserID)
+	if a := accessOf(t, f, carol, shared); a.Access.Read || !a.Access.WaitingKey {
+		t.Fatalf("Carol with the flag and no key: %+v", a.Access)
+	}
+	_, err := f.svc.CreateWorkspaceKey(t.Context(), carol, tm.id, keyRequest("carol's", "read", reads(shared)))
+	wantCode(t, "Carol, waiting for the key, creating a key that reads it", err, service.CodeNotAuthorized)
+	sends, err := f.svc.CreateWorkspaceKey(t.Context(), carol, tm.id, keyRequest("carol's", "send",
+		service.KeyMailboxRequest{AccountID: shared, Send: true}))
+	if err != nil {
+		t.Fatalf("Carol giving a key send: %v", err)
+	}
+	_, err = f.svc.SetKeyAccess(t.Context(), carol, tm.id, sends.Prefix, shared, keyAccess(true, false, true))
+	wantCode(t, "Carol, waiting for the key, adding read to a key", err, service.CodeNotAuthorized)
+	if n := f.count(t, `SELECT count(*) FROM key_access WHERE account_id = ? AND read = 1`, shared); n != 0 {
+		t.Fatalf("%d keys read the mailbox after refused requests", n)
+	}
+
+	// Supplied the key, she reads it, and passes read on to a key.
+	if _, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, carol.UserID,
+		service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, carol.UserID)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CreateWorkspaceKey(t.Context(), carol, tm.id, keyRequest("carol's reader", "read", reads(shared))); err != nil {
+		t.Errorf("Carol, who reads it now, creating a key that reads it: %v", err)
+	}
+	if _, err := f.svc.SetKeyAccess(t.Context(), carol, tm.id, sends.Prefix, shared, keyAccess(true, false, true)); err != nil {
+		t.Errorf("Carol, who reads it now, adding read to a key: %v", err)
 	}
 }
 
@@ -543,6 +618,87 @@ func TestTheFirstKeyOfAMailboxComesWithAGrantForEveryoneWhoReadsItWithAnAccountK
 	wantCode(t, "a second first key", first(tm.ana, tm.ana.UserID, tm.bea.UserID), service.CodeConflict)
 }
 
+func TestAStreamHearsAFirstKeyTakeReadFromAReaderWithoutAnAccountKey(t *testing.T) {
+	// Cy reads a mailbox without a key by the flag, and has no account key:
+	// its first key, written by Ana, is sealed to nobody of hers, and her
+	// open stream says she no longer reads it. Ana, who reads it before and
+	// after, hears nothing.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	const orders = "acc_00000000000000e1"
+	tm.link(t, f, orders, "orders@mail.example")
+	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
+		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, orders, cy.UserID, readFlag("")); err != nil {
+		t.Fatal(err)
+	}
+	streams := map[string]*service.Stream{}
+	for who, p := range map[string]service.Principal{"Cy": cy, "Ana": tm.ana} {
+		st, err := f.svc.Subscribe(t.Context(), p, 0, service.EventFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		if changes, err := st.CheckAccess(t.Context()); err != nil || len(changes) != 0 {
+			t.Fatalf("%s's new stream reports %+v %v", who, changes, err)
+		}
+		streams[who] = st
+	}
+	key := newBrowserKey(t, "", 1)
+	if _, err := f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
+		PublicKey: b64(key.public), Namespace: key.namespace,
+		Grants: []service.GrantToRequest{{UserID: tm.ana.UserID, Grant: key.sealTo(t, f, tm.ana.UserID)}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err := streams["Cy"].CheckAccess(t.Context()); err != nil || len(changes) != 1 ||
+		changes[0] != (service.AccessChange{AccountID: orders, Read: false}) {
+		t.Errorf("Cy's stream after the first key: %+v %v", changes, err)
+	}
+	if changes, err := streams["Ana"].CheckAccess(t.Context()); err != nil || len(changes) != 0 {
+		t.Errorf("Ana's stream after her first key: %+v %v", changes, err)
+	}
+}
+
+func TestAStreamHearsTheSuppliedKeyGiveRead(t *testing.T) {
+	// Bea holds the flag on a mailbox that has a key, with an account key
+	// and no grant: she waits for it. Ana supplies it, and Bea's open stream
+	// says she reads it now; Ana's, whose reading did not change, hears
+	// nothing.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	shared, key := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	f.exec(t, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage, granted_by, created_at, updated_at)
+		VALUES (?, ?, ?, 1, 0, 0, 0, ?, 0, 0)`, shared, tm.id, tm.bea.UserID, tm.ana.UserID)
+	streams := map[string]*service.Stream{}
+	for who, p := range map[string]service.Principal{"Bea": tm.bea, "Ana": tm.ana} {
+		st, err := f.svc.Subscribe(t.Context(), p, 0, service.EventFilter{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(st.Close)
+		if changes, err := st.CheckAccess(t.Context()); err != nil || len(changes) != 0 {
+			t.Fatalf("%s's new stream reports %+v %v", who, changes, err)
+		}
+		streams[who] = st
+	}
+	if _, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, tm.bea.UserID,
+		service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, tm.bea.UserID)}); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err := streams["Bea"].CheckAccess(t.Context()); err != nil || len(changes) != 1 ||
+		changes[0] != (service.AccessChange{AccountID: shared, Read: true}) {
+		t.Errorf("Bea's stream once supplied: %+v %v", changes, err)
+	}
+	if changes, err := streams["Ana"].CheckAccess(t.Context()); err != nil || len(changes) != 0 {
+		t.Errorf("Ana's stream after she supplied the key: %+v %v", changes, err)
+	}
+}
+
 func TestOnlyAPersonalMailboxsPersonWritesItANewKeyAndItsOlderGrantsGo(t *testing.T) {
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
@@ -589,10 +745,13 @@ func TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesTh
 		t.Fatal(err)
 	}
 	mine := added.Account.ID
+	if _, err := f.svc.GrantSyncConsent(t.Context(), tm.ana, f.consent().Sync); err != nil {
+		t.Fatal(err)
+	}
 	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
 	tm.syncOn(t, f, shared)
-	if !f.eligible(t, shared) {
-		t.Fatal("the team mailbox does not sync before the reset")
+	if !f.eligible(t, shared) || !f.eligible(t, mine) {
+		t.Fatal("her mailboxes do not sync before the reset")
 	}
 	// Ana alone reads the team mailbox: her reset needs force, and leaves
 	// it with nobody who can read it.
@@ -622,11 +781,21 @@ func TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesTh
 		}
 	}
 	// The team mailbox nobody reads stops; her personal one keeps syncing
-	// under her consent, which her reset did not take.
+	// under her consent, which her reset did not take, while she waits for
+	// its key.
 	if f.eligible(t, shared) {
 		t.Error("the team mailbox nobody can read still syncs")
 	}
-	// A new key for her own mailbox, which her new account key opens.
+	if !f.eligible(t, mine) {
+		t.Error("her personal mailbox stopped syncing while she waits for its key")
+	}
+	// A new key for her own mailbox, which her new account key opens; her
+	// stream, opened while she waited, says she reads it again.
+	st, err := f.svc.Subscribe(t.Context(), ana, 0, service.EventFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 	next := newBrowserKey(t, home.namespace, 2)
 	if _, err := f.svc.WriteNewKey(t.Context(), ana, mine, service.NewKeyRequest{
 		Epoch: 2, PublicKey: b64(next.public), Grant: next.sealTo(t, f, ana.UserID),
@@ -635,6 +804,13 @@ func TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesTh
 	}
 	if a := accessOf(t, f, ana, mine); !a.Access.Read || a.Access.WaitingKey {
 		t.Errorf("her own mailbox with its new key: %+v", a.Access)
+	}
+	if changes, err := st.CheckAccess(t.Context()); err != nil || len(changes) != 1 ||
+		changes[0] != (service.AccessChange{AccountID: mine, Read: true}) {
+		t.Errorf("her stream after her new key: %+v %v", changes, err)
+	}
+	if !f.eligible(t, mine) {
+		t.Error("her personal mailbox does not sync with its new key")
 	}
 }
 
@@ -731,6 +907,36 @@ func TestEveryKeyWriteNeedsAStepUpWithinTenMinutes(t *testing.T) {
 	}
 	if _, err := f.svc.AddAccount(t.Context(), fresh, keyed(fresh, f.passwordAccount(t, "ana.home@mail.example"))); err != nil {
 		t.Errorf("linking right after a sign-in: %v", err)
+	}
+}
+
+func TestALinkWhoseStepUpEndedDuringItsLoginStoresNothing(t *testing.T) {
+	// The step-up asked before the mail server is dialled only fails a stale
+	// one early: the transaction that would store the mailbox, its key and
+	// the linker's grant asks again, and a step-up whose ten minutes ended
+	// while the login took its time stores nothing (docs/key-scheme.md
+	// section 11).
+	f := newFixture(t)
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	req := newBrowserKey(t, "", 1).link(t, f, ana, f.passwordAccount(t, "ana@mail.example"))
+	ended := f.duringLogin(t, func() error {
+		_, err := f.db.Writer().ExecContext(t.Context(),
+			`UPDATE sessions SET authenticated_at = authenticated_at - 660 WHERE id = ?`, ana.SessionID)
+		return err
+	})
+	_, err := f.svc.AddAccount(t.Context(), ana, req)
+	ended()
+	wantCode(t, "a link whose step-up ended during its login", err, service.CodeNotAuthorized)
+	if n := f.count(t, `SELECT count(*) FROM accounts`); n != 0 {
+		t.Errorf("%d mailboxes stored", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_keys`) + f.count(t, `SELECT count(*) FROM mailbox_grants`); n != 0 {
+		t.Errorf("%d mailbox keys and grants stored", n)
+	}
+	// Stepped up again, the same link goes through.
+	f.stepUp(t, ana)
+	if _, err := f.svc.AddAccount(t.Context(), ana, req); err != nil {
+		t.Errorf("the link after a step-up: %v", err)
 	}
 }
 

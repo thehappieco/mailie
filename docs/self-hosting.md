@@ -714,9 +714,11 @@ The release that brings mailbox keys ([`key-scheme.md`](key-scheme.md) sections 
 
 - **Every mailbox you have stays without a key**, and is read as before, by the "read" flag. The
   first time someone who reads one signs in to the console on this version (after enrolling, at
-  the upgrade of 0013 or since), their browser writes its key, sealed to everyone else who reads it
-  and has enrolled, while that sign-in counts as a step-up. Mailboxes linked from now on get their
-  key with the link. Operator mailboxes, linked from the command line, keep none.
+  the upgrade of 0013 or since), their browser writes its key right after that sign-in, sealed to
+  everyone else who reads it and has enrolled, while the sign-in counts as a step-up; a session
+  only reopened from before writes none, and the console offers to write it on the mailbox, behind
+  a step-up. Mailboxes linked from now on get their key with the link. Operator mailboxes, linked
+  from the command line, keep none.
 - **Members who wait for the key.** Once a mailbox has a key, reading it takes the flag and the
   person's grant. Someone who holds "read" but had not enrolled when the key was written (they have
   not signed in since the upgrade of 0013) sees the mailbox as waiting for its key, and reads
@@ -724,9 +726,11 @@ The release that brings mailbox keys ([`key-scheme.md`](key-scheme.md) sections 
   The same goes for a person you reset (`user password --bootstrap`), on every mailbox that has a
   key: a reader of a team's mailbox gives them the key again, and their own mailboxes they key
   again themselves.
-- **A step-up for keys and grants.** Linking a mailbox, giving "read" to someone, handing on a
-  mailbox's key and writing a mailbox's key need the person's password within the last ten
-  minutes (a sign-in counts); the console asks for it again when it is older.
+- **A step-up for keys and grants.** Linking a mailbox, giving "read" with a grant (on a mailbox
+  that has a key, to someone who has enrolled), handing on a mailbox's key and writing a mailbox's
+  key need the person's password within the last ten minutes (a sign-in counts); the console asks
+  for it again when it is older. "Read" by the flag alone, on a mailbox without a key or to someone
+  who has not enrolled, needs none, nor does any other change of flags.
 - **A script that links a mailbox with an API key** links an operator mailbox, as before, which has
   no key; a person's console sends the key with the link, and a server of this release refuses a
   person's link without one.

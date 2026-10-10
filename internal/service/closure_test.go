@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -850,23 +851,56 @@ func TestConsentFinishingAfterItsOwnerWasDisabledStoresNoGrant(t *testing.T) {
 	}
 }
 
+// duringLogin runs change once, the first time the fixture's mail server
+// accepts a login, while the request that dialled it waits for the answer:
+// after every check a request makes before the login, before the transaction
+// that would store what it brought. The function it returns fails the test
+// unless change ran, and ran without an error.
+func (f *fixture) duringLogin(t *testing.T, change func() error) func() {
+	t.Helper()
+	srv := f.mailServer(t)
+	done := make(chan error, 1)
+	var once sync.Once
+	srv.OnLogin(func() { once.Do(func() { done <- change() }) })
+	t.Cleanup(func() { srv.OnLogin(nil) })
+	return func() {
+		t.Helper()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("the change made during the login: %v", err)
+			}
+		default:
+			t.Fatal("the request never logged in to the mail server")
+		}
+	}
+}
+
 func TestAMailboxAddedByARequestThatOutlivedItsPersonIsNotStored(t *testing.T) {
-	// ana's request authenticated, then spent seconds logging in to her mail
-	// server, and she was disabled meanwhile. The principal it carries is
-	// the one from before; the account must not be created for her anyway.
+	// ana's request authenticated and passed every check made before the
+	// login, then spent seconds logging in to her mail server, and she was
+	// disabled meanwhile. The principal it carries is the one from before;
+	// only the transaction that would store the mailbox sees she is off, and
+	// the account must not be created for her anyway.
 	f := newFixture(t)
 	f.person(t, "owner@example.com", auth.RoleOwner)
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
-	if _, err := f.svc.DisableUser(t.Context(), admin(), service.CloseUserRequest{Email: "ana@example.com"}); err != nil {
-		t.Fatal(err)
-	}
+	req := keyed(ana, f.passwordAccount(t, "late@mail.example"))
+	disabled := f.duringLogin(t, func() error {
+		_, err := f.svc.DisableUser(t.Context(), admin(), service.CloseUserRequest{Email: "ana@example.com"})
+		return err
+	})
 
-	_, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, f.passwordAccount(t, "late@mail.example")))
+	_, err := f.svc.AddAccount(t.Context(), ana, req)
+	disabled()
 	if service.CodeOf(err) != service.CodeUnauthorized {
 		t.Errorf("adding for a disabled person: %v, want unauthorized", err)
 	}
 	if n := f.count(t, `SELECT count(*) FROM accounts WHERE email = 'late@mail.example'`); n != 0 {
 		t.Errorf("an account was created for a disabled person")
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_keys`); n != 0 {
+		t.Errorf("%d mailbox keys stored for a disabled person", n)
 	}
 	// The instance's own mailboxes have no person to check.
 	if _, err := f.svc.AddAccount(t.Context(), admin(), f.passwordAccount(t, "team@mail.example")); err != nil {

@@ -43,6 +43,8 @@ type IMAPServer struct {
 	gmailRefusals bool
 	// unavailable is set by Unavailable.
 	unavailable bool
+	// onLogin is set by OnLogin.
+	onLogin func()
 
 	mem      *imapmemserver.Server
 	memUser  *imapmemserver.User
@@ -221,6 +223,27 @@ func (s *IMAPServer) Unavailable(on bool) {
 	s.unavailable = on
 }
 
+// OnLogin runs fn on every password login the server accepts, before it
+// answers: what a test changes while a client waits on its login, as the
+// world may change while a real server takes seconds to answer. It runs on
+// the server's goroutine, so fn reports its failures by other means than
+// t.Fatal. Nil removes it.
+func (s *IMAPServer) OnLogin(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onLogin = fn
+}
+
+// loggedIn runs the hook OnLogin set, if any.
+func (s *IMAPServer) loggedIn() {
+	s.mu.Lock()
+	fn := s.onLogin
+	s.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
 func (s *IMAPServer) checkToken(user, token string) error {
 	if reason := s.refusal(user, token); reason != nil {
 		if reason.ServerFault() {
@@ -340,6 +363,7 @@ func (s *saslSession) Login(username, password string) error {
 			Type: imap.StatusResponseTypeNo, Code: imap.ResponseCodeAuthenticationFailed, Text: "LOGIN failed.",
 		}
 	}
+	s.owner.loggedIn()
 	return nil
 }
 

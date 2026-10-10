@@ -797,8 +797,16 @@ person's: an API key is `403`.
   beside its writer. The members list (`GET /v1/workspaces/{id}/members`) carries each person's
   `seal_id` and `public_key` for an owner or an admin giving read.
 - **Taking read** — a revoke, a membership disabled or removed, the person disabled, deleted or
-  reset — deletes their grants in the same transaction; `event: access` follows every write of a
-  key or a grant.
+  reset — deletes their grants in the same transaction.
+- **Events.** Every write of a key or a grant has open streams check access again, and `event:
+  access` reaches only the person whose reading the write changed: `"read": true` when the key is
+  supplied to them, or when they write a new key for their own mailbox while they waited for it;
+  `"read": false` when a first key is written with no grant of theirs (they have no account key
+  yet). A write that changes nobody's reading sends nothing: a supply tells the other readers
+  nothing, though their `waiting` changed, nor does a first key tell its writer or those it is
+  sealed to, though `keyless_readers` emptied. A console reads `GET /v1/accounts/{id}/mailbox-key`
+  again after its own writes rather than wait for an event, and again when a write answers `409`:
+  someone else's write came first.
 
 | Situation | Code |
 |---|---|
