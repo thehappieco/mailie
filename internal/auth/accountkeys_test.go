@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -151,7 +152,7 @@ func TestASignUpGivesThePersonTheSealIDOpeningItsInvitationAnswered(t *testing.T
 func TestAChallengeAnswersAnAccountAtItsTargetExactlyAsAnAddressWithoutOne(t *testing.T) {
 	users, db, _ := newUsers(t)
 	nobody, err := users.Challenge(t.Context(), "ana@example.com")
-	if err != nil || nobody.Upgrade || len(nobody.Salt) != 16 || nobody.KDF != auth.DefaultKDF {
+	if err != nil || len(nobody.Salt) != 16 || nobody.KDF != auth.DefaultKDF {
 		t.Fatalf("challenge for nobody = %+v, %v", nobody, err)
 	}
 	// The address's salt before its account exists is the salt it keeps,
@@ -159,7 +160,7 @@ func TestAChallengeAnswersAnAccountAtItsTargetExactlyAsAnAddressWithoutOne(t *te
 	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	for _, typed := range []string{"ana@example.com", " ANA@Example.com "} {
 		got, err := users.Challenge(t.Context(), typed)
-		if err != nil || got.Upgrade || !bytes.Equal(got.Salt, nobody.Salt) || got.KDF != nobody.KDF {
+		if err != nil || !bytes.Equal(got.Salt, nobody.Salt) || got.KDF != nobody.KDF {
 			t.Errorf("challenge for %q with an account = %+v, %v; want %+v", typed, got, err, nobody)
 		}
 	}
@@ -170,7 +171,7 @@ func TestAChallengeAnswersAnAccountAtItsTargetExactlyAsAnAddressWithoutOne(t *te
 		t.Fatal(err)
 	}
 	disabled, err := users.Challenge(t.Context(), "gone@example.com")
-	if err != nil || disabled.Upgrade || bytes.Equal(disabled.Salt, nobody.Salt) {
+	if err != nil || bytes.Equal(disabled.Salt, nobody.Salt) {
 		t.Errorf("challenge for a disabled person = %+v, %v", disabled, err)
 	}
 	if want, _ := keyscheme.DecoySalt(authtest.SaltKey, "gone@example.com"); !bytes.Equal(disabled.Salt, want) {
@@ -178,23 +179,29 @@ func TestAChallengeAnswersAnAccountAtItsTargetExactlyAsAnAddressWithoutOne(t *te
 	}
 }
 
-func TestAChallengeSaysUpgradeOnlyForAnActivePersonWithAnOldPassword(t *testing.T) {
+func TestAChallengeAnswersAPersonWhoNeverEnrolledAsAnAddressWithoutAnAccount(t *testing.T) {
+	// The upgrade's answer left with it (docs/key-scheme.md section 12.7): a
+	// person from before the key scheme who never enrolled, active or not,
+	// is answered the address's target and nothing more, exactly what the
+	// address was answered before they existed.
 	users, db, _ := newUsers(t)
+	before, err := users.Challenge(t.Context(), "old@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
 	authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
 	gone := authtest.NewLegacyUser(t, db, "gone@example.com", auth.RoleMember)
 	if err := users.SetDisabled(t.Context(), gone.ID, true); err != nil {
 		t.Fatal(err)
 	}
-	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	for email, want := range map[string]bool{
-		"old@example.com": true, "gone@example.com": false, "ana@example.com": false, "nobody@example.com": false,
-	} {
+	after, err := users.Challenge(t.Context(), " OLD@example.com")
+	if err != nil || !bytes.Equal(after.Salt, before.Salt) || after.KDF != before.KDF {
+		t.Errorf("the challenge for a person who never enrolled = %+v, %v; want %+v, as before they existed", after, err, before)
+	}
+	for _, email := range []string{"old@example.com", "gone@example.com", "nobody@example.com"} {
 		got, err := users.Challenge(t.Context(), email)
-		if err != nil || got.Upgrade != want {
-			t.Errorf("challenge for %s: upgrade %v (%v), want %v", email, got.Upgrade, err, want)
-		}
-		if target, _ := keyscheme.DecoySalt(authtest.SaltKey, email); !bytes.Equal(got.Salt, target) {
-			t.Errorf("challenge for %s answered a salt that is not the address's", email)
+		if err != nil || !bytes.Equal(got.Salt, mustSalt(t, authtest.SaltKey, email)) || got.KDF != auth.DefaultKDF {
+			t.Errorf("the challenge for %s = %+v, %v; want the address's target", email, got, err)
 		}
 	}
 	if _, err := users.Challenge(t.Context(), "not an address"); !errors.Is(err, auth.ErrInvalidEmail) {
@@ -359,16 +366,16 @@ func TestATicketInAnAnswerFinishesOnlyWithTheAuthKeyThatEarnedIt(t *testing.T) {
 	}
 }
 
-func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testing.T) {
+func TestARecoveryWithATicketThatIsNotOneCostsNoDerivation(t *testing.T) {
 	derivations := countedKDF(t)
 	users, db, _ := newUsers(t)
-	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
-	opened, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	sid := sessionOf(t, users, authtest.SignIn(t, users, "ana@example.com"))
+	begun, err := users.BeginPasswordChange(t.Context(), ana.ID, sid, authtest.AuthKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	upgrade, err := users.LegacySignIn(t.Context(), "old@example.com", authtest.Password)
+	opened, err := users.OpenRecovery(t.Context(), "ana@example.com", authtest.RecoveryProof)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,15 +386,9 @@ func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testi
 			PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
 		})
 	}
-	enrol := func(ticket string) error {
-		_, _, _, err := users.Enrol(t.Context(), ticket, authtest.Enrolment(t), "test")
-		return err
-	}
 	for name, try := range map[string]func() error{
-		"a recovery with a made-up ticket":      func() error { return recover(made) },
-		"a recovery with an enrolment's ticket": func() error { return recover(upgrade.Ticket) },
-		"an enrolment with a made-up ticket":    func() error { return enrol(made) },
-		"an enrolment with a recovery's ticket": func() error { return enrol(opened.Ticket) },
+		"a recovery with a made-up ticket":           func() error { return recover(made) },
+		"a recovery with a password change's ticket": func() error { return recover(begun.Ticket) },
 	} {
 		derivations.Store(0)
 		if err := try(); !errors.Is(err, auth.ErrTicketInvalid) {
@@ -397,12 +398,52 @@ func TestARecoveryOrAnEnrolmentWithATicketThatIsNotOneCostsNoDerivation(t *testi
 			t.Errorf("%s was refused after %d derivations, want none", name, n)
 		}
 	}
-	// Both tickets are still their own.
+	// The recovery's ticket is still its own.
 	if err := recover(opened.Ticket); err != nil {
 		t.Errorf("the recovery's own ticket: %v", err)
 	}
-	if err := enrol(upgrade.Ticket); err != nil {
-		t.Errorf("the enrolment's own ticket: %v", err)
+}
+
+func TestAnEnrolmentTicketLeftFromTheUpgradeFinishesNothing(t *testing.T) {
+	// The schema still admits the upgrade's purpose, 'enrol', which nothing
+	// issues since the upgrade left. One the release before issued, still
+	// within its ten minutes when this one starts, is no ticket of any
+	// ceremony, even for its own person; refusing it costs no derivation;
+	// and it goes with its time.
+	derivations := countedKDF(t)
+	users, db, clock := newUsers(t)
+	old := authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
+	raw := bytes.Repeat([]byte{0x45}, 32)
+	hash := sha256.Sum256(raw)
+	ticket := base64.RawURLEncoding.EncodeToString(raw)
+	if _, err := db.Writer().ExecContext(t.Context(), `INSERT INTO auth_tickets(hash, user_id, session_id, purpose, kdf_salt,
+		kdf_m, kdf_t, kdf_p, proof, created_at, expires_at) VALUES (?, ?, NULL, 'enrol', ?, ?, ?, ?, NULL, ?, ?)`,
+		hash[:], old.ID, mustSalt(t, authtest.SaltKey, "old@example.com"), auth.DefaultKDF.M, auth.DefaultKDF.T,
+		auth.DefaultKDF.P, clock.Unix(), clock.Add(auth.TicketTTL).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	derivations.Store(0)
+	if err := users.FinishRecovery(t.Context(), auth.RecoveryFinish{
+		Ticket: ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: secretOf("x"), KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t), RecoveryWrap: authtest.Wrap(t), RecoveryProof: secretOf("y"),
+	}); !errors.Is(err, auth.ErrTicketInvalid) {
+		t.Errorf("an enrolment ticket finished a recovery: %v", err)
+	}
+	if _, err := users.FinishPasswordChange(t.Context(), old.ID, "", auth.NewPassword{
+		Ticket: ticket, CurrentAuthKey: authtest.AuthKey, AuthKey: secretOf("x"), KDF: auth.DefaultKDF,
+		PasswordWrap: authtest.Wrap(t),
+	}, "test"); !errors.Is(err, auth.ErrTicketInvalid) {
+		t.Errorf("an enrolment ticket finished a password change for its own person: %v", err)
+	}
+	if n := derivations.Load(); n != 0 {
+		t.Errorf("refusing an enrolment ticket cost %d derivations, want none", n)
+	}
+	if n := count(t, db, `SELECT count(*) FROM auth_tickets WHERE purpose = 'enrol'`); n != 1 {
+		t.Fatalf("%d enrolment tickets left, want the one, unused", n)
+	}
+	*clock = clock.Add(auth.TicketTTL)
+	if n, err := users.SweepTickets(t.Context()); err != nil || n != 1 {
+		t.Errorf("SweepTickets = %d, %v; want the expired enrolment ticket", n, err)
 	}
 }
 
@@ -861,56 +902,64 @@ func TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns(t *testing.T) 
 	}
 }
 
-func TestTheUpgradeChecksTheOldPasswordOnceAndNeverAgain(t *testing.T) {
+func TestAPersonWhoNeverEnrolledSignsInAgainOnlyThroughAResetInvitation(t *testing.T) {
+	// The upgrade left (docs/key-scheme.md section 12.7): nothing signs in a
+	// person from before the key scheme who never enrolled, whose old hash
+	// no sign-in checks, and they have no recovery code. The operator's
+	// reset invitation is their way back: it enrols them under the seal id
+	// they always had, writes their account key and clears the old hash.
 	cheapKDF(t)
 	users, db, _ := newUsers(t)
 	old := authtest.NewLegacyUser(t, db, "old@example.com", auth.RoleMember)
-	if _, err := users.LegacySignIn(t.Context(), "old@example.com", "not the password"); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Fatalf("a wrong password: %v", err)
+	for _, key := range []string{authtest.AuthKey, secretOf("anything")} {
+		if _, err := users.Login(t.Context(), "old@example.com", key, "test"); !errors.Is(err, auth.ErrBadCredentials) {
+			t.Fatalf("an auth key signed in a person who never enrolled: %v", err)
+		}
 	}
-	upgrade, err := users.LegacySignIn(t.Context(), " OLD@example.com", authtest.Password)
+	if _, err := users.OpenRecovery(t.Context(), "old@example.com", authtest.RecoveryProof); !errors.Is(err, auth.ErrBadCredentials) {
+		t.Fatalf("a recovery opened for a person who never enrolled: %v", err)
+	}
+	if n := liveSessions(t, db, old.ID); n != 0 {
+		t.Fatalf("%d sessions for a person nothing signs in", n)
+	}
+
+	code, _, err := users.CreateReset(t.Context(), old.ID, false, "cli")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A ticket, not a session, with what the browser binds the new wraps to
-	// and derives under: the person's seal id and the address's target.
-	if n := liveSessions(t, db, old.ID); n != 0 {
-		t.Fatalf("the upgrade's check opened %d sessions", n)
+	opened, err := users.OpenReset(t.Context(), code, "old@example.com")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if upgrade.SealID != old.SealID || !bytes.Equal(upgrade.Salt, mustSalt(t, authtest.SaltKey, "old@example.com")) ||
-		upgrade.KDF != auth.DefaultKDF {
-		t.Fatalf("the upgrade's ticket came with %q, %x, %+v", upgrade.SealID, upgrade.Salt, upgrade.KDF)
+	if opened.SealID != old.SealID || !bytes.Equal(opened.Salt, mustSalt(t, authtest.SaltKey, "old@example.com")) ||
+		opened.KDF != auth.DefaultKDF {
+		t.Fatalf("the reset link opened %q, %x, %+v; want the seal id and the address's target", opened.SealID, opened.Salt,
+			opened.KDF)
 	}
-	ticket := upgrade.Ticket
-	in := authtest.Enrolment(t)
-	token, session, user, err := users.Enrol(t.Context(), ticket, in, "test")
+	in := authtest.EnrolmentWith(t, secretOf("after the reset"), secretOf("its recovery code"))
+	token, session, user, err := users.CompleteReset(t.Context(), code, "old@example.com", in, "test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !user.Enrolled || !bytes.Equal(user.PublicKey, in.PublicKey) || user.SealID != old.SealID || session.AuthenticatedAt.IsZero() {
-		t.Errorf("enrolled %+v, session %+v", user, session)
+		t.Errorf("after the reset: %+v, %+v", user, session)
 	}
 	if _, err := users.AuthenticateSession(t.Context(), token); err != nil {
-		t.Errorf("the enrolment's session: %v", err)
+		t.Errorf("the reset's session: %v", err)
 	}
-	var hash string
-	if err := db.Reader().QueryRowContext(t.Context(), `SELECT password_hash FROM users WHERE id = ?`, old.ID).Scan(&hash); err != nil || hash != "" {
-		t.Errorf("the old hash is still %q (%v)", hash, err)
-	}
-	// From then on the password in clear is refused, as a wrong one is,
-	// and the challenge says nothing of an upgrade.
-	if _, err := users.LegacySignIn(t.Context(), "old@example.com", authtest.Password); !errors.Is(err, auth.ErrBadCredentials) {
-		t.Errorf("the old password was taken again: %v", err)
-	}
-	if c, err := users.Challenge(t.Context(), "old@example.com"); err != nil || c.Upgrade {
-		t.Errorf("challenge after the upgrade = %+v, %v", c, err)
+	var (
+		hash     string
+		enrolled int64
+	)
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT password_hash, zk_enrolled_at FROM users WHERE id = ?`, old.ID).
+		Scan(&hash, &enrolled); err != nil || hash != "" || enrolled == 0 {
+		t.Errorf("after the reset the old hash is %q and enrolled at %d (%v); want none, and enrolled", hash, enrolled, err)
 	}
 	if _, err := users.Login(t.Context(), "old@example.com", in.AuthKey, "test"); err != nil {
-		t.Errorf("the auth key does not sign in: %v", err)
+		t.Errorf("the auth key the reset stored does not sign in: %v", err)
 	}
-	// Used once.
-	if _, _, _, err := users.Enrol(t.Context(), ticket, authtest.Enrolment(t), "test"); !errors.Is(err, auth.ErrTicketInvalid) {
-		t.Errorf("an enrolment ticket worked twice: %v", err)
+	if _, err := users.OpenRecovery(t.Context(), "old@example.com", in.RecoveryProof); err != nil {
+		t.Errorf("the recovery code the reset stored does not open a recovery: %v", err)
 	}
 }
 

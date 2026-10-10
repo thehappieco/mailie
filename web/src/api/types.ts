@@ -39,15 +39,14 @@ export interface User {
   seal_id?: string
   /**
    * The person's account public key, base64url of 32 bytes, written once at
-   * their enrolment; absent before (a person who has not upgraded yet, or
-   * one who signs in only another way). The browser compares the key it
-   * opens with it.
+   * their enrolment; absent before (a person from before the key scheme who
+   * never enrolled, or one who signs in only another way). The browser
+   * compares the key it opens with it.
    */
   public_key?: string
 }
 /**
- * What sign-up, a reset, the upgrade's enrolment and a password change
- * answer: a fresh bearer token. authenticated_at is the session's step-up
+ * What sign-up, a reset and a password change answer: a fresh bearer token. authenticated_at is the session's step-up
  * time (unix seconds; 0 is none), which what the step-up guards needs within
  * the last ten minutes.
  */
@@ -64,14 +63,17 @@ export interface Me { user: User; session: SessionInfo }
 export interface KDFWire { alg: string; m: number; t: number; p: number }
 /** A salt (base64url, 16 bytes) and parameters to derive a password under. */
 export interface Target { salt: string; kdf: KDFWire }
-/** POST /v1/auth/challenge: what an address's password is derived under; upgrade in the release that brings the key scheme only. */
-export interface Challenge extends Target { upgrade?: boolean }
+/**
+ * POST /v1/auth/challenge: what an address's password is derived under, and
+ * nothing more. The release that brought the key scheme also answered
+ * upgrade; a console of this one ignores it, as it ignores any member it does
+ * not know, and sends no password anywhere.
+ */
+export type Challenge = Target
 /** Login's rederive: the account's target, and the ticket that stores the same password under it. */
 export interface Rederive extends Target { ticket: string }
 /** POST /v1/auth/signup/open and /v1/auth/reset/open: the target, and the seal id the wraps are bound to. */
 export interface Opening extends Target { seal_id: string }
-/** POST /v1/auth/upgrade/login: a ticket to enrol with, never a session. */
-export interface UpgradeTicket extends Opening { ticket: string }
 /** POST /v1/auth/password/begin: the current password wrap, the target of the new password, and its ticket. */
 export interface PasswordBegin extends Target { password_wrap: string; ticket: string }
 /** POST /v1/auth/recover/open: the account key under the recovery code, whose it is, the target, and the ticket. */
@@ -696,7 +698,7 @@ function isTarget(v: Fields, strict: boolean): boolean {
 }
 
 export function isChallenge(v: unknown, strict = false): v is Challenge {
-  return record(v) && known(v, ['salt', 'kdf', 'upgrade'], strict) && isTarget(v, strict) && optional(v.upgrade, flag)
+  return record(v) && known(v, ['salt', 'kdf'], strict) && isTarget(v, strict)
 }
 
 export function isRederive(v: unknown, strict = false): v is Rederive {
@@ -705,11 +707,6 @@ export function isRederive(v: unknown, strict = false): v is Rederive {
 
 export function isOpening(v: unknown, strict = false): v is Opening {
   return record(v) && known(v, ['salt', 'kdf', 'seal_id'], strict) && isTarget(v, strict) && isSealIDText(v.seal_id)
-}
-
-export function isUpgradeTicket(v: unknown, strict = false): v is UpgradeTicket {
-  return record(v) && known(v, ['salt', 'kdf', 'seal_id', 'ticket'], strict) && isTarget(v, strict) && isSealIDText(v.seal_id)
-    && isTicket(v.ticket)
 }
 
 export function isPasswordBegin(v: unknown, strict = false): v is PasswordBegin {

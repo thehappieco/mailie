@@ -14,8 +14,11 @@
 // code wraps the account key this browser keeps under a new one, with the
 // password asked for every time and proved in the same request: a session
 // alone, however recent its sign-in, sets neither secret. A person who
-// signed up before the key scheme and has not signed in since has no account
-// key yet: they are asked to sign in again, which upgrades their account.
+// signed up before the key scheme and never enrolled, still signed in from
+// then, has no account key, and their old password no longer signs them in
+// (the upgrade left after the release that brought the scheme): they are
+// told to ask the administrator for a reset link, never to sign in again,
+// which would not work.
 import { computed, provide, ref, shallowRef, watch } from 'vue'
 import { MIN_PASSWORD } from '../api/auth'
 import { enrolled, hasPassword } from '../api/types'
@@ -59,10 +62,10 @@ async function saveProfile() {
   finally { profileBusy.value = false }
 }
 
-/** Whether there is a password to change: not for a person who signs in only another way, nor one not upgraded yet. */
+/** Whether there is a password to change: not for a person who signs in only another way, nor one who never enrolled. */
 const withPassword = computed(() => hasPassword(session.user) && enrolled(session.user))
-/** A password the server still checks itself: the person signs in again to upgrade, which gives them an account key. */
-const notUpgraded = computed(() => hasPassword(session.user) && !enrolled(session.user))
+/** A password from before the key scheme, which no sign-in takes any more: a reset link from the administrator is the way back. */
+const notEnrolled = computed(() => hasPassword(session.user) && !enrolled(session.user))
 const passwordOpen = ref(false)
 const current = ref('')
 const next = ref('')
@@ -185,10 +188,9 @@ async function leave(all: boolean) {
         <AppIcon name="chevron-right" :size="18" />
       </button>
       <p v-if="recoveryProblem && !recoveryOpen" class="alert" role="alert">{{ describe(recoveryProblem) }}</p>
-      <div v-if="notUpgraded" class="security-summary upgrade">
+      <div v-if="notEnrolled" class="security-summary not-enrolled">
         <span class="summary-icon"><AppIcon name="lock" :size="22" /></span>
-        <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Sign in again to finish setting up your account: your password then stays in your browser, and you get a recovery code. Until then you cannot change either.') }}</small></span>
-        <div class="session-actions"><button class="ghost small" type="button" :disabled="leaving" @click="leave(false)"><AppIcon name="logout" :size="16" />{{ t('Sign in again') }}</button></div>
+        <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Your password is from before passwords stayed in the browser, and it no longer signs you in: once this session ends, you need a reset link from the administrator of this server. With it you choose a new password, which stays in your browser, and get a recovery code.') }}</small></span>
       </div>
       <div class="security-summary sessions">
         <span class="summary-icon"><AppIcon name="shield" :size="22" /></span>
@@ -257,7 +259,7 @@ button.security-summary:hover { background: var(--bg-hover); }
 .summary-text { flex: 1; min-width: 0; }
 .summary-text strong { display: block; font-size: 14px; color: var(--text); }
 .summary-text small { display: block; font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.5; }
-.sessions, .upgrade { flex-wrap: wrap; }
+.sessions, .not-enrolled { flex-wrap: wrap; }
 .session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .session-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .success, .alert { margin: 0; }

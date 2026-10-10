@@ -34,8 +34,6 @@ function specific(failure: Failure): string | undefined {
       if (code === 'unauthorized') return t('The email or password is incorrect.')
       if (code === 'bad_request') return t('Enter a valid email address and your password.')
       if (code === 'rate_limited') return t('Too many sign-in attempts. Wait a minute and try again.')
-      // The upgrade's ticket, or a derivation the server's default moved under: both are a new start.
-      if (code === 'not_authorized' || code === 'conflict') return t('This took too long, or something changed on the server. Sign in again.')
       return undefined
     case 'sign-up':
       // Also an invitation into a team made by someone who may not bring people onto the server: it is accepted signed in,
@@ -305,7 +303,6 @@ function general(failure: Failure): string {
     case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'security': return t('This server answered something Mailie does not trust, so nothing more was sent. Tell the administrator of this server.')
-    case 'upgrade_refused': return t('This browser already set up this account so that your password never leaves it, but the server asked for it, so nothing was sent. Tell the administrator of this server: if they restored it from an older copy, they can send you a reset link.')
     case 'password_too_short': return t('The new password needs at least {count} characters.', { count: MIN_PASSWORD })
     case 'password_too_long': return t('The password can have at most 256 characters.')
     case 'password_invalid':
@@ -314,7 +311,7 @@ function general(failure: Failure): string {
     case 'recovery_code': return t('That is not a recovery code. It has 30 letters and digits, in six groups of five.')
     case 'derive_failed': return t('This browser could not process the password. Close other tabs and try again.')
     case 'no_account_key': return t('This browser does not hold your account key. Sign out, sign in again here, and try again.')
-    case 'not_enrolled': return t('Your account has no account key yet. Sign out and sign in again with your password to set it up, then try again.')
+    case 'not_enrolled': return t('Your account has no account key yet. Ask the administrator of this server for a reset link to set one up, then try again.')
     case 'aborted':
     case 'internal':
       return t('Something went wrong on the server. Try again in a moment.')

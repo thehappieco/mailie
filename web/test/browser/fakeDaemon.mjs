@@ -44,12 +44,14 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * (MAIL_MCP_HTTP, MAIL_KEYS_MAY_SEND). personal: the server lists each
  * person's personal workspace (GET /v1/workspaces), as every server with
  * workspaces does, and its owner keeps that workspace's API keys; left out,
- * it answers 404, as a server older than workspaces would. notUpgraded: the
- * people seeded with a password signed up before the key scheme, and their
- * first sign-in is the upgrade's (docs/key-scheme.md section 12.7); otherwise
- * they enrolled with that password, and the daemon holds only what their
- * browser would have sent (an auth key, wraps it cannot open), made the first
- * time anything asks.
+ * it answers 404, as a server older than workspaces would. notEnrolled: the
+ * people seeded with a password signed up before the key scheme and never
+ * enrolled: nothing signs them in, a sign-in failing as a wrong password's,
+ * and a reset link enrols them (the upgrade, docs/key-scheme.md section 12.7,
+ * left after the release that brought the scheme); otherwise they enrolled
+ * with that password, and the daemon holds only what their browser would
+ * have sent (an auth key, wraps it cannot open), made the first time
+ * anything asks.
  *
  * extend(core): an edition's own state and routes, called once with the
  * core's state and helpers. It may return methods (added to the daemon),
@@ -60,7 +62,7 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * keep: { admin, mailboxes: [{ id, reads }] } for a member (admin: an owner
  * or an admin of it; reads: the person reads that mailbox), or null.
  */
-export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, notUpgraded = false, extend } = {}) {
+export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, notEnrolled = false, extend } = {}) {
   if (!origin || !versions?.sync || !versions.actions || !versions.keys) throw new Error('fakeDaemon: origin and versions { sync, actions, keys } are required')
   const users = new Map([['ana@example.test', { id: 'usr_00000000000000a1', seal_id: ANA_SEAL_ID, email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: now() - 86400 * 30, password: PASSWORD, consent: consented ? now() - 86400 : 0, ...(consented ? { consentVersion: versions.sync } : {}), actions: actionsAgreed ? now() - 3 * 86400 : 0, actionsVersion: actionsAgreed }]])
   /** The ceremonies' single-use tickets, and the reset links waiting: { purpose, user, token?, salt }. */
@@ -74,7 +76,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // Account ids have their own counter, past the fixtures below: sharing the
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
-  const calls = { login: 0, challenge: 0, upgrade: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
+  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
   /** Every workspace's API keys as the daemon stores them: never the secret, which only the creating answer carries. */
   const keys = []
   /** The record of each key's sends, by prefix (service.SendStatus): never who a message went to, its subject or its text. */
@@ -188,10 +190,10 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   const targetOf = email => saltOf(`target|${String(email).trim().toLowerCase()}`)
   /**
    * A person seeded with a password enrolled with it, as their browser would
-   * have: made the first time anything asks, unless they have not upgraded.
+   * have: made the first time anything asks, unless they never enrolled.
    */
   const enrolled = async user => {
-    if (!user || user.authKey || !user.password || notUpgraded) return user
+    if (!user || user.authKey || !user.password || notEnrolled) return user
     user.seal_id ??= publicUser(user).seal_id
     user.salt = targetOf(user.email)
     Object.assign(user, await enrolment(user.password, user.salt, user.seal_id))
@@ -249,31 +251,18 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       const fail = (status, code) => json({ code, message: `synthetic ${code}: detail the console must never show` }, status)
       const body = () => { try { return request.postDataJSON() ?? {} } catch { return {} } }
       // The key scheme's ceremonies (docs/key-scheme.md section 12): what
-      // the daemon checks and stores, never a password but the upgrade's.
+      // the daemon checks and stores, never a password.
       if (path.startsWith('/v1/auth/')) calls.auth.push({ path, body: body() })
       const named = method === 'POST' && body().email !== undefined ? await enrolled(users.get(String(body().email).trim().toLowerCase())) : undefined
       if (path === '/v1/auth/challenge' && method === 'POST') {
         calls.challenge++
         if (named?.authKey) return json({ salt: named.salt, kdf: KDF })
-        return json({ salt: targetOf(body().email), kdf: KDF, ...(named?.password ? { upgrade: true } : {}) })
+        return json({ salt: targetOf(body().email), kdf: KDF })
       }
       if (path === '/v1/auth/login' && method === 'POST') {
         calls.login++
         if (!named?.authKey || body().auth_key !== named.authKey) return fail(401, 'unauthorized')
         return json({ ...issue(named), password_wrap: named.passwordWrap })
-      }
-      if (path === '/v1/auth/upgrade/login' && method === 'POST') {
-        calls.upgrade++
-        if (!named?.password || body().password !== named.password) return fail(401, 'unauthorized')
-        return json({ ticket: ticketOf('enrol', named, targetOf(named.email)), seal_id: publicUser(named).seal_id, salt: targetOf(named.email), kdf: KDF })
-      }
-      if (path === '/v1/auth/upgrade/enrol' && method === 'POST') {
-        const ticket = takeTicket(body().ticket, 'enrol')
-        if (!ticket) return fail(403, 'not_authorized')
-        ticket.user.seal_id = publicUser(ticket.user).seal_id
-        store(ticket.user, body(), ticket.salt)
-        endSessions(ticket.user)
-        return json(issue(ticket.user))
       }
       if (path === '/v1/auth/signup/open' && method === 'POST') {
         const { invite, email } = body()

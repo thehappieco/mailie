@@ -114,7 +114,6 @@ func TestAnExtensionSignsPeopleInWhereExternalSignInOnlyTurnsPasswordsOff(t *tes
 		{"/v1/auth/signup", "", signUpBody(t, code)},
 		{"/v1/auth/password/begin", ana, fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey)},
 		{"/v1/auth/stepup", ana, fmt.Sprintf(`{"auth_key":%q}`, authtest.AuthKey)},
-		{"/v1/auth/upgrade/login", "", fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password)},
 	} {
 		a := request(t, http.MethodPost, base+call.path, call.token, call.body)
 		if a.status != http.StatusForbidden || !strings.Contains(a.body, `"code":"not_authorized"`) ||
@@ -137,6 +136,15 @@ func TestTheZeroOptionsLeavePasswordsOn(t *testing.T) {
 	a = request(t, http.MethodPost, base+"/v1/auth/login", "", fmt.Sprintf(`{"email":"ana@example.com","auth_key":%q}`, authtest.AuthKey))
 	if a.status != http.StatusOK || !strings.Contains(a.body, `"has_password":true`) {
 		t.Errorf("POST /v1/auth/login with her password answered %d %q, want her session", a.status, a.body)
+	}
+	// The upgrade's one password in clear left in the release after the
+	// one that brought the key scheme: the daemon knows its routes no more,
+	// and answers them as any path it does not serve.
+	for _, path := range []string{"/v1/auth/upgrade/login", "/v1/auth/upgrade/enrol"} {
+		a = request(t, http.MethodPost, base+path, "", fmt.Sprintf(`{"email":"ana@example.com","password":%q}`, authtest.Password))
+		if a.status != http.StatusNotFound || !strings.Contains(a.body, `"code":"not_found"`) {
+			t.Errorf("POST %s answered %d %q, want the API's 404", path, a.status, a.body)
+		}
 	}
 }
 

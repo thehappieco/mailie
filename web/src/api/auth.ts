@@ -1,15 +1,16 @@
 // /v1/auth: the signed-in person, and the key scheme's ceremonies
 // (docs/key-scheme.md section 12). The password never travels: what does is
-// an auth key derived from it in this browser (crypto/account.ts), with the
-// one exception of the upgrade's old password, in the release that brings
-// the scheme only. The calls made without a bearer token are the ones that
-// start a session or prove a secret for an address.
+// an auth key derived from it in this browser (crypto/account.ts). The
+// upgrade's one password in clear, in the release that brought the scheme,
+// left in the next, and nothing here sends one. The calls made without a
+// bearer token are the ones that start a session or prove a secret for an
+// address.
 
 import { checked, request } from './http'
 import {
-  isChallenge, isLoginReply, isMe, isOpening, isPasswordBegin, isRecoverOpen, isSessionReply, isStepUpReply, isUpgradeTicket, isUser,
+  isChallenge, isLoginReply, isMe, isOpening, isPasswordBegin, isRecoverOpen, isSessionReply, isStepUpReply, isUser,
   type Challenge, type KDFWire, type LoginReply, type Me, type Opening, type PasswordBegin, type RecoverOpen, type SessionReply,
-  type StepUpReply, type UpgradeTicket, type User,
+  type StepUpReply, type User,
 } from './types'
 
 /** Restoring a remembered session waits this long before offering a retry. */
@@ -63,15 +64,6 @@ export async function openRecovery(email: string, recoveryProof: string): Promis
  */
 export async function finishRecovery(input: { ticket: string; current_recovery_proof: string } & Omit<Enrolment, 'public_key'>): Promise<void> {
   await request<void>('/v1/auth/recover/finish', { body: input })
-}
-
-/** The upgrade's one password in clear (docs/key-scheme.md section 12.7), in the release that brings the key scheme only. */
-export async function upgradeLogin(email: string, password: string): Promise<UpgradeTicket> {
-  return checked(await request('/v1/auth/upgrade/login', { body: { email, password } }), isUpgradeTicket)
-}
-
-export async function upgradeEnrol(input: { ticket: string } & Enrolment): Promise<SessionReply> {
-  return checked(await request('/v1/auth/upgrade/enrol', { body: input }), isSessionReply)
 }
 
 export async function me(token: string, signal?: AbortSignal): Promise<Me> {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // A recovery code, shown once (docs/key-scheme.md section 5.6): right after
-// an account is created, recovered, reset or upgraded, and after the person
-// replaced theirs. It is the one way back in without the password, so the
+// an account is created, recovered or reset, and after the person replaced
+// theirs. It is the one way back in without the password, so the
 // dialog stays until the person says they saved it; nothing keeps it, here
 // or on the server, once it closes.
 import { computed, ref } from 'vue'

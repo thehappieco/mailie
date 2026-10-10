@@ -68,7 +68,7 @@ type Target struct {
 // Lifetimes of what the ceremonies hand out.
 const (
 	// TicketTTL is how long a ceremony's ticket lasts: the re-derivation of a
-	// sign-in, a password change, a recovery, the upgrade's enrolment.
+	// sign-in, a password change, a recovery.
 	TicketTTL = 10 * time.Minute
 	// StepUpWindow is how long after a sign-in or a step-up a session may do
 	// what the step-up guards (docs/key-scheme.md section 11).
@@ -85,12 +85,18 @@ const (
 
 // Ticket purposes, as auth_tickets stores them.
 //
+// The schema's CHECK also admits 'enrol', the upgrade's enrolment ticket
+// (docs/key-scheme.md section 12.7), which nothing issues since the upgrade
+// left: the column keeps its constraint, as migrations are never edited,
+// and no ceremony takes that purpose, so one left from the release before
+// finishes nothing, and goes with its ten minutes (SweepTickets) or with its
+// person's next change of secrets (dropTicketsTx).
+//
 //nolint:gosec // G101: the names of ceremonies, not credentials
 const (
 	ticketPassword = "password"
 	ticketRederive = "rederive"
 	ticketRecover  = "recover"
-	ticketEnrol    = "enrol"
 )
 
 var (
@@ -203,51 +209,39 @@ func (u *Users) target(email string) (Target, error) {
 	return Target{Salt: salt, KDF: DefaultKDF}, nil
 }
 
-// Challenge is what a challenge answers for an address.
-type Challenge struct {
-	Target
-	// Upgrade says the address has an active person whose password the
-	// server still checks itself: their next sign-in is the upgrade's
-	// (docs/key-scheme.md section 12.7). Only this release answers it.
-	Upgrade bool
-}
-
 // Challenge answers the salt and parameters a browser derives a password
 // under for an address: an enrolled person's stored ones, and for any other
-// address (unknown, disabled, a person with no password) the address's
-// target, so that an account at its target is answered exactly what its
-// address would be without it. The one exception is Upgrade.
-func (u *Users) Challenge(ctx context.Context, email string) (Challenge, error) {
+// address (unknown, disabled, a person with no password, a person from before
+// the key scheme who never enrolled) the address's target, so that an
+// account at its target is answered exactly what its address would be
+// without it (docs/key-scheme.md section 5.3).
+func (u *Users) Challenge(ctx context.Context, email string) (Target, error) {
 	email, err := NormalizeEmail(email)
 	if err != nil {
-		return Challenge{}, err
+		return Target{}, err
 	}
 	target, err := u.target(email)
 	if err != nil {
-		return Challenge{}, err
+		return Target{}, err
 	}
 	var (
-		status, hash string
-		enrolled     int64
-		salt         []byte
-		m, t, p      int
+		status   string
+		enrolled int64
+		salt     []byte
+		m, t, p  int
 	)
 	err = u.store.Reader().QueryRowContext(ctx,
-		`SELECT status, password_hash, zk_enrolled_at, kdf_salt, kdf_m, kdf_t, kdf_p FROM users WHERE email = ?`, email,
-	).Scan(&status, &hash, &enrolled, &salt, &m, &t, &p)
+		`SELECT status, zk_enrolled_at, kdf_salt, kdf_m, kdf_t, kdf_p FROM users WHERE email = ?`, email,
+	).Scan(&status, &enrolled, &salt, &m, &t, &p)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return Challenge{Target: target}, nil
+		return target, nil
 	case err != nil:
-		return Challenge{}, fmt.Errorf("auth: challenge: %w", err)
-	case status != userActive:
-		return Challenge{Target: target}, nil
-	case enrolled != 0:
-		return Challenge{Target: Target{Salt: salt, KDF: KDF{M: m, T: t, P: p}}}, nil
-	case hash != "":
-		return Challenge{Target: target, Upgrade: true}, nil
+		return Target{}, fmt.Errorf("auth: challenge: %w", err)
+	case status == userActive && enrolled != 0:
+		return Target{Salt: salt, KDF: KDF{M: m, T: t, P: p}}, nil
 	}
-	return Challenge{Target: target}, nil
+	return target, nil
 }
 
 // Rederive is the target a sign-in names when the account is not at it, and
@@ -312,8 +306,9 @@ func (r enrolledRow) signsIn() bool { return r.status == userActive && r.enrolle
 // The shape is the security property, as in SignIn before it: one Argon2id
 // derivation whether or not the address has an account, and one error,
 // ErrBadCredentials, for every way of failing: an unknown address, a disabled
-// person, a person not enrolled (who signs in through the upgrade, or an
-// identity provider), and a wrong key.
+// person, a person not enrolled (one from before the key scheme, whose way
+// back is a reset invitation, or one who signs in through an identity
+// provider), and a wrong key.
 func (u *Users) Login(ctx context.Context, email, authKey, userAgent string) (Login, error) {
 	if err := checkSecretText(authKey); err != nil {
 		return Login{}, err
@@ -883,148 +878,6 @@ func (u *Users) ExternalStepUp(ctx context.Context, userID, sessionID, issuer, s
 			at, sessionID)
 		return err
 	})
-}
-
-// UpgradeTicket is what the upgrade's check of an old password answers: the
-// ticket to enrol with, the person's seal id to bind the wraps to, and the
-// target to derive under, which the ticket carries and Enrol stores.
-type UpgradeTicket struct {
-	Target
-	Ticket string
-	SealID string
-}
-
-// LegacySignIn is the upgrade's one last check of a password in clear
-// (docs/key-scheme.md section 12.7): an active person whom the server still
-// checks a password for, and has not enrolled, gets a ticket to enrol with
-// (Enrol) when the password matches their old hash, under the old rules,
-// with their seal id and the target the ticket carries. It answers no
-// session. Every other case, an enrolled person's included, is
-// ErrBadCredentials after the same derivation: the server never checks a
-// password in clear for anyone who has enrolled. It exists in the release
-// that brings the scheme only.
-func (u *Users) LegacySignIn(ctx context.Context, email, password string) (UpgradeTicket, error) {
-	email = keyscheme.NormaliseAddress(email)
-	var (
-		id, status, hash, sealID string
-		enrolled                 int64
-	)
-	err := u.store.Reader().QueryRowContext(ctx,
-		`SELECT id, status, password_hash, zk_enrolled_at, seal_id FROM users WHERE email = ?`, email,
-	).Scan(&id, &status, &hash, &enrolled, &sealID)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return UpgradeTicket{}, fmt.Errorf("auth: sign in: %w", err)
-	}
-	legacy := err == nil && status == userActive && enrolled == 0 && hash != ""
-	against := dummyPasswordHash
-	if legacy {
-		against = hash
-	}
-	ok, err := verifyPassword(ctx, password, against)
-	if err != nil {
-		return UpgradeTicket{}, err
-	}
-	if !legacy || !ok {
-		return UpgradeTicket{}, ErrBadCredentials
-	}
-	target, err := u.target(email)
-	if err != nil {
-		return UpgradeTicket{}, err
-	}
-	out := UpgradeTicket{Target: target, SealID: sealID}
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		var (
-			standing, current string
-			zk                int64
-		)
-		if err := tx.QueryRowContext(ctx, `SELECT status, password_hash, zk_enrolled_at FROM users WHERE id = ?`, id).
-			Scan(&standing, &current, &zk); err != nil {
-			return fmt.Errorf("auth: sign in: %w", err)
-		}
-		if standing != userActive || current != hash || zk != 0 {
-			return ErrBadCredentials
-		}
-		// Bound to no secret, unlike the other tickets an answer carries:
-		// binding it to the password would send the password a second time,
-		// and a log in front of the server that holds this answer most
-		// likely holds its request too, with the password in it. A residual
-		// of the one release the upgrade exists in
-		// (docs/key-scheme-threat-model.md section 5.12).
-		var err error
-		out.Ticket, err = issueTicketTx(ctx, tx, id, "", ticketEnrol, target, u.now(), nil)
-		return err
-	})
-	if err != nil {
-		return UpgradeTicket{}, err
-	}
-	return out, nil
-}
-
-// Enrol finishes the upgrade: with the ticket LegacySignIn answered, it
-// stores the person's account key, verifiers and wraps under the ticket's
-// target, sets zk_enrolled_at (one way), clears the old password hash, ends
-// every session the person has and starts one whose step-up time is now, in
-// one transaction. From then on the server refuses their password in clear.
-func (u *Users) Enrol(ctx context.Context, ticket string, in Enrolment, userAgent string) (string, Session, User, error) {
-	if err := in.check(); err != nil {
-		return "", Session{}, User{}, err
-	}
-	ticketHash, ok := hashTicket(ticket)
-	if !ok {
-		return "", Session{}, User{}, ErrTicketInvalid
-	}
-	// Checked before the hashes as well as inside the transaction, as a
-	// recovery's.
-	if err := u.requireTicket(ctx, ticketHash, "", "", nil, ticketEnrol); err != nil {
-		return "", Session{}, User{}, err
-	}
-	hashed, err := hashVerifiers(ctx, in.AuthKey, in.RecoveryProof)
-	if err != nil {
-		return "", Session{}, User{}, err
-	}
-	var (
-		token   string
-		session Session
-		user    User
-	)
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		now := u.now()
-		t, err := consumeTicketTx(ctx, tx, ticketHash, now, "", "", nil, ticketEnrol)
-		if err != nil {
-			return err
-		}
-		if t.target.KDF != in.KDF {
-			return ErrKDFNotCurrent
-		}
-		n, err := execCount(ctx, tx, `UPDATE users SET public_key = ?, auth_verifier = ?, kdf_salt = ?, kdf_m = ?,
-			kdf_t = ?, kdf_p = ?, password_wrap = ?, recovery_wrap = ?, recovery_verifier = ?, password_hash = '',
-			zk_enrolled_at = ?, updated_at = ?
-			WHERE id = ? AND status = ? AND zk_enrolled_at = 0 AND password_hash <> ''`,
-			in.PublicKey, hashed.auth, t.target.Salt, t.target.KDF.M, t.target.KDF.T, t.target.KDF.P,
-			in.PasswordWrap, in.RecoveryWrap, hashed.recovery, now.Unix(), now.Unix(), t.userID, userActive)
-		if err != nil {
-			return fmt.Errorf("auth: enrol: %w", err)
-		}
-		if n == 0 {
-			return ErrTicketInvalid
-		}
-		if err := dropTicketsTx(ctx, tx, t.userID); err != nil {
-			return err
-		}
-		if _, err := revokeSessionsTx(ctx, tx, t.userID, now.Unix()); err != nil {
-			return err
-		}
-		token, session, err = startSessionTx(ctx, tx, t.userID, userAgent, now, SessionTTL, now)
-		if err != nil {
-			return err
-		}
-		user, err = scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, t.userID))
-		return err
-	})
-	if err != nil {
-		return "", Session{}, User{}, err
-	}
-	return token, session, user, nil
 }
 
 // Reset is a reset invitation as the operator sees it. The code is not here:

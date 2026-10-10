@@ -65,8 +65,6 @@ whoever controls the hosted service's machine.
   replace a person's public key at any time (section 5.3);
 - seal anyone a grant of a key of its choosing, and write the matching mailbox public key at a new
   epoch, since it controls its own schema (section 5.4);
-- tell a browser that has not seen an account enrol that the account still needs the upgrade, and
-  so receive the password (section 5.5);
 - give two addresses one salt; withhold, corrupt or replay wraps and grants; change a seal id or a
   namespace. Each of these makes something fail to open: a denial of service.
 
@@ -74,6 +72,8 @@ whoever controls the hosted service's machine.
 
 - learn an enrolled person's password: it receives `auth_key`, an HKDF branch of a 64 MiB
   Argon2id of the password, never the password or `K_wrap` (spec §5.4);
+- make the console send a password: no request carries one, whatever a challenge answers, since
+  the upgrade that sent one once left (section 5.5);
 - open a password or recovery wrap, a platform wrap or a grant, or make the browser derive with
   cheap parameters or a short salt: the browser refuses parameters outside the compiled bounds
   before deriving (spec §5.2; `account-go.json#account/derive/refuses/*`);
@@ -226,8 +226,10 @@ wrap and grant.
 **Can:** guess a person's password offline. Each guess costs one Argon2id at the account's
 parameters (64 MiB, three passes by default) and a decryption of the password wrap, or a further
 19 MiB Argon2id against the verifier; the verifier is no cheaper an oracle than the wrap
-(spec §5.7). A weak password falls. Until a person upgrades, the old server-side hash (Argon2id,
-64 MiB) offers the same cost; a backup taken before an upgrade keeps it until the backup expires.
+(spec §5.7). A weak password falls. A person from before phase 3 who never enrolled keeps their
+old server-side hash (Argon2id, 64 MiB), which nothing checks since the upgrade left (spec §12.7)
+but which offers the same cost, until a reset clears it; a backup taken before a person enrolled
+keeps it until the backup expires.
 
 **Cannot:** use a recovery wrap without the code (150 bits), a platform wrap without `sk_p`, or a
 grant without the account key; replay a verifier as an auth key (it is a hash of it).
@@ -312,25 +314,26 @@ reader writes (spec §12.14): the step-up is what keeps a stolen session from do
 nothing. In phase 4 it would matter for what browsers seal to the mailbox (drafts, a search
 index); phase 4 must decide whether browsers remember a mailbox's keys across epochs (spec §17).
 
-### 5.5 The upgrade sends the password once
+### 5.5 The upgrade sent the password once (removed)
 
-A person who signed up before phase 3 sends their password in clear to the server one last time
-(spec §12.7). A browser remembers every address that enrolled or proved a zero-knowledge secret in
-it (signing up, signing in, a password change, a recovery, a new recovery code, a reset, the
-upgrade, a step-up), keyed by the server's origin and the address as the server stores it, so
-another spelling of the address is the same record; it never sends that address's password again.
-A page whose browser refuses storage remembers in its own memory until it is reloaded. A browser
-that did not see the enrolment (a new device, cleared storage, a page reloaded in a browser that
-refuses storage, a browser only ever used before phase 3) cannot tell an account that needs the
-upgrade from a server that pretends it does, and would send it. The memory also refuses an honest
-server: one put back from a copy older than phase 3 and upgraded again asks everyone who enrolled
-in between for the upgrade, and their browsers refuse; each then needs a reset invitation (spec
-§12.6), which the operator's documentation says before it offers that way back. Until the legacy
-route is removed, a challenge also says to anyone that an address has an active account not yet
-upgraded (a disabled one is answered as an unknown address): the `upgrade` answer is an enumeration
-oracle for those accounts, under the sign-in rate limits. And the enrolment ticket the upgrade's
-answer carries is bound to no secret (section 5.12). All three end when the route is removed in a
-later release (spec §17).
+In the release that brought phase 3, a person who signed up before it sent their password in clear
+to the server one last time (spec §12.7). That left three residuals, for that release: a browser
+that had not seen the account enrol (a new device, cleared storage, a page reloaded in a browser
+that refuses storage) could not tell an account that needed the upgrade from a server that
+pretended it did, and would send the password, the browser's memory of enrolled addresses
+defending only the others; the `upgrade` answer told anyone that an address had an active account
+not yet upgraded, an enumeration oracle under the sign-in rate limits; and the enrolment ticket
+the upgrade answered was bound to no secret (section 5.12).
+
+All three ended when the upgrade left, in the next release (spec §17). No route takes a password in
+clear; a challenge answers a person who never enrolled their address's target, as it answers an
+address without an account, and a sign-in of theirs fails as any other does, after the same work;
+and the console sends no password in any request, whatever a challenge answers, so it keeps no
+memory of enrolled addresses either, and drops the one an older console kept. What remains of
+those people is section 4.7's old hash, until a reset clears it, and the reset itself (spec
+§12.6), their way back: the operator issues it out of band, as for a person who lost everything
+(section 5.8). A server that serves its own console can still capture any password typed into it
+(section 5.2); that was always so, and is not the upgrade's.
 
 ### 5.6 Offline guessing from a copy
 
@@ -408,14 +411,13 @@ The same log may hold the tickets other answers carry, and they are bound the sa
 recovery's, in `recover/open`'s answer beside the recovery wrap, finishes only with the recovery
 proof that opened it, sent again (spec §12.4): whoever saw only that answer cannot set a password
 and a recovery code of their own, sign in as the person and lock them out. The upgrade's enrolment
-ticket, in `upgrade/login`'s answer, is bound to no secret (spec §12.7, step 3): whoever saw that
-answer could, within its 10 minutes and before the person's browser uses it (at once, or once the
-person has chosen a new password when the old one cannot be used as it is), enrol the account
-under a password and an account key of their own and hold it for good; the person's browser would
-then see its enrolment refused. Binding the ticket to the password would send the password a
-second time (section 5.5), and a log in front of the server that holds this answer most likely
-holds its request too, with the password in clear, which already gives the account away. A
-residual of the one release the upgrade exists in.
+ticket, in `upgrade/login`'s answer in the release that brought phase 3, was bound to no secret
+(spec §12.7): whoever saw that answer could, within its 10 minutes and before the person's browser
+used it, enrol the account under a password and an account key of their own and hold it for good.
+Binding it to the password would have sent the password a second time, and a log in front of the
+server that held that answer most likely held its request too, with the password in clear. A
+residual of that one release, which ended with the upgrade (section 5.5): nothing issues such a
+ticket now, and one left in a database finishes nothing.
 
 ## 6. Where each defence is tested
 
@@ -441,23 +443,25 @@ enforces them. The server's half of sections 11 and 12.1 to 12.7 is tested in
 another id. identity, a silent sign-in, the current auth key a new recovery code needs, a ticket
 that finishes only with the auth key that earned it, a recovery's only with the recovery proof that
 opened it, a ticket that is not one refused before any hash, a recovery opened while its code is
-replaced, the upgrade's one-way flag, written-once columns, the targets of salts and parameters, the
-reset and its last-reader guard), `internal/auth/users_test.go` (an invitation's address matched
-byte for byte, never folded), `internal/api/accountkeys_test.go` (no route answers a wrap to a
-session alone, nor lets one set a recovery code right after its sign-in, the challenge, the
-ceremonies over REST and their limits) and `internal/store/migrate_thirteen_test.go`. The console's
+replaced, the one-way enrolment flag, written-once columns, the targets of salts and parameters,
+the reset and its last-reader guard, a person who never enrolled answered as an address without an
+account and enrolled only by a reset, and an enrolment ticket left from the upgrade finishing
+nothing), `internal/auth/users_test.go` (an invitation's address matched byte for byte, never
+folded; every way a sign-in fails, a person who never enrolled included, looking the same),
+`internal/api/accountkeys_test.go` (no route answers a wrap to a session alone, nor lets one set a
+recovery code right after its sign-in, the challenge, the ceremonies over REST and their limits,
+the upgrade's routes not found) and `internal/store/migrate_thirteen_test.go`. The console's
 half is tested in `web/test/account.spec.ts`, with the real derivation and wraps: no password in any
-request but the upgrade's one, and never for an address the browser saw enrol, under any spelling,
-nor in a page that saw it enrol in a browser that refuses storage; the step-up judged by the
+request, whatever a challenge answers, an `upgrade` member included; the step-up judged by the
 server's clock, not the browser's; a wrap that does not open after an accepted auth key, and
 parameters outside the bounds, refused as security errors; every enrolment bound to the seal id the
 server answered; the re-derivation, the reset's target, the two-step password change, recovery
-finished with the proof that opened it, the password before a new recovery code; an address
-remembered as soon as the server accepts a proof, a recovery or a change that fails after that
-included, and an enrolment whose answer names another key or whose key the vault refuses; and the
-vault, opened only for the person named, wiped at sign-out and when no session is valid, and kept
-for the page when the browser refuses its write. The sign-in form never says a password is not sent
-while the upgrade may send it (`web/test/signIn.page.spec.ts`). The server's half of sections 8, 9
+finished with the proof that opened it, the password before a new recovery code; a person who
+never enrolled refused as a wrong password is, and enrolled by a reset link; and the vault, opened
+only for the person named, wiped at sign-out and when no session is valid, kept for the page when
+the browser refuses its write, and rid of the enrolled addresses an older console kept, with their
+store. The sign-in form says the password is never sent while it works, which holds since no
+ceremony sends one (`web/test/signIn.page.spec.ts`). The server's half of sections 8, 9
 and 12.11 to 12.15 is tested in `internal/service/mailboxkeys_test.go` (the step-up guarding every
 key and grant written, the first key of a keyless mailbox included, and nothing else; who may give
 "read" with a grant and who may supply the key; the first key's grants, exactly its readers'; a

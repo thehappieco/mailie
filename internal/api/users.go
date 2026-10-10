@@ -19,9 +19,9 @@ import (
 // guessed at when the request names one, by its address typed or as the
 // signed-in person: one bucket per account, keyed by its address, whichever
 // route spends it (allowSessionSignIn). The challenge proves nothing and
-// hashes nothing, and spends only the address's: it is the one answer that
-// can say an account exists (the upgrade's, in this release), and the
-// address bucket is what bounds asking it.
+// hashes nothing, and spends only the address's: it says nothing of whether
+// an account exists, but for an account off its target (docs/key-scheme.md
+// section 5.3), and the address bucket is what bounds asking it.
 
 func (h *Handler) challenge(q *request) {
 	var req service.ChallengeRequest
@@ -211,43 +211,6 @@ func (h *Handler) stepUp(q *request) {
 		return
 	}
 	q.finish(http.StatusOK, stepped)
-}
-
-func (h *Handler) upgradeLogin(q *request) {
-	var req service.UpgradeLoginRequest
-	if err := q.decode(&req); err != nil {
-		q.fail(err)
-		return
-	}
-	if !q.allowSignIn(emailSubject(req.Email)) {
-		return
-	}
-	ticket, err := h.Service.UpgradeLogin(q.ctx(), req)
-	if err != nil {
-		if service.CodeOf(err) == service.CodeUnauthorized {
-			h.metricAuthFailure("password")
-		}
-		q.fail(err)
-		return
-	}
-	q.write(http.StatusOK, ticket)
-}
-
-func (h *Handler) upgradeEnrol(q *request) {
-	var req service.UpgradeEnrolRequest
-	if err := q.decode(&req); err != nil {
-		q.fail(err)
-		return
-	}
-	if !q.allowSignIn("") {
-		return
-	}
-	session, err := h.Service.UpgradeEnrol(q.ctx(), req, q.r.UserAgent())
-	if err != nil {
-		q.fail(err)
-		return
-	}
-	q.write(http.StatusOK, session)
 }
 
 func (h *Handler) openReset(q *request) {

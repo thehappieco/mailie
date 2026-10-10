@@ -6,7 +6,7 @@ import { dropInvitation } from '../state/invitation'
 import { pendingOAuthReturn } from '../state/oauthReturn'
 import { dropReset } from '../state/resetLink'
 import { session } from '../state/session'
-import { finishUpgrade, openResetLink, recover, resetPassword, signIn, signUp, type PendingUpgrade } from '../state/account'
+import { openResetLink, recover, resetPassword, signIn, signUp } from '../state/account'
 import { edition } from '../edition'
 import { describe } from '../ui/errors'
 import { t } from '../ui/i18n'
@@ -29,19 +29,19 @@ import PasswordInput from './PasswordInput.vue'
 //
 // The password never leaves this page (docs/key-scheme.md): every form here
 // derives from it in the browser (state/account.ts), which takes a few
-// seconds by design. Besides signing in and up: recovering an account with
-// its recovery code, a reset link from the operator (#reset=…), and the
-// one-time upgrade of an account made before the key scheme, which asks for
-// a new password only when the old one cannot be used as it is. That upgrade
-// is the one exception: a sign-in the server answers with it sends the old
-// password, once, so the sign-in form never says a password is never sent;
-// the forms that choose a new password do, and it always holds there.
+// seconds by design, and says so while it works, the sign-in form too: since
+// the one-time upgrade of an account made before the key scheme left (it sent
+// the old password once, in the release that brought the scheme only), no
+// form sends a password, whatever the server answers. Besides signing in and
+// up: recovering an account with its recovery code, and a reset link from
+// the operator (#reset=…), which is also the way back for an account made
+// before the key scheme that never enrolled.
 const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | null }>()
 const legal = edition().legal
 const teams = edition().teams === true
 const editionSignIn = edition().signIn
 
-type Mode = 'sign-in' | 'sign-up' | 'recover' | 'reset' | 'upgrade'
+type Mode = 'sign-in' | 'sign-up' | 'recover' | 'reset'
 const mode = ref<Mode>(props.reset ? 'reset' : props.invitation ? 'sign-up' : 'sign-in')
 const busy = ref(false)
 const problem = ref<Failure | null>(null)
@@ -54,8 +54,6 @@ const code = ref('')
 /** A recovery that went through, whose sign-in after it did not: the new password works. */
 const recovered = ref(false)
 const returning = pendingOAuthReturn()
-/** An upgrade whose old password cannot be used as it is: the person chooses a new one (mode upgrade). */
-let pending: PendingUpgrade | null = null
 /** What the reset link answered when the page opened it: the target and the seal id the new password is bound to. */
 let resetOpening: Opening | undefined
 
@@ -65,7 +63,7 @@ const title = computed(() => {
   switch (mode.value) {
     case 'sign-up': return t('Create your account')
     case 'recover': return t('Recover your account')
-    case 'reset': case 'upgrade': return t('Choose a new password')
+    case 'reset': return t('Choose a new password')
     default: return t('Sign in')
   }
 })
@@ -73,7 +71,7 @@ const action = computed(() => {
   switch (mode.value) {
     case 'sign-up': return busy.value ? t('Creating your account…') : t('Create your account')
     case 'recover': return busy.value ? t('Recovering your account…') : t('Recover and sign in')
-    case 'reset': case 'upgrade': return busy.value ? t('Saving…') : t('Save and sign in')
+    case 'reset': return busy.value ? t('Saving…') : t('Save and sign in')
     default: return busy.value ? t('Signing in…') : t('Sign in')
   }
 })
@@ -98,7 +96,6 @@ function switchTo(next: Mode) {
   password.value = ''
   confirm.value = ''
   code.value = ''
-  pending = null
   email.value = next === 'sign-up' ? props.invitation?.email ?? '' : email.value
 }
 
@@ -131,12 +128,8 @@ async function submit(event: SubmitEvent) {
         mode.value = 'sign-in'
         recovered.value = true
       }
-    } else if (mode.value === 'upgrade' && pending) {
-      await finishUpgrade(pending, password.value)
-      pending = null
     } else {
-      const upgrade = await signIn(email.value, password.value)
-      if (upgrade) { pending = upgrade; mode.value = 'upgrade' }
+      await signIn(email.value, password.value)
     }
   } catch (error) {
     problem.value = failure(op, error)
@@ -169,7 +162,6 @@ async function submit(event: SubmitEvent) {
         <p v-if="mode === 'sign-up'" class="sub">{{ t('This invitation is for the address below. Choose your name and a password to finish.') }}</p>
         <p v-else-if="mode === 'recover'" class="sub">{{ t('Enter the recovery code you saved when you created your account, and choose a new password. You get a new recovery code too.') }}</p>
         <p v-else-if="mode === 'reset'" class="sub">{{ t('This link from the administrator of this server gives the address below a new password and a new recovery code. The old ones stop working.') }}</p>
-        <p v-else-if="mode === 'upgrade'" class="sub">{{ t('Your password has characters this server no longer accepts. Choose a new one to finish signing in.') }}</p>
         <p v-else class="sub">{{ t('Your email accounts, connected in one place. Sign in to continue.') }}</p>
 
         <p v-if="session.notice === 'expired' && mode === 'sign-in' && !recovered" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
@@ -186,7 +178,7 @@ async function submit(event: SubmitEvent) {
           <div class="field">
             <label for="email">{{ t('Email') }}</label>
             <input id="email" v-model="email" name="username" type="email" autocomplete="username" required autocapitalize="off"
-              spellcheck="false" inputmode="email" :readonly="(mode === 'sign-up' && !!invitation?.email) || mode === 'reset' || mode === 'upgrade'" :disabled="busy" />
+              spellcheck="false" inputmode="email" :readonly="(mode === 'sign-up' && !!invitation?.email) || mode === 'reset'" :disabled="busy" />
             <p v-if="mode === 'sign-up' && invitation?.email" class="hint">{{ t('The invitation only works for this address.') }}</p>
           </div>
           <div v-if="mode === 'recover'" class="field">
@@ -209,13 +201,13 @@ async function submit(event: SubmitEvent) {
             <span v-if="busy" class="loading-spinner inline" aria-hidden="true" />
             {{ action }}
           </button>
-          <p v-if="busy" class="hint working" role="status">{{ choosing ? t('Your password is processed here, in this browser, and never sent. This takes a few seconds.') : t('This takes a few seconds.') }}</p>
+          <p v-if="busy" class="hint working" role="status">{{ t('Your password is processed here, in this browser, and never sent. This takes a few seconds.') }}</p>
           <p v-if="mode === 'sign-up' && legal?.signUp" class="consent"><component :is="legal.signUp" /></p>
         </form>
 
         <div class="auth-footer">
           <button v-if="mode === 'sign-in'" class="linkish" type="button" @click="switchTo('recover')">{{ t('Forgot your password?') }}</button>
-          <button v-if="mode === 'sign-up' || mode === 'recover' || mode === 'reset' || mode === 'upgrade'" class="linkish" type="button" @click="switchTo('sign-in')">{{ mode === 'sign-up' ? t('I already have an account') : t('Back to sign in') }}</button>
+          <button v-if="mode === 'sign-up' || mode === 'recover' || mode === 'reset'" class="linkish" type="button" @click="switchTo('sign-in')">{{ mode === 'sign-up' ? t('I already have an account') : t('Back to sign in') }}</button>
           <button v-else-if="invitation" class="linkish" type="button" @click="switchTo('sign-up')">{{ t('Use my invitation') }}</button>
           <p v-else class="auth-footnote"><AppIcon name="info" :size="16" />{{ t('Accounts are created by invitation. Ask the administrator of this server for a link.') }}</p>
           <p v-if="legal?.signInFooter" class="auth-legal"><component :is="legal.signInFooter" /></p>

@@ -27,9 +27,9 @@ type Handler struct {
 	// and only failed authentications spend from the tight bucket, so polling
 	// with a good credential is never throttled and guessing one is.
 	Limits *ratelimit.Auth
-	// SignInLimits meters sign-in, sign-up, password changes, recovery,
-	// step-up and the upgrade, where every attempt is a guess at a person's
-	// secret and costs an Argon2id derivation, and the challenge.
+	// SignInLimits meters sign-in, sign-up, password changes, recovery and
+	// step-up, where every attempt is a guess at a person's secret and costs
+	// an Argon2id derivation, and the challenge.
 	SignInLimits *ratelimit.Auth
 	Metrics      *obs.Metrics
 	Log          *slog.Logger
@@ -60,8 +60,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// Signing in is the other way in without a credential, which is why it
 	// has its own, much tighter limits. The password never comes: the
 	// browser derives an auth key under what the challenge answers
-	// (docs/key-scheme.md section 12), but for the upgrade's one password in
-	// clear, which exists in the release that brings the key scheme only.
+	// (docs/key-scheme.md section 12). The upgrade's one password in clear
+	// (/v1/auth/upgrade/login and /enrol) left in the release after the one
+	// that brought the key scheme: its routes are not found now.
 	mux.Handle("POST /v1/auth/challenge", h.public(opts(), h.challenge))
 	mux.Handle("POST /v1/auth/login", h.public(opts(), h.signIn))
 	mux.Handle("POST /v1/auth/signup/open", h.public(opts(), h.openSignUp))
@@ -70,8 +71,6 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/auth/reset", h.public(opts(), h.completeReset))
 	mux.Handle("POST /v1/auth/recover/open", h.public(opts(), h.openRecovery))
 	mux.Handle("POST /v1/auth/recover/finish", h.public(opts(), h.finishRecovery))
-	mux.Handle("POST /v1/auth/upgrade/login", h.public(opts(), h.upgradeLogin))
-	mux.Handle("POST /v1/auth/upgrade/enrol", h.public(opts(), h.upgradeEnrol))
 	// The rest of /v1/auth is for a signed-in person. The scope named here
 	// admits any credential; the service refuses keys, so the answer says
 	// why rather than only that.

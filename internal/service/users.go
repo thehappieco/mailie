@@ -82,14 +82,12 @@ type ChallengeRequest struct {
 }
 
 // Challenge is the salt (base64url, 16 bytes) and the parameters to derive
-// under. Upgrade says the address has a person whose password the server
-// still checks itself, once: their sign-in is the upgrade's (POST
-// /v1/auth/upgrade/login). It exists in the release that brings the key
-// scheme only.
+// under, and nothing more: the release that brought the key scheme also
+// answered "upgrade" for a person who had not enrolled, which left with the
+// upgrade in the next (docs/key-scheme.md section 12.7).
 type Challenge struct {
-	Salt    string `json:"salt"`
-	KDF     KDF    `json:"kdf"`
-	Upgrade bool   `json:"upgrade,omitempty"`
+	Salt string `json:"salt"`
+	KDF  KDF    `json:"kdf"`
 }
 
 // Enrolment is what a browser sends to enrol a person: the auth key and the
@@ -238,30 +236,6 @@ type StepUp struct {
 	AuthenticatedAt int64 `json:"authenticated_at"`
 }
 
-// UpgradeLoginRequest is the upgrade's one password in clear
-// (docs/key-scheme.md section 12.7), for a person who signed up before the
-// key scheme. It exists in the release that brings the scheme only.
-type UpgradeLoginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
-}
-
-// UpgradeTicket is what the old password proves: a ticket to enrol with,
-// not a session, the person's seal id to bind the wraps to, and the target
-// to derive under, which the enrolment stores.
-type UpgradeTicket struct {
-	Ticket string `json:"ticket"`
-	SealID string `json:"seal_id"`
-	Salt   string `json:"salt"`
-	KDF    KDF    `json:"kdf"`
-}
-
-// UpgradeEnrolRequest enrols the person the ticket names.
-type UpgradeEnrolRequest struct {
-	Ticket string `json:"ticket"`
-	Enrolment
-}
-
 // ResetOpenRequest checks a reset invitation before its person chooses a
 // password: the code and the address its link carries.
 type ResetOpenRequest struct {
@@ -316,9 +290,9 @@ var errBadKeyMaterial = E(CodeBadRequest,
 
 // Challenge answers the salt and the parameters a browser derives a password
 // under for an address (docs/key-scheme.md section 5.3): an enrolled person's
-// own, and for any other address the address's target, so the answer does
-// not say whether it has an account; but for the upgrade's, which does, in
-// this release only.
+// own, and for any other address, a person from before the key scheme who
+// never enrolled included, the address's target, so the answer does not say
+// whether it has an account.
 func (s *Service) Challenge(ctx context.Context, req ChallengeRequest) (Challenge, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return Challenge{}, err
@@ -327,7 +301,7 @@ func (s *Service) Challenge(ctx context.Context, req ChallengeRequest) (Challeng
 	if err != nil {
 		return Challenge{}, fromUsers(err, "answering the challenge failed")
 	}
-	return Challenge{Salt: b64(c.Salt), KDF: presentKDF(c.KDF), Upgrade: c.Upgrade}, nil
+	return Challenge{Salt: b64(c.Salt), KDF: presentKDF(c.KDF)}, nil
 }
 
 // OpenSignUp checks an invitation as signing up will, before its person
@@ -365,8 +339,9 @@ func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent strin
 }
 
 // Login signs a person in with an auth key. A wrong key, an address with no
-// account, a disabled person, a person who has not enrolled and a person with
-// no password all get the same answer, after the same amount of work. Refused
+// account, a disabled person, a person who has not enrolled (one from before
+// the key scheme, whose way back is a reset invitation) and a person with no
+// password all get the same answer, after the same amount of work. Refused
 // outright where people sign in only through an extension.
 func (s *Service) Login(ctx context.Context, req LoginRequest, userAgent string) (Login, error) {
 	if err := s.passwordsInUse(); err != nil {
@@ -516,42 +491,6 @@ func (s *Service) SessionAddress(ctx context.Context, p Principal) (string, erro
 		return "", fromUsers(err, "reading the account failed")
 	}
 	return user.Email, nil
-}
-
-// UpgradeLogin is the upgrade's one check of a password in clear, for a
-// person who signed up before the key scheme: it answers a ticket to enrol
-// with, never a session. An enrolled person's password, like every other
-// way of failing, is answered as a wrong one. It exists in the release that
-// brings the key scheme only.
-func (s *Service) UpgradeLogin(ctx context.Context, req UpgradeLoginRequest) (UpgradeTicket, error) {
-	if err := s.passwordsInUse(); err != nil {
-		return UpgradeTicket{}, err
-	}
-	ticket, err := s.users.LegacySignIn(ctx, req.Email, req.Password)
-	if err != nil {
-		return UpgradeTicket{}, fromSecret(err, CodeUnauthorized, "email or password is wrong", "signing in failed")
-	}
-	return UpgradeTicket{
-		Ticket: ticket.Ticket, SealID: ticket.SealID, Salt: b64(ticket.Salt), KDF: presentKDF(ticket.KDF),
-	}, nil
-}
-
-// UpgradeEnrol enrols the person the upgrade's ticket names: from then on the
-// server refuses their password in clear. Their other sessions end, and this
-// browser is signed in.
-func (s *Service) UpgradeEnrol(ctx context.Context, req UpgradeEnrolRequest, userAgent string) (Session, error) {
-	if err := s.passwordsInUse(); err != nil {
-		return Session{}, err
-	}
-	in, err := enrolment(req.Enrolment)
-	if err != nil {
-		return Session{}, err
-	}
-	token, session, user, err := s.users.Enrol(ctx, req.Ticket, in, userAgent)
-	if err != nil {
-		return Session{}, fromUsers(err, "enrolling failed")
-	}
-	return presentSession(token, session, user), nil
 }
 
 // OpenReset checks a reset invitation and answers what its new password is

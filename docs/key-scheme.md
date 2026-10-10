@@ -5,8 +5,9 @@
   version byte, a new label or a new kind, never in place, and the vectors of a published version
   keep passing. Section 12 is normative for what each side sends, checks and stores; the route
   names it gives are informative until the server serves them, when [`console.md`](console.md) and
-  the contract fixtures name them. The server serves those of sections 12.1 to 12.7 under
-  `/v1/auth/` (Appendix C).
+  the contract fixtures name them. The server serves those of sections 12.1 to 12.6 under
+  `/v1/auth/` (Appendix C); the upgrade of section 12.7 it served in the release that brought this
+  scheme only.
 - Built on: The Happie Co's kit, `github.com/thehappieco/kit` v0.7.0 in Go and
   `@thehappieco/kit` 0.7.0 in TypeScript. Its `SPEC.md` is cited as "kit §n". This document is
   Mailie's profile of it (kit §3): labels, headers, magic, kinds and additional data, and the
@@ -35,8 +36,9 @@ key. This document fixes:
 - the mailbox key pairs and their epochs (section 8), the grants (section 9), the envelope domain
   and kinds they are sealed under (section 10);
 - the step-up that giving access and writing keys ask for (section 11), and the ceremonies
-  (section 12): signing up, signing in, recovery, the upgrade of existing accounts, linking a
-  mailbox, giving and taking "read", mailboxes without a key, and revocation;
+  (section 12): signing up, signing in, recovery, the reset, the upgrade of existing accounts
+  (served in one release, history since), linking a mailbox, giving and taking "read", mailboxes
+  without a key, and revocation;
 - what phase 3 does **not** protect (section 15).
 
 **Phase 3 hides nothing from the server.** The index stays in clear in the server's database, and
@@ -163,13 +165,13 @@ no control character, at most 256 code points, then UTF-8. So one password typed
 one key (`account-go.json#account/derive/nfc` and `account-go.json#account/derive/nfd-with-no-break-spaces`
 have the same outputs), and Go and every browser prepare it to the same bytes.
 
-- A password being **presented** (sign-in, a re-derivation, step-up, the upgrade of section 12.7)
-  has no minimum length. A refused one is `password`/`rejected`
+- A password being **presented** (sign-in, a re-derivation, step-up, and the upgrade of section
+  12.7 while it existed) has no minimum length. A refused one is `password`/`rejected`
   (`account-go.json#account/derive/refuses/control-character`, `account-go.json#account/derive/refuses/257-code-points`).
 - A **new** password (sign-up, a change, a recovery, a reset) has at least 12 code points, checked
   by the console before anything is derived (`prepareNewPassword`; Go
-  `platform.PrepareNewPassword`). Today's server-side rule is 10 characters; the upgrade keeps a
-  shorter existing password, as a presented one.
+  `platform.PrepareNewPassword`). The server-side rule before this scheme was 10 characters; the
+  upgrade kept a shorter existing password, as a presented one, in the one release it existed.
 
 ### 5.2 KDF parameters and bounds
 
@@ -216,19 +218,21 @@ and the sign-in look an account up by `normalise(email)` too.
 
 - **An account's target** is `salt` of its current address with the server's current default
   parameters (section 5.2). Every ceremony that stores a verifier stores the target and nothing
-  else: enrolment (sections 12.1, 12.6, 12.7), a password change and a recovery (12.3, 12.4), and
+  else: enrolment (sections 12.1 and 12.6, and 12.7 while it existed), a password change and a
+  recovery (12.3, 12.4), and
   the re-derivation of a sign-in (12.2, step 5), each in a browser that holds the password. So an
   account leaves its target only when the target moves (its address changes, or the default is
   raised) and returns to it at the person's next sign-in, and a server never moves an account to
   parameters other than its default.
 - A **challenge** answers an enrolled account's stored salt and parameters, and, for any other
-  address (unknown, disabled, a person with no password), `salt(a)` and the default parameters. An
-  account at its target is answered exactly what its address would be answered without the
-  account, so a challenge does not say whether an address has an account, nor when one was made:
-  the salt an address gets before its account exists is the salt it keeps. Two windows are the
-  exceptions, and both end: the `upgrade` answer (section 12.7), which says an account has not
-  upgraded, until the legacy route is removed; and an account not yet at its target, until the
-  person's next sign-in (threat model, sections 5.5 and 5.9).
+  address (unknown, disabled, a person with no password, a person from before this scheme who never
+  enrolled), `salt(a)` and the default parameters, and nothing more. An account at its target is
+  answered exactly what its address would be answered without the account, so a challenge does not
+  say whether an address has an account, nor when one was made: the salt an address gets before its
+  account exists is the salt it keeps. One window is the exception, and it ends: an account not yet
+  at its target, until the person's next sign-in (threat model, section 5.9). The release that
+  brought this scheme had a second, the `upgrade` answer (section 12.7), which said an account had
+  not enrolled; it left in the next release (threat model, section 5.5).
 - A server can still give two addresses one salt; the browser cannot tell (kit §13).
 
 ### 5.4 Derivation
@@ -346,7 +350,7 @@ shown once and replaced at every recovery.
 | `users.auth_verifier` | the auth key, hashed | see below |
 | `users.password_wrap`, `users.recovery_wrap` | section 5.5 | `CheckAccountWrapShape` |
 | `users.recovery_verifier` | the recovery proof, hashed | see below |
-| `users.zk_enrolled_at` | when the person enrolled in this scheme | one way: never set back to 0 (section 12.7) |
+| `users.zk_enrolled_at` | when the person enrolled in this scheme | one way: never set back to 0 (sections 12.6 and 12.7) |
 
 - **The verifiers** are Argon2id PHC strings of the auth key's and the proof's text under the
   server's own parameters, those of an API key's secret (`internal/auth`, `keyParams`: 19 MiB,
@@ -356,8 +360,13 @@ shown once and replaced at every recovery.
   offline oracle (kit §11.7), so the server's hash adds no cost to a guess and its job is to stop a
   copy of the database from being replayed as an auth key. It is the mechanism the server already
   uses for every secret it checks, and costs a sign-in 19 MiB instead of today's 64.
-- **An unknown address, a disabled person and a person without a password** are checked against a
-  dummy verifier, so a miss costs what a wrong auth key costs and answers the same.
+- **An unknown address, a disabled person, a person without a password and a person who never
+  enrolled** are checked against a dummy verifier, so a miss costs what a wrong auth key costs and
+  answers the same.
+- **An old password hash** (`users.password_hash`) is what a person from before this scheme who
+  never enrolled still has. Nothing checks it since the upgrade left (section 12.7); the column
+  stays, as a migration is never edited, it still says the person has a password (`has_password`),
+  and the reset (section 12.6) clears it. An enrolled row has none (a CHECK).
 - **The password wrap is handed out only after the auth key is verified**, and the recovery wrap
   only after the recovery proof is: someone without either gets a salt, never a wrap to attack
   offline. Only a copy of the database gives one (threat model, "A backup thief").
@@ -689,7 +698,8 @@ actions when that time is more than 10 minutes old, or later than the server's o
   a recovery code a session could set would be a password it could set (section 12.4).
 - **What sets the time, self-hosted:** a ceremony in which the server verified the person's own
   secret and opened the session (signing up, section 12.1; signing in, 12.2; a reset invitation,
-  12.6; the upgrade's enrolment, 12.7), and a step-up; on the server's clock.
+  12.6; in the release that brought this scheme, the upgrade's enrolment, 12.7), and a step-up; on
+  the server's clock.
 - **What sets the time, hosted:** id.'s `auth_time`, from the userinfo of the access token the
   sign-in (section 12.8) or the step-up presented, never the server's clock; an `auth_time` later
   than the server's now is refused. A silent sign-in (identity only, answered from id.'s session,
@@ -765,13 +775,13 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    (`salt(normalise(email))`, the salt the browser derived with, since `salt` normalises), that
    seal id and `zk_enrolled_at` set. The answer carries the session, whose step-up time is now
    (section 11), the seal id and the public key.
-4. The browser records the address as enrolled as soon as this answers, before it checks that the
-   answer names the public key it made (section 12.7, step 2), keeps the account key in the vault,
-   and shows the recovery code once.
+4. The browser checks that the answer names the public key it made (an answer that names another
+   is a security error, and its session is ended), keeps the account key in the vault, and shows
+   the recovery code once.
 
 ### 12.2 Signing in (self-hosted)
 
-1. `challenge {email}` → `{salt, kdf}` (or `upgrade`, section 12.7), for `normalise(email)`.
+1. `challenge {email}` → `{salt, kdf}`, for `normalise(email)`, and nothing more (section 5.3).
 2. The browser checks `kdf` and the salt (section 5.2), derives, and sends `login {email, auth_key}`.
 3. The server looks the person up by `normalise(email)` and verifies the auth key (a dummy verifier
    for every other case). It answers the session, whose step-up time is now (section 11),
@@ -781,8 +791,8 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    keeps SHA-256 of the 32 bytes; stored as SHA-256).
 4. The browser opens the wrap with `K_wrap` under `seal_id` and `public_key` (section 5.5): a wrap
    that does not open is a security error, not a wrong password, since the auth key was accepted.
-   It keeps the account key in the vault. It records the address as enrolled as soon as the server
-   has accepted the auth key, whatever fails after it (section 12.7).
+   It keeps the account key in the vault. Whatever the challenge answered, it sends nothing but
+   the auth key: no password goes to the server in any ceremony.
 5. **Re-derivation.** If the answer named a target, the browser prepares the same password again,
    as presented, checks the target's parameters and salt (section 5.2), derives under them, wraps
    the account key under the new `K_wrap`, and sends `password/finish {ticket, current_auth_key,
@@ -803,8 +813,7 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    current wrap and the account's target, answered only to a current auth key verified in this
    request, under the sign-in rate limits; the ticket is single use, 10 minutes, bound to the
    person, the session and that current auth key (SHA-256 of its 32 bytes, kept with the ticket),
-   stored as SHA-256. A session alone gets nothing (section 5.7). The browser records the address
-   as enrolled once this answers (section 12.7).
+   stored as SHA-256. A session alone gets nothing (section 5.7).
 3. The browser opens the wrap with the current `K_wrap` (and, when the vault holds the account
    key, compares the two), prepares the new password as new (section 5.1), checks the target's
    parameters and salt, derives under them, and wraps the same account key under the new
@@ -823,8 +832,7 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    ticket}`, for `normalise(email)` and only against the stored proof (a dummy for every other
    case); `salt` and `kdf` are the account's target (section 5.3); `ticket` is single use,
    10 minutes, bound to the person and to the recovery proof just verified, of which it keeps
-   SHA-256 of the 32 bytes, and stored as SHA-256. The browser records the address as enrolled
-   once this answers (section 12.7).
+   SHA-256 of the 32 bytes, and stored as SHA-256.
 2. The browser opens the recovery wrap with `K_rwrap` (section 5.6), prepares a new password as
    new, checks the target's parameters and salt, derives under them, wraps the same account key
    under the new `K_wrap`, makes a **new** recovery code and wraps the account key under it.
@@ -868,7 +876,9 @@ the server replaces `users.public_key` (the one replacement of a written-once ke
 and wraps, and **deletes every grant sealed to the old key** and
 every platform wrap of the person, and ends their sessions. Their personal mailboxes then open
 only once they write them a new key (section 12.12); a team's mailboxes, on which they keep the
-flag, once a reader supplies them the key (section 12.13).
+flag, once a reader supplies them the key (section 12.13). The reset is also the way back for a
+person from before this scheme who never enrolled (section 12.7): it enrols them, under the seal
+id they always had, and clears their old password hash.
 
 **The last reader.** Deleting a person's grants takes "read" from them on every mailbox that has a
 key (section 12.13), and a team mailbox left with no reader can never be given a key again
@@ -889,55 +899,47 @@ them a new root (they lost both id.'s password and its recovery code, which by d
 the root opened), is the same replacement, started at sign-in; what starts it is left to the
 hosted service's step of phase 3 (an open question of section 17).
 
-### 12.7 The upgrade of existing self-hosted accounts
+### 12.7 The upgrade of existing self-hosted accounts (removed)
 
-People who signed up before phase 3 have a password hashed on the server and no account key. Their
-password reaches the server **one last time**:
+People who signed up before phase 3 had a password hashed on the server and no account key. The
+release that brought this scheme let each of them send their password to the server **one last
+time**, at their first sign-in on it, and enrol; the next release removed it, as section 17 had
+settled (Appendix C). This section is history: what the upgrade was, when it left, and what stays.
 
-1. Their challenge answers `{salt: salt(email), kdf: default, upgrade: true}`. Only an **active**
-   person who has a server-side password hash and `zk_enrolled_at = 0` gets `upgrade`; a disabled
-   person, like an unknown address, gets the plain answer of section 5.3.
-2. The browser keeps a memory of the addresses that have enrolled, keyed by the server's origin
-   and `normalise(address)` (section 2), so that every spelling the server takes for one account
-   is one record (IndexedDB, not wiped at sign-out; and the page's own memory, never cleared, so
-   that a browser that refuses IndexedDB still remembers until a reload). It records an address
-   in every ceremony in this browser in which the account enrolled or the server accepted a
-   zero-knowledge proof for it, as soon as the server has accepted it, whatever fails after it: signing up, signing in, changing the password, a recovery,
-   replacing the recovery code, a reset invitation, this upgrade, and a step-up (sections 11, 12.1
-   to 12.6). **If it remembers this address as enrolled, it refuses an `upgrade` answer and never
-   sends the password**; it tells the person to tell the server's administrator, since a server
-   put back from a copy older than its enrolment asks this honestly, and a reset invitation is
-   then the way back (section 12.6).
-   Otherwise it sends `upgrade/login {email, password}` over TLS, as every sign-in did before
-   phase 3. The console's tests hold the memory to another spelling of a remembered address
-   (another case, surrounding white space) being refused too.
-3. The server checks the password against the old hash, under the old rules and rate limits, and
-   answers a single-use enrolment ticket (10 minutes, bound to the person, stored as SHA-256), the
-   person's seal id, and the target the ticket carries (the salt of step 1 and the default
-   parameters), not a session. Unlike the tickets of sections 12.2 to 12.4, it is bound to no
-   secret: binding it to the password would send the password a second time, and whoever logs
-   this answer in front of the server most likely logs its request too, with the password in
-   clear. Whoever saw only the answer could enrol the account under a password of their own
-   before the person's browser uses the ticket; a residual for the one release the route exists
-   (threat model, section 5.12).
-4. The browser prepares the same password as a presented one (no new minimum). If the profile
-   refuses it (a control character, more than 256 code points, section 5.1), the person chooses a
-   new one, prepared as new. It derives under the target of step 3, makes the account key and a
-   recovery code, seals the wraps under the seal id of step 3, and sends `upgrade/enrol {ticket,
-   auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`.
-5. In one transaction the server stores section 5.7's columns, sets `zk_enrolled_at` (one way: the
-   schema refuses setting it back), **clears the old password hash**, ends the person's other
-   sessions and opens one, whose step-up time is now (section 11).
-6. The browser records the address as enrolled as soon as this answers, before it checks that the
-   answer names the public key it made (step 2), keeps the account key in the vault, and shows the
-   recovery code.
+**What it was.** Their challenge answered `{salt: salt(email), kdf: default, upgrade: true}`, only
+for an active person with a server-side password hash and `zk_enrolled_at = 0`. Their browser,
+unless it remembered the address as enrolled (a memory of every address that enrolled or proved a
+zero-knowledge secret in it, keyed by the server's origin and `normalise(address)`, kept in
+IndexedDB and not wiped at sign-out), sent `upgrade/login {email, password}` over TLS. The server
+checked the password against the old hash, under the old rules and the sign-in limits, and
+answered a single-use enrolment ticket (10 minutes, bound to the person and to no secret, stored as
+SHA-256), the person's seal id and the address's target, never a session. The browser prepared the
+same password as presented (or a new one, when the profile refused it), derived under that target,
+made the account key and a recovery code, sealed the wraps under that seal id, and sent
+`upgrade/enrol {ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`.
+In one transaction the server stored section 5.7's columns, set `zk_enrolled_at` (one way), cleared
+the old hash, ended the person's other sessions and opened one whose step-up time was now.
 
-From then on the server refuses a password in clear for the person, answering as for a wrong one,
-and the browser never sends one to an address it remembers. The legacy route and `upgrade` exist in
-one release only, the one that brings this scheme, and are removed in the next, announced in the
-release notes (`docs/self-hosting.md`); a person who has not signed in by then gets a reset
-invitation from the operator (section 12.6). After that no browser sends a password at all. The residual, a server that pretends an enrolled account is not
-to a browser that does not remember it, is in the threat model.
+**When it left.** In the release after the one that brought this scheme (2026-10-10). The routes
+`/v1/auth/upgrade/login` and `/v1/auth/upgrade/enrol` are not found, the challenge answers
+`{salt, kdf}` and nothing more, and the server checks no password in clear. The console sends no
+password at all, whatever a challenge answers (an `upgrade` member is ignored, as any member it
+does not know), so the memory of enrolled addresses, which defended only the upgrade, is gone too:
+the browser vault's database (section 7) drops its store, and the addresses in it, at its next
+open.
+
+**What stays.** A person who never signed in during that release has not enrolled. Their old hash
+stays in `users.password_hash`, which no sign-in checks (section 5.7); the schema is unchanged, with
+no migration: the column, the one-way trigger on `zk_enrolled_at`, and `auth_tickets`' CHECK, which
+still admits the purpose `enrol`, stay as migration 0013 wrote them. Nothing issues an `enrol`
+ticket now and no ceremony takes one, so one left from the release before finishes nothing and goes
+with its ten minutes. Such a person is answered and refused exactly as an address without an
+account: the challenge answers the address's target (section 5.3), and every sign-in fails as a
+wrong one does, after one derivation against the dummy verifier (section 5.7). Their way back is
+the operator's reset invitation (section 12.6, `mailserver user password --bootstrap --email
+ADDRESS`), which enrols a person who was not and clears the old hash; the release notes
+(`docs/self-hosting.md`) say so. With no password sent anywhere, the residuals the upgrade left
+(threat model, sections 5.5 and 5.12) ended with it.
 
 ### 12.8 Signing in on the hosted service
 
@@ -1027,7 +1029,7 @@ Mailboxes that exist when phase 3 is deployed have no key, and are read as today
   and otherwise asks for a step-up first; it never writes one on the page load of an older
   session.
 - **After.** From the first key on, "read" is the flag and a grant. A member who held the flag but
-  had no public key yet (they had not upgraded) sees "waiting for the key" until a reader supplies
+  had no public key yet (they had not enrolled) sees "waiting for the key" until a reader supplies
   it (section 12.13).
 
 ### 12.15 Operator mailboxes and API keys
@@ -1151,13 +1153,14 @@ Go `internal/keyscheme/server.go` and, in `mailie.ts`, the console's helpers.
 The kit modules underneath: Go `account`, `seal`, `hpke`, `platformwrap`, `profiles/mailie`,
 `profiles/platform`, `jcs`, `vectors`; TypeScript `@thehappieco/kit/account`, `/seal`, `/hpke`,
 `/platformwrap`, `/profiles/mailie`, `/profiles/platform/core`, `/browserAccount`, `/jcs`,
-`/bytes`. The server's half of sections 11 and 12.1 to 12.7 is migration 0013
+`/bytes`. The server's half of sections 11 and 12.1 to 12.6 (and of 12.7, in the release that
+brought this scheme) is migration 0013
 (`internal/store/migrations/0013_account_keys.sql`), `internal/auth/accountkeys.go` (the
 ceremonies), `internal/service/users.go` and `internal/api/users.go` (the routes), the salt key in
 `internal/store/saltkey.go`, and the reset invitation of `mailserver user password --bootstrap`.
 The console's half is `web/src/crypto/account.ts` (the derivations and wraps of each ceremony),
 `web/src/state/account.ts` (its requests, in order), `web/src/state/accountVault.ts` (the browser
-vault and the memory of enrolled addresses, sections 7 and 12.7) and the sign-in screens
+vault, section 7) and the sign-in screens
 (`web/src/components/SignInView.vue`, `RecoveryCodeDialog.vue`, `StepUpDialog.vue`), held by
 `web/test/account.spec.ts`. The server's half of the mailbox keys and the grants (sections 8, 9 and
 12.11 to 12.15) is migration 0014 (`internal/store/migrations/0014_mailbox_keys.sql`), the one
@@ -1198,7 +1201,7 @@ depends on it. Those settled on 2026-10-09 say so.
    the owner first.
 5. **The upgrade's oracle.** Settled by the owner: the legacy route and the `upgrade` answer exist in
    one release only and leave in the next (section 12.7), with the release notes saying so; the
-   oracle lasts that long.
+   oracle lasts that long. They left in the next release (2026-10-10, Appendix C).
 6. **What browsers remember of keys (phase 4).** Whether browsers pin the public keys they seal
    grants to (threat model, section 5.3) and remember a mailbox's keys across epochs (section 5.4):
    the defences left against a server or a database writer that substitutes a person's key or
@@ -1485,3 +1488,38 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   - **Left to phase 4**: a member whose grant exists but does not open (one forged by whoever held
     a session in its window) cannot be supplied, since the supply needs no grant at the current
     epoch; phase 4, when grants open content, decides how such a grant is replaced.
+- Version 1, the upgrade removed (2026-10-10). No byte changed. The upgrade of section 12.7 existed
+  in the release that brought this scheme only, as the owner settled with this document's first
+  version (section 17), and leaves in the next; section 12.7 is its history now. What the code had
+  to choose, the narrowest choice, recorded here:
+  - **The server.** `POST /v1/auth/upgrade/login` and `/enrol` are gone (not found, as any path the
+    daemon does not serve), with their service and the old hash's check (`LegacySignIn`, `Enrol`,
+    and the 64 MiB Argon2id of a password in clear, its dummy and its byte limit): the server checks
+    no password in clear anywhere. The challenge answers `{salt, kdf}`, never `upgrade`, and a
+    person who never enrolled is answered the address's target, as an address without an account
+    is; every sign-in of theirs fails with the one error, after one derivation against the dummy
+    verifier (`TestEveryWayASignInFailsLooksTheSame`,
+    `TestAChallengeAnswersAPersonWhoNeverEnrolledAsAnAddressWithoutAnAccount`, and over REST
+    `TestAPersonWhoNeverEnrolledSignsInOverRESTOnlyAfterAResetLink`). The hashing slots of
+    people's secrets, two at once, now hold 19 MiB each at most.
+  - **The schema stays.** No migration: `users.password_hash` keeps a person's old hash until a
+    reset clears it, read only for `has_password`; `auth_tickets`' CHECK still admits the purpose
+    `enrol`, which nothing issues and no ceremony takes, so a ticket the release before issued
+    finishes nothing and expires (`TestAnEnrolmentTicketLeftFromTheUpgradeFinishesNothing`).
+  - **The way back** for a person who never enrolled is the reset invitation of section 12.6, which
+    already enrolled a person who was not and cleared an old hash
+    (`TestAPersonWhoNeverEnrolledSignsInAgainOnlyThroughAResetInvitation`); the release notes
+    (`docs/self-hosting.md`) tell operators so, and the console tells a person still signed in from
+    before the scheme to ask the administrator for one.
+  - **The console** sends no password in any request: its sign-in derives and sends the auth key
+    whatever the challenge answers, an `upgrade` member included, which it ignores; its strict
+    contract check refuses one. The memory of enrolled addresses (section 12.7) defended only the
+    upgrade, so it is removed with its IndexedDB store: the browser vault's database moves to
+    version 2, whose first opening deletes the `enrolled` store and keeps the vault and its
+    record; a page of the release before, still open, then finds the database newer than it asks
+    for and keeps the account key in its own memory only, until it is reloaded. Sections 12.1 to
+    12.4 no longer record an address, and the error `upgrade_refused` is gone. The sign-in form,
+    which never said a password stays in the browser while the upgrade could send one, now says so
+    as the forms that choose a new password do. The earlier entries of this appendix that name the
+    upgrade's routes, its ticket and the console's memory describe the release that brought this
+    scheme.

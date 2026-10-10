@@ -1,8 +1,8 @@
 // The sign-in card as a person uses it, on a page (test/dom.ts), against the
 // in-memory server half of test/accountServer.ts: what it says while it
-// works, which is never that the password stays here while it may be sent,
-// and what it says when a recovery went through but the sign-in after it did
-// not.
+// works, that the password stays here, which holds now that no sign-in
+// sends one, and what it says when a recovery went through but the sign-in
+// after it did not.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { click, fill, find, flush, submit, words, type FakeElement } from './dom'
@@ -11,7 +11,7 @@ import SignInView from '../src/components/SignInView.vue'
 import { enrol } from '../src/crypto/account'
 import { recoveryCode } from '../src/state/account'
 import { accountServer, DEFAULT_KDF, targetOf, type Stored } from './accountServer'
-import { failure, stubPage } from './support'
+import { failure, json, stubPage } from './support'
 
 const NEVER_SENT = 'Your password is processed here, in this browser, and never sent.'
 
@@ -42,32 +42,35 @@ afterEach(() => {
 })
 
 describe('the sign-in card', { timeout: 30_000 }, () => {
-  it('never says the password is not sent while a sign-in may send it, for the upgrade', async () => {
+  it('says the password is never sent while a sign-in works, and sends only its auth key, whatever the challenge answers', async () => {
     const server = accountServer()
     const old: Stored = {
       id: 'usr_00000000000000c3', email: 'old@example.test', name: 'Old', sealID: '6b0d2f4e-9a1c-4e7b-8d35-0c2a7f9e1b64', salt: '',
-      kdf: DEFAULT_KDF, authKey: '', passwordWrap: '', recoveryWrap: '', recoveryProof: '', legacyPassword: 'my old password',
+      kdf: DEFAULT_KDF, authKey: '', passwordWrap: '', recoveryWrap: '', recoveryProof: '',
     }
     server.people.set(old.email, old)
-    // The upgrade's answer held while the page waits for it: the password has just been sent.
-    let release: (error: Error) => void = () => {}
-    server.inFlight.set('/v1/auth/upgrade/login', () => new Promise((_, reject) => { release = reject }))
+    // A person from before the key scheme who never enrolled, and a challenge as the release that brought the scheme answered it.
+    server.refuseNext.set('/v1/auth/challenge', () => json({ salt: targetOf(old.email), kdf: DEFAULT_KDF, upgrade: true }))
+    // The sign-in's answer held while the page waits for it.
+    let release: () => void = () => {}
+    server.inFlight.set('/v1/auth/login', () => new Promise<void>(resolve => { release = resolve }))
     mounted = mount(SignInView, { invitation: null })
     await flush()
     await fill(find('input[name=username]'), old.email)
     await fill(find('input[name=password]'), 'my old password')
     await submit(find('form'))
-    await vi.waitFor(() => expect(server.paths()).toContain('/v1/auth/upgrade/login'))
+    await vi.waitFor(() => expect(server.paths()).toContain('/v1/auth/login'))
     await flush()
-    expect(server.calls.at(-1)!.body.password).toBe('my old password')
-    expect(words()).toContain('This takes a few seconds.')
-    expect(words()).not.toContain(NEVER_SENT)
-    release(new Error('the network went away'))
-    await vi.waitFor(() => expect(find('button[type=submit]')!.disabled).toBe(false))
+    expect(words()).toContain(NEVER_SENT)
+    expect(server.paths()).toEqual(['/v1/auth/challenge', '/v1/auth/login'])
+    expect(server.calls.some(call => JSON.stringify(call.body).includes('my old password'))).toBe(false)
+    release()
+    await vi.waitFor(() => expect(find('[role=alert]')).not.toBeNull())
+    expect(words(find('[role=alert]')!)).toBe('The email or password is incorrect.')
   })
 
   it('says a recovery is done, and to sign in with the new password, when the sign-in after it fails', async () => {
-    const made = await enrol('correct horse battery staple', { salt: targetOf('ana@example.test'), kdf: DEFAULT_KDF, seal_id: 'b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4' }, 'new')
+    const made = await enrol('correct horse battery staple', { salt: targetOf('ana@example.test'), kdf: DEFAULT_KDF, seal_id: 'b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4' })
     const e = made.enrolment
     const server = accountServer()
     server.people.set('ana@example.test', {

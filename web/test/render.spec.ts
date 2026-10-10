@@ -310,20 +310,23 @@ describe('what the console renders', () => {
     expect(signup.match(/minlength="12"/g)).toHaveLength(2)
   })
 
-  it('offers an enrolled person their password and recovery code, and asks one not upgraded to sign in again instead', async () => {
+  it('offers an enrolled person their password and recovery code, and sends one who never enrolled to the administrator for a reset link', async () => {
     signIn()
     const enrolledHTML = text(await render(OpenAccount))
     expect(enrolledHTML).toContain('Change the password you sign in with')
     expect(enrolledHTML).toContain('Recovery code Replace the code that lets you back in if you forget your password')
-    const { public_key: _, ...notUpgraded } = ana
-    signIn(notUpgraded)
+    expect(enrolledHTML).not.toContain('reset link')
+    // Still signed in from before the key scheme: the old password signs in no more, and nothing asks them to sign in again.
+    const { public_key: _, ...notEnrolled } = ana
+    signIn(notEnrolled)
     const legacyHTML = text(await render(OpenAccount))
     expect(legacyHTML).not.toContain('Change the password you sign in with')
     expect(legacyHTML).not.toContain('Recovery code')
-    expect(legacyHTML).toContain('Sign in again to finish setting up your account')
-    signIn({ ...notUpgraded, has_password: false })
+    expect(legacyHTML).toContain('it no longer signs you in: once this session ends, you need a reset link from the administrator of this server')
+    expect(legacyHTML).not.toContain('Sign in again')
+    signIn({ ...notEnrolled, has_password: false })
     const externalHTML = text(await render(OpenAccount))
-    expect(externalHTML).not.toContain('Sign in again to finish setting up your account')
+    expect(externalHTML).not.toContain('reset link')
     expect(externalHTML).not.toContain('Recovery code')
   })
 

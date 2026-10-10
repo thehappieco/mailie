@@ -332,7 +332,7 @@ func TestADisabledPersonIsRefusedAnExternalSignInAndNothingIsLinked(t *testing.T
 	}
 }
 
-func TestAPasswordlessPersonCannotSignInWithAnyPassword(t *testing.T) {
+func TestAPasswordlessPersonCannotSignInWithAnyAuthKey(t *testing.T) {
 	users, db, _ := newUsers(t)
 	_, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
 	var hash string
@@ -350,11 +350,9 @@ func TestAPasswordlessPersonCannotSignInWithAnyPassword(t *testing.T) {
 		return argon2.IDKey(password, salt, 1, 8, threads, keyLen)
 	})
 	verifierMemory, verifierPasses := auth.VerifierCostForTest()
-	passwordMemory, passwordPasses := auth.PasswordCostForTest()
 	// Every one refused, as an unknown address is: one error, and exactly one
 	// derivation at the full cost, so the answer does not tell a guesser
-	// that this address signs in another way. Neither an auth key nor, at
-	// the upgrade, a password in clear.
+	// that this address signs in another way.
 	for _, key := range []string{authtest.AuthKey, base64.RawURLEncoding.EncodeToString(make([]byte, 32))} {
 		calls = nil
 		if _, err := users.Login(t.Context(), "cy@example.com", key, "test"); !errors.Is(err, auth.ErrBadCredentials) {
@@ -362,15 +360,6 @@ func TestAPasswordlessPersonCannotSignInWithAnyPassword(t *testing.T) {
 		}
 		if len(calls) != 1 || calls[0].memory != verifierMemory || calls[0].passes != verifierPasses {
 			t.Errorf("an auth key: derivations %+v, want exactly one at m=%d t=%d", calls, verifierMemory, verifierPasses)
-		}
-	}
-	for _, password := range []string{"", " ", authtest.Password, "no password hashes to this value", "mailie-dummy-sal"} {
-		calls = nil
-		if _, err := users.LegacySignIn(t.Context(), "cy@example.com", password); !errors.Is(err, auth.ErrBadCredentials) {
-			t.Errorf("password %q was taken for an upgrade: %v", password, err)
-		}
-		if len(calls) != 1 || calls[0].memory != passwordMemory || calls[0].passes != passwordPasses {
-			t.Errorf("password %q: derivations %+v, want exactly one at m=%d t=%d", password, calls, passwordMemory, passwordPasses)
 		}
 	}
 	// Nor is there a current password to prove for a change, and the
@@ -382,8 +371,9 @@ func TestAPasswordlessPersonCannotSignInWithAnyPassword(t *testing.T) {
 	if _, err := users.BeginPasswordChange(t.Context(), cy.ID, p.SessionID, authtest.AuthKey); !errors.Is(err, auth.ErrBadCredentials) {
 		t.Errorf("a password change began by proving none: %v", err)
 	}
-	if c, err := users.Challenge(t.Context(), "cy@example.com"); err != nil || c.Upgrade {
-		t.Errorf("challenge = %+v, %v; want the plain answer", c, err)
+	if c, err := users.Challenge(t.Context(), "cy@example.com"); err != nil ||
+		!bytes.Equal(c.Salt, mustSalt(t, authtest.SaltKey, "cy@example.com")) || c.KDF != auth.DefaultKDF {
+		t.Errorf("challenge = %+v, %v; want the address's target", c, err)
 	}
 }
 

@@ -65,9 +65,6 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		calls["finish a recovery"] = f.svc.FinishRecovery(ctx, service.RecoverFinishRequest{})
 		calls["replace the recovery code"] = f.svc.ReplaceRecovery(ctx, owner, service.RecoveryRequest{})
 		_, calls["step up with the password"] = f.svc.StepUp(ctx, owner, service.StepUpRequest{AuthKey: authtest.AuthKey})
-		_, calls["the upgrade's sign-in"] = f.svc.UpgradeLogin(ctx, service.UpgradeLoginRequest{
-			Email: "owner@example.com", Password: authtest.Password})
-		_, calls["the upgrade's enrolment"] = f.svc.UpgradeEnrol(ctx, service.UpgradeEnrolRequest{Enrolment: wireEnrolment(t)}, "test")
 		_, calls["a reset invitation"] = f.svc.CompleteReset(ctx, service.ResetRequest{
 			Email: "owner@example.com", Enrolment: wireEnrolment(t)}, "test")
 		_, calls["invite to the instance, signed in"] = f.svc.CreateInvite(ctx, owner, service.InviteRequest{Email: "x@example.com"})

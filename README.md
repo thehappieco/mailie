@@ -229,7 +229,9 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   invitation** from the operator, with the daemon stopped: `mailserver user password --bootstrap
   --email X` prints a single-use link with which they choose a new password and get a new account
   key; their sessions end and what was granted to the old key goes. It refuses, without `--force`,
-  the last person who can read a team mailbox. No route sets or resets a password.
+  the last person who can read a team mailbox. No route sets or resets a password. It is also the
+  way back for a person who signed up before the key scheme and never signed in on the release that
+  brought it ([`docs/self-hosting.md`](docs/self-hosting.md#upgrades)).
 
 [`docs/console.md`](docs/console.md) covers the console, its REST API, consent, events and the
 OAuth flows in detail.

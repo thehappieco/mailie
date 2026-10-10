@@ -74,9 +74,9 @@ failure, never something to create from here. The fixtures of routes the open co
 `test/browser/console.mjs` opens the open console in a real Chromium with every `/v1` call answered
 by an in-memory fake daemon and the Google and Microsoft pages intercepted. It walks sign-in and
 sign-up by invitation with the key scheme (no password ever in a request; the recovery code shown
-once; a password change; the password asked for again to replace the recovery code), the one-time
-upgrade of an account made before it (and its refusal for an address that enrolled here), recovery
-with the code and a reset link, an IMAP mailbox, iCloud (a refused password, an app-specific one, a
+once; a password change; the password asked for again to replace the recovery code), an account
+made before it that never enrolled (refused, its password never sent) enrolled by a reset link,
+recovery with the code the reset showed, an IMAP mailbox, iCloud (a refused password, an app-specific one, a
 custom domain), the loopback and web OAuth flows, a Gmail consent that came back without the
 mailbox, a folder listing the mail server refuses, removal (with the mailbox's id repeated in
 `confirm`, as the daemon requires), the account section and an expired session, on desktop and
@@ -94,8 +94,8 @@ request to the message or sending routes, which its fake daemon does not impleme
 `QA_ONLY=console|keys-scheme|sync|actions|keys|storage` runs one group.
 
 The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and sessions, the key
-scheme's ceremonies with the people it seeds enrolled under their password, or not upgraded yet
-with `notUpgraded`, their enrolment made by `test/browser/keyScheme.mjs`, mailboxes
+scheme's ceremonies with the people it seeds enrolled under their password, or never enrolled
+with `notEnrolled`, their enrolment made by `test/browser/keyScheme.mjs`, mailboxes
 and their OAuth flows, sync and the event stream, actions consent, a workspace's API keys and the
 ones a person created, `GET /v1/me/mcp`, storage) and the helpers the QA scripts share. Another
 edition's QA imports it and adds its own routes and state through `extend` (the cloud app's adds

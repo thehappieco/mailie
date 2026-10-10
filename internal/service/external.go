@@ -20,9 +20,8 @@ import (
 // A daemon whose people sign in only that way (Deps.ExternalSignInOnly)
 // refuses every route that signs in with a password, signs up or accepts an
 // invitation, changes a password, or creates an invitation: every route of
-// the key scheme's password and recovery code (docs/key-scheme.md section 12)
-// and the upgrade's. Its step-up is the provider's (MarkExternalStepUp,
-// ExternalStepUp).
+// the key scheme's password and recovery code (docs/key-scheme.md section
+// 12). Its step-up is the provider's (MarkExternalStepUp, ExternalStepUp).
 
 // ExternalSignIn is a person an identity provider vouched for, as an
 // extension presents them once it has done the provider's protocol.

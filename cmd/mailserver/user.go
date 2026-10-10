@@ -314,7 +314,10 @@ func closeBody(req service.CloseUserRequest) map[string]any {
 
 // A person who lost both their password and their recovery code gets a reset
 // invitation from the operator, with the daemon stopped: `user password
-// --bootstrap --email ADDRESS` (docs/key-scheme.md section 12.6). Nothing
+// --bootstrap --email ADDRESS` (docs/key-scheme.md section 12.6). So does a
+// person who signed up before the key scheme and never signed in during the
+// release that brought it: the upgrade left after that release, and the reset
+// enrols them (section 12.7). Nothing
 // that reaches the daemon over the network makes one, by design, so
 // --bootstrap is not optional here; whoever can open the database file and
 // hold its lock administers the instance already.

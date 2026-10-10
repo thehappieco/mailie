@@ -16,7 +16,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 	// through an extension, where every route that signs in with a password,
 	// signs up or accepts an invitation, changes a password or creates an
 	// invitation, every ceremony of the key scheme's password and recovery
-	// code and the upgrade's, answers 403 with the one refusal, whoever asks;
+	// code, answers 403 with the one refusal, whoever asks;
 	// and one as `serve` runs it, where each of them does what it does.
 	for _, only := range []bool{true, false} {
 		h := newHarnessWith(t, nil, serviceOptions{publicURL: "http://localhost:5174", externalSignInOnly: only})
@@ -51,16 +51,11 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 		// What the ceremonies that finish need from the ones that begin,
 		// made at the repository so that both daemons are asked the same.
 		authtest.NewUser(t, h.store, "rec@example.com", auth.RoleMember)
-		authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
 		ownerP, err := h.users.AuthenticateSession(t.Context(), owner)
 		if err != nil {
 			t.Fatal(err)
 		}
 		opened, err := h.users.OpenRecovery(t.Context(), "rec@example.com", authtest.RecoveryProof)
-		if err != nil {
-			t.Fatal(err)
-		}
-		upgrade, err := h.users.LegacySignIn(t.Context(), "old@example.com", authtest.Password)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -97,10 +92,6 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 				"ticket": opened.Ticket, "current_recovery_proof": authtest.RecoveryProof, "auth_key": secret("recovered"),
 				"kdf": defaultKDF(), "password_wrap": wrap(), "recovery_wrap": wrap(), "recovery_proof": secret("new code"),
 			})},
-			{"the upgrade's sign-in", http.MethodPost, "/v1/auth/upgrade/login", "",
-				jsonOf(t, map[string]any{"email": "old@example.com", "password": authtest.Password})},
-			{"the upgrade's enrolment", http.MethodPost, "/v1/auth/upgrade/enrol", "",
-				jsonOf(t, enrolment(t, secret("upgraded"), secret("upgraded code"), map[string]any{"ticket": upgrade.Ticket}))},
 			{"replace the recovery code", http.MethodPost, "/v1/auth/recovery", owner,
 				jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey, "recovery_wrap": wrap(), "recovery_proof": secret("replaced")})},
 			{"begin a password change", http.MethodPost, "/v1/auth/password/begin", owner,

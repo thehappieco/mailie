@@ -24,8 +24,8 @@ func (f *fixture) legacy(email string) auth.User {
 	return authtest.NewLegacyUser(f.t, f.db, email, auth.RoleMember)
 }
 
-// enrol gives a person who had none an account public key, as their upgrade
-// would.
+// enrol gives a person who had none an account public key, as a reset
+// invitation does for a person from before the key scheme.
 func (f *fixture) enrol(userID string) {
 	f.t.Helper()
 	if _, err := f.db.Writer().ExecContext(f.t.Context(), `UPDATE users SET public_key = ? WHERE id = ?`,

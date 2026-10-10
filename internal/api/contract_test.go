@@ -403,14 +403,6 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	}
 	capture("login_rederive", http.StatusOK, http.MethodPost, "/v1/auth/login", "",
 		fmt.Sprintf(`{"email":"dee@example.com","auth_key":%q}`, authtest.AuthKey))
-	// A person who signed up before the key scheme: the challenge says so,
-	// in this release, and their password in clear proves a ticket to enrol
-	// with, never a session.
-	authtest.NewLegacyUser(t, h.store, "eve@example.com", auth.RoleMember)
-	capture("challenge_upgrade", http.StatusOK, http.MethodPost, "/v1/auth/challenge", "", `{"email":"eve@example.com"}`)
-	capture("upgrade_ticket", http.StatusOK, http.MethodPost, "/v1/auth/upgrade/login", "",
-		fmt.Sprintf(`{"email":"eve@example.com","password":%q}`, authtest.Password))
-
 	// A reset link answers the target the new password is derived under.
 	resetCode, _, err := h.users.CreateReset(t.Context(), dee.ID, true, "cli")
 	if err != nil {
@@ -464,9 +456,9 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("new_key", http.StatusOK, http.MethodPut, "/v1/accounts/"+imapID+"/mailbox-key", token,
 		jsonOf(t, map[string]any{"epoch": 2, "public_key": contractMailboxKey(6), "grant": contractGrant(2, 0x66)}))
 
-	// A plain session, as signing up, a reset, the upgrade's enrolment and
-	// a password change answer it: here a password change, which ends
-	// every session ana had, so it comes last.
+	// A plain session, as signing up, a reset and a password change answer
+	// it: here a password change, which ends every session ana had, so it
+	// comes last.
 	begun := capture("", http.StatusOK, http.MethodPost, "/v1/auth/password/begin", token,
 		fmt.Sprintf(`{"current_auth_key":%q}`, authtest.AuthKey))
 	ticket, _ := begun["ticket"].(string)

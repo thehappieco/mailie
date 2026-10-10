@@ -8,6 +8,7 @@ import { toBase64URL } from '@thehappieco/kit/bytes'
 import { generateAccountKeys } from '@thehappieco/kit/account'
 import { IDBObjectStore } from 'fake-indexeddb'
 import { deriveKeys, enrol, openWrap, recoveryKeys, type Enrolled } from '../src/crypto/account'
+import { sealBrowserVault } from '../src/crypto/mailie'
 import { accountServer, DEFAULT_KDF, saltOf, targetOf, type Stored } from './accountServer'
 import { failure, freshModules, json, now, reply, serve, settle, stubPage } from './support'
 
@@ -32,8 +33,8 @@ async function load() {
 let atTarget: Enrolled
 let offTarget: Enrolled
 beforeAll(async () => {
-  atTarget = await enrol(PASSWORD, { salt: targetOf(ANA), kdf: DEFAULT_KDF, seal_id: ANA_SEAL }, 'new')
-  offTarget = await enrol(PASSWORD, { salt: saltOf('an older salt'), kdf: DEFAULT_KDF, seal_id: ANA_SEAL }, 'new')
+  atTarget = await enrol(PASSWORD, { salt: targetOf(ANA), kdf: DEFAULT_KDF, seal_id: ANA_SEAL })
+  offTarget = await enrol(PASSWORD, { salt: saltOf('an older salt'), kdf: DEFAULT_KDF, seal_id: ANA_SEAL })
 }, 60_000)
 
 function stored(made: Enrolled, salt: string, fields: Partial<Stored> = {}): Stored {
@@ -47,20 +48,15 @@ function stored(made: Enrolled, salt: string, fields: Partial<Stored> = {}): Sto
 const same = (a: Uint8Array | null, b: Uint8Array) => a !== null && a.length === b.length && a.every((byte, i) => byte === b[i])
 /** Whether any request carried the password, under any field. */
 const sentPassword = (server: ReturnType<typeof accountServer>, password = PASSWORD) => server.calls.some(call => JSON.stringify(call.body).includes(password))
-/** Ana as a server put back from a copy older than her enrolment stores her: an old password, no account key. */
-const legacyAna = (password: string): Stored => ({ ...stored(atTarget, '', { legacyPassword: password }), publicKey: undefined, authKey: '' })
+/** Ana as a person who signed up before the key scheme and never enrolled: no account key, nothing that signs her in. */
+const notEnrolledAna = (): Stored => ({ ...stored(atTarget, ''), publicKey: undefined, authKey: '', passwordWrap: '', recoveryWrap: '', recoveryProof: '' })
 
-/** Forgets, in this browser's storage, every address it saw enrol: what a page that never saw this person's sign-in starts from. */
-async function forgetEnrolledInStorage(): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const request = indexedDB.open('mailie-browser-account', 1)
+/** Opens this browser's vault database at whatever version it has, for a spec to look inside. */
+function openVaultDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open('mailie-browser-account')
     request.onerror = () => reject(request.error)
-    request.onsuccess = () => {
-      const tx = request.result.transaction('enrolled', 'readwrite')
-      tx.objectStore('enrolled').clear()
-      tx.oncomplete = () => { request.result.close(); resolve() }
-      tx.onerror = () => reject(tx.error)
-    }
+    request.onsuccess = () => resolve(request.result)
   })
 }
 
@@ -88,7 +84,6 @@ describe('creating an account by invitation', { timeout: 30_000 }, () => {
     expect(recovery.proof).toBe(person.recoveryProof)
     const opened = await openWrap('recovery', recovery.key, person.recoveryWrap, person.sealID, person.publicKey!)
     expect(same(await s.vault.accountKeyOf(person.sealID, person.publicKey!), opened)).toBe(true)
-    expect(await s.vault.rememberedEnrolled(' NEW@example.test ')).toBe(true)
     s.recoveryCodeSaved()
     expect(s.recoveryCode.code).toBe('')
 
@@ -169,102 +164,51 @@ describe('signing in', { timeout: 30_000 }, () => {
   })
 })
 
-describe('the upgrade of an account made before the key scheme', { timeout: 30_000 }, () => {
-  const legacy = (): Stored => ({ ...stored(atTarget, '', { legacyPassword: 'my old password' }), publicKey: undefined, authKey: '' })
-
-  it('sends the old password once, enrols with the same password, and never sends it again for that address', async () => {
+describe('an account made before the key scheme that never enrolled', { timeout: 30_000 }, () => {
+  it('is refused as a wrong password is, and its password is never sent', async () => {
     const s = await load()
     const server = accountServer()
-    server.people.set(ANA, legacy())
-    await s.signIn(ANA, 'my old password')
-    expect(server.paths()).toEqual(['/v1/auth/challenge', '/v1/auth/upgrade/login', '/v1/auth/upgrade/enrol'])
-    expect(server.calls[1]!.body).toEqual({ email: ANA, password: 'my old password' })
-    const enrolment = server.calls[2]!.body
-    expect(JSON.stringify(enrolment)).not.toContain('my old password')
-    expect(server.people.get(ANA)!.publicKey).toBe(enrolment.public_key)
-    expect(s.session.keyed).toBe(true)
-    expect(s.recoveryCode.reason).toBe('new-account')
-
-    // A server that answers upgrade again, for any spelling of the address, is not believed.
-    server.people.set(ANA, legacy())
-    const next = await load()
-    for (const spelling of [ANA, '  ANA@example.TEST\t']) {
-      await expect(next.signIn(spelling, 'my old password')).rejects.toMatchObject({ code: 'upgrade_refused' })
-    }
-    expect(server.paths().filter(path => path === '/v1/auth/upgrade/login')).toHaveLength(1)
+    server.people.set(ANA, notEnrolledAna())
+    await expect(s.signIn(ANA, 'my old password')).rejects.toMatchObject({ code: 'unauthorized' })
+    expect(server.paths()).toEqual(['/v1/auth/challenge', '/v1/auth/login'])
+    expect(Object.keys(server.calls[1]!.body).sort()).toEqual(['auth_key', 'email'])
+    expect(sentPassword(server, 'my old password')).toBe(false)
+    expect(s.session.phase).not.toBe('ready')
   })
 
-  it('never sends the password in clear for an address that signed in here with the key scheme', async () => {
-    const s = await load()
-    const server = accountServer()
-    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
-    await s.signIn(ANA, PASSWORD)
-    server.people.set(ANA, legacy())
-    await expect(s.signIn(ANA, PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
-    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
-  })
-
-  it('remembers an address that enrolled in this page even when the browser refuses storage', async () => {
-    // A browser that refuses site data: IndexedDB throws, and nothing this page learns outlives it.
-    vi.stubGlobal('indexedDB', { open() { throw new Error('storage refused') } })
-    const s = await load()
-    const server = accountServer()
-    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
-    await s.signIn(ANA, PASSWORD)
-    expect(s.session.notRemembered).toBe(true)
-    await s.signOut()
-    // Signing in again in the same page, to a server that now says upgrade.
-    server.people.set(ANA, legacy())
-    await expect(s.signIn(' ana@EXAMPLE.test', PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
-    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
-    expect(sentPassword(server)).toBe(false)
-  })
-
-  it('remembers the address as soon as the server accepts the enrolment, even when its answer names another key or the vault refuses the key', async () => {
-    for (const afterwards of ['names another key', 'the vault refuses the key'] as const) {
+  it('sends the auth key alone even to a server that still answers upgrade, as the release before did', async () => {
+    for (const ana of ['never enrolled', 'enrolled'] as const) {
       stubPage()
       const s = await load()
       const server = accountServer()
-      server.people.set(ANA, legacy())
-      let refusing: { mockRestore(): void } | undefined
-      if (afterwards === 'names another key') {
-        // A session for Ana with a public key the enrolment did not make: refused, and its session ended.
-        server.refuseNext.set('/v1/auth/upgrade/enrol', () => json({
-          token: toBase64URL(crypto.getRandomValues(new Uint8Array(32))), expires_at: now() + 3600, authenticated_at: now(),
-          user: { id: 'usr_00000000000000a1', email: ANA, name: 'Ana', role: 'member', created_at: 1_790_000_000, has_password: true, seal_id: ANA_SEAL, public_key: offTarget.enrolment.public_key },
-        }))
-      } else {
-        // The server enrolled Ana; this browser then cannot seal the key it made at rest.
-        server.inFlight.set('/v1/auth/upgrade/enrol', () => {
-          refusing = vi.spyOn(crypto.subtle, 'generateKey').mockRejectedValue(new Error('the vault refuses'))
-        })
-      }
-      const failed = await s.signIn(ANA, 'my old password').then(() => null, (error: unknown) => error)
-      refusing?.mockRestore()
-      expect(failed, afterwards).not.toBeNull()
-      expect(server.paths().slice(0, 3), afterwards).toEqual(['/v1/auth/challenge', '/v1/auth/upgrade/login', '/v1/auth/upgrade/enrol'])
-      expect(s.session.phase, afterwards).not.toBe('ready')
-      expect(await s.vault.rememberedEnrolled(ANA), afterwards).toBe(true)
-
-      // The next page, to a server that asks for the upgrade again: the password does not go.
-      server.people.set(ANA, legacy())
-      const next = await load()
-      await expect(next.signIn(' ana@EXAMPLE.test', 'my old password'), afterwards).rejects.toMatchObject({ code: 'upgrade_refused' })
-      expect(server.paths().filter(path => path === '/v1/auth/upgrade/login'), afterwards).toHaveLength(1)
+      server.people.set(ANA, ana === 'enrolled' ? stored(atTarget, targetOf(ANA)) : notEnrolledAna())
+      server.refuseNext.set('/v1/auth/challenge', () => json({ salt: targetOf(ANA), kdf: DEFAULT_KDF, upgrade: true }))
+      const signedIn = await s.signIn(ANA, PASSWORD).then(() => true, (error: unknown) => error)
+      if (ana === 'enrolled') expect(signedIn, ana).toBe(true)
+      else expect(signedIn, ana).toMatchObject({ code: 'unauthorized' })
+      expect(server.paths(), ana).toEqual(['/v1/auth/challenge', '/v1/auth/login'])
+      expect(sentPassword(server), ana).toBe(false)
     }
   })
 
-  it('asks for a new password when the old one cannot be used as it is', async () => {
+  it('enrols with a reset link from the administrator, under the seal id it always had', async () => {
     const s = await load()
     const server = accountServer()
-    server.people.set(ANA, { ...legacy(), legacyPassword: 'old\u0007password' })
-    const pending = await s.signIn(ANA, 'old\u0007password')
-    expect(pending).not.toBeNull()
-    expect(server.paths()).toEqual(['/v1/auth/challenge', '/v1/auth/upgrade/login'])
-    await expect(s.finishUpgrade(pending!, 'too short')).rejects.toMatchObject({ code: 'password_too_short' })
-    await s.finishUpgrade(pending!, 'a password with no control characters')
-    expect(server.paths().at(-1)).toBe('/v1/auth/upgrade/enrol')
-    expect(s.session.phase).toBe('ready')
+    server.people.set(ANA, notEnrolledAna())
+    await s.resetPassword({ reset: server.reset(ANA), email: ANA, password: 'a password after the reset' })
+    expect(server.paths()).toEqual(['/v1/auth/reset/open', '/v1/auth/reset'])
+    expect(sentPassword(server, 'a password after the reset')).toBe(false)
+    const person = server.people.get(ANA)!
+    expect(person.publicKey).toBe(server.calls[1]!.body.public_key)
+    expect(s.session.user?.seal_id).toBe(ANA_SEAL)
+    expect(s.session.keyed).toBe(true)
+    expect(s.recoveryCode.reason).toBe('new-account')
+
+    // From then on the new password signs in, from any page.
+    const next = await load()
+    await next.signOut()
+    await next.signIn(ANA, 'a password after the reset')
+    expect(next.session.phase).toBe('ready')
   })
 })
 
@@ -290,7 +234,7 @@ describe('recovering an account', { timeout: 30_000 }, () => {
     expect((await recoveryKeys(s.recoveryCode.code)).proof).toBe(person.recoveryProof)
   })
 
-  it('remembers the address, and says the recovery is done, when the sign-in after it fails', async () => {
+  it('says the recovery is done when the sign-in after it fails', async () => {
     const s = await load()
     const server = accountServer()
     server.people.set(ANA, stored(atTarget, targetOf(ANA)))
@@ -302,11 +246,9 @@ describe('recovering an account', { timeout: 30_000 }, () => {
     expect(s.recoveryCode.reason).toBe('recovered')
     expect((await recoveryKeys(s.recoveryCode.code)).proof).toBe(server.people.get(ANA)!.recoveryProof)
 
-    // The next page, to a server that now asks for the upgrade: no password goes.
-    server.people.set(ANA, legacyAna('my brand new password'))
-    const next = await load()
-    await expect(next.signIn(ANA, 'my brand new password')).rejects.toMatchObject({ code: 'upgrade_refused' })
-    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
+    // The new password signs in, as the page says.
+    await s.signIn(ANA, 'my brand new password')
+    expect(s.session.phase).toBe('ready')
     expect(sentPassword(server, 'my brand new password')).toBe(false)
   })
 
@@ -375,27 +317,6 @@ describe('a signed-in person’s password and recovery code', { timeout: 40_000 
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, person.publicKey!), atTarget.accountKey)).toBe(true)
   })
 
-  it('remembers the address once the current password is accepted, even when the change then fails', async () => {
-    const first = await load()
-    const server = accountServer()
-    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
-    await first.signIn(ANA, PASSWORD)
-    // A page that never saw this person sign in: the session restored, the browser's memory of the address gone.
-    await forgetEnrolledInStorage()
-    const s = await load()
-    await s.restore()
-    expect(s.session.phase).toBe('ready')
-    server.refuseNext.set('/v1/auth/password/finish', () => failure('unavailable', 503))
-    await expect(s.changePassword(PASSWORD, 'the next password of mine')).rejects.toMatchObject({ code: 'unavailable' })
-    expect(server.paths().slice(-2)).toEqual(['/v1/auth/password/begin', '/v1/auth/password/finish'])
-
-    server.people.set(ANA, legacyAna(PASSWORD))
-    const next = await load()
-    await expect(next.signIn(ANA, PASSWORD)).rejects.toMatchObject({ code: 'upgrade_refused' })
-    expect(server.paths()).not.toContain('/v1/auth/upgrade/login')
-    expect(sentPassword(server)).toBe(false)
-  })
-
   it('refuses a wrong current password without changing anything', async () => {
     const s = await load()
     const server = accountServer()
@@ -447,7 +368,7 @@ describe('a signed-in person’s password and recovery code', { timeout: 40_000 
   })
 
   it('never shows it over another person signed in meanwhile, on this page or in the login this browser remembers', async () => {
-    const bea = await enrol(PASSWORD, { salt: targetOf(BEA), kdf: DEFAULT_KDF, seal_id: BEA_SEAL }, 'new')
+    const bea = await enrol(PASSWORD, { salt: targetOf(BEA), kdf: DEFAULT_KDF, seal_id: BEA_SEAL })
     for (const meanwhile of ['signs in here', 'signs in in another tab'] as const) {
       const s = await load()
       const server = accountServer()
@@ -526,19 +447,46 @@ describe('the browser vault', () => {
   it('keeps the account key only as ciphertext under a key the page cannot export', async () => {
     const s = await load()
     const pair = await kept(s)
-    const record = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const request = indexedDB.open('mailie-browser-account', 1)
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const get = request.result.transaction('vault').objectStore('vault').get('current')
-        get.onsuccess = () => { request.result.close(); resolve(get.result as Record<string, unknown>) }
-      }
+    const db = await openVaultDatabase()
+    const record = await new Promise<Record<string, unknown>>(resolve => {
+      const get = db.transaction('vault').objectStore('vault').get('current')
+      get.onsuccess = () => { db.close(); resolve(get.result as Record<string, unknown>) }
     })
     const envelope = record.envelope as { key: CryptoKey; ciphertext: ArrayBuffer }
     expect(envelope.key.extractable).toBe(false)
     const text = new Uint8Array(envelope.ciphertext)
     expect(same(text.subarray(0, 32), pair.privateKey)).toBe(false)
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, pair.publicText), pair.privateKey)).toBe(true)
+  })
+
+  it('drops the addresses an older console remembered, with their store, and keeps the account key it kept', async () => {
+    // The database as the release that brought the key scheme left it: version 1, the vault and the enrolled addresses.
+    const pair = await generateAccountKeys()
+    const record = {
+      version: 1, origin: location.origin, sealID: ANA_SEAL, publicKey: toBase64URL(pair.publicKey),
+      envelope: await sealBrowserVault(pair.privateKey, pair.publicKey, ANA_SEAL),
+    }
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('mailie-browser-account', 1)
+      request.onerror = () => reject(request.error)
+      request.onupgradeneeded = () => {
+        request.result.createObjectStore('vault')
+        request.result.createObjectStore('enrolled')
+      }
+      request.onsuccess = () => {
+        const tx = request.result.transaction(['vault', 'enrolled'], 'readwrite')
+        tx.objectStore('vault').put(record, 'current')
+        tx.objectStore('enrolled').put(Date.now(), `${location.origin}|${ANA}`)
+        tx.oncomplete = () => { request.result.close(); resolve() }
+        tx.onerror = () => reject(tx.error)
+      }
+    })
+    const s = await load()
+    expect(same(await s.vault.accountKeyOf(ANA_SEAL, record.publicKey), pair.privateKey)).toBe(true)
+    const db = await openVaultDatabase()
+    expect(db.version).toBe(2)
+    expect([...db.objectStoreNames]).toEqual(['vault'])
+    db.close()
   })
 
   it('wipes the account key at sign-out', async () => {
@@ -763,16 +711,13 @@ describe('the browser vault', () => {
     const s = await loadKeepingPastExpiry()
     const pair = await kept(s)
     // The record as a console from before holders wrote it.
-    await new Promise<void>((resolve, reject) => {
-      const request = indexedDB.open('mailie-browser-account', 1)
-      request.onerror = () => reject(request.error)
-      request.onsuccess = () => {
-        const tx = request.result.transaction('vault', 'readwrite')
-        const store = tx.objectStore('vault')
-        const read = store.get('current')
-        read.onsuccess = () => { const { holder: _, ...older } = read.result as Record<string, unknown>; store.put(older, 'current') }
-        tx.oncomplete = () => { request.result.close(); resolve() }
-      }
+    const db = await openVaultDatabase()
+    await new Promise<void>(resolve => {
+      const tx = db.transaction('vault', 'readwrite')
+      const store = tx.objectStore('vault')
+      const read = store.get('current')
+      read.onsuccess = () => { const { holder: _, ...older } = read.result as Record<string, unknown>; store.put(older, 'current') }
+      tx.oncomplete = () => { db.close(); resolve() }
     })
     await s.sessionVault.saveLocalSession({ id: crypto.randomUUID(), token: 'tok_remembered_00000000000000000000000000000', expiresAt: now() + 60, userID: 'usr_00000000000000a1' })
     refusingServer(0)

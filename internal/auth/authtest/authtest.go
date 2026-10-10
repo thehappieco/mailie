@@ -30,8 +30,10 @@ import (
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
-// Password is what every user NewLegacyUser makes signs in with at the
-// upgrade, as people did before the key scheme.
+// Password is a password in clear, as people typed one before the key
+// scheme: what the old hash of every user NewLegacyUser makes was made from,
+// which nothing checks any more, and what a test sends to show that no route
+// takes a password.
 const Password = "correct horse battery staple"
 
 // AuthKey is the auth key every user NewUser makes signs in with, and
@@ -204,9 +206,10 @@ func NewUser(t *testing.T, db *store.Store, email string, role auth.Role) auth.U
 	return user
 }
 
-// NewLegacyUser inserts an active user who signed up before the key scheme:
-// a password the server checks itself (Password), no account key. Their next
-// sign-in is the upgrade's.
+// NewLegacyUser inserts an active user who signed up before the key scheme
+// and never enrolled: an old password hash (of Password) that no sign-in
+// checks any more, and no account key. No sign-in signs them in; a reset
+// invitation is their way back.
 func NewLegacyUser(t *testing.T, db *store.Store, email string, role auth.Role) auth.User {
 	t.Helper()
 	now := db.Now().UTC().Truncate(time.Second)

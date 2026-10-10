@@ -9,15 +9,16 @@
 // It walks what a self-hosted server's console offers: signing in and up
 // with a password the server never receives (docs/key-scheme.md: the auth
 // key, the recovery code shown once and replaced with the password,
-// recovery, a reset link and the one-time upgrade), connecting mailboxes,
+// recovery, and a reset link, which is also the way back for an account made
+// before the key scheme that never enrolled), connecting mailboxes,
 // sync, the person's account and permissions, API keys and the MCP endpoint,
 // and Storage. The console names no company and links
 // to no policy; there is no mail to read or send, and the pass fails on any
 // request to the message or sending routes.
 //
 // QA_ORIGIN (default http://localhost:5174), QA_SCREENSHOTS (directory),
-// QA_ONLY (console: the account passes; keys-scheme: the upgrade, recovery
-// and a reset link; sync; actions: the permission in Account; keys: API keys
+// QA_ONLY (console: the account passes; keys-scheme: an account that never
+// enrolled, a reset link and recovery; sync; actions: the permission in Account; keys: API keys
 // and the MCP endpoint; storage),
 // QA_PLAYWRIGHT_MODULE (path to playwright's index.mjs when it is not
 // installed here), QA_BROWSER (chromium|firefox|webkit), QA_BROWSER_EXECUTABLE
@@ -616,8 +617,9 @@ for (const language of only && only !== 'console' ? [] : ['pt-BR', 'de-DE']) {
 }
 
 // --- the key scheme's other ways in --------------------------------------------
-// The one-time upgrade of an account made before the key scheme, recovery
-// with the code it shows, and a reset link from the operator.
+// An account made before the key scheme that never enrolled, which no sign-in
+// takes, a reset link from the operator, which enrols it, and recovery with
+// the code the reset showed.
 
 for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] : [false, true]) {
   const label = `key-scheme-${mobile ? 'mobile' : 'desktop'}`
@@ -625,7 +627,7 @@ for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] :
     serviceWorkers: 'block', locale: 'en-US', reducedMotion: 'reduce',
     viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
   })
-  const daemon = fakeDaemon({ notUpgraded: true })
+  const daemon = fakeDaemon({ notEnrolled: true })
   const errors = []
   await context.route('**/v1/**', route => daemon.handle(route))
   const page = await context.newPage()
@@ -642,25 +644,35 @@ for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] :
     await page.locator('form[name=mailie-login] button[type=submit]').click()
   }
   try {
-    // The upgrade: the old password goes once, and the account is enrolled with it.
+    // An account that never enrolled: its old password signs in no more, and is never sent.
     await page.goto(origin + '/')
     await signIn(PASSWORD)
+    await page.getByRole('alert').filter({ hasText: 'The email or password is incorrect.' }).waitFor()
+    assert.equal(sent(daemon, PASSWORD), false, 'the old password is never sent')
+    assert.equal(daemon.calls.auth.some(call => call.path.startsWith('/v1/auth/upgrade/')), false, 'nothing asks for the upgrade')
+    await shot('not-enrolled')
+
+    // A reset link from the operator: a password, a recovery code and an account key, the first ones.
+    const ana = daemon.users.get('ana@example.test')
+    await page.goto('about:blank')
+    await page.goto(`${origin}/#reset=${RESET}&email=ana%40example.test`)
+    const reset = page.locator('form[name=mailie-reset]')
+    await reset.waitFor()
+    assert.equal(await page.evaluate(() => location.hash), '', 'the reset code leaves the address bar at once')
+    assert.equal(await page.locator('input[name=username]').inputValue(), 'ana@example.test')
+    await shot('reset')
+    await page.locator('input[name=password]').fill('a password after the reset')
+    await page.locator('input[name=confirm-password]').fill('a password after the reset')
+    await reset.locator('button[type=submit]').click()
     const code = await saveRecoveryCode(page)
-    await page.locator('.account-card').first().waitFor()
-    assert.equal(daemon.calls.upgrade, 1, 'the old password is sent once, to the upgrade')
+    await page.locator('.console-main').waitFor()
+    assert.ok(ana.publicKey, 'a reset gives the account its key')
+    assert.equal(sent(daemon, 'a password after the reset'), false, 'a reset sends no password')
+
+    // Recovery with the code the reset showed: a new password, a new code.
     await page.locator(mobile ? '.mobile-profile' : '.profile-trigger').first().click()
     await page.locator('.account-settings').getByRole('button', { name: 'Sign out', exact: true }).click()
-    // A server that asks again for the password in clear is not believed.
-    const ana = daemon.users.get('ana@example.test')
-    const enrolled = { ...ana }
-    Object.assign(ana, { authKey: undefined, password: PASSWORD })
-    await signIn(PASSWORD)
-    await page.getByRole('alert').filter({ hasText: 'This browser already set up this account so that your password never leaves it' }).waitFor()
-    assert.equal(daemon.calls.upgrade, 1, 'never a second password in clear for an address that enrolled here')
-    await shot('upgrade-refused')
-    Object.assign(ana, enrolled)
-
-    // Recovery with the code the upgrade showed: a new password, a new code.
+    await page.locator('form[name=mailie-login]').waitFor()
     await page.getByRole('button', { name: 'Forgot your password?' }).click()
     const recover = page.locator('form[name=mailie-recover]')
     await recover.waitFor()
@@ -674,26 +686,6 @@ for (const mobile of only && only !== 'keys-scheme' && only !== 'console' ? [] :
     assert.notEqual(next, code, 'a recovery shows a new code')
     await page.locator('.account-card').first().waitFor()
     assert.equal(sent(daemon, code) || sent(daemon, 'a recovered password'), false, 'neither the code nor the new password is sent')
-
-    // A reset link from the operator: a new password, a new code, a new key.
-    await page.locator(mobile ? '.mobile-profile' : '.profile-trigger').first().click()
-    await page.locator('.account-settings').getByRole('button', { name: 'Sign out', exact: true }).click()
-    await page.locator('form[name=mailie-login]').waitFor()
-    const before = ana.publicKey
-    await page.goto('about:blank')
-    await page.goto(`${origin}/#reset=${RESET}&email=ana%40example.test`)
-    const reset = page.locator('form[name=mailie-reset]')
-    await reset.waitFor()
-    assert.equal(await page.evaluate(() => location.hash), '', 'the reset code leaves the address bar at once')
-    assert.equal(await page.locator('input[name=username]').inputValue(), 'ana@example.test')
-    await shot('reset')
-    await page.locator('input[name=password]').fill('a password after the reset')
-    await page.locator('input[name=confirm-password]').fill('a password after the reset')
-    await reset.locator('button[type=submit]').click()
-    await saveRecoveryCode(page)
-    await page.locator('.console-main').waitFor()
-    assert.notEqual(ana.publicKey, before, 'a reset gives a new account key')
-    assert.equal(sent(daemon, 'a password after the reset'), false, 'a reset sends no password')
     assert.deepEqual(errors, [], 'no page, script or CSP errors')
     console.log(`ok ${label}`)
   } catch (error) {

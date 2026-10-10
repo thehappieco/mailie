@@ -25,9 +25,8 @@ password, database or message: describe them instead.
   64 MiB), and the server keeps an Argon2id hash of the auth key, the person's account public key,
   their account key wrapped under the password and under a recovery code (which only their browser
   opens), and a hash of the recovery code's proof ([`docs/key-scheme.md`](docs/key-scheme.md)).
-  People who signed up before the key scheme keep an Argon2id hash of their password until their
-  next sign-in, the one time their password reaches the server again, which enrols them and clears
-  it.
+  People who signed up before the key scheme and never enrolled keep the Argon2id hash of their
+  old password, which nothing checks any more, until a reset invitation enrols them and clears it.
 - Argon2id hashes of API keys, and SHA-256 hashes of session tokens, of the single-use tickets of
   the sign-in ceremonies, and of invitation and reset codes.
 
@@ -65,10 +64,10 @@ verifier is the same offline oracle.
   session (a sign-in or a step-up). A mailbox's key pair is made in a browser; the server stores
   its public half and the grants sealed of it, which it cannot open, and never its private key. On
   a mailbox that has a key, reading takes the flag and the person's grant at its current epoch.
-- In the release that brings the key scheme only, a person who signed up before it sends their
-  password in clear one last time, at their next sign-in, and a challenge says, to anyone, that such
-  an address has an account not yet upgraded. Enrolment is one way: the server then refuses their
-  password in clear, and the console never sends it for an address it remembers.
+- No password reaches the server in any request. The release that brought the key scheme let a
+  person who signed up before it send theirs in clear one last time, to enrol; the next release
+  removed that upgrade. A person who never enrolled is answered and refused as an address without
+  an account, and a reset invitation from the operator is their way back. Enrolment is one way.
 
 [`docs/architecture.md`](docs/architecture.md) lists the rules that keep these properties, and
 [`docs/backup.md`](docs/backup.md) the threat model of backups.

@@ -30,12 +30,6 @@ func VerifierCostForTest() (memoryKiB, passes uint32) {
 	return keyParams.memory, keyParams.time
 }
 
-// PasswordCostForTest is the cost a password was hashed at before the key
-// scheme, which the upgrade's check costs.
-func PasswordCostForTest() (memoryKiB, passes uint32) {
-	return passwordParams.memory, passwordParams.time
-}
-
 // HashWaitersForTest is how many checks of people's secrets and of keys are
 // queued for a hashing slot right now.
 func HashWaitersForTest() (people, keys int) {

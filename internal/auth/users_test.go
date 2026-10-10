@@ -62,9 +62,8 @@ func invite(t *testing.T, users *auth.Users, email string, role auth.Role) strin
 }
 
 func TestHashingPeoplesSecretsIsBoundedToTwoAtATime(t *testing.T) {
-	// 19 MiB a verifier and 64 MiB the upgrade's old password: a burst of
-	// sign-ins with no bound is a way to run the daemon out of memory that
-	// the rate limiter only slows down.
+	// 19 MiB a verifier: a burst of sign-ins with no bound is a way to run
+	// the daemon out of memory that the rate limiter only slows down.
 	var running, peak atomic.Int32
 	release := make(chan struct{})
 	started := make(chan struct{}, 8)
@@ -116,9 +115,9 @@ func TestHashingPeoplesSecretsIsBoundedToTwoAtATime(t *testing.T) {
 func TestEveryWayASignInFailsLooksTheSame(t *testing.T) {
 	// Same error, and the same work: exactly one derivation at a verifier's
 	// full cost for an address with no account, a disabled person, a person
-	// who has not enrolled (their next sign-in is the upgrade's) and a wrong
-	// auth key. A miss that returned early would time out as a free oracle
-	// for which addresses have accounts.
+	// who has not enrolled (one from before the key scheme, whose old hash no
+	// sign-in checks) and a wrong auth key. A miss that returned early would
+	// time out as a free oracle for which addresses have accounts.
 	users, db, _ := newUsers(t)
 	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	gone := authtest.NewUser(t, db, "gone@example.com", auth.RoleMember)

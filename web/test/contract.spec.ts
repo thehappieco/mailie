@@ -17,8 +17,8 @@ import { EventStreamParser } from '../src/api/events'
 import { fromBase64URL } from '@thehappieco/kit/bytes'
 import { checkKDF } from '../src/crypto/mailie'
 import {
-  isChallenge, isLoginReply, isOpening, isPasswordBegin, isRecoverOpen, isStepUpReply, isUpgradeTicket, enrolled,
-  type Challenge, type LoginReply, type Opening, type RecoverOpen, type UpgradeTicket,
+  isChallenge, isLoginReply, isOpening, isPasswordBegin, isRecoverOpen, isStepUpReply, enrolled,
+  type Challenge, type LoginReply, type Opening, type RecoverOpen,
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
   isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
   isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
@@ -51,10 +51,8 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['login', value => isLoginReply(value, true)],
   ['login_rederive', value => isLoginReply(value, true)],
   ['challenge', value => isChallenge(value, true)],
-  ['challenge_upgrade', value => isChallenge(value, true)],
   ['signup_open', value => isOpening(value, true)],
   ['reset_open', value => isOpening(value, true)],
-  ['upgrade_ticket', value => isUpgradeTicket(value, true)],
   ['password_begin', value => isPasswordBegin(value, true)],
   ['recover_open', value => isRecoverOpen(value, true)],
   ['stepup', value => isStepUpReply(value, true)],
@@ -139,20 +137,19 @@ describe('the HTTP contract the Go handlers answer with', () => {
 
   it('names every salt and parameter set a browser derives under as one it accepts', () => {
     const targets: { salt: string; kdf: unknown }[] = [
-      fixture('challenge') as Challenge, fixture('challenge_upgrade') as Challenge, fixture('signup_open') as Opening,
-      fixture('reset_open') as Opening, fixture('upgrade_ticket') as UpgradeTicket, fixture('recover_open') as RecoverOpen,
+      fixture('challenge') as Challenge, fixture('signup_open') as Opening, fixture('reset_open') as Opening,
+      fixture('recover_open') as RecoverOpen,
       (fixture('login_rederive') as LoginReply).rederive!,
     ]
     for (const target of targets) expect(() => checkKDF(target.kdf, fromBase64URL(target.salt, 16))).not.toThrow()
-    expect((fixture('challenge_upgrade') as Challenge).upgrade).toBe(true)
-    expect(fixture('challenge')).not.toHaveProperty('upgrade')
+    // The challenge answers a salt and parameters, and nothing more: the upgrade's answer left with it.
+    expect(Object.keys(fixture('challenge') as Challenge).sort()).toEqual(['kdf', 'salt'])
+    expect(isChallenge({ ...(fixture('challenge') as Challenge), upgrade: true }, true)).toBe(false)
     expect(fixture('login')).not.toHaveProperty('rederive')
   })
 
   it('tells every enrolment the seal id it binds the wraps to before it seals one', () => {
-    for (const name of ['signup_open', 'reset_open', 'upgrade_ticket', 'recover_open']) expect((fixture(name) as Opening).seal_id, name).toMatch(/^[0-9a-f-]{36}$/)
-    // The upgrade's check of an old password answers a ticket, never a session.
-    expect(fixture('upgrade_ticket')).not.toHaveProperty('token')
+    for (const name of ['signup_open', 'reset_open', 'recover_open']) expect((fixture(name) as Opening).seal_id, name).toMatch(/^[0-9a-f-]{36}$/)
   })
 
   it('a session token is an opaque bearer, not an API key', () => {

@@ -3,20 +3,21 @@
 // The cryptography is crypto/account.ts's; the session is state/session.ts's,
 // where each ceremony that signs someone in ends.
 //
-// The password never leaves this page, but once: the upgrade of an account
-// made before the key scheme sends it in clear to the server that already
-// checks it (section 12.7), and only for an address this browser has never
-// seen enrol. A new recovery code is shown once (recoveryCode, below) and
-// kept nowhere.
+// The password never leaves this page, whatever a server answers: nothing
+// here sends it. (The upgrade of an account made before the key scheme sent
+// it in clear once, in the release that brought the scheme only, section
+// 12.7; it left in the next, and a reset link from the operator is the way
+// back for an account that never enrolled.) A new recovery code is shown
+// once (recoveryCode, below) and kept nowhere.
 
 import { reactive } from 'vue'
 import { fromBase64URL } from '@thehappieco/kit/bytes'
 import * as auth from '../api/auth'
 import { ApiError } from '../api/http'
-import { enrolled, type LoginReply, type Opening, type SessionReply, type UpgradeTicket, type User } from '../api/types'
+import { enrolled, type LoginReply, type Opening, type SessionReply, type User } from '../api/types'
 import { checkNewPassword, deriveKeys, enrol, newRecovery, openWrap, recoveryKeys, rewrap, type Enrolled } from '../crypto/account'
 import { CeremonyError } from '../crypto/errors'
-import { accountKeyOf, keepAccountKey, rememberEnrolled, rememberedEnrolled, settleRecord } from './accountVault'
+import { accountKeyOf, keepAccountKey, settleRecord } from './accountVault'
 import { authorized, beginSession, identity, markKeyed, replaceSession, session, steppedUp } from './session'
 import { rememberedPerson } from './sessionVault'
 
@@ -65,14 +66,6 @@ function sameKey(user: User, sealID: string, publicKey: string): boolean {
 }
 
 /**
- * A sign-in that leaves the person to choose a new password: the upgrade of
- * an account whose old password the platform's preparation refuses (a
- * control character, more than 256 code points; section 12.7, step 4). The
- * ticket stays in this page's memory, for ten minutes at most.
- */
-export interface PendingUpgrade { email: string; ticket: UpgradeTicket }
-
-/**
  * signIn signs a person in (docs/key-scheme.md section 12.2): the challenge,
  * the derivation under its salt and parameters, the auth key, and the
  * password wrap opened with the wrap key. A wrap that does not open after the
@@ -81,18 +74,14 @@ export interface PendingUpgrade { email: string; ticket: UpgradeTicket }
  * derived again under the target before the console opens; if that fails,
  * the next sign-in asks again.
  *
- * An address the challenge says has not upgraded is upgraded here (section
- * 12.7), unless this browser remembers it enrolled: then nothing is sent, and
- * it is upgrade_refused. It answers a PendingUpgrade when the old password
- * cannot be used as it is, and null once signed in.
+ * Whatever the challenge answers, the auth key is all that is sent: an
+ * account made before the key scheme that never enrolled is refused as a
+ * wrong password is (unauthorized), and a reset link is its way back.
  */
-export async function signIn(email: string, password: string): Promise<PendingUpgrade | null> {
+export async function signIn(email: string, password: string): Promise<void> {
   const answer = await auth.challenge(email)
-  if (answer.upgrade) return upgrade(email, password)
   const keys = await deriveKeys(password, answer, 'presented')
   const reply = await auth.login(email, keys.authKey)
-  // The server accepted a proof: remembered now, whatever fails next (section 12.7, step 2).
-  await rememberEnrolled(email)
   let accountKey: Uint8Array
   try {
     accountKey = await openWrap('password', keys.wrapKey, reply.password_wrap, reply.user.seal_id!, reply.user.public_key!)
@@ -106,7 +95,6 @@ export async function signIn(email: string, password: string): Promise<PendingUp
     accountKey.fill(0)
   }
   await beginSession(reply, true)
-  return null
 }
 
 /**
@@ -123,44 +111,12 @@ async function rederive(reply: LoginReply, password: string, accountKey: Uint8Ar
   } catch { /* The account stays where it was; its next sign-in names the target again. */ }
 }
 
-async function upgrade(email: string, password: string): Promise<PendingUpgrade | null> {
-  // The one password in clear, never to an address this browser saw enrol:
-  // a server that says otherwise is not believed.
-  if (await rememberedEnrolled(email)) throw new CeremonyError('upgrade_refused')
-  const ticket = await auth.upgradeLogin(email, password)
-  try {
-    await finishEnrolment(email, password, ticket, 'presented')
-  } catch (error) {
-    if (error instanceof CeremonyError && error.code === 'password_rejected') return { email, ticket }
-    throw error
-  }
-  return null
-}
-
-/** finishUpgrade enrols with a new password, when the old one cannot be used as it is (PendingUpgrade). */
-export async function finishUpgrade(pending: PendingUpgrade, password: string): Promise<void> {
-  checkNewPassword(password)
-  await finishEnrolment(pending.email, password, pending.ticket, 'new')
-}
-
-async function finishEnrolment(email: string, password: string, ticket: UpgradeTicket, use: 'new' | 'presented'): Promise<void> {
-  const made = await enrol(password, ticket, use)
-  try {
-    const reply = await auth.upgradeEnrol({ ticket: ticket.ticket, ...made.enrolment })
-    await startEnrolled(email, reply, made, ticket.seal_id)
-  } finally {
-    made.accountKey.fill(0)
-  }
-}
-
 /**
  * startEnrolled signs in the person an enrolment made, keeps their account
- * key, and shows the recovery code once. The address is remembered first:
- * the server has accepted the enrolment, whatever fails next (an answer that
- * names another key, a vault that refuses the key; section 12.7, step 2).
+ * key, and shows the recovery code once. An answer that names another key
+ * than the one made is refused, and its session ended.
  */
-async function startEnrolled(email: string, reply: SessionReply, made: Enrolled, sealID: string): Promise<void> {
-  await rememberEnrolled(email)
+async function startEnrolled(reply: SessionReply, made: Enrolled, sealID: string): Promise<void> {
   if (!sameKey(reply.user, sealID, made.enrolment.public_key)) refuse(reply)
   await keepAccountKey(made.accountKey, made.publicKey, sealID)
   await beginSession(reply, true)
@@ -171,10 +127,10 @@ async function startEnrolled(email: string, reply: SessionReply, made: Enrolled,
 export async function signUp(input: { invite: string; email: string; name: string; password: string }): Promise<void> {
   checkNewPassword(input.password)
   const opened: Opening = await auth.openSignUp(input.invite, input.email)
-  const made = await enrol(input.password, opened, 'new')
+  const made = await enrol(input.password, opened)
   try {
     const reply = await auth.signup({ invite: input.invite, email: input.email, name: input.name, seal_id: opened.seal_id, ...made.enrolment })
-    await startEnrolled(input.email, reply, made, opened.seal_id)
+    await startEnrolled(reply, made, opened.seal_id)
   } finally {
     made.accountKey.fill(0)
   }
@@ -198,10 +154,10 @@ export async function openResetLink(reset: string, email: string): Promise<Openi
 export async function resetPassword(input: { reset: string; email: string; password: string }, opened?: Opening): Promise<void> {
   checkNewPassword(input.password)
   const target = opened ?? await auth.openReset(input.reset, input.email)
-  const made = await enrol(input.password, target, 'new')
+  const made = await enrol(input.password, target)
   try {
     const reply = await auth.reset({ reset: input.reset, email: input.email, ...made.enrolment })
-    await startEnrolled(input.email, reply, made, target.seal_id)
+    await startEnrolled(reply, made, target.seal_id)
   } finally {
     made.accountKey.fill(0)
   }
@@ -227,8 +183,6 @@ export async function recover(input: { email: string; code: string; password: st
   checkNewPassword(input.password)
   const keys = await recoveryKeys(input.code)
   const opened = await auth.openRecovery(input.email, keys.proof)
-  // The server accepted the code's proof: remembered now, whatever fails next (section 12.7, step 2).
-  await rememberEnrolled(input.email)
   const accountKey = await openWrap('recovery', keys.key, opened.recovery_wrap, opened.seal_id, opened.public_key)
   try {
     const next = await rewrap(input.password, opened, 'new', accountKey, opened.seal_id)
@@ -277,8 +231,6 @@ export async function changePassword(current: string, next: string): Promise<voi
   const answer = await auth.challenge(user.email)
   const keys = await deriveKeys(current, answer, 'presented')
   const begun = await authorized(token => auth.beginPasswordChange(token, keys.authKey))
-  // The server accepted the current auth key: remembered now, whatever fails next (section 12.7, step 2).
-  await rememberEnrolled(user.email)
   const accountKey = await openWrap('password', keys.wrapKey, begun.password_wrap, user.seal_id, user.public_key)
   try {
     // The key this browser kept, if any, must be the one the server's wrap holds.
@@ -308,7 +260,6 @@ export async function stepUp(password: string): Promise<void> {
   const keys = await deriveKeys(password, answer, 'presented')
   const reply = await authorized(token => auth.stepUp(token, keys.authKey))
   steppedUp(user.id, reply.authenticated_at)
-  await rememberEnrolled(user.email)
 }
 
 /**
@@ -337,7 +288,6 @@ export async function replaceRecoveryCode(password: string): Promise<void> {
     await authorized(token => auth.replaceRecovery(token, {
       current_auth_key: keys.authKey, recovery_wrap: recovery.recoveryWrap, recovery_proof: recovery.recoveryProof,
     }))
-    await rememberEnrolled(user.email)
     if (await mayShowCodeOf(user.id)) showRecoveryCode(recovery.code, 'replaced')
   } finally {
     accountKey.fill(0)

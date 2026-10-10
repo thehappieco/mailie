@@ -1,5 +1,5 @@
-// Where this browser keeps the person's account key between page loads, and
-// which addresses it has seen enrol (docs/key-scheme.md sections 7 and 12.7).
+// Where this browser keeps the person's account key between page loads
+// (docs/key-scheme.md section 7).
 //
 // The vault is the kit's key at rest under Mailie's profile
 // (crypto/mailie.ts sealBrowserVault): the 32-byte account key encrypted
@@ -20,18 +20,19 @@
 // write (its storage full), keeps the key for this page only, and a reload
 // forgets it.
 //
-// The memory of enrolled addresses is the upgrade's defence (section 12.7):
-// an address this browser saw enrol in the key scheme never sends its
-// password in clear again, whatever a challenge answers. It is keyed by the
-// origin and the address as the server stores it (normaliseAddress), so
-// every spelling of one account is one record, and it is not wiped at
-// sign-out: it says nothing secret, and forgetting it would reopen the door
-// it closes. This page also keeps its own copy, which nothing clears, so a
-// browser that refuses IndexedDB still never sends the password of an
-// address it saw enrol for as long as the page lives.
+// This browser no longer remembers which addresses it saw enrol. That
+// memory was the upgrade's defence (section 12.7): an address it held never
+// sent its password in clear again. The upgrade left in the release after
+// the one that brought the key scheme, and with it every request that could
+// carry a password, so the memory defended nothing, and it is gone with its
+// store: version 2 of the database deletes the store of version 1, and the
+// addresses in it, the first time a page of this release opens it. A page of
+// the release before, still open in another tab, then finds the database
+// newer than the one it asks for, and keeps the key in its own memory only,
+// as in a browser that refuses IndexedDB, until it is reloaded.
 
 import { toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
-import { isMailieError, normaliseAddress, openBrowserVault, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope, type PrivateKey } from '../crypto/mailie'
+import { isMailieError, openBrowserVault, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope, type PrivateKey } from '../crypto/mailie'
 
 interface VaultRecord {
   version: 1
@@ -61,8 +62,11 @@ interface VaultRecord {
 }
 
 const database = 'mailie-browser-account'
+/** Version 2: the vault alone; version 1 also kept the enrolled addresses (formerEnrolledStore). */
+const version = 2
 const vaultStore = 'vault'
-const enrolledStore = 'enrolled'
+/** Version 1's store of the addresses this browser saw enrol, for the upgrade: deleted at the upgrade to version 2, never written. */
+const formerEnrolledStore = 'enrolled'
 const slot = 'current'
 
 /** The record kept for this page when IndexedDB is refused; also the newest one this page wrote. */
@@ -78,10 +82,12 @@ function currentOrigin(): string {
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') { reject(new Error('browser storage unavailable')); return }
-    const request = indexedDB.open(database, 1)
+    const request = indexedDB.open(database, version)
     request.onupgradeneeded = () => {
-      request.result.createObjectStore(vaultStore)
-      request.result.createObjectStore(enrolledStore)
+      // A new browser gets the vault; one of version 1 keeps its vault, and its record, and loses the enrolled addresses.
+      const db = request.result
+      if (!db.objectStoreNames.contains(vaultStore)) db.createObjectStore(vaultStore)
+      if (db.objectStoreNames.contains(formerEnrolledStore)) db.deleteObjectStore(formerEnrolledStore)
     }
     request.onsuccess = () => resolve(request.result)
     request.onerror = () => reject(request.error)
@@ -258,38 +264,4 @@ export async function outlivedExpiry(): Promise<boolean> {
 /** forgetHeldAccountKey drops this page's own copy only, for a session another tab ended (and wiped already). */
 export function forgetHeldAccountKey(): void {
   held = null
-}
-
-const enrolledKey = (email: string) => `${currentOrigin()}|${normaliseAddress(email)}`
-
-/**
- * The addresses this page saw enrol, as enrolledKey spells them: what it
- * remembers even when IndexedDB is refused. Never cleared, not at sign-out
- * either; a reload starts it again from what IndexedDB kept.
- */
-const enrolledHere = new Set<string>()
-
-/** rememberEnrolled records that an address enrolled, or proved a zero-knowledge secret, in this browser (section 12.7). */
-export async function rememberEnrolled(email: string): Promise<void> {
-  let key: string
-  try { key = enrolledKey(email) } catch { return }
-  enrolledHere.add(key)
-  try {
-    await transaction<void>(enrolledStore, 'readwrite', (store, done) => { store.put(Date.now(), key); done(undefined) })
-  } catch { /* A browser that refuses storage remembers in this page only (enrolledHere) until a reload. */ }
-}
-
-/** rememberedEnrolled says whether this browser saw the address enrol, in any of the spellings the server takes for it. */
-export async function rememberedEnrolled(email: string): Promise<boolean> {
-  let key: string
-  try { key = enrolledKey(email) } catch { return false }
-  if (enrolledHere.has(key)) return true
-  try {
-    return await transaction<boolean>(enrolledStore, 'readonly', (store, done) => {
-      const request = store.get(key)
-      request.onsuccess = () => done(request.result !== undefined)
-    })
-  } catch {
-    return false
-  }
 }

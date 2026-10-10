@@ -493,7 +493,7 @@ describe('linking a mailbox with its first key', () => {
     expect(stepUp.stepUpPrompt.open).toBe(false)
     expect(posted(fetch)).toEqual([])
     const { describe: describeFailure } = await import('../src/ui/errors')
-    expect(describeFailure(store.connect.failure!)).toBe('Your account has no account key yet. Sign out and sign in again with your password to set it up, then try again.')
+    expect(describeFailure(store.connect.failure!)).toBe('Your account has no account key yet. Ask the administrator of this server for a reset link to set one up, then try again.')
   })
 
   it('asks for the step-up first when the session’s has less than two minutes left, and sends nothing until it is given', async () => {

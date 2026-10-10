@@ -671,7 +671,9 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   browser there, leave in the next release. Until then a challenge tells anyone who asks that an
   address has an account not yet upgraded (the key scheme's threat model, section 5.5). Ask
   everyone to sign in once on this version; whoever has not by the next one gets a reset
-  invitation from you (below).
+  invitation from you (below). The next release removes it
+  ([The upgrade leaves](#the-upgrade-leaves-the-release-after-the-key-schemes)): a server that goes
+  straight from a release before the key scheme to a later one has no upgrade at all.
 - **New passwords have at least twelve characters**; one chosen before keeps working, however
   short.
 - **Nothing needs configuring, but on a server under AWS KMS.** The first start makes a **salt
@@ -701,6 +703,7 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   version for the upgrade once more, and their browsers refuse, telling them to ask you: give each
   a reset invitation ([A forgotten password](#a-forgotten-password)), or have them clear the site's
   data in their browser. Restoring a backup from before this version onto it does the same.
+  Upgrading again to a later release, which has no upgrade, each of them needs a reset invitation.
 - **The API.** `POST /v1/auth/login` takes `{email, auth_key}`; `POST /v1/auth/signup` an
   enrolment; `POST /v1/auth/password` is gone, replaced by `/v1/auth/password/begin` and
   `/finish`; new routes answer the challenge, recovery, step-up, the reset invitation and the
@@ -738,6 +741,35 @@ The release that brings mailbox keys ([`key-scheme.md`](key-scheme.md) sections 
   the upgrade, with the version you kept, loses every mailbox key and grant written since: the
   mailboxes are read by the flag again, and the console writes their keys again when you upgrade
   again.
+
+### The upgrade leaves (the release after the key scheme's)
+
+The release after the one that brings the key scheme removes the upgrade of accounts made before it
+([`key-scheme.md`](key-scheme.md) section 12.7), the one time the console sent a password in
+clear. No migration runs and the schema does not change; **back up first**, as above, all the same.
+
+- **Accounts that never signed in during the release that brought the key scheme sign in no
+  more.** A person who signed up before the key scheme and did not sign in on that release has not
+  enrolled: the console sends their old password nowhere, and a sign-in of theirs fails as a wrong
+  password does. Give each a **reset invitation**, with the daemon stopped
+  (`mailserver user password --bootstrap --email ADDRESS`,
+  [A forgotten password](#a-forgotten-password)): with it they choose a new password and get a
+  recovery code and their account key, and their old password hash is cleared. If your server goes
+  straight from a release before the key scheme to this one or a later one, that is everyone who
+  has a password: plan a reset invitation for each, and send each link to its person only.
+- **Someone still signed in from before the key scheme** keeps that session until it ends (14 days
+  at most from its sign-in); the console tells them, in their account, that their password no
+  longer signs them in and to ask you for a reset link. They cannot link a mailbox or change their
+  password meanwhile.
+- **Nothing else changes for people who enrolled.** Their sign-in, recovery code and keys are as
+  they were. Their browsers forget the list of addresses that enrolled there, which only the
+  upgrade used.
+- **The API.** `POST /v1/auth/upgrade/login` and `/v1/auth/upgrade/enrol` answer `404`, and the
+  challenge answers `{salt, kdf}` without `upgrade` ([`console.md`](console.md#routes)). Their old
+  password hashes stay in the database, which nothing reads to sign anyone in, until a reset
+  clears each one.
+- **Going back** to the release that brought the key scheme is the copy and that version, as ever;
+  the upgrade then works again there for whoever has not enrolled.
 
 ```sh
 # Compose, from deploy/:
@@ -788,9 +820,11 @@ The copy is the database in clear apart from the credentials: delete it, and the
 the new version has proved itself.
 
 Going back from the release that brings the key scheme (migration 0013) puts back the old password
-hashes, and the browsers of the people who signed in on it remember that they enrolled: when you
-upgrade again, those people cannot sign in until you give each a reset invitation
-([A forgotten password](#a-forgotten-password)) or they clear the site's data in their browser.
+hashes and drops every enrolment made since. When you upgrade again, to a release after the one that
+brought the scheme, which has no upgrade, each of those people needs a reset invitation
+([A forgotten password](#a-forgotten-password)); upgrading again to that release itself, the
+browsers of the people who signed in on it remembered that they enrolled and refused the upgrade,
+with the same remedy, or clearing the site's data in their browser.
 
 ## A forgotten password
 
@@ -801,7 +835,10 @@ daemon stopped: `user password --bootstrap` prints a link, valid seven days and 
 person only. With it they choose a new password and get a new recovery code and a new account key;
 their sessions end then, and everything sealed to their old key goes: their personal mailboxes
 then need a new key, which they write in the console, and a team's mailboxes a reader to give them
-theirs again. Until the link is used, nothing of theirs changes; a newer one replaces it.
+theirs again. Until the link is used, nothing of theirs changes; a newer one replaces it. It is
+also the way back for a person who signed up before the key scheme and never enrolled
+([The upgrade leaves](#the-upgrade-leaves-the-release-after-the-key-schemes)): it gives them their
+first account key and recovery code, and clears their old password hash.
 
 It refuses, naming the mailboxes, while the person is the last who can read a team mailbox that
 has a key, even in a team they are alone in: nobody could give them its key again. On a team

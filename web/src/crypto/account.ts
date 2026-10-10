@@ -107,14 +107,14 @@ export interface Enrolled {
 
 /**
  * enrol makes a person's account key and recovery code, and wraps the key
- * under the password and the code, bound to the seal id the server answered
- * (sign-up, a reset, the upgrade; docs/key-scheme.md sections 12.1, 12.6 and
- * 12.7). The password is derived under the target the server answered with
- * the seal id, which is what it stores.
+ * under a new password and the code, bound to the seal id the server answered
+ * (sign-up and a reset; docs/key-scheme.md sections 12.1 and 12.6). The
+ * password is prepared as a new one and derived under the target the server
+ * answered with the seal id, which is what it stores.
  */
-export async function enrol(password: string, opened: Target & { seal_id: string }, use: PasswordUse): Promise<Enrolled> {
+export async function enrol(password: string, opened: Target & { seal_id: string }): Promise<Enrolled> {
   if (!isSealID(opened.seal_id)) throw new CeremonyError('security')
-  const keys = await deriveKeys(password, opened, use)
+  const keys = await deriveKeys(password, opened, 'new')
   let pair: { publicKey: Bytes; privateKey: Bytes } | undefined
   try {
     pair = await generateAccountKeys()

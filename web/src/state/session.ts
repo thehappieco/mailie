@@ -7,7 +7,7 @@
 // for a request that raced a newer sign-in.
 //
 // The ceremonies that start a session (signing in and up, a recovery, a
-// reset link, the upgrade) are state/account.ts's: each ends here, in
+// reset link) are state/account.ts's: each ends here, in
 // beginSession. Where a session ends without the person asking, the account
 // key this browser kept goes with it (docs/key-scheme.md section 7).
 

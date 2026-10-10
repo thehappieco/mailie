@@ -15,7 +15,7 @@
 // (binding, shape or vault), which the console catches by class and code;
 // the kit's other errors (AccountError, SealError, PlatformWrapError, the
 // platform profile's PlatformError) pass through as they are. The account's
-// ceremonies (sign-up, sign-in, recovery, the upgrade) use it through
+// ceremonies (sign-up, sign-in, recovery, a reset) use it through
 // crypto/account.ts; mailbox keys and their grants, through
 // crypto/mailbox.ts.
 
@@ -56,9 +56,9 @@ function lowerCodePoint(cp: number): string {
  * normaliseAddress is an address as the server stores it (docs/key-scheme.md
  * section 2; Go keyscheme.NormaliseAddress, held to the same vectors): white
  * space trimmed at both ends as Go's strings.TrimSpace does, and every letter
- * lowered by its simple mapping, as Go's strings.ToLower does. The browser
- * keys its memory of the addresses that enrolled with it, so every spelling
- * the server takes for one account is one record. It validates nothing.
+ * lowered by its simple mapping, as Go's strings.ToLower does, so every
+ * spelling the server takes for one account is one address. It validates
+ * nothing.
  */
 export function normaliseAddress(address: string): string {
   const cps = Array.from(address, c => c.codePointAt(0) ?? 0)

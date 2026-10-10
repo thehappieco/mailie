@@ -114,10 +114,11 @@ replaced at every recovery), and a hash of the recovery code's proof. A new pass
 twelve code points, which the console checks before it derives anything; a password being
 presented has no minimum.
 
-- **The challenge.** `POST /v1/auth/challenge {email}` answers `{salt, kdf}`: an enrolled person's
-  own, and for any other address (unknown, disabled, a person with no password) the address's
-  salt under the server's salt key and the default parameters, which is also what an account at
-  its target stores, so the answer does not say whether an address has an account. The salt key
+- **The challenge.** `POST /v1/auth/challenge {email}` answers `{salt, kdf}`, and nothing more: an
+  enrolled person's own, and for any other address (unknown, disabled, a person with no password,
+  a person from before the key scheme who never enrolled) the address's salt under the server's
+  salt key and the default parameters, which is also what an account at its target stores, so the
+  answer does not say whether an address has an account. The salt key
   is made at the daemon's first start and kept in the database sealed like a credential
   (`meta.kdf_salt_key`, under `MAIL_CREDENTIAL_KEY_HEX` or the KMS key). The browser refuses
   parameters or a salt outside the platform's bounds before it derives anything.
@@ -130,7 +131,7 @@ presented has no minimum.
   (`current_auth_key`), and no session ends. An unknown address, a disabled person, a
   person who has not enrolled and a person with no password cost the same work as a wrong auth key
   and get the same answer (`unauthorized`): an auth key is checked against a dummy verifier in all
-  of them. At most two checks of people's secrets run at once.
+  of them. At most two checks of people's secrets run at once. No route takes a password in clear.
 - **Signing up.** An invitation's link opens the sign-up: `POST /v1/auth/signup/open {invite,
   email}` checks the invitation as the sign-up will and answers `{salt, kdf, seal_id}`, the
   address's target and the person's **seal id**, the UUID every wrap and grant binds them by,
@@ -165,7 +166,7 @@ presented has no minimum.
   (`not_authorized`) and changes nothing. It ends the recoveries opened with the old code.
 - **Step-up.** `POST /v1/auth/stepup {auth_key}` proves the session's own person again: it checks
   the auth key of that person only and refreshes that one session's step-up time
-  (`{authenticated_at}`), as a sign-in, a sign-up or an enrolment sets it. The routes that write a
+  (`{authenticated_at}`), as a sign-in, a sign-up or a reset sets it. The routes that write a
   mailbox key or a grant for someone else refuse a session whose step-up time is more than ten
   minutes old, or none, with `403` (`not_authorized`) and nothing written
   ([`key-scheme.md`](key-scheme.md) section 11): linking a mailbox (`POST /v1/accounts`), giving
@@ -176,29 +177,26 @@ presented has no minimum.
   or on a mailbox without a key included, need none. A sign-in counts for its first ten minutes.
   `GET /v1/auth/me` reports the session's `authenticated_at` (0: none), so the console can ask for
   the password again before it calls such a route rather than after a refusal.
-- **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
-  minutes, stored as SHA-256 and bound to the person; for a password change and a re-derivation,
-  to the session and the auth key that earned the ticket, and for a recovery to the recovery proof
-  that opened it, each kept as SHA-256: whoever saw only the answer that carried the ticket cannot
-  finish it. The upgrade's enrolment ticket is bound to no secret, a residual of this release
-  ([`key-scheme-threat-model.md`](key-scheme-threat-model.md) section 5.12). A ticket that is not
-  one costs no Argon2id to refuse, and a refused one stays its own. A ceremony that changes the
-  password (a change, a re-derivation, a recovery, a reset, an enrolment) spends every other ticket
-  of the person; replacing the recovery code spends only the recoveries opened with the old code,
-  and a password change or re-derivation in flight goes on, since the password it proved has not
-  changed.
-- **The upgrade, in this release only.** A person who signed up before the key scheme has a
-  password hashed on the server and no account key; their challenge adds `upgrade: true`. Their
-  browser sends the password in clear **one last time**, `POST /v1/auth/upgrade/login {email,
-  password}`, which checks it against the old hash and answers `{ticket, seal_id, salt, kdf}` (the
-  person's seal id, and the target the enrolment stores), never a session; then
-  `POST /v1/auth/upgrade/enrol {ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap,
-  recovery_proof}` enrols them with the same password, clears the old hash, ends their other
-  sessions and signs this browser in. Enrolment is one way (the schema refuses undoing it): from
-  then on the server answers their password in clear as a wrong one, and the console, which
-  remembers every address that enrolled in this browser, never sends it. The route and the
-  `upgrade` answer leave in the next release; a person who has not signed in by then gets a reset
-  invitation.
+- **Tickets** (re-derivation, password change, recovery) are single-use, valid ten minutes, stored
+  as SHA-256 and bound to the person; for a password change and a re-derivation, to the session and
+  the auth key that earned the ticket, and for a recovery to the recovery proof that opened it, each
+  kept as SHA-256: whoever saw only the answer that carried the ticket cannot finish it. A ticket
+  that is not one costs no Argon2id to refuse, and a refused one stays its own. The schema still
+  admits the upgrade's purpose, `enrol`, which nothing issues now and no ceremony takes (below). A
+  ceremony that changes the password (a change, a re-derivation, a recovery, a reset) spends every
+  other ticket of the person; replacing the recovery code spends only the recoveries opened with the
+  old code, and a password change or re-derivation in flight goes on, since the password it proved
+  has not changed.
+- **The upgrade, removed.** The release that brought the key scheme let a person who signed up
+  before it, with a password hashed on the server and no account key, send that password in clear
+  **one last time** (`POST /v1/auth/upgrade/login` and `/enrol`, announced by the challenge's
+  `upgrade: true`) and enrol with it. The next release removed both routes and the `upgrade`
+  answer ([`key-scheme.md`](key-scheme.md) section 12.7): they are not found now, and the server
+  checks no password in clear. A person who did not sign in during that release has not enrolled:
+  their challenge answers their address's target, and every sign-in of theirs fails as a wrong
+  password does, after the same work. Their old hash stays in the database (no migration), and no
+  sign-in reads it, until a reset invitation, below, enrols them and clears it: that is their way
+  back.
 - **A lost password and recovery code.** The operator prints a **reset invitation** with the
   daemon stopped: `mailserver user password --bootstrap --email X [--force]`. It sets no password:
   it prints a single-use link, `<MAIL_PUBLIC_URL>/#reset=…&email=…`, valid seven days (the code in
@@ -217,7 +215,8 @@ presented has no minimum.
   A disabled person's link works only once they are enabled again; disabling a person deletes
   their invitations and tickets. There is no route that makes one, by design. `--email -` reads
   the address from standard input. It is also how a person who signs in through an extension, and
-  has no password, is given one.
+  has no password, is given one, and how a person from before the key scheme who never enrolled
+  signs in again: completing it enrols them.
 
 ### The console's half
 
@@ -245,8 +244,8 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   console next runs there, whatever happens to the session meanwhile ([`key-scheme-threat-model.md`](key-scheme-threat-model.md)
   section 4.6). The page asks its own copy first, so a browser that refuses IndexedDB, or opens it
   and refuses the write, keeps the key for the page only.
-- **The recovery code is shown once**, after a sign-up, a recovery, a reset link and the upgrade,
-  and after the person replaces theirs, in a dialog that stays until they say they saved it
+- **The recovery code is shown once**, after a sign-up, a recovery and a reset link, and after the
+  person replaces theirs, in a dialog that stays until they say they saved it
   (`components/RecoveryCodeDialog.vue`); nothing keeps it once it closes.
 - **A new recovery code** (`components/AccountPanel.vue`) asks for the password every time,
   derives the current auth key under the account's own salt and parameters, and sends it with the
@@ -267,17 +266,17 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **The links.** An invitation (`#invite=…&email=…`) starts with `signup/open`; a reset link
   (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
-- **The upgrade.** The console remembers, per origin and per address as the server stores it, every
-  address that enrolled or proved an auth key or a recovery code in this browser, as soon as the
-  server accepts the proof or the enrolment, whatever fails after it (an answer that names another
-  key, a vault that refuses the key). The memory is not wiped at sign-out, and the page keeps its
-  own copy too, so a browser that refuses IndexedDB remembers until a reload. For a remembered
-  address it refuses the challenge's `upgrade` and sends nothing, and tells the person to tell the
-  server's administrator, who can send a reset link if the server was put back from an older copy;
-  otherwise the password goes once to `upgrade/login`, and the same password, derived, to
-  `upgrade/enrol`. A password the platform's preparation refuses as it is asks for a new one. A
-  person still signed in from before the upgrade (no `user.public_key`) is asked to sign in again
-  to change their password or recovery code.
+- **No password is sent**, in any request, whatever a challenge answers: the sign-in derives and
+  sends the auth key alone, and ignores an `upgrade` member as it ignores any member it does not
+  know, so the sign-in form says, as the forms that choose a new password do, that the password
+  never leaves the browser. The console keeps no memory of enrolled addresses: that memory
+  defended only the upgrade's one password in clear, and left with it; the account key's database
+  drops the store an older console kept, with the addresses in it, the first time a page of this
+  release opens it. A person from before the key scheme who never enrolled is told what a wrong
+  password is told. One still signed in from before it (no `user.public_key`) is told in their
+  account that their password no longer signs them in and to ask the administrator for a reset
+  link, and is offered neither a password change nor a recovery code, nor asked to sign in
+  again, which would not work.
 
 ### Invitations
 
@@ -400,10 +399,10 @@ says the person is, and answers its page with the `Session` that comes back, exa
   `POST /v1/auth/challenge`, `/v1/auth/login`, `/v1/auth/signup/open`, `/v1/auth/signup`,
   `/v1/auth/reset/open`, `/v1/auth/reset`,
   `/v1/auth/invites/accept`, `/v1/auth/password/begin` and `/finish`, `/v1/auth/recover/open` and
-  `/finish`, `/v1/auth/recovery`, `/v1/auth/stepup`, `/v1/auth/upgrade/login` and `/enrol`,
-  `/v1/users/invites` and `/v1/workspaces/{id}/invites`. No salt key is made there. The command line's `--bootstrap` commands
-  still write to the database, but an invitation they print signs nobody up there. Left at its zero
-  value nothing changes.
+  `/finish`, `/v1/auth/recovery`, `/v1/auth/stepup`, `/v1/users/invites` and
+  `/v1/workspaces/{id}/invites`. No salt key is made there. The command line's `--bootstrap`
+  commands still write to the database, but an invitation they print signs nobody up there. Left at
+  its zero value nothing changes.
 
 ### Keys and scopes
 
@@ -430,9 +429,9 @@ their grant on it and their consent.
 ### Rate limits
 
 Sign-in and sign-up: 60 a minute per address (burst 20) and 5 a minute per email address, before
-any hashing. That second budget is the account's, whichever route spends it: a recovery, a reset,
-the upgrade's sign-in and a session's step-up, password change and recovery code replacement (keyed
-by the person's stored address) all draw on the same 5. Authenticated requests spend from a bucket
+any hashing. That second budget is the account's, whichever route spends it: a recovery, a reset
+and a session's step-up, password change and recovery code replacement (keyed by the person's
+stored address) all draw on the same 5. Authenticated requests spend from a bucket
 per address (600 a minute, burst 60). A wrong key secret spends from a tight bucket for that key's
 prefix (30 a minute, burst 10), and a key whose prefix does not exist from a tight bucket for the
 address, consulted only once the prefix is not found. No failure is charged to the address as a
@@ -648,7 +647,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | Route | Who | What |
 |---|---|---|
 | `GET /v1/healthz` | anyone | `{status, version, uptime_seconds}` |
-| `POST /v1/auth/challenge` | anyone | `{email}` → `{salt, kdf, upgrade?}`; `upgrade` in this release only |
+| `POST /v1/auth/challenge` | anyone | `{email}` → `{salt, kdf}`; the release that brought the key scheme also answered `upgrade`, removed since |
 | `POST /v1/auth/login` | anyone | `{email, auth_key}` → `Session` with `password_wrap`, and `rederive {salt, kdf, ticket}` when the account is off its target |
 | `POST /v1/auth/signup/open` | anyone | `{invite, email}` → `{salt, kdf, seal_id}`; checks the invitation as the sign-up will |
 | `POST /v1/auth/signup` | anyone | `{invite, email, name, seal_id, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
@@ -656,8 +655,6 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/auth/reset` | anyone | `{reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; a new account key, every session and grant of the old one ends |
 | `POST /v1/auth/recover/open` | anyone | `{email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf, ticket}` |
 | `POST /v1/auth/recover/finish` | anyone | `{ticket, current_recovery_proof, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends; `current_recovery_proof` is the proof that opened the recovery (`recover/open`'s), `recovery_proof` the new code's |
-| `POST /v1/auth/upgrade/login` | anyone | `{email, password}` → `{ticket, seal_id, salt, kdf}`; in this release only |
-| `POST /v1/auth/upgrade/enrol` | anyone | `{ticket, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; in this release only |
 | `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension; `user.seal_id`, `user.public_key`, `session.authenticated_at` |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password/begin` | session | `{current_auth_key}` → `{password_wrap, salt, kdf, ticket}` |
@@ -870,8 +867,9 @@ one ([`key-scheme.md`](key-scheme.md) section 16):
   grant at epoch 1 sealed to their own `user.public_key` under their `seal_id`, sent as
   `public_key`, `namespace` and `grant` in the `POST /v1/accounts` that creates the mailbox, by the
   password form and the OAuth flows alike, and the private key zeroed before the page leaves for the
-  provider. A person without an account key (signed in from before the upgrade) is told to sign in
-  again (`not_enrolled`) before anything is asked or sent. Finishing an abandoned link sends no
+  provider. A person without an account key (signed up before the key scheme, never enrolled, and
+  still signed in from then) is told to ask the administrator for a reset link (`not_enrolled`)
+  before anything is asked or sent. Finishing an abandoned link sends no
   key: the mailbox has its own.
 - **Giving Read** (`state/team.ts` `saveGrant`): Read added on a mailbox that has a key (the
   directory's `epoch`) to a member with an account key reads the member again

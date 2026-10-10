@@ -24,7 +24,11 @@ export const targetOf = (email: string) => saltOf(`target|${normalise(email)}`)
 let serial = 0
 const random = (n = 32) => toBase64URL(crypto.getRandomValues(new Uint8Array(n)))
 
-/** A person as the server stores them. legacyPassword: someone who signed up before the key scheme. */
+/**
+ * A person as the server stores them. One who signed up before the key
+ * scheme and never enrolled has no public key and an empty authKey: nothing
+ * signs them in, and a reset link enrols them.
+ */
 export interface Stored {
   id: string
   email: string
@@ -37,15 +41,14 @@ export interface Stored {
   passwordWrap: string
   recoveryWrap: string
   recoveryProof: string
-  legacyPassword?: string
 }
 
 /**
  * A ticket: a password change's and a re-derivation's are bound to a session
  * (token) and to the auth key that earned it, a recovery's to the recovery
- * proof that opened it (proof); the upgrade's enrolment to neither.
+ * proof that opened it (proof).
  */
-interface Ticket { purpose: 'password' | 'rederive' | 'recover' | 'enrol'; userID: string; token?: string; proof?: string; salt: string }
+interface Ticket { purpose: 'password' | 'rederive' | 'recover'; userID: string; token?: string; proof?: string; salt: string }
 interface Session { userID: string; authenticatedAt: number; ended?: boolean }
 
 export interface Call { path: string; body: Record<string, unknown>; token: string }
@@ -88,7 +91,6 @@ export function accountServer() {
     Object.assign(p, {
       publicKey: body.public_key as string, salt, kdf: body.kdf as typeof DEFAULT_KDF, authKey: body.auth_key as string,
       passwordWrap: body.password_wrap as string, recoveryWrap: body.recovery_wrap as string, recoveryProof: body.recovery_proof as string,
-      legacyPassword: undefined,
     })
   }
 
@@ -116,16 +118,19 @@ export function accountServer() {
     const session = sessions.get(token)
     const signedIn = session && !session.ended ? byID(session.userID) : undefined
     const person = people.get(normalise(String(body.email ?? '')))
+    // Only an enrolled person proves a secret, as the server checks everyone else against a dummy.
+    const enrolled = person && person.authKey !== '' ? person : undefined
     switch (path) {
       case '/v1/auth/challenge':
-        if (person && !person.legacyPassword) return json({ salt: person.salt, kdf: person.kdf })
-        return json({ salt: targetOf(String(body.email)), kdf: DEFAULT_KDF, ...(person?.legacyPassword ? { upgrade: true } : {}) })
+        // An enrolled person's stored salt and parameters; any other address, a person who never enrolled included, its target.
+        if (enrolled) return json({ salt: enrolled.salt, kdf: enrolled.kdf })
+        return json({ salt: targetOf(String(body.email)), kdf: DEFAULT_KDF })
       case '/v1/auth/login': {
-        if (!person || person.legacyPassword || body.auth_key !== person.authKey) return failure('unauthorized', 401)
-        const reply = open(person)
-        const target = targetOf(person.email)
-        const rederive = person.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: person.id, token: reply.token, proof: person.authKey, salt: target }) }
-        return json({ ...reply, password_wrap: person.passwordWrap, ...(rederive ? { rederive } : {}) })
+        if (!enrolled || body.auth_key !== enrolled.authKey) return failure('unauthorized', 401)
+        const reply = open(enrolled)
+        const target = targetOf(enrolled.email)
+        const rederive = enrolled.salt === target ? undefined : { salt: target, kdf: DEFAULT_KDF, ticket: ticket({ purpose: 'rederive', userID: enrolled.id, token: reply.token, proof: enrolled.authKey, salt: target }) }
+        return json({ ...reply, password_wrap: enrolled.passwordWrap, ...(rederive ? { rederive } : {}) })
       }
       case '/v1/auth/signup/open': {
         const invite = invites.get(String(body.invite))
@@ -157,10 +162,10 @@ export function accountServer() {
         return json(open(p))
       }
       case '/v1/auth/recover/open':
-        if (!person || person.legacyPassword || body.recovery_proof !== person.recoveryProof) return failure('unauthorized', 401)
+        if (!enrolled || body.recovery_proof !== enrolled.recoveryProof) return failure('unauthorized', 401)
         return json({
-          seal_id: person.sealID, public_key: person.publicKey, recovery_wrap: person.recoveryWrap, salt: targetOf(person.email), kdf: DEFAULT_KDF,
-          ticket: ticket({ purpose: 'recover', userID: person.id, proof: person.recoveryProof, salt: targetOf(person.email) }),
+          seal_id: enrolled.sealID, public_key: enrolled.publicKey, recovery_wrap: enrolled.recoveryWrap, salt: targetOf(enrolled.email), kdf: DEFAULT_KDF,
+          ticket: ticket({ purpose: 'recover', userID: enrolled.id, proof: enrolled.recoveryProof, salt: targetOf(enrolled.email) }),
         })
       case '/v1/auth/recover/finish': {
         // Only with the proof that opened the recovery, and the ticket stays its own otherwise.
@@ -171,17 +176,6 @@ export function accountServer() {
         Object.assign(p, { salt: t.salt, authKey: body.auth_key, passwordWrap: body.password_wrap, recoveryWrap: body.recovery_wrap, recoveryProof: body.recovery_proof })
         endAll(p.id)
         return new Response(null, { status: 204 })
-      }
-      case '/v1/auth/upgrade/login':
-        if (!person?.legacyPassword || body.password !== person.legacyPassword) return failure('unauthorized', 401)
-        return json({ ticket: ticket({ purpose: 'enrol', userID: person.id, salt: targetOf(person.email) }), seal_id: person.sealID, salt: targetOf(person.email), kdf: DEFAULT_KDF })
-      case '/v1/auth/upgrade/enrol': {
-        const t = take(body.ticket, 'enrol')
-        if (!t) return failure('not_authorized', 403)
-        const p = byID(t.userID)
-        enrolFrom(p, body, t.salt)
-        endAll(p.id)
-        return json(open(p))
       }
     }
     if (!signedIn) return failure('unauthorized', 401)

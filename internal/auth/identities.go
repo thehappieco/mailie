@@ -217,11 +217,11 @@ func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, e
 
 // createPasswordlessTx creates a person who signs in through an identity
 // provider, as sign-up creates one: an instance member, never an owner, with
-// what the workspace source creates for a person. They have no password: the
-// hash is empty, which nothing matches (verifyPassword), and
-// password_changed_at is 0. The instance invites still waiting for their
-// address are spent, as signing up spends them: none of them can sign the
-// address up any more.
+// what the workspace source creates for a person. They have no password: no
+// hash, no auth verifier (an empty one, which verifyPersonSecret checks
+// against its dummy, so nothing matches), and password_changed_at is 0. The
+// instance invites still waiting for their address are spent, as signing up
+// spends them: none of them can sign the address up any more.
 func (u *Users) createPasswordlessTx(ctx context.Context, tx *sql.Tx, email, name string, now time.Time) (string, error) {
 	userID, err := newID("usr_")
 	if err != nil {

@@ -85,7 +85,8 @@ type User struct {
 	// identity provider (SignInExternal) and has never been given a
 	// password: no password signs them in, and none can be changed. It is
 	// true for a person enrolled in the key scheme (Enrolled) and for one
-	// whose old password the server still checks, once, for the upgrade.
+	// who signed up before it and never enrolled, whose old password hash no
+	// sign-in checks any more: a reset invitation is their way back.
 	HasPassword bool
 	// Enrolled is a person enrolled in the key scheme (docs/key-scheme.md
 	// section 12): their password never reaches the server.

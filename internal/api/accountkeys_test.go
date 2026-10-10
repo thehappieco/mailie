@@ -2,7 +2,6 @@ package api_test
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -89,54 +88,66 @@ func TestTheChallengeAnswersAnAccountsAddressAsOneWithoutAnAccount(t *testing.T)
 	}
 }
 
-func TestTheUpgradeOverRESTTakesThePasswordOnceAndNeverAgain(t *testing.T) {
+func TestAPersonWhoNeverEnrolledSignsInOverRESTOnlyAfterAResetLink(t *testing.T) {
+	// The upgrade left (docs/key-scheme.md section 12.7): its routes are not
+	// found, the challenge answers a person from before the key scheme what
+	// it answered their address before they existed, a sign-in fails exactly
+	// as for an address with no account, and a reset link is the way back.
 	h := newHarness(t, false)
-	old := authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
-	resp := h.do(t, http.MethodPost, "/v1/auth/challenge", "", `{"email":"old@example.com"}`)
-	if text := body(t, resp); !strings.Contains(text, `"upgrade":true`) {
-		t.Fatalf("the challenge for an account not upgraded: %s", text)
+	challenge := func(email string) string {
+		t.Helper()
+		resp := h.do(t, http.MethodPost, "/v1/auth/challenge", "", jsonOf(t, map[string]any{"email": email}))
+		text := body(t, resp)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("challenge for %s: %d %s", email, resp.StatusCode, text)
+		}
+		return text
 	}
-	upgradeLogin := func(email, password string) (int, string) {
-		resp := h.do(t, http.MethodPost, "/v1/auth/upgrade/login", "",
-			jsonOf(t, map[string]any{"email": email, "password": password}))
+	before := challenge("old@example.com")
+	old := authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
+	if after := challenge("old@example.com"); after != before || strings.Contains(after, "upgrade") {
+		t.Errorf("the challenge answered %s before the person and %s after", before, after)
+	}
+	signIn := func(email string) (int, string) {
+		resp := h.do(t, http.MethodPost, "/v1/auth/login", "", jsonOf(t, map[string]any{"email": email, "auth_key": authtest.AuthKey}))
 		return resp.StatusCode, body(t, resp)
 	}
-	status, text := upgradeLogin("old@example.com", authtest.Password)
-	var ticket struct {
-		Ticket string `json:"ticket"`
-		SealID string `json:"seal_id"`
+	oldStatus, oldText := signIn("old@example.com")
+	nobodyStatus, nobodyText := signIn("nobody@example.com")
+	if oldStatus != http.StatusUnauthorized || oldStatus != nobodyStatus || oldText != nobodyText {
+		t.Errorf("signing in a person who never enrolled: %d %s; an address with no account: %d %s", oldStatus, oldText,
+			nobodyStatus, nobodyText)
+	}
+	for _, path := range []string{"/v1/auth/upgrade/login", "/v1/auth/upgrade/enrol"} {
+		resp := h.do(t, http.MethodPost, path, "", jsonOf(t, map[string]any{"email": "old@example.com", "password": authtest.Password}))
+		if text := body(t, resp); resp.StatusCode != http.StatusNotFound {
+			t.Errorf("POST %s answered %d %s, want 404", path, resp.StatusCode, text)
+		}
+	}
+
+	code, _, err := h.users.CreateReset(t.Context(), old.ID, false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := h.do(t, http.MethodPost, "/v1/auth/reset/open", "", jsonOf(t, map[string]any{"reset": code, "email": "old@example.com"}))
+	var opened struct {
 		Salt   string `json:"salt"`
+		SealID string `json:"seal_id"`
 	}
-	if status != http.StatusOK || !decodeText(text, &ticket) || ticket.Ticket == "" || ticket.SealID != old.SealID ||
-		len(ticket.Salt) != 22 || strings.Contains(text, "token") {
-		t.Fatalf("the upgrade's sign-in answered %d %s, want a ticket, the seal id and the target, and no session", status, text)
+	decodeInto(t, resp, &opened)
+	if resp.StatusCode != http.StatusOK || opened.SealID != old.SealID || !strings.Contains(before, `"salt":"`+opened.Salt+`"`) {
+		t.Fatalf("the reset link opened %d %+v, want the seal id and the address's target", resp.StatusCode, opened)
 	}
-	newKey := secret("upgraded")
-	resp = h.do(t, http.MethodPost, "/v1/auth/upgrade/enrol", "",
-		jsonOf(t, enrolment(t, newKey, secret("code"), map[string]any{"ticket": ticket.Ticket})))
+	newKey := secret("after the reset")
+	resp = h.do(t, http.MethodPost, "/v1/auth/reset", "",
+		jsonOf(t, enrolment(t, newKey, secret("new code"), map[string]any{"reset": code, "email": "old@example.com"})))
 	var s sessionReply
 	decodeInto(t, resp, &s)
 	if resp.StatusCode != http.StatusOK || s.Token == "" || s.AuthenticatedAt == 0 || s.User.PublicKey == "" ||
-		s.User.SealID != ticket.SealID {
-		t.Fatalf("the enrolment answered %d %+v", resp.StatusCode, s)
-	}
-	// From then on: no upgrade in the challenge, and the password in clear
-	// answered exactly as a wrong one is.
-	resp = h.do(t, http.MethodPost, "/v1/auth/challenge", "", `{"email":"old@example.com"}`)
-	if text := body(t, resp); strings.Contains(text, "upgrade") {
-		t.Errorf("the challenge after the upgrade: %s", text)
-	}
-	rightStatus, right := upgradeLogin("old@example.com", authtest.Password)
-	wrongStatus, wrong := upgradeLogin("old@example.com", "not the password")
-	if rightStatus != http.StatusUnauthorized || right != wrong || wrongStatus != rightStatus {
-		t.Errorf("the old password after the upgrade: %d %s; a wrong one: %d %s", rightStatus, right, wrongStatus, wrong)
+		s.User.SealID != old.SealID {
+		t.Fatalf("the reset answered %d %+v", resp.StatusCode, s)
 	}
 	h.signInWith(t, "old@example.com", newKey)
-}
-
-// decodeText decodes JSON text into v, reporting whether it could.
-func decodeText(text string, v any) bool {
-	return json.Unmarshal([]byte(text), v) == nil
 }
 
 func TestARecoveryOverRESTKeepsTheAccountKeyAndEndsEverySession(t *testing.T) {
@@ -466,15 +477,13 @@ func TestASignInAndASessionsCeremoniesSpendOneBudgetPerAccount(t *testing.T) {
 	}
 }
 
-func TestTheRecoveryAndTheUpgradeAreRateLimitedPerAccount(t *testing.T) {
+func TestARecoveryIsRateLimitedPerAccount(t *testing.T) {
 	h := newHarnessWith(t, func(h *api.Handler) {
 		h.SignInLimits = ratelimit.DefaultSignIn([]netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")})
 	}, serviceOptions{})
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	authtest.NewLegacyUser(t, h.store, "old@example.com", auth.RoleMember)
 	for _, c := range []struct{ path, field, value, email string }{
 		{"/v1/auth/recover/open", "recovery_proof", secret("wrong"), "ana@example.com"},
-		{"/v1/auth/upgrade/login", "password", "not the password", "old@example.com"},
 	} {
 		attempt := func(email, from string) *http.Response {
 			req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, h.server.URL+c.path,
