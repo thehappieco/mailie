@@ -1029,6 +1029,9 @@ func TestAResetOfATeamMailboxsLastReaderNeedsForce(t *testing.T) {
 	team := teamOf(t, db, ana.ID)
 	addMember(t, db, team.ID, bea.ID)
 	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+	// A mailbox that has a key, which the reset takes from her with her
+	// grant.
+	authtest.KeyMailbox(t, db, mailbox, ana.ID)
 
 	var blocked *auth.BlockedError
 	if _, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli"); !errors.As(err, &blocked) ||
@@ -1069,6 +1072,7 @@ func TestAResetOfTheOnlyMemberOfATeamWhoReadsItsMailboxNeedsForce(t *testing.T) 
 	// but a reset leaves both, and the mailbox with nobody who can read it.
 	team := teamOf(t, db, ana.ID)
 	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+	authtest.KeyMailbox(t, db, mailbox, ana.ID)
 
 	var blocked *auth.BlockedError
 	if _, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli"); !errors.As(err, &blocked) ||
@@ -1149,6 +1153,7 @@ func TestAResetLinkRefusesTheLastReaderBeforeAPasswordIsChosen(t *testing.T) {
 	team := teamOf(t, db, ana.ID)
 	addMember(t, db, team.ID, bea.ID)
 	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+	authtest.KeyMailbox(t, db, mailbox, ana.ID)
 	grantRead(t, db, mailbox, bea.ID)
 	code, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli")
 	if err != nil {
@@ -1215,6 +1220,8 @@ func teamMailbox(t *testing.T, db *store.Store, teamID, linkedBy string) string 
 	return id
 }
 
+// grantRead gives a member read on a mailbox, with a grant at its current
+// epoch when it has a key: they read it from then on.
 func grantRead(t *testing.T, db *store.Store, accountID, userID string) {
 	t.Helper()
 	if _, err := db.Writer().ExecContext(t.Context(), `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read,
@@ -1222,13 +1229,22 @@ func grantRead(t *testing.T, db *store.Store, accountID, userID string) {
 		SELECT id, workspace_id, ?, 1, 0, 0, 0, '', 0, 0 FROM accounts WHERE id = ?`, userID, accountID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Writer().ExecContext(t.Context(), `INSERT INTO mailbox_grants(account_id, workspace_id, user_id, epoch,
+		grant, granted_by, created_at)
+		SELECT k.account_id, a.workspace_id, ?, max(k.epoch), ?, '', 0 FROM mailbox_keys k JOIN accounts a ON a.id = k.account_id
+		 WHERE k.account_id = ? GROUP BY k.account_id`, userID, authtest.Grant(t, 1), accountID); err != nil {
+		t.Fatal(err)
+	}
 }
 
+// revokeRead takes a member's read on a mailbox, and their grants with it.
 func revokeRead(t *testing.T, db *store.Store, accountID, userID string) {
 	t.Helper()
-	if _, err := db.Writer().ExecContext(t.Context(), `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`,
-		accountID, userID); err != nil {
-		t.Fatal(err)
+	for _, table := range []string{"mailbox_access", "mailbox_grants"} {
+		if _, err := db.Writer().ExecContext(t.Context(), `DELETE FROM `+table+` WHERE account_id = ? AND user_id = ?`,
+			accountID, userID); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

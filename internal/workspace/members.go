@@ -29,8 +29,13 @@ type Member struct {
 	// their read cannot be revoked, nor their membership disabled or removed,
 	// until someone else reads them (ErrLastReader).
 	LastReaderOf []string
-	JoinedAt     time.Time
-	UpdatedAt    time.Time
+	// SealID and PublicKey are what a grant to the person is sealed to and
+	// bound by (docs/key-scheme.md sections 3.1 and 9.1): their seal id,
+	// and their account public key, nil until they enrol.
+	SealID    string
+	PublicKey []byte
+	JoinedAt  time.Time
+	UpdatedAt time.Time
 }
 
 // Active reports whether the membership counts: active, of a person active
@@ -38,7 +43,7 @@ type Member struct {
 func (m Member) Active() bool { return m.Status == StatusActive && !m.PersonDisabled }
 
 const memberColumns = `m.workspace_id, m.user_id, u.email, u.name, m.role, m.status, u.status <> 'active',
-	m.created_at, m.updated_at`
+	u.seal_id, u.public_key, m.created_at, m.updated_at`
 
 func scanMember(row rowScanner) (Member, error) {
 	var (
@@ -46,7 +51,7 @@ func scanMember(row rowScanner) (Member, error) {
 		created, updated int64
 	)
 	err := row.Scan(&m.WorkspaceID, &m.UserID, &m.Email, &m.Name, &m.Role, &m.Status, &m.PersonDisabled,
-		&created, &updated)
+		&m.SealID, &m.PublicKey, &created, &updated)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Member{}, ErrNotMember
@@ -83,7 +88,7 @@ func memberOn(ctx context.Context, q querier, workspaceID, userID string) (Membe
 		}
 		m.LastOwner = others == 0
 	}
-	if m.LastReaderOf, err = lastReaderOf(ctx, q, userID, workspaceID, nil, false); err != nil {
+	if m.LastReaderOf, err = lastReaderOf(ctx, q, userID, lastReaders{workspaceID: workspaceID}); err != nil {
 		return Member{}, err
 	}
 	return m, nil
@@ -338,9 +343,10 @@ func expireInvitesByTx(ctx context.Context, tx *sql.Tx, workspaceID, userID stri
 }
 
 // leaveTx is what a member losing their place in a workspace takes with it:
-// their grants there, the consent attempts they started on its mailboxes,
-// and the team's invites still waiting for their address. The last-reader
-// rule is the caller's to have checked.
+// their grants there, flags and sealed grants of every epoch, the consent
+// attempts they started on its mailboxes, and the team's invites still
+// waiting for their address. The last-reader rule is the caller's to have
+// checked.
 func leaveTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error {
 	// Whatever consent attempt they started on a mailbox here ends: they
 	// manage none of them any more (dropAttemptsTx).
@@ -352,6 +358,13 @@ func leaveTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mailbox_access WHERE workspace_id = ? AND user_id = ?`,
 		workspaceID, userID); err != nil {
 		return fmt.Errorf("workspace: delete grants: %w", err)
+	}
+	// A disabled membership stays, and the foreign key that takes the sealed
+	// grants with a removed one would not: they go with the flag, here
+	// (docs/key-scheme.md section 12.13).
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mailbox_grants WHERE workspace_id = ? AND user_id = ?`,
+		workspaceID, userID); err != nil {
+		return fmt.Errorf("workspace: delete the sealed grants: %w", err)
 	}
 	// An invite to the team still waiting for the person's address would
 	// bring them straight back, with whatever role it names: it goes with

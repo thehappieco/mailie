@@ -4,10 +4,13 @@
 //
 // Every mailbox belongs to its workspace. Using one takes active membership
 // in its workspace and a grant on it: read, act and send each open one use.
-// Owners and admins of a workspace manage every mailbox in it by their role —
-// its card, re-authorizing it, who holds what on it — and read none of them
-// by being one; manage is stored only for members, for whom it means the
-// card and re-authorizing.
+// On a mailbox that has a key (docs/key-scheme.md section 8), reading also
+// takes the key, sealed to the person at its current epoch (sealed.go), by
+// the one rule of store.ReaderSQL; a member who holds the flag without it
+// waits for the key. Owners and admins of a workspace manage every mailbox in
+// it by their role — its card, re-authorizing it, who holds what on it — and
+// read none of them by being one; manage is stored only for members, for
+// whom it means the card and re-authorizing.
 //
 // This package holds the data and the rules the data must never break, the
 // protections: a team keeps an active owner, a team mailbox someone can read

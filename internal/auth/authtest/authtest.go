@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -93,6 +94,60 @@ func Wrap(t *testing.T) []byte {
 	}
 	w[0] = keyscheme.AccountWrapHeader
 	return w
+}
+
+// Grant is 88 random bytes with a grant's header at epoch: a grant's shape
+// (docs/key-scheme.md section 9.1), sealing nothing. The server only ever
+// checks the shape of a grant, which it cannot open.
+func Grant(t *testing.T, epoch int) []byte {
+	t.Helper()
+	if epoch < 0 || epoch > keyscheme.MaxEpoch {
+		t.Fatalf("authtest: epoch %d does not fit a grant's header", epoch)
+	}
+	g := make([]byte, keyscheme.GrantLen)
+	if _, err := rand.Read(g); err != nil {
+		t.Fatal(err)
+	}
+	copy(g, []byte{0x4d, 0x4c, 0x01, 0x01, 0x01})
+	binary.BigEndian.PutUint16(g[5:7], uint16(epoch)) //nolint:gosec // G115: checked to fit above
+	g[7] = 0
+	if err := keyscheme.CheckGrantShape(g, epoch); err != nil {
+		t.Fatalf("authtest: a grant at epoch %d: %v", epoch, err)
+	}
+	return g
+}
+
+// LinkKey is what a linker's browser sends with a link (docs/key-scheme.md
+// section 12.11): the public half of a fresh mailbox key pair, a fresh
+// namespace, and a grant's shape at epoch 1.
+func LinkKey(t *testing.T) workspace.LinkKey {
+	t.Helper()
+	return workspace.LinkKey{PublicKey: PublicKey(t), Namespace: keyscheme.NewSealID(), Grant: Grant(t, 1)}
+}
+
+// KeyMailbox writes the first key of a mailbox that has none, as writerID's
+// console would right after a sign-in (docs/key-scheme.md section 12.14):
+// with a grant for the writer and for every other active member who holds
+// read and has an account key. The writer must read the mailbox and have an
+// account key; nothing asks for a step-up. It returns the key pair.
+func KeyMailbox(t *testing.T, db *store.Store, accountID, writerID string) workspace.KeyPair {
+	t.Helper()
+	ws := workspace.NewRepository(db, nil)
+	state, err := ws.KeyState(t.Context(), accountID, writerID)
+	if err != nil {
+		t.Fatalf("authtest: read the mailbox key: %v", err)
+	}
+	grants := []workspace.GrantTo{{UserID: writerID, Grant: Grant(t, 1)}}
+	for _, r := range state.KeylessReaders {
+		grants = append(grants, workspace.GrantTo{UserID: r.UserID, Grant: Grant(t, 1)})
+	}
+	key, err := ws.WriteFirstKey(t.Context(), accountID, writerID, workspace.FirstKey{
+		PublicKey: PublicKey(t), Namespace: keyscheme.NewSealID(), Grants: grants,
+	}, nil)
+	if err != nil {
+		t.Fatalf("authtest: key the mailbox: %v", err)
+	}
+	return key
 }
 
 // NewUser inserts an active user, enrolled in the key scheme with AuthKey

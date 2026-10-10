@@ -7,12 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/thehappieco/mailie/internal/store"
 )
 
 // Flags are what a grant lets its holder do with a mailbox.
 type Flags struct {
 	// Read is searching and reading messages, originals and attachments,
-	// listing folders, the mailbox's events and storage.
+	// listing folders, the mailbox's events and storage. Stored, it is the
+	// flag; on a mailbox that has a key, the flag reads only beside the
+	// person's grant at its current epoch, which Access reports.
 	Read bool
 	// Act is marking, starring, archiving, moving and trashing messages. It
 	// needs Read: an action names messages the actor reads.
@@ -78,10 +82,16 @@ type Grant struct {
 	GrantedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Sealed is the person holding a grant at the mailbox key's current
+	// epoch (a SealedGrant): on a mailbox that has a key, what reading needs
+	// beside the flag. Always false on a mailbox without one, which is read
+	// by the flag alone.
+	Sealed bool
 }
 
-const grantColumns = `g.account_id, g.workspace_id, g.user_id, g.read, g.act, g.send, g.manage, g.granted_by,
-	g.created_at, g.updated_at`
+// grantColumns are a Grant's, over mailbox_access aliased g.
+var grantColumns = `g.account_id, g.workspace_id, g.user_id, g.read, g.act, g.send, g.manage, g.granted_by,
+	g.created_at, g.updated_at, ` + store.CurrentGrantSQL("g.account_id", "g.user_id")
 
 func scanGrant(row rowScanner) (Grant, error) {
 	var (
@@ -89,7 +99,7 @@ func scanGrant(row rowScanner) (Grant, error) {
 		created, updated int64
 	)
 	err := row.Scan(&g.AccountID, &g.WorkspaceID, &g.UserID, &g.Read, &g.Act, &g.Send, &g.Manage, &g.GrantedBy,
-		&created, &updated)
+		&created, &updated, &g.Sealed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Grant{}, ErrNoGrant
@@ -101,7 +111,8 @@ func scanGrant(row rowScanner) (Grant, error) {
 }
 
 // Grant reads a person's grant on a mailbox, whether or not their membership
-// counts right now; ErrNoGrant when there is none.
+// counts right now, nor they hold the key; ErrNoGrant when there is none.
+// What they may do now is Access's.
 func (r *Repository) Grant(ctx context.Context, accountID, userID string) (Grant, error) {
 	return grantOn(ctx, r.store.Reader(), accountID, userID)
 }
@@ -116,12 +127,6 @@ func grantOn(ctx context.Context, q querier, accountID, userID string) (Grant, e
 	return scanGrant(q.QueryRowContext(ctx,
 		`SELECT `+grantColumns+` FROM mailbox_access g WHERE g.account_id = ? AND g.user_id = ?`, accountID, userID))
 }
-
-// activeGrant is the condition, over mailbox_access aliased g, that the
-// grant counts: its holder is an active member of the mailbox's workspace and
-// active on the instance.
-const activeGrant = `EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
-	WHERE m.workspace_id = g.workspace_id AND m.user_id = g.user_id AND m.status = 'active' AND u.status = 'active')`
 
 // ManagesTx is nil when userID manages a mailbox right now, inside the
 // caller's transaction: as an active owner or admin of its workspace, active
@@ -153,11 +158,15 @@ func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error 
 }
 
 // Access reads what a person may do with each mailbox named, as an active
-// member of its workspace active on the instance: read, act and send from
-// their grant, and manage from their grant or from their role, owner or
-// admin, which manages every mailbox of the workspace. A mailbox they neither
-// hold a grant on nor manage by their role is absent: the caller's own
-// "access" on each mailbox they see.
+// member of its workspace active on the instance: read as the one rule says
+// (store.ReaderSQL: the flag, and on a mailbox that has a key a grant at its
+// current epoch), act from their grant where they read, send from their
+// grant, and manage from their grant or from their role, owner or admin,
+// which manages every mailbox of the workspace. A mailbox they neither hold a
+// grant on nor manage by their role is absent: the caller's own "access" on
+// each mailbox they see. One they hold a grant on is present even when every
+// flag it reports is off: a member waiting for the key holds read and act and
+// reads nothing yet, and still sees the mailbox's card.
 func (r *Repository) Access(ctx context.Context, userID string, accountIDs []string) (map[string]Flags, error) {
 	return accessOn(ctx, r.store.Reader(), userID, accountIDs)
 }
@@ -171,14 +180,15 @@ func accessOn(ctx context.Context, q querier, userID string, accountIDs []string
 	if err != nil {
 		return nil, fmt.Errorf("workspace: encode ids: %w", err)
 	}
-	rows, err := q.QueryContext(ctx, `SELECT a.id, coalesce(g.read, 0), coalesce(g.act, 0), coalesce(g.send, 0),
-		       coalesce(g.manage, 0) OR m.role IN ('owner', 'admin')
+	rows, err := q.QueryContext(ctx, `SELECT id, reads, act AND reads, send, manage FROM (
+		SELECT a.id, coalesce(`+store.ReaderSQL("g")+`, 0) AS reads, coalesce(g.act, 0) AS act,
+		       coalesce(g.send, 0) AS send, coalesce(g.manage, 0) OR m.role IN ('owner', 'admin') AS manage
 		  FROM accounts a
 		  JOIN workspace_members m ON m.workspace_id = a.workspace_id AND m.user_id = ?1 AND m.status = 'active'
 		  JOIN users u ON u.id = m.user_id AND u.status = 'active'
 		  LEFT JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = m.user_id
 		 WHERE a.id IN (SELECT value FROM json_each(?2))
-		   AND (g.account_id IS NOT NULL OR m.role IN ('owner', 'admin'))`,
+		   AND (g.account_id IS NOT NULL OR m.role IN ('owner', 'admin')))`,
 		userID, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("workspace: read access: %w", err)
@@ -205,13 +215,15 @@ func accessOn(ctx context.Context, q querier, userID string, accountIDs []string
 type mailbox struct {
 	id, workspaceID string
 	kind            Kind
+	// personID is the person of a personal workspace's mailbox.
+	personID string
 }
 
 func mailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, error) {
 	var mb mailbox
-	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind, coalesce(w.person_id, '')
 		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ?`, accountID).
-		Scan(&mb.id, &mb.workspaceID, &mb.kind)
+		Scan(&mb.id, &mb.workspaceID, &mb.kind, &mb.personID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return mailbox{}, ErrNoMailbox
@@ -245,9 +257,40 @@ func (mb mailbox) grantable() error {
 // Who may grant what is the Check's to decide. Losing manage ends the
 // consent attempts the person started on the mailbox, in the same
 // transaction. What the keys they gave something to hold stands on its own.
+//
+// On a mailbox that has a key, read given to a person with an account key
+// comes with their grant, which SetGrantSealed takes: SetGrant refuses it
+// (ErrSealedGrantNeeded). Taking read deletes the person's grants on the
+// mailbox, every epoch's, in the same transaction.
 func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, flags Flags, grantedBy string, check Check) (Grant, error) {
+	return r.SetGrantSealed(ctx, accountID, userID, flags, nil, grantedBy, check)
+}
+
+// SetGrantSealed is SetGrant with the grant that gives read on a mailbox that
+// has a key (docs/key-scheme.md sections 9.3 and 12.13): the mailbox's
+// private key sealed to the person at its current epoch, written with the
+// flag in one transaction. The grant is required when the change adds read
+// on such a mailbox for a person with an account key (ErrSealedGrantNeeded),
+// and refused otherwise: with a change that does not add read
+// (ErrSealedGrantUnwanted: supplying the key, SupplyGrant, is how a member
+// who holds the flag gets one), on a mailbox without a key (ErrKeyless), and
+// for a person without an account key (ErrNotEnrolled), who is given read by
+// the flag alone and waits for the key. It must have a grant's shape
+// (keyscheme.ErrShape) at the mailbox's current epoch (ErrEpoch), and the
+// person no grant at that epoch yet (ErrSealedGrantExists).
+//
+// That the giver reads the mailbox themself, and has a fresh step-up when
+// the recipient is someone else, is the Check's to decide (ReadsNowTx).
+func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID string, flags Flags, sealed []byte, grantedBy string,
+	check Check,
+) (Grant, error) {
 	if err := flags.check(); err != nil {
 		return Grant{}, err
+	}
+	if sealed != nil {
+		if _, err := grantEpoch(sealed); err != nil {
+			return Grant{}, err
+		}
 	}
 	now := r.now().Unix()
 	var out Grant
@@ -281,12 +324,26 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 				return err
 			}
 		}
+		epoch, err := sealedWithReadTx(ctx, tx, accountID, userID, flags.Read && !before.Read, sealed)
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
 			  granted_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(account_id, user_id) DO UPDATE SET read = excluded.read, act = excluded.act, send = excluded.send,
 			  manage = excluded.manage, granted_by = excluded.granted_by, updated_at = excluded.updated_at`,
 			accountID, mb.workspaceID, userID, flags.Read, flags.Act, flags.Send, flags.Manage, grantedBy, now, now); err != nil {
 			return fmt.Errorf("workspace: set grant: %w", err)
+		}
+		if sealed != nil {
+			if err := insertSealedGrantTx(ctx, tx, accountID, mb.workspaceID, userID, epoch, sealed, grantedBy, now); err != nil {
+				return err
+			}
+		}
+		if before.Read && !flags.Read {
+			if err := dropSealedGrantsTx(ctx, tx, accountID, userID); err != nil {
+				return err
+			}
 		}
 		if before.Manage && !flags.Manage {
 			if err := dropAttemptsTx(ctx, tx, userID, accountID); err != nil {
@@ -309,7 +366,8 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 // Refused as SetGrant is on personal and operator mailboxes, and when it
 // would take read from the last person who can read the mailbox
 // (ErrLastReader). Losing manage, which only a member stores, ends the
-// consent attempts they started on it.
+// consent attempts they started on it. Losing read deletes their grants on
+// the mailbox, every epoch's, even where send or manage stay.
 func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop Flags, check Check) (Grant, error) {
 	if !drop.Any() {
 		drop = AllFlags()
@@ -349,6 +407,11 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 		}
 		if err != nil {
 			return fmt.Errorf("workspace: revoke: %w", err)
+		}
+		if before.Read && !left.Read {
+			if err := dropSealedGrantsTx(ctx, tx, accountID, userID); err != nil {
+				return err
+			}
 		}
 		if before.Manage && !left.Manage {
 			if err := dropAttemptsTx(ctx, tx, userID, accountID); err != nil {
@@ -390,7 +453,8 @@ func GrantLinkTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID
 func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT a.id, a.email, a.provider, a.state, a.linked_by, w.kind,
 		       a.sync_enabled_at, a.sync_enabled_by, a.sync_consent_version, a.sync_enabled_via = 'migration',
-		       (SELECT count(*) FROM mailbox_access g WHERE g.account_id = a.id AND g.read = 1 AND `+activeGrant+`)
+		       (SELECT count(*) FROM mailbox_access g WHERE g.account_id = a.id AND `+store.ReaderSQL("g")+`),
+		       coalesce(`+store.CurrentEpochSQL("a.id")+`, 0)
 		  FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
 		 WHERE a.workspace_id = ?
 		 ORDER BY a.created_at, a.rowid`, workspaceID)
@@ -407,7 +471,7 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string)
 			at   int64
 		)
 		if err := rows.Scan(&mb.AccountID, &mb.Email, &mb.Provider, &mb.State, &mb.LinkedBy, &kind,
-			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers); err != nil {
+			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers, &mb.Epoch); err != nil {
 			return nil, fmt.Errorf("workspace: list the directory: %w", err)
 		}
 		mb.Sync.At = unix(at)
@@ -435,14 +499,20 @@ type MailboxAccess struct {
 	// workspace's, or an operator mailbox's switch. Zero for a personal
 	// mailbox, which syncs under its person's.
 	Sync Consent
-	// Readers counts who can read it: active members, active on the
-	// instance, holding read.
+	// Readers counts who reads it now, by the one rule (store.ReaderSQL):
+	// active members, active on the instance, holding read, and on a
+	// mailbox that has a key a grant at its current epoch.
 	Readers int
 	// NoReader is a team mailbox nobody can read: it syncs nothing until
 	// someone can, and only an owner or an admin who removes it and links it
 	// again gets read on it again.
 	NoReader bool
-	Grants   []Grant
+	// Epoch is the mailbox key's current epoch; 0 for a mailbox without a
+	// key, which is read by the flag alone.
+	Epoch int
+	// Grants are who holds what on it; each says whether its person holds
+	// the key at the current epoch (Grant.Sealed).
+	Grants []Grant
 	// Keys are the live keys holding something on it: what each holds, who
 	// created it and who gave it last.
 	Keys []MailboxKey

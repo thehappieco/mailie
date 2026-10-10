@@ -22,34 +22,37 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 //   - an operator mailbox (no person, the operator workspace): the operator
 //     switched sync on for it;
 //   - a team mailbox (no person, a team): an owner or an admin of the team
-//     gave the workspace's consent, and someone can read it — an active
-//     member, active on the instance, holding read. A mailbox nobody can read
-//     indexes nothing more until someone can, or it is removed.
+//     gave the workspace's consent, and someone reads it (ReaderSQL: an
+//     active member, active on the instance, holding read, and on a mailbox
+//     that has a key a grant at its current epoch). A mailbox nobody reads
+//     indexes nothing more until someone does, or it is removed.
+//
+// A personal mailbox has no reader term: its person may lose their grant (a
+// reset) and write it a new key (docs/key-scheme.md section 12.12), and
+// nothing it stores is sealed yet, so it keeps syncing meanwhile.
 //
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
 // on for somebody else's personal mailbox, and a withdrawal stops it whatever
 // that column says.
-const syncEligible = `a.state = 'active' AND ` + syncPermitted
+var syncEligible = `a.state = 'active' AND ` + syncPermitted
 
 // syncPermitted is the consent half of the rule, as a boolean expression over
 // accounts aliased a. SyncPermitted reports it on its own; syncEligible adds
 // that the account is active.
-const syncPermitted = `CASE
+var syncPermitted = `CASE
 	WHEN a.owner_user_id IS NOT NULL THEN EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id
 	                                                AND u.status = 'active' AND u.sync_consent_at <> 0)
 	WHEN a.workspace_id = 'wsp_operator' THEN a.sync_enabled_at <> 0
 	ELSE a.sync_enabled_at <> 0 AND ` + hasReader + ` END`
 
-// hasReader is whether a mailbox, aliased a, has a reader: an active member
-// of its workspace, active on the instance, holding read on it.
-const hasReader = `EXISTS (SELECT 1 FROM mailbox_access r
-	  JOIN workspace_members rm ON rm.workspace_id = r.workspace_id AND rm.user_id = r.user_id
-	  JOIN users ru ON ru.id = r.user_id
-	 WHERE r.account_id = a.id AND r.read = 1 AND rm.status = 'active' AND ru.status = 'active')`
+// hasReader is whether a mailbox, aliased a, has a reader, by the one rule
+// (ReaderSQL).
+var hasReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account_id = a.id AND ` + ReaderSQL("r") + `)`
 
 // SyncEligibleAccounts lists every account the engine should be syncing,
 // oldest first.
 func (s *Store) SyncEligibleAccounts(ctx context.Context) ([]string, error) {
+	//nolint:gosec // G202: syncEligible is built from constants alone (ReaderSQL's fragments); nothing is interpolated
 	rows, err := s.r.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+syncEligible+` ORDER BY a.created_at, a.id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list accounts eligible to sync: %w", err)
@@ -132,7 +135,7 @@ func (s *Store) TeamSyncNotices(ctx context.Context) (keptStopped, noReader []st
 }
 
 // The queries of TeamSyncNotices.
-const (
+var (
 	teamsKeptStopped = `SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
 		WHERE w.kind = 'team' AND a.sync_enabled_via = 'migration' AND a.sync_enabled_at = 0 AND ` + hasReader + `
 		ORDER BY a.created_at, a.id`

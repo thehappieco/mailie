@@ -284,6 +284,13 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// Mailbox keys and the grants sealed with them: her own mailbox's, which
+	// go with it; the team mailbox bob keyed, sealed to both of them, whose
+	// grant of hers goes with her; and the one she linked into the team and
+	// keyed, sealed to bob too, which stays without her name.
+	authtest.KeyMailbox(t, f.db, anaHome, ana.UserID)
+	authtest.KeyMailbox(t, f.db, teamBox.ID, bob.UserID)
+	authtest.KeyMailbox(t, f.db, linked.ID, ana.UserID)
 	anaAlone, err := workspaces.CreateTeam(t.Context(), "Ana alone", ana.UserID, nil)
 	if err != nil {
 		t.Fatal(err)

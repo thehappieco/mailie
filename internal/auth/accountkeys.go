@@ -1042,10 +1042,11 @@ type Reset struct {
 // deletes every grant sealed to their old key. A person's earlier reset
 // invitation still waiting is replaced.
 //
-// Deleting a person's grants takes "read" from them, so without force it is
-// refused, with a BlockedError naming the mailboxes, while the person is the
-// last reader of a team mailbox, whether or not anyone else belongs to the
-// team (resetBlocksTx). Completing it checks again, unless it was forced.
+// Deleting a person's grants takes "read" from them on every mailbox that has
+// a key, so without force it is refused, with a BlockedError naming the
+// mailboxes, while the person is the last reader of such a team mailbox,
+// whether or not anyone else belongs to the team (resetBlocksTx). Completing
+// it checks again, unless it was forced.
 func (u *Users) CreateReset(ctx context.Context, userID string, force bool, createdBy string) (string, Reset, error) {
 	raw := make([]byte, resetCodeBytes)
 	if _, err := rand.Read(raw); err != nil {
@@ -1084,13 +1085,15 @@ func (u *Users) CreateReset(ctx context.Context, userID string, force bool, crea
 }
 
 // resetBlocksTx refuses a reset of a person who is the last reader of a team
-// mailbox (BlockedError, with only the mailboxes). Not the test closing a
-// person uses (workspace.BlocksTx), which leaves out a team whose only member
-// is the person, since that team goes with them: a reset leaves the person
-// and every team of theirs standing, and a team mailbox it took "read" from
-// could then never be read again.
+// mailbox that has a key (BlockedError, with only the mailboxes): the reset
+// deletes their grants, which takes "read" from them there, and on such a
+// mailbox only (they keep reading one without a key by the flag). Not the
+// test closing a person uses (workspace.BlocksTx), which leaves out a team
+// whose only member is the person, since that team goes with them: a reset
+// leaves the person and every team of theirs standing, and a team mailbox it
+// took "read" from could then never be read again.
 func resetBlocksTx(ctx context.Context, tx *sql.Tx, userID string) error {
-	last, err := workspace.LastReaderOfTx(ctx, tx, userID)
+	last, err := workspace.LastReaderOfKeyedTx(ctx, tx, userID)
 	if err != nil {
 		return err
 	}
@@ -1108,9 +1111,9 @@ func resetBlocksTx(ctx context.Context, tx *sql.Tx, userID string) error {
 // off its target is the salt it stores now (docs/key-scheme.md section 5.3):
 // a password derived under that, stored as the target, would never sign in.
 // A link that is not valid is ErrResetInvalid, as CompleteReset's; one issued
-// without force for a person who has become a team mailbox's last reader is
-// a BlockedError here already, before anyone chooses a password. It changes
-// nothing.
+// without force for a person who has become the last reader of a team mailbox
+// that has a key is a BlockedError here already, before anyone chooses a
+// password. It changes nothing.
 func (u *Users) OpenReset(ctx context.Context, code, email string) (ResetOpening, error) {
 	email, err := NormalizeEmail(email)
 	if err != nil {
@@ -1177,7 +1180,7 @@ func ResetLink(publicURL, code, email string) string {
 // The invitation is for the address it names, of an active person; anything
 // else is ErrResetInvalid and spends nothing. One issued without force is
 // refused, a BlockedError, while the person is the last reader of a team
-// mailbox, and stays unspent.
+// mailbox that has a key, and stays unspent.
 func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolment, userAgent string) (string, Session, User, error) {
 	email, err := NormalizeEmail(email)
 	if err != nil {
@@ -1242,9 +1245,14 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 				return err
 			}
 		}
-		// Every grant sealed to the old key, and every platform wrap of the
-		// person, go here, in this transaction: the tables that hold them
-		// come with mailbox keys (migration 0014) and the hosted service.
+		// Every grant sealed to the old key goes here, in this transaction:
+		// their flags stay, and on every mailbox that has a key they wait for
+		// it again (a new key for their own, a reader's for a team's). Every
+		// platform wrap of the person goes too, in the table the hosted
+		// service brings.
+		if err := workspace.DropSealedGrantsOfTx(ctx, tx, userID); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET public_key = ?1, key_replaced_at = max(?2, key_replaced_at + 1),
 			auth_verifier = ?3, kdf_salt = ?4, kdf_m = ?5, kdf_t = ?6, kdf_p = ?7, password_wrap = ?8, recovery_wrap = ?9,
 			recovery_verifier = ?10, password_hash = '', password_changed_at = ?2, updated_at = ?2,

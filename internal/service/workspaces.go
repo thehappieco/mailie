@@ -876,7 +876,10 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 	if err != nil {
 		return account.Account{}, E(CodeInternal, "reading the access to the mailbox failed", err)
 	}
-	if !held[a.ID].Any() {
+	// Whether they hold a grant, as administratorTx asks: a member waiting
+	// for the mailbox's key holds one whose read and act count for nothing
+	// yet, and may hold nothing else.
+	if _, ok := held[a.ID]; !ok {
 		return account.Account{}, errNoAccount
 	}
 	return account.Account{}, errTeamAdmin

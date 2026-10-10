@@ -24,6 +24,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	imapprovider "github.com/thehappieco/mailie/internal/provider/imap"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // flowTTL is how long a consent flow stays open. Long enough to find a
@@ -372,6 +373,16 @@ type AddRequest struct {
 	// that the caller may still link into the workspace. nil checks nothing
 	// more.
 	Check func(*sql.Tx) error
+	// Key is the mailbox's first key pair and the linker's own grant at
+	// epoch 1, made by the linker's browser (docs/key-scheme.md sections 8
+	// and 12.11), written in the transaction that creates the mailbox, on
+	// the password and the OAuth paths alike; resuming a link's consent
+	// later carries none, the row carries it. Only with a LinkerID: an
+	// operator mailbox has no key (ErrOperatorKey). nil links the mailbox
+	// without a key, which a person who reads it keys later (section
+	// 12.14); whether a person's link must carry one is the service's to
+	// decide.
+	Key *workspace.LinkKey
 	// InitialDays is the initial sync window; zero means the default.
 	InitialDays int
 	// SaveSentCopy overrides the provider default. Nil keeps it.
@@ -406,6 +417,16 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 			"account: an iCloud account is generic IMAP on Apple's servers, with a password, and names no others")
 	}
 	profile := provider.ProfileFor(kind)
+	// Checked before anything is dialled: a link that could never be stored
+	// costs no login.
+	if req.Key != nil {
+		if req.LinkerID == "" {
+			return Account{}, nil, ErrOperatorKey
+		}
+		if err := workspace.CheckLinkKey(*req.Key); err != nil {
+			return Account{}, nil, err
+		}
+	}
 
 	a := Account{
 		ID:           newAccountID(),
@@ -472,14 +493,14 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		// Sealed before anything is written, and written whole: a key
 		// service that cannot seal it leaves no account behind, which a retry
 		// would find a duplicate and nothing could give its password.
-		created, err := r.repo.createWithPassword(ctx, a, req.LinkerID, check, req.Password)
+		created, err := r.repo.createWithPassword(ctx, a, req.LinkerID, req.Key, check, req.Password)
 		if err != nil {
 			return Account{}, nil, err
 		}
 		return created, nil, nil
 	}
 
-	created, err := r.repo.create(ctx, a, req.LinkerID, check, nil)
+	created, err := r.repo.create(ctx, a, req.LinkerID, req.Key, check, nil)
 	if err != nil {
 		return Account{}, nil, err
 	}

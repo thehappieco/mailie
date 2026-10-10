@@ -318,6 +318,9 @@ func TestMigrationElevenLeavesATeamMailboxOfADisabledLinkerStoppedWithItsIndex(t
 	s := openAtVersion(t, 7)
 	seedTeams(t, s)
 	migrateTo(t, s, 11)
+	// The daemon reads it at the latest schema, whose later migrations change
+	// nothing of this.
+	migrateTo(t, s, latestVersion(t))
 	// Its consent was its linker's, who is disabled: nothing is copied, so
 	// it syncs nothing, and its index stays as it was, bound to them.
 	if ok, err := s.SyncEligible(context.Background(), "acc_t2"); err != nil || ok {
@@ -365,6 +368,9 @@ func TestMigrationElevenKeepsADisabledLinkersOwnMailboxBoundAndListsItAsReadByNo
 		   to_text, internal_date, size, first_seen_at, updated_at, body_text)
 		 VALUES ('acc_t4', 8, 24, 1, 'i@x', 'mid:i@x', 'Invoice 100', 'vendor', 'billing2', 995, 50, 995, 995, 'pay')`)
 	migrateTo(t, s, 11)
+	// The daemon reads it at the latest schema, whose later migrations change
+	// nothing of this.
+	migrateTo(t, s, latestVersion(t))
 
 	if got := queryStrings(t, s, `SELECT coalesce(owner_user_id, '-'), linked_by, sync_enabled_at, sync_enabled_by,
 		  sync_enabled_via FROM accounts WHERE id = 'acc_t4'`); !slices.Equal(got, []string{

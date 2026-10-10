@@ -116,13 +116,16 @@ type Ended struct {
 // live key they created is revoked, in whichever workspace, and every invite
 // they made that is still waiting expires, in one transaction. What they
 // enrolled with (their account key, verifiers and wraps) stays: switched back
-// on, they sign in with their password again. A disabled person still signed in somewhere, or
-// holding a key or an invite that would work again if they were switched
-// back on, would not be disabled. The mailboxes of their personal workspace
-// stop syncing, since they are no longer active; a team mailbox whose consent
-// was still bound to theirs stops in the same transaction, and its index is
-// deleted (store.StopBoundTx). Every other team mailbox carries on: it is the
-// team's.
+// on, they sign in with their password again. Their grants on mailboxes keep
+// their flags, which count for nothing while they are off, and lose every
+// sealed grant (docs/key-scheme.md section 12.13): switched back on, they
+// wait for the key on every mailbox that has one. A disabled person still
+// signed in somewhere, or holding a key or an invite that would work again if
+// they were switched back on, would not be disabled. The mailboxes of their
+// personal workspace stop syncing, since they are no longer active; a team
+// mailbox whose consent was still bound to theirs stops in the same
+// transaction, and its index is deleted (store.StopBoundTx). Every other team
+// mailbox carries on: it is the team's.
 //
 // Disabling someone already disabled changes nothing and is not an error: a
 // team mailbox migration 0011 found bound to them, stopped with its index
@@ -165,6 +168,12 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM reset_invites WHERE user_id = ?`, id); err != nil {
 			return fmt.Errorf("auth: delete the user's reset invitations: %w", err)
+		}
+		// Being disabled takes the key with "read" (docs/key-scheme.md
+		// section 12.13): deleted, so that switching them back on does not
+		// bring it back either.
+		if err := workspace.DropSealedGrantsOfTx(ctx, tx, id); err != nil {
+			return err
 		}
 		// Revoked rather than left to fail: switching the person back on
 		// must not bring a key back, any more than it brings a session back.

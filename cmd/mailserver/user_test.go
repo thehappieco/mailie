@@ -448,6 +448,8 @@ func TestAResetOfATeamMailboxsLastReaderWithBootstrapNeedsForce(t *testing.T) {
 	}, ana.ID); err != nil {
 		t.Fatal(err)
 	}
+	// It has a key, which the reset takes from her with her grant.
+	authtest.KeyMailbox(t, db, "acc_00000000000000a1", ana.ID)
 	before := resetState(t, db, ana.ID)
 
 	_, err = captureStdout(t, func() error {

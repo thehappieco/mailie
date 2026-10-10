@@ -63,14 +63,14 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 	if err != nil {
 		return Blocks{}, err
 	}
-	b.LastReaderOf, err = lastReaderOf(ctx, tx, userID, "", nil, true)
+	b.LastReaderOf, err = lastReaderOf(ctx, tx, userID, lastReaders{outlived: true})
 	if err != nil {
 		return Blocks{}, err
 	}
 	b.BoundTo, err = listIDs(ctx, tx, `SELECT a.id FROM accounts a
 		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
 		 WHERE a.sync_enabled_via = 'migration' AND a.sync_enabled_by = ?1
-		   AND EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = a.id AND o.user_id <> ?1 AND `+readerOf("o")+`)
+		   AND EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = a.id AND o.user_id <> ?1 AND `+store.ReaderSQL("o")+`)
 		 ORDER BY a.created_at, a.rowid`, userID)
 	if err != nil {
 		return Blocks{}, err
@@ -95,11 +95,12 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 // only member they are (account.Registry.RemoveOwner): those teams and their
 // personal workspace, with their memberships, their keys and the invites
 // still waiting to join them; and their name wherever it is kept as
-// attribution: on the grants they gave others and what they gave keys, on
-// the mailboxes they linked and on the team consents to sync they gave,
-// which stay, with their date and revision, the workspace's. Their
-// memberships of other teams, and their grants there, go with the person
-// (ON DELETE CASCADE). It returns the teams it deleted.
+// attribution: on the grants they gave others, flags and sealed grants, and
+// what they gave keys, on the mailbox keys their browser wrote, on the
+// mailboxes they linked and on the team consents to sync they gave, which
+// stay, with their date and revision, the workspace's. Their memberships of
+// other teams, and their grants there, flags and sealed grants, go with the
+// person (ON DELETE CASCADE). It returns the teams it deleted.
 //
 // A used invite to a deleted team is not theirs to take: it is the record of
 // how another person arrived, and stays, without its team (ON DELETE SET
@@ -110,6 +111,8 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
 	for _, step := range []struct{ what, query string }{
 		{"forget who granted", `UPDATE mailbox_access SET granted_by = '' WHERE granted_by = ?`},
+		{"forget who sealed grants", `UPDATE mailbox_grants SET granted_by = '' WHERE granted_by = ?`},
+		{"forget who wrote mailbox keys", `UPDATE mailbox_keys SET created_by = '' WHERE created_by = ?`},
 		{"forget who gave keys mailboxes", `UPDATE key_access SET granted_by = '' WHERE granted_by = ?`},
 		{"forget who linked", `UPDATE accounts SET linked_by = '' WHERE linked_by = ?`},
 		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''

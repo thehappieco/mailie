@@ -140,6 +140,10 @@ var (
 	// mailbox that cannot have one at creation: only a team mailbox is
 	// linked with its workspace's consent.
 	ErrNoWorkspaceConsent = errors.New("account: only a team mailbox is linked with its workspace's consent")
+	// ErrOperatorKey is a key pair sent with a mailbox nobody links: an
+	// operator mailbox has no key (docs/key-scheme.md section 12.15), since
+	// there is no person to hold one.
+	ErrOperatorKey = errors.New("account: an operator mailbox has no key")
 )
 
 // Repository reads and writes accounts and their sealed credentials.
@@ -271,10 +275,13 @@ const (
 // the instance, who holds a grant on it or, as an owner or an admin of the
 // workspace, manages it by their role. Need narrows to the mailboxes on which
 // they may do what it names: read, act and send come only from a grant, never
-// from a role; manage from either. A workspace key sees a mailbox it holds
-// something on, and Need narrows to what it holds; a key never manages.
-// Whether the key still works is its authentication's, and the re-check's
-// before every answer, as a session's is.
+// from a role; manage from either. Read is the one rule's (store.ReaderSQL):
+// on a mailbox that has a key, the flag and a grant at its current epoch, so
+// a member waiting for the key sees the card and reads nothing; act needs it
+// too, since an action names messages its actor reads. A workspace key sees
+// a mailbox it holds something on, and Need narrows to what it holds; a key
+// never manages. Whether the key still works is its authentication's, and
+// the re-check's before every answer, as a session's is.
 type Visibility struct {
 	// All is every account, for the daemon's own reads.
 	All bool
@@ -308,9 +315,10 @@ func (v Visibility) clause() (string, []any) {
 		             AND u.status = 'active'
 		             AND (EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = accounts.id AND g.user_id = m.user_id
 		                            AND g.read >= ? AND g.act >= ? AND g.send >= ?
+		                            AND (NOT ? OR `+store.ReaderSQL("g")+`)
 		                            AND (g.manage >= ? OR m.role IN ('owner', 'admin')))
 		                  OR (? AND m.role IN ('owner', 'admin'))))`)
-			args = append(args, v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage, byRole)
+			args = append(args, v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Read || v.Need.Act, v.Need.Manage, byRole)
 		}
 		if v.Key != "" {
 			parts = append(parts, `EXISTS (SELECT 1 FROM key_access x
@@ -343,7 +351,7 @@ func (v Visibility) clause() (string, []any) {
 // links it. It names its person (OwnerUserID) exactly when that workspace is
 // personal.
 func (r *Repository) Create(ctx context.Context, a Account, linker string) (Account, error) {
-	return r.create(ctx, a, linker, nil, nil)
+	return r.create(ctx, a, linker, nil, nil, nil)
 }
 
 // createWithPassword is Create for a password account whose login has been
@@ -352,7 +360,9 @@ func (r *Repository) Create(ctx context.Context, a Account, linker string) (Acco
 // key service not reached, throttled or refusing the call) leaves nothing
 // behind, and the same add can be tried again; a write that fails leaves no
 // account without its password, which no route could give it afterwards.
-func (r *Repository) createWithPassword(ctx context.Context, a Account, linker string, also func(*sql.Tx) error, password string) (Account, error) {
+func (r *Repository) createWithPassword(ctx context.Context, a Account, linker string, key *workspace.LinkKey,
+	also func(*sql.Tx) error, password string,
+) (Account, error) {
 	// Sealed outside the transaction: a call to a key service must not hold
 	// the database's one writer. The id is the account's before it exists.
 	sealed, err := r.sealer.Seal(ctx, secrets.Credential(a.ID, "password"), []byte(password))
@@ -360,7 +370,7 @@ func (r *Repository) createWithPassword(ctx context.Context, a Account, linker s
 		return Account{}, fmt.Errorf("account: seal password: %w", err)
 	}
 	a.State = StatePendingAuth
-	return r.create(ctx, a, linker, also, func(tx *sql.Tx, at time.Time) ([]events.Event, error) {
+	return r.create(ctx, a, linker, key, also, func(tx *sql.Tx, at time.Time) ([]events.Event, error) {
 		if err := r.putCredential(ctx, tx, a.ID, "password", sealed, at.Unix()); err != nil {
 			return nil, err
 		}
@@ -377,8 +387,17 @@ func (r *Repository) createWithPassword(ctx context.Context, a Account, linker s
 // after the account's insert, both in that transaction; nil runs nothing.
 // What then journals is published after the commit, and the account it
 // returns is in the state then left it in.
-func (r *Repository) create(ctx context.Context, a Account, linker string, also func(*sql.Tx) error,
+//
+// key, when not nil, is the mailbox's first key pair and its linker's grant,
+// which the browser that links it made (docs/key-scheme.md sections 8 and
+// 12.11): written after the insert and the linker's flags, before then, in
+// the same transaction (workspace.WriteLinkKeyTx). Only with a linker: a
+// mailbox nobody links is the operator's, which has no key (ErrOperatorKey).
+func (r *Repository) create(ctx context.Context, a Account, linker string, key *workspace.LinkKey, also func(*sql.Tx) error,
 	then func(tx *sql.Tx, at time.Time) ([]events.Event, error)) (Account, error) {
+	if key != nil && linker == "" {
+		return Account{}, ErrOperatorKey
+	}
 	now := r.now().UTC().Truncate(time.Second)
 	a.CreatedAt, a.UpdatedAt = now, now
 	if a.State == "" {
@@ -445,6 +464,11 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, also 
 		}
 		if linker != "" {
 			if err := workspace.GrantLinkTx(ctx, tx, a.ID, a.WorkspaceID, linker, now); err != nil {
+				return err
+			}
+		}
+		if key != nil {
+			if err := workspace.WriteLinkKeyTx(ctx, tx, a.ID, linker, *key, now); err != nil {
 				return err
 			}
 		}
