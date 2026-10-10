@@ -3,7 +3,8 @@
 // with it. In a team they own or administer, every mailbox of it is listed:
 // they manage each one by their role, seeing its card (address, state, how
 // far its sync has got) and who has access to it, never what it holds unless
-// they are given Read; one nobody can read is marked. A member of a team sees
+// they are given Read; one nobody can read is marked, and one whose key the
+// person waits for says so, and who can mend it. A member of a team sees
 // the mailboxes they hold a grant on, and a line saying who manages the
 // team's people, access and API keys. Connecting a mailbox is offered only where the
 // person may link one (docs/workspaces.md, "Mailboxes"): their personal
@@ -17,7 +18,7 @@ import { accounts, dismissNotice, loadAccounts, openDetail } from '../state/acco
 import { consent, loadConsent, needsConsent } from '../state/sync'
 import { directoryEntry, loadDirectory, loadMembers, team } from '../state/team'
 import { currentWorkspace, loadWorkspaces, selectWorkspace, workspaces } from '../state/workspaces'
-import { accessOf, administers, canLinkInto, grantSummary, workspaceName } from '../ui/access'
+import { accessOf, administers, canLinkInto, grantSummary, waitsForKey, workspaceName } from '../ui/access'
 import { describe } from '../ui/errors'
 import { count, since } from '../ui/format'
 import { t } from '../ui/i18n'
@@ -156,6 +157,7 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
         <SyncStatus v-if="syncing(account)" :account="account" />
         <p v-else class="account-note" :class="stateTone(account.state)"><AppIcon name="info" :size="15" />{{ stateDetail(account) }}</p>
         <p v-if="nobodyReads(account)" class="account-note bad"><AppIcon name="alert" :size="15" />{{ t('Nobody can read this mailbox any more, so it does not sync. Remove it, or remove it and connect it again.') }}</p>
+        <p v-else-if="waitsForKey(account)" class="account-note warn"><AppIcon name="key" :size="15" />{{ inTeam ? t('You hold Read on this mailbox, but are waiting for its key. Anyone who reads it can hand it to you.') : t('This mailbox is waiting for its key. Create a new one from its details to read it again.') }}</p>
         <p v-else-if="!accessOf(account).read && admin" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You manage this mailbox by your role, but do not read it. Read comes only from an owner or an admin who reads it.') }}</p>
         <p v-else-if="!accessOf(account).read" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You can see this mailbox, but not read it. Read comes only from an owner or an admin of the team who reads it.') }}</p>
         <div class="row-actions">

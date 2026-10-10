@@ -466,6 +466,10 @@ in the database or its files), `internal/workspace/sealed_test.go` (the one read
 reader by it, the deletion of grants with "read", keys and grants written once),
 `internal/auth/grants_test.go` (a disable and a reset take every grant and keep the flags),
 `internal/api/mailboxkeys_test.go` (the routes, no route taking a private key) and
-`internal/mcp/mailboxkey_test.go` (a key sees none of it); the console's half comes with the next
-part of phase 3's step 4. The specification's sections 11 and 12 are what those tests hold the
-server and the console to.
+`internal/mcp/mailboxkey_test.go` (a key sees none of it); the console's half in
+`web/test/mailboxKeys.spec.ts`, `web/test/mailboxKeys.page.spec.ts` and `web/test/accounts.spec.ts`
+(every grant it seals opens for its recipient to the mailbox's key and for nobody else, one that
+opens to a key the sealer chose is refused, a recipient key of low order is refused, a mailbox
+private key is zeroed once sealed, every write waits for a fresh step-up, and first keys follow a
+sign-in, never a restored session). The specification's sections 11 and 12 are what those tests
+hold the server and the console to.

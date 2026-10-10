@@ -54,7 +54,9 @@ name in an import of the kit, `@thehappieco/kit`, which is code and never reache
 
 `src/crypto/mailie.ts` is Mailie's profile of the kit's key scheme (`../docs/key-scheme.md`): the
 kit's own since 0.7.0 (`@thehappieco/kit/profiles/mailie`), re-exported with the few helpers the
-kit leaves to the console, which the ceremonies use through `src/crypto/account.ts`.
+kit leaves to the console, which the ceremonies use through `src/crypto/account.ts`, and mailbox
+keys and their grants through `src/crypto/mailbox.ts` (made, sealed and opened in the browser
+only; `../docs/console.md`, "Mailbox keys").
 `test/keyscheme.spec.ts` holds it to the golden vectors the Go side writes
 (`../internal/keyscheme/testdata`, `go test ./internal/keyscheme -run
 TestTheVectorsAreWhatTheProfileWrites -update`), including every case that must fail; as with the

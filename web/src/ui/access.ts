@@ -18,6 +18,16 @@ export function accessOf(account: Pick<Account, 'access'> | undefined): GrantFla
   return account?.access ?? FULL_ACCESS
 }
 
+/**
+ * Whether the caller holds Read on a mailbox that has a key, without the key
+ * itself (docs/key-scheme.md section 12.13): they read nothing of it until
+ * someone who reads it hands the key to them, or, for their own personal
+ * mailbox, they write it a new one.
+ */
+export function waitsForKey(account: Pick<Account, 'access'> | undefined): boolean {
+  return account?.access?.waiting_key === true
+}
+
 export function flagsOf(value: Partial<GrantFlags> | undefined): GrantFlags {
   return { read: !!value?.read, act: !!value?.act, send: !!value?.send, manage: !!value?.manage }
 }

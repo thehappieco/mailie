@@ -15,10 +15,18 @@
 // the revision of the text shown; left unticked, the mailbox is connected
 // with sync off. A server that asks about another text by then is offered a
 // reload instead of the box.
+//
+// A new link carries the mailbox's first key (docs/key-scheme.md section
+// 12.11, state/accounts.ts), which needs the person's password from the last
+// ten minutes, with two of them to spare: it is asked over this dialog
+// before anything moves (state/stepUp.ts), and closing it leaves the form as
+// it was. Finishing an authorization sends no key: the mailbox has its own.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import type { Account, ProviderID } from '../api/types'
+import { enrolled, type Account, type ProviderID } from '../api/types'
 import { edition } from '../edition'
-import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, LINK_STEP_UP_MARGIN_S, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import { session } from '../state/session'
+import { ensureStepUp, StepUpCancelled } from '../state/stepUp'
 import { consent, consentTextOutdated, loadConsent } from '../state/sync'
 import { currentWorkspace, selectWorkspace, workspaces } from '../state/workspaces'
 import { canLinkInto, workspaceName } from '../ui/access'
@@ -155,7 +163,16 @@ async function submit() {
   const syncConsentVersion = intoTeam.value && teamSync.value && !outdated.value ? syncText.version : undefined
   moving.value = true
   let workspaceID: string
-  try { workspaceID = await goTo() } finally { moving.value = false }
+  try {
+    // A person without an account key is told so by the link itself, before any step-up.
+    if (enrolled(session.user)) await ensureStepUp(LINK_STEP_UP_MARGIN_S)
+    workspaceID = await goTo()
+  } catch (error) {
+    if (error instanceof StepUpCancelled) return
+    throw error
+  } finally {
+    moving.value = false
+  }
   sentTeamSync.value = !!(workspaceID && syncConsentVersion)
   if (password.value) {
     const body = draftRequest(provider.value, draft.value)

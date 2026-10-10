@@ -1158,7 +1158,21 @@ vault and the memory of enrolled addresses, sections 7 and 12.7) and the sign-in
 reader rule in `internal/store/readers.go`, the keys and grants written and read in
 `internal/workspace/sealed.go`, the use cases in `internal/service/mailboxkeys.go` (with the link in
 `accounts.go` and "read" with a grant in `workspaces.go`) and the routes in
-`internal/api/mailboxkeys.go`; the console's half comes in the next part of phase 3's step 4.
+`internal/api/mailboxkeys.go`. The console's half of them is `web/src/crypto/mailbox.ts` (a
+mailbox's key pair and namespace, a grant sealed to the public key and seal id the server serves,
+both checked first, and the person's own grant opened against the mailbox's public key at that
+epoch; every mailbox private key zeroed once its grants are sealed),
+`web/src/state/accountVault.ts` (`accountPrivateKeyOf`: the account key that opens grants, as the
+kit's non-extractable private key), `web/src/state/grants.ts` (the person's own grant opened to
+seal the key to someone else), `web/src/state/stepUp.ts` with `components/StepUpPrompt.vue` (the
+step-up asked before every call of section 11, over whatever dialog is open),
+`web/src/state/accounts.ts` (the link's key, section 12.11), `web/src/state/team.ts` ("read" with
+a grant, section 12.13) and `web/src/state/mailboxKeys.ts` with `components/MailboxKeyPanel.vue`
+(waiting for the key, supplying it, a first key from the sheet or right after a sign-in and never
+on a restored session, section 12.14, and a personal mailbox's new key, section 12.12), held by
+`web/test/mailboxKeys.spec.ts`, `web/test/mailboxKeys.page.spec.ts` and `web/test/accounts.spec.ts`
+with the kit's real cryptography: every grant the console seals opens for its recipient, with
+`openGrant`, to the key whose public half the server holds.
 
 ## 17. Open questions
 

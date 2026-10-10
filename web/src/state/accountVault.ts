@@ -7,7 +7,9 @@
 // and public key, in IndexedDB beside the session's record
 // (state/sessionVault.ts), one per browser profile. It is opened only for the
 // person the server says is signed in: a record of anyone else is wiped,
-// never opened. It is never sent anywhere. This page also keeps the newest
+// never opened. It is never sent anywhere. What opens the person's grants
+// takes it as the kit's non-extractable private key (accountPrivateKeyOf);
+// only a new recovery code reads the raw key back out (accountKeyOf). This page also keeps the newest
 // record it wrote in its own memory, and asks that copy first: a browser that
 // refuses IndexedDB (a private window), or opens it and then refuses the
 // write (its storage full), keeps the key for this page only, and a reload
@@ -24,7 +26,7 @@
 // address it saw enrol for as long as the page lives.
 
 import { toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
-import { isMailieError, normaliseAddress, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope } from '../crypto/mailie'
+import { isMailieError, normaliseAddress, openBrowserVault, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope, type PrivateKey } from '../crypto/mailie'
 
 interface VaultRecord {
   version: 1
@@ -131,14 +133,13 @@ function belongsTo(record: VaultRecord, sealID: string, publicKey: string): bool
 }
 
 /**
- * accountKeyOf opens the vault for the person the server names (their seal
- * id and public key, as GET /v1/auth/me answers them) and returns the raw
- * account key, which the caller zeroes, or null when this browser holds none
- * of theirs. The record this page wrote comes first, when it is theirs: the
- * slot may hold an older one, if the write was refused. A record of anyone
- * else, and one that does not open, is wiped.
+ * openRecord opens the vault for the person the server names (their seal id
+ * and public key, as GET /v1/auth/me answers them) with open, or answers null
+ * when this browser holds none of theirs. The record this page wrote comes
+ * first, when it is theirs: the slot may hold an older one, if the write was
+ * refused. A record of anyone else, and one that does not open, is wiped.
  */
-export async function accountKeyOf(sealID: string, publicKey: string): Promise<Bytes | null> {
+async function openRecord<T>(sealID: string, publicKey: string, open: (envelope: BrowserKeyEnvelope) => Promise<T>): Promise<T | null> {
   const record = held !== null && belongsTo(held, sealID, publicKey) ? held : await storedRecord()
   if (!record) return null
   if (!belongsTo(record, sealID, publicKey)) {
@@ -146,11 +147,31 @@ export async function accountKeyOf(sealID: string, publicKey: string): Promise<B
     return null
   }
   try {
-    return await openBrowserVaultKey(record.envelope, sealID)
+    return await open(record.envelope)
   } catch (error) {
     if (isMailieError(error)) await wipeAccountKey()
     return null
   }
+}
+
+/**
+ * accountKeyOf returns the raw account key of the person named, which the
+ * caller zeroes, or null (openRecord): the one way the console reads the raw
+ * key back out of the vault, for the one caller that wraps it again (a new
+ * recovery code, docs/key-scheme.md section 12.5).
+ */
+export async function accountKeyOf(sealID: string, publicKey: string): Promise<Bytes | null> {
+  return openRecord(sealID, publicKey, envelope => openBrowserVaultKey(envelope, sealID))
+}
+
+/**
+ * accountPrivateKeyOf returns the account key of the person named as the
+ * kit's non-extractable private key (openBrowserVault, which also recomputes
+ * the public half), or null (openRecord): what opens their grants
+ * (docs/key-scheme.md section 9.2), never the raw bytes.
+ */
+export async function accountPrivateKeyOf(sealID: string, publicKey: string): Promise<PrivateKey | null> {
+  return openRecord(sealID, publicKey, envelope => openBrowserVault(envelope, sealID))
 }
 
 /** holdsAccountKey says whether this browser holds the account key of the person named, opening it to be sure. */

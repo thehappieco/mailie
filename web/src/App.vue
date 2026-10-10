@@ -10,6 +10,7 @@ import { describe } from './ui/errors'
 import { forgetRemembered, recheckRemembered, restore, session, showSignIn } from './state/session'
 import { captureOAuthReturn, pendingOAuthReturn, sweepOAuthStorage } from './state/oauthReturn'
 import { finishOAuthReturn } from './state/accounts'
+import { firstKeysAfterSignIn } from './state/mailboxKeys'
 import { dropInvitation, holdInvitation, invitation } from './state/invitation'
 import { holdReset, resetLink } from './state/resetLink'
 import { takeInvitation, takeReset } from './ui/signupLink'
@@ -18,6 +19,7 @@ import OAuthReturnView from './components/OAuthReturnView.vue'
 import InvitationDialog from './components/InvitationDialog.vue'
 import LiveRegion from './components/LiveRegion.vue'
 import RecoveryCodeDialog from './components/RecoveryCodeDialog.vue'
+import StepUpPrompt from './components/StepUpPrompt.vue'
 
 const consoleView = edition().console
 /** Teams are made here, so an invitation may be one to join a team, accepted signed in. */
@@ -39,6 +41,11 @@ function sweepOAuth() {
   if (next !== null) oauthSweep = setTimeout(sweepOAuth, next + 50)
 }
 sweepOAuth()
+
+// Right after a sign-in in this page, never a restored session: the first
+// key of each mailbox the person reads without one, while the sign-in still
+// counts as a step-up (docs/key-scheme.md section 12.14).
+const stopFirstKeys = firstKeysAfterSignIn()
 
 const finishing = ref(false)
 const rememberNoticeClosed = ref(false)
@@ -93,6 +100,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopFirstKeys()
   clearTimeout(oauthSweep)
   window.removeEventListener('resize', updateViewport)
   mobileQuery.removeEventListener('change', updateViewport)
@@ -122,6 +130,8 @@ onBeforeUnmount(() => {
   <InvitationDialog v-if="teams && session.phase === 'ready' && !finishing && invitation.pending" />
   <!-- Over whatever is on screen, signed in or not: a recovery whose sign-in failed still shows its new code. -->
   <RecoveryCodeDialog v-if="session.phase !== 'restoring'" />
+  <!-- Over whatever dialog asked for it: the step-up a write of a mailbox key or a grant waits for (state/stepUp.ts). -->
+  <StepUpPrompt v-if="session.phase === 'ready'" />
 
   <div v-if="session.phase === 'ready' && session.notRemembered && !rememberNoticeClosed" class="alert session-notice" role="status">
     <span>{{ t('This browser did not let Mailie remember your session. You will need to sign in again after reloading the page.') }}</span>

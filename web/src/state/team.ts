@@ -27,7 +27,9 @@ import { edition } from '../edition'
 import { grantChange } from '../ui/access'
 import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount } from './accounts'
 import { failure, type Failure, type Operation } from './failure'
+import { sealFromOwn } from './grants'
 import { authorized, identity, session } from './session'
+import { StepUpCancelled, withStepUp } from './stepUp'
 import { adoptOwnPlace, loadWorkspaces, workspaces } from './workspaces'
 
 interface Listing<T> { list: T[]; loaded: boolean; loading: boolean; failure: Failure | null }
@@ -162,21 +164,47 @@ export function directoryEntry(accountID: string): MailboxAccess | undefined {
 }
 
 /**
+ * Whom Read given from before to after goes to with their grant
+ * (docs/key-scheme.md section 12.13): a person who does not hold the flag
+ * yet, given it on a mailbox that has a key (the directory lists its epoch),
+ * who has an account key (the members list their seal id and public key).
+ * Nobody otherwise: Read on a mailbox without a key, and to a person who has
+ * not enrolled yet, is given by the flag alone, and the key follows later.
+ */
+export function readRecipient(accountID: string, userID: string, before: GrantFlags, after: GrantFlags): Member | null {
+  if (!after.read || before.read || directoryEntry(accountID)?.epoch === undefined) return null
+  const member = memberOf(userID)
+  return member?.seal_id && member.public_key ? member : null
+}
+
+/** What saving a grant came to: done (null), refused (a failure to say), or stopped by the person, who closed the step-up. */
+export type GrantSaved = Failure | null | 'cancelled'
+
+/**
  * Sets what a person holds on a mailbox, from what they hold now to what the
  * caller ticked: a revoke when flags only go, the grant set exactly when one
- * comes. The directory is read again either way, and the members (whose last
- * reader may have changed); and the caller's own card, when the grant was
- * theirs.
+ * comes. Read given on a mailbox that has a key to a person with an account
+ * key goes with their grant, sealed here from the caller's own after a fresh
+ * step-up (state/stepUp.ts). The directory is read again either way, and the
+ * members (whose last reader may have changed); and the caller's own card,
+ * when the grant was theirs.
  */
-export async function saveGrant(accountID: string, userID: string, before: GrantFlags, after: GrantFlags): Promise<Failure | null> {
+export async function saveGrant(accountID: string, userID: string, before: GrantFlags, after: GrantFlags): Promise<GrantSaved> {
   const change = grantChange(before, after)
   if (change.kind === 'none') return null
   const ok = current()
+  const recipient = change.kind === 'set' ? readRecipient(accountID, userID, before, after) : null
   try {
-    if (change.kind === 'set') await authorized(token => api.setAccess(token, accountID, userID, change.flags))
+    if (change.kind === 'set' && recipient) {
+      await withStepUp(async () => {
+        const sealed = await sealFromOwn(accountID, recipient)
+        return authorized(token => api.setAccess(token, accountID, userID, change.flags, sealed.grant))
+      })
+    } else if (change.kind === 'set') await authorized(token => api.setAccess(token, accountID, userID, change.flags))
     else await authorized(token => api.revokeAccess(token, accountID, userID, change.flags))
   } catch (error) {
-    const found = refused('change-access', error, ok)
+    if (error instanceof StepUpCancelled) return 'cancelled'
+    const found = refused(recipient ? 'give-read' : 'change-access', error, ok)
     // Changed elsewhere meanwhile, or gone: what is shown is read again.
     if (ok() && (found.code === 'conflict' || found.code === 'not_found')) { void loadDirectory(); void loadMembers() }
     return found

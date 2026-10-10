@@ -1,11 +1,11 @@
 <script setup lang="ts">
-// The step-up (docs/key-scheme.md section 11): what gives access to a
-// mailbox and writes its keys, in the next step of phase 3, needs the
-// person's password proved within the last ten minutes, on this session;
-// nothing asks for it yet. Replacing the recovery code and changing the
-// password prove the password in their own request instead. The password is
-// derived here as at sign-in and never sent; only this session's step-up
-// time moves.
+// The step-up (docs/key-scheme.md section 11): linking a mailbox, giving
+// Read with a grant, supplying a mailbox's key, and writing its first or a
+// new key need the person's password proved within the last ten minutes, on
+// this session (state/stepUp.ts asks; components/StepUpPrompt.vue shows
+// this). Replacing the recovery code and changing the password prove the
+// password in their own request instead. The password is derived here as at
+// sign-in and never sent; only this session's step-up time moves.
 import { ref } from 'vue'
 import { stepUp } from '../state/account'
 import { failure, type Failure } from '../state/failure'

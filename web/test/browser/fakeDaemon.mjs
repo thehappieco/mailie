@@ -74,7 +74,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // Account ids have their own counter, past the fixtures below: sharing the
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
-  const calls = { login: 0, challenge: 0, upgrade: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], storage: 0, mcp: 0 }
+  const calls = { login: 0, challenge: 0, upgrade: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
   /** Every workspace's API keys as the daemon stores them: never the secret, which only the creating answer carries. */
   const keys = []
   /** The record of each key's sends, by prefix (service.SendStatus): never who a message went to, its subject or its text. */
@@ -105,7 +105,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   const owner = id => [...users.values()].find(user => (accountsByUser.get(user.id) ?? []).some(account => account.id === id))
   /** An account as the daemon presents it: the sync block says off unless its owner consented and it is active. */
   const present = account => {
-    const { sync, target: _, ...rest } = account
+    const { sync, target: _, key, ...rest } = account
     const enabled = Boolean(owner(account.id)?.consent)
     const on = enabled && account.state === 'active'
     const block = { enabled, running: on && sync.state !== 'off', state: on ? sync.state : 'off', folders_synced: on ? sync.folders_synced : 0, folders_total: on ? sync.folders_total : 0, messages: on ? sync.messages : 0, initial_progress: on ? sync.initial_progress : 0 }
@@ -116,7 +116,9 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     const archive = account.provider === 'gmail' ? allMail.indexed : account.provider !== 'imap'
     // Whether it can send for this caller (service.sendOf): the owner's mailbox, working.
     const send = account.state === 'active' ? { available: true, from_name: 'Ana Souza' } : { available: false, reason: account.state, from_name: 'Ana Souza' }
-    return { ...rest, sync: block, actions: { archive, trash: true, ...(account.provider === 'gmail' && !archive ? { archive_reason: 'all_mail_hidden' } : {}) }, send }
+    // Its key pair at the current epoch (service.Account's mailbox_key), once a person's browser made one.
+    const mailboxKey = key ? { mailbox_key: { epoch: key.epoch, public_key: key.public_key, namespace: key.namespace } } : {}
+    return { ...rest, sync: block, actions: { archive, trash: true, ...(account.provider === 'gmail' && !archive ? { archive_reason: 'all_mail_hidden' } : {}) }, send, ...mailboxKey }
   }
   const emit = (user, type, accountID, payload = {}) => journal.push({ user: user.id, seq: ++seq, type, account_id: accountID, at: now(), payload: { account_id: accountID, ...payload } })
   /** The first sync of an account: the last 90 days in steps, sync.progress on each, folder.changed{initial_done} at the end. */
@@ -441,7 +443,10 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         const password = request_.provider === 'imap' || request_.provider === 'icloud'
         // The daemon fills in Apple's servers itself and refuses any sent for iCloud.
         if (request_.provider === 'icloud' && ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'smtp_tls'].some(key => key in request_)) return fail(400, 'bad_request')
+        // A person's link carries the mailbox's first key and their own grant (docs/key-scheme.md section 12.11).
+        if (!request_.public_key || !request_.namespace || !request_.grant) return fail(400, 'bad_request')
         const account = { id: `acc_${String(++accountSerial).padStart(16, '0')}`, email: request_.email, provider: request_.provider, auth_kind: password ? 'password' : 'oauth2', state: 'pending_auth', save_sent_copy: password, created_at: now(), sync: idle(), target: 120 }
+        account.key = { epoch: 1, public_key: request_.public_key, namespace: request_.namespace, grant: request_.grant }
         if (request_.display_name) account.display_name = request_.display_name
         if (password) {
           await new Promise(done => setTimeout(done, 700))
@@ -455,6 +460,26 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         }
         mine.push(account)
         return json({ account: present(account), auth: startFlow(account) }, 201)
+      }
+      // A mailbox's key (docs/console.md, "Mailbox keys"): the person's own grant, nobody waiting; its first key, and a new one.
+      const keyRoute = path.match(/^\/v1\/accounts\/([^/]+)\/mailbox-key$/)
+      if (keyRoute) {
+        const account = mine.find(item => item.id === keyRoute[1])
+        if (!account) return fail(404, 'not_found')
+        const pair = () => ({ epoch: account.key.epoch, public_key: account.key.public_key, namespace: account.key.namespace })
+        if (method === 'GET') return json({ ...(account.key ? { ...pair(), grant: account.key.grant } : {}), waiting: [], suppliers: [], keyless_readers: [] })
+        const sent = body()
+        calls.mailboxKeys.push({ account: account.id, method, epoch: sent.epoch ?? 1 })
+        if (method === 'POST') {
+          if (account.key) return fail(409, 'conflict')
+          account.key = { epoch: 1, public_key: sent.public_key, namespace: sent.namespace, grant: sent.grants?.find(grant => grant.user_id === user.id)?.grant }
+          return json(pair(), 201)
+        }
+        if (method === 'PUT') {
+          if (!account.key || sent.epoch !== account.key.epoch + 1) return fail(409, 'conflict')
+          account.key = { epoch: sent.epoch, public_key: sent.public_key, namespace: account.key.namespace, grant: sent.grant }
+          return json(pair())
+        }
       }
       const start = path.match(/^\/v1\/accounts\/([^/]+)\/oauth\/start$/)
       if (start && method === 'POST') {

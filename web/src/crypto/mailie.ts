@@ -16,8 +16,8 @@
 // the kit's other errors (AccountError, SealError, PlatformWrapError, the
 // platform profile's PlatformError) pass through as they are. The account's
 // ceremonies (sign-up, sign-in, recovery, the upgrade) use it through
-// crypto/account.ts; the mailbox keys and grants come with the routes that
-// serve them.
+// crypto/account.ts; mailbox keys and their grants, through
+// crypto/mailbox.ts.
 
 import { MailieError, openBrowserVault, browserVaultAAD, type BrowserKeyEnvelope, type Bytes } from '@thehappieco/kit/profiles/mailie'
 

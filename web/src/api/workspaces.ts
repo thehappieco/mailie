@@ -7,7 +7,7 @@ import { segment } from './endpoint'
 import { ApiError, checked, request } from './http'
 import {
   isGrant, isMailboxAccessList, isMember, isMemberList, isTeamInvite, isTeamInviteList, isWorkspace, isWorkspaceList,
-  type Grant, type GrantFlags, type MailboxAccess, type Member, type MemberChange, type TeamInvite, type Workspace,
+  type Grant, type GrantChange, type GrantFlags, type MailboxAccess, type Member, type MemberChange, type TeamInvite, type Workspace,
   type WorkspaceRole,
 } from './types'
 
@@ -76,9 +76,15 @@ export async function accessDirectory(token: string, id: string, signal?: AbortS
   return checked(await request(`/v1/workspaces/${segment(id)}/access`, { token, signal }), isMailboxAccessList)
 }
 
-/** Sets exactly what a person holds on a mailbox: every flag is sent, so leaving one out never takes it away. */
-export async function setAccess(token: string, accountID: string, userID: string, flags: GrantFlags): Promise<Grant> {
-  const body: GrantFlags = { read: flags.read, act: flags.act, send: flags.send, manage: flags.manage }
+/**
+ * Sets exactly what a person holds on a mailbox: every flag is sent, so
+ * leaving one out never takes it away. grant, with Read given on a mailbox
+ * that has a key to a person with an account key, is their grant at its
+ * current epoch (docs/key-scheme.md section 12.13).
+ */
+export async function setAccess(token: string, accountID: string, userID: string, flags: GrantFlags, grant?: string): Promise<Grant> {
+  const body: GrantChange = { read: flags.read, act: flags.act, send: flags.send, manage: flags.manage }
+  if (grant) body.grant = grant
   return checked(await request(`/v1/accounts/${segment(accountID)}/access/${segment(userID)}`, { token, method: 'PUT', body }), isGrant)
 }
 

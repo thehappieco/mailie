@@ -12,20 +12,26 @@
 // asking for the account until it leaves pending_auth or the flow's window
 // closes: every 3 s, or, while the event stream is open (state/live.ts), as
 // soon as an account.state event names it, with a slow poll kept only as a
-// safety net.
+// safety net. The request that creates a mailbox carries its first key
+// (docs/key-scheme.md section 12.11), made and sealed to the person here on
+// every attempt, after a fresh step-up (state/stepUp.ts); resuming an
+// abandoned link sends none, since the mailbox has the one its link wrote.
 
 import { reactive, watch } from 'vue'
 import * as api from '../api/accounts'
 import { ApiError } from '../api/http'
 import { listProviders } from '../api/providers'
-import type { Account, AccountState, AccountSync, AddAccountRequest, AuthFlow, Folder, Provider, ProviderID } from '../api/types'
+import { enrolled, type Account, type AccountState, type AccountSync, type AddAccountRequest, type AddAccountResult, type AuthFlow, type Folder, type Provider, type ProviderID } from '../api/types'
+import { CeremonyError } from '../crypto/errors'
+import { linkKey } from '../crypto/mailbox'
 import { announce } from '../ui/announce'
 import { noticeText } from '../ui/notices'
 import type { ReasonFacts } from '../ui/reasons'
 import { server } from './connection'
 import { failure, type Failure, type Operation } from './failure'
 import { FLOW_LIFETIME_MS, rememberOAuthStart, takeOAuthReturn, takeOAuthStart } from './oauthReturn'
-import { authorized, identity } from './session'
+import { authorized, identity, session } from './session'
+import { StepUpCancelled, withStepUp } from './stepUp'
 import { selectWorkspace, settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
 
 export const POLL_INTERVAL_MS = 3_000
@@ -520,6 +526,38 @@ async function wait(generation: number, accountID: string, baseline: Baseline): 
 const refusedBeforeStoring: string[] = ['bad_request', 'not_authorized', 'unauthorized', 'rate_limited', 'aborted']
 
 /**
+ * The step-up a link needs left to spare when it is sent, in seconds: the
+ * server checks it before it signs in to the mail server and again in the
+ * transaction that stores the mailbox, after a login of up to 30 s
+ * (docs/key-scheme.md section 11).
+ */
+export const LINK_STEP_UP_MARGIN_S = 120
+
+/**
+ * addWithKey sends the request that creates a mailbox with its first key
+ * (docs/key-scheme.md sections 8 and 12.11): a fresh key pair and namespace
+ * on every attempt, its private key sealed to the linker's own account key
+ * at epoch 1 and zeroed before anything is sent, after a fresh step-up
+ * (state/stepUp.ts). A person without an account key links nothing
+ * (not_enrolled), before a step-up is asked for.
+ */
+async function addWithKey(body: AddAccountRequest): Promise<AddAccountResult> {
+  const linker = session.user
+  if (!linker || !enrolled(linker)) throw new CeremonyError('not_enrolled')
+  return withStepUp(async () => {
+    const key = await linkKey(linker)
+    return authorized(token => api.addAccount(token, { ...body, ...key }))
+  }, LINK_STEP_UP_MARGIN_S)
+}
+
+/** The person closed the step-up a link asked for: the form is back, as it was, and nothing was sent. */
+function backToForm(generation: number): void {
+  if (generation !== connectGeneration) return
+  connect.phase = 'idle'
+  connect.failure = null
+}
+
+/**
  * Connects a mailbox that signs in with Google or Microsoft: into a team the
  * person owns or administers when workspaceID names one, otherwise into their
  * personal workspace. Into a team, syncConsentVersion gives the team's
@@ -533,14 +571,17 @@ export async function connectOAuthAccount(input: { provider: ProviderID; email: 
   if (input.workspaceID && input.syncConsentVersion) body.sync_consent_version = input.syncConsentVersion
   let result
   try {
-    result = await authorized(token => api.addAccount(token, body))
+    result = await addWithKey(body)
   } catch (error) {
     if (generation !== connectGeneration) return
+    if (error instanceof StepUpCancelled) { backToForm(generation); return }
     const code = error instanceof ApiError ? error.code : ''
-    // These are refused before anything is stored. Anything else (internal,
-    // unavailable, conflict) may have left a row behind: the server creates
-    // the account before it starts consent, and the reply never said its id.
-    if (!refusedBeforeStoring.includes(code)) {
+    // These are refused before anything is stored, as is whatever this
+    // browser refused before sending (crypto/errors.ts). Anything else
+    // (internal, unavailable, conflict) may have left a row behind: the
+    // server creates the account before it starts consent, and the reply
+    // never said its id.
+    if (!(error instanceof CeremonyError) && !refusedBeforeStoring.includes(code)) {
       await loadAccounts()
       if (generation !== connectGeneration) return
       const email = input.email.trim().toLowerCase()
@@ -576,13 +617,14 @@ export async function connectOAuthAccount(input: { provider: ProviderID; email: 
 export async function connectPasswordAccount(body: AddAccountRequest): Promise<boolean> {
   const generation = begin({ provider: body.provider, email: body.email })
   try {
-    const result = await authorized(token => api.addAccount(token, body))
+    const result = await addWithKey(body)
     if (generation !== connectGeneration) return false
     upsert(result.account)
     connect.accountID = result.account.id
     connect.phase = 'done'
     return true
   } catch (error) {
+    if (error instanceof StepUpCancelled) { backToForm(generation); return false }
     // iCloud's refusal has one likely cause worth naming; a server the person typed has several.
     if (generation === connectGeneration) { connect.phase = 'failed'; connect.failure = failure(body.provider === 'icloud' ? 'test-login-icloud' : 'test-login', error) }
     return false

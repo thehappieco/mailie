@@ -6,7 +6,9 @@
 // authorizing again needs manage. In a team, its owners and admins manage
 // every mailbox by their role: they see who can use it and change that,
 // give or withdraw the team's agreement to sync it, and remove it; a member
-// sees their own card. Removal is typed, never a confirm(): the person
+// sees their own card. Anyone who holds Read on it sees its key's section
+// (MailboxKeyPanel): waiting for the key, handing it over, a first key and a
+// personal mailbox's new one. Removal is typed, never a confirm(): the person
 // writes the address, which also makes them read it, and the server is
 // sent the mailbox's id to confirm.
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
@@ -16,7 +18,7 @@ import { accounts, closeDetail, loadFolders, removeAccount } from '../state/acco
 import { consent, reviewConsent, syncNow, syncRequests } from '../state/sync'
 import { directoryEntry, personName } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
-import { accessOf, actorName, administers, grantSummary, workspaceName } from '../ui/access'
+import { accessOf, actorName, administers, grantSummary, waitsForKey, workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
 import { describe, describeFolders } from '../ui/errors'
 import { count, since, stamp } from '../ui/format'
@@ -26,6 +28,7 @@ import { folderBadge, fromIndex } from '../ui/sync'
 import AccessPanel from './AccessPanel.vue'
 import AppIcon from './AppIcon.vue'
 import LiveRegion from './LiveRegion.vue'
+import MailboxKeyPanel from './MailboxKeyPanel.vue'
 import StatusChip from './StatusChip.vue'
 import SyncStatus from './SyncStatus.vue'
 import TeamMailboxSync from './TeamMailboxSync.vue'
@@ -176,9 +179,12 @@ function authorize() {
           <TeamMailboxSync v-if="admin" :account="account" />
         </section>
 
+        <MailboxKeyPanel :account="account" />
+
         <section v-if="!access.read" class="sheet-section">
           <h3>{{ t('Folders') }}</h3>
-          <p v-if="admin" class="dim">{{ t('You manage this mailbox as an owner or an admin of {team}, but do not read it, so its folders and messages are not shown to you. Read comes only from an owner or an admin who reads it.', { team: teamName }) }}</p>
+          <p v-if="waitsForKey(account)" class="dim">{{ t('You are waiting for this mailbox’s key, so its folders and messages are not shown to you yet.') }}</p>
+          <p v-else-if="admin" class="dim">{{ t('You manage this mailbox as an owner or an admin of {team}, but do not read it, so its folders and messages are not shown to you. Read comes only from an owner or an admin who reads it.', { team: teamName }) }}</p>
           <p v-else class="dim">{{ t('You do not have read access to this mailbox, so its folders and messages are not shown to you. It comes only from an owner or an admin of the team who reads it.') }}</p>
         </section>
         <section v-else class="sheet-section">

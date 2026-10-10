@@ -251,12 +251,19 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **A new recovery code** (`components/AccountPanel.vue`) asks for the password every time,
   derives the current auth key under the account's own salt and parameters, and sends it with the
   new wrap and proof; the password is never sent.
-- **The step-up prompt** (`components/StepUpDialog.vue`) is for what the step-up guards
-  ([Mailbox keys](#mailbox-keys)); the console's flows that seal mailbox keys and grants, and mount
-  it before each such call, are the next part of phase 3's step 4. The console judges the session's
-  `authenticated_at` by the server's clock, as the `Date` of the server's answers gives it
-  (`state/connection.ts`), never by its own: a browser whose clock runs ahead would otherwise find
-  a step-up it just made already old.
+- **The step-up prompt** (`components/StepUpDialog.vue`, mounted once for the page by
+  `components/StepUpPrompt.vue`) is asked for before every call the step-up guards
+  ([Mailbox keys](#mailbox-keys)): linking a mailbox, giving Read with a grant, handing a
+  mailbox's key over, and its first or a new key. `state/stepUp.ts` asks first, over whatever
+  dialog is open, unless the session's `authenticated_at` leaves 30 seconds of the ten minutes (two
+  minutes for a link, which the server checks again after its login to the mail server, up to 30
+  seconds later); the flow goes on once the password is proved (`POST /v1/auth/stepup`), and stops
+  without a word, sending nothing, when the dialog is closed. A `403` after which the step-up is no
+  longer fresh was the step-up going stale on the way: the prompt is shown again and the call made
+  once more, with keys and grants sealed anew; any other `403` is the call's. The console judges
+  the session's `authenticated_at` by the server's clock, as the `Date` of the server's answers
+  gives it (`state/connection.ts`), never by its own: a browser whose clock runs ahead would
+  otherwise find a step-up it just made already old.
 - **The links.** An invitation (`#invite=…&email=…`) starts with `signup/open`; a reset link
   (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
@@ -534,7 +541,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   Manage). Folders and Sync need `read`; authorizing again needs manage; a mailbox seen without
   `read` (an owner's or an admin's card of a team mailbox, say) says so instead of offering them,
   and one that needs authorizing tells whoever does not manage it that an owner or an admin has
-  to. Removing is a team's owners' and admins' (or a personal mailbox's person's): it asks for the
+  to. One whose key the person waits for (`access.waiting_key`) says that instead, apart from not
+  reading it: in a team, that anyone who reads it can hand the key over; a personal one, that its
+  details offer a new key ([Mailbox keys](#mailbox-keys)). Removing is a team's owners' and admins' (or a personal mailbox's person's): it asks for the
   mailbox's address typed and sends its id as `confirm`.
 - **A member of a team** gets the switcher and cards for the mailboxes they hold a grant on
   (re-authorizing where they hold `manage`; an edition with Mail and Compose offers those they read
@@ -546,11 +555,18 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   sheet says that its owners and admins turn it on.
 - **Who can use a mailbox** (the sheet's Access, in a team, for its owners and admins): every
   active member with their flags, ticked and then saved. `read` is offered only to a viewer who
-  reads the mailbox; `act` only for someone who reads; `send` for anyone; `manage` for members
-  (owners and admins manage by their role, so theirs is shown ticked and is not theirs to change).
+  reads the mailbox (on one that has a key, the flag and the key: `readsNow`, the directory's
+  `sealed` at its `epoch`); `act` only for someone who reads; `send` for anyone; `manage` for
+  members (owners and admins manage by their role, so theirs is shown ticked and is not theirs to
+  change). Someone who holds Read without the key is marked as waiting for it. Read given on a
+  mailbox that has a key to a member with an account key (the members list's `seal_id` and
+  `public_key`) goes with their grant, sealed in the viewer's browser from their own after a
+  step-up, which the row says before it is saved; to a member without one, and on a mailbox
+  without a key, by the flag alone.
   The mailbox's last reader (`last_reader_of`, or `readers` of 1) is marked, and taking their read
   is not offered; an owner or an admin who does not read it is told that they cannot give Read,
-  not even to themselves; a mailbox nobody can read
+  not even to themselves, and one who waits for its key, that they can once someone who reads it
+  hands it over; a mailbox nobody can read
   (`no_reader`) says so, and that removing it, or removing it and linking it again, is the way out.
   A change that only takes flags away is `DELETE …/access/{user}?flags=` naming them; one that gives
   anything sets the grant exactly (`PUT`, all four). The sheet also shows the mailbox's sync for
@@ -573,7 +589,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   or one of those teams (`workspace_id`). Into a team it shows the sync text with "Turn on sync for
   {team}", which sends `sync_consent_version`; left unticked, the mailbox is linked with sync off.
   The console shows the workspace chosen before connecting, so the new card lands in the list it
-  belongs to; a provider's return shows the workspace of the mailbox it authorized.
+  belongs to; a provider's return shows the workspace of the mailbox it authorized. A link carries
+  the mailbox's first key, and asks for the step-up first when the session's has less than two
+  minutes left ([Mailbox keys](#mailbox-keys)).
 - **Events.** `event: access` reads the list again (once for several, a second later), Storage if
   it was read, and what was read of the team shown (its members and its directory), and forgets the
   folders of a mailbox no longer readable; an edition hears it through `onLiveAccess()`. A stream narrowed to a workspace the person is no longer in ends with
@@ -815,10 +833,56 @@ person's: an API key is `403`.
 | a mailbox the caller cannot see; a recipient who is not an active member of its workspace | `404` |
 | a grant at another epoch than the current one, or a new key at another than the next; a grant that already exists; a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace in use; a recipient without an account key, or without `read` for the key; a person without an account key linking | `409` |
 
-The console's half (sealing and opening in the browser with the kit's `sealGrant` and
-`openGrant`, the step-up dialog before each call, the waiting state on a card) is the next part of
-phase 3's step 4: until it lands, a person's link from the open console carries no key and is
-refused.
+#### The console's half
+
+The browser makes every mailbox key and seals every grant; the server never receives a private
+one ([`key-scheme.md`](key-scheme.md) section 16):
+
+- **The cryptography** is `web/src/crypto/mailbox.ts`, over the kit's `hpke` and Mailie profile: a
+  key pair (`generateKeyPair`) and a namespace (`newNamespace`) at epoch 1, or a personal mailbox's
+  own namespace at its next epoch; a grant sealed (`sealGrant`) to the public key and seal id the
+  server serves, both checked first; and the person's own grant opened (`openGrant`) against the
+  public key the server holds for the mailbox at that epoch. Every mailbox private key is zeroed as
+  soon as its grants are sealed, and one is open at a time. A seal id or a key outside its
+  spelling, a recipient key of low order, a grant that does not open, and one that opens to
+  another key than the mailbox's are all `security`: nothing is sealed or sent.
+- **The account key that opens grants** comes from the browser vault as the kit's
+  non-extractable private key (`accountPrivateKeyOf` in `web/src/state/accountVault.ts`, under the
+  vault's rules: the person `GET /v1/auth/me` names, a record of anyone else wiped); only a new
+  recovery code reads the raw key back out. A browser without it (`session.keyed` false: a
+  sign-in elsewhere, storage refused) says `no_account_key`, to sign in again there, before
+  anything is sent. Sealing to someone else needs no account private key.
+- **Linking** (`state/accounts.ts`): a fresh pair and namespace on every attempt, the linker's
+  grant at epoch 1 sealed to their own `user.public_key` under their `seal_id`, sent as
+  `public_key`, `namespace` and `grant` in the `POST /v1/accounts` that creates the mailbox, by the
+  password form and the OAuth flows alike, and the private key zeroed before the page leaves for the
+  provider. A person without an account key (signed in from before the upgrade) is told to sign in
+  again (`not_enrolled`) before anything is asked or sent. Finishing an abandoned link sends no
+  key: the mailbox has its own.
+- **Giving Read** (`state/team.ts` `saveGrant`): Read added on a mailbox that has a key (the
+  directory's `epoch`) to a member with an account key reads the key (`GET …/mailbox-key`), opens
+  the giver's own grant, seals the key to the member at the current epoch and sends it as `grant`
+  with the four flags, after a step-up; otherwise the flags alone, as before, with no step-up.
+- **The key's section of a mailbox's sheet** (`components/MailboxKeyPanel.vue`,
+  `state/mailboxKeys.ts`), for anyone who holds Read on it, owner, admin or member: a member who
+  waits for the key is told who can hand it over (`suppliers`), or that nobody reads the mailbox
+  now; someone who reads it is shown who waits for it (`waiting`) and hands it to each, sealed from
+  their own grant (`PUT …/grants/{user}`); a mailbox read without a key offers its first key,
+  naming whom it is sealed to beside them (`keyless_readers`, `POST …/mailbox-key`); and a
+  personal mailbox whose person waits for its key, or whose own grant does not open in this
+  browser (tried when its sheet opens), offers a new key at the next epoch, sealed to them alone
+  (`PUT …/mailbox-key`). A team mailbox is never offered a new key: one nobody reads keeps its
+  "nobody can read" note, and is only removed. Each write asks for the step-up first, and reads
+  the key, the card and the team's directory again after it, or after a `409`.
+- **First keys after a sign-in**: right after every sign-in in this page (`state/session.ts`
+  `onSignIn`, from `beginSession`), never on the page load of an older session, while the
+  sign-in's step-up time counts and this browser keeps the person's account key, the console reads
+  `GET /v1/accounts` and writes the first key of every mailbox the person reads without one (never
+  an operator's), one request per mailbox, sealed to them and to its `keyless_readers`; a `409` (someone enrolled, or
+  another tab keyed it) reads the mailbox key again and tries once more. A mailbox it did not key
+  is left for its sheet.
+- **Failures** are said by operation (`give-read`, `load-mailbox-key`, `supply-key`, `first-key`,
+  `new-key`, and `not_enrolled` for a link), in the console's words, never the server's.
 
 ### OAuth flows
 

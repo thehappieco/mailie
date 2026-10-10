@@ -26,6 +26,7 @@ export interface Operations {
   'load-members': true; 'change-member': true; 'remove-member': true; 'leave-team': true
   'load-invites': true; 'create-invite': true; 'revoke-invite': true
   'load-access': true; 'change-access': true; 'team-sync-on': true; 'team-sync-off': true
+  'give-read': true; 'load-mailbox-key': true; 'supply-key': true; 'first-key': true; 'new-key': true
 }
 export type Operation = keyof Operations
 

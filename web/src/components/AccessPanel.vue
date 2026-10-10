@@ -7,17 +7,22 @@
 // who does not gives none, not even to themselves; Act goes only to someone
 // who reads it, and Send to anyone; Manage is given to members, as owners
 // and admins have it by their role; and the last person who can read the
-// mailbox keeps Read. A mailbox nobody can read says so, and what is left to
-// do about it. Below the people, the API keys holding something on it: what
-// each holds and who created it, and taking the mailbox out of one; keys
-// never count as readers, and what one holds is changed in the workspace's
-// API keys. The server decides every change.
+// mailbox keeps Read. On a mailbox that has a key, reading takes the key
+// too: Read given to someone with an account key goes with the key, sealed
+// in this browser from the caller's own after a step-up (state/team.ts
+// saveGrant), and someone who holds Read without the key is marked as
+// waiting for it (the sheet's key section hands it over). A mailbox nobody
+// can read says so, and what is left to do about it. Below the people, the
+// API keys holding something on it: what each holds and who created it, and
+// taking the mailbox out of one; keys never count as readers, and what one
+// holds is changed in the workspace's API keys. The server decides every
+// change.
 import { computed, onMounted, ref } from 'vue'
-import type { GrantFlags, MailboxKey, Member } from '../api/types'
+import { readsNow, type GrantFlags, type MailboxKey, type Member } from '../api/types'
 import { dropKeyMailbox } from '../state/apikeys'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
-import { directoryEntry, loadDirectory, loadMembers, personName, saveGrant, team } from '../state/team'
+import { directoryEntry, loadDirectory, loadMembers, personName, readRecipient, saveGrant, team } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
 import {
   activeMember, administers, flagHint, flagLabel, flagNames, flagsOf, grantPermissions, grantSummary, holdsAny, lastReaderOf, sameFlags,
@@ -41,12 +46,20 @@ const entry = computed(() => directoryEntry(props.accountId))
 /** Gone from the team's directory since the sheet opened: the mailbox was removed. */
 const gone = computed(() => team.directory.loaded && !entry.value)
 const grantOf = (userID: string): GrantFlags => flagsOf(entry.value?.grants.find(grant => grant.user_id === userID))
-const mine = computed(() => grantOf(me.value))
-/** The person is the only one who can read the mailbox, as the server marks them, or as its count of readers says. */
-function lastReader(member: Member, held: GrantFlags): boolean {
-  if (lastReaderOf(member).includes(props.accountId)) return true
-  return held.read && activeMember(member) && entry.value?.readers === 1
+/** Whether the person reads the mailbox now: Read, and on a mailbox that has a key the key too (readsNow). */
+function reads(userID: string): boolean {
+  const grant = entry.value?.grants.find(item => item.user_id === userID)
+  return !!grant && !!entry.value && readsNow(entry.value, grant)
 }
+/** What the caller holds, with Read as they read it now: waiting for the key, they give no Read. */
+const mine = computed(() => ({ ...grantOf(me.value), read: reads(me.value) }))
+/** The person is the only one who can read the mailbox, as the server marks them, or as its count of readers says. */
+function lastReader(member: Member): boolean {
+  if (lastReaderOf(member).includes(props.accountId)) return true
+  return reads(member.user_id) && activeMember(member) && entry.value?.readers === 1
+}
+/** Holds Read on a mailbox that has a key without the key: waiting for someone who reads it to hand it over. */
+const waiting = (row: Row): boolean => row.held.read && !reads(row.member.user_id)
 
 function rank(row: Row): number {
   if (row.member.user_id === me.value) return 0
@@ -57,7 +70,7 @@ function rank(row: Row): number {
 const rows = computed<Row[]>(() => team.members.list
   .map(member => {
     const held = grantOf(member.user_id)
-    const rules = grantPermissions({ administers: admin.value, mine: mine.value, member, held, lastReader: lastReader(member, held) })
+    const rules = grantPermissions({ administers: admin.value, mine: mine.value, member, held, lastReader: lastReader(member) })
     return { member, held, rules }
   })
   .filter(row => row.rules.lock !== 'inactive')
@@ -107,10 +120,15 @@ async function save(row: Row) {
   saving.value = id
   const problem = await saveGrant(props.accountId, id, row.held, draft)
   saving.value = ''
+  // The step-up was closed: nothing was sent, and what was ticked stays.
+  if (problem === 'cancelled') return
   if (problem) { problems.value[id] = problem; return }
   delete drafts.value[id]
   announce(t('Access saved.'))
 }
+
+/** Saving this row's draft hands the person the mailbox's key, sealed here: said before it is saved. */
+const sealsKey = (row: Row): boolean => changed(row) && readRecipient(props.accountId, row.member.user_id, row.held, shown(row)) !== null
 
 /** Why a row's Read cannot go: said beside it, before anyone tries. */
 function lockText(row: Row): string {
@@ -121,8 +139,11 @@ function lockText(row: Row): string {
 }
 
 /** What the caller cannot give, said once for every row. */
-const giving = computed(() => mine.value.read ? ''
-  : t('You do not read this mailbox, so you cannot give Read on it, not even to yourself: only an owner or an admin who reads it can.'))
+const giving = computed(() => {
+  if (mine.value.read) return ''
+  if (grantOf(me.value).read) return t('You are waiting for this mailbox’s key, so you cannot give Read on it until someone who reads it hands the key to you.')
+  return t('You do not read this mailbox, so you cannot give Read on it, not even to yourself: only an owner or an admin who reads it can.')
+})
 
 /** The live keys holding something on the mailbox, by name. */
 const keys = computed<MailboxKey[]>(() => [...(entry.value?.keys ?? [])].sort((a, b) => a.name.localeCompare(b.name)))
@@ -176,6 +197,7 @@ onMounted(() => {
             <strong>{{ row.member.user_id === me ? t('You') : row.member.name || row.member.email }}</strong>
             <small>{{ row.member.email }} · {{ workspaceRoleLabel(row.member.role) }}</small>
           </div>
+          <span v-if="waiting(row)" class="pill waiting-key"><AppIcon name="key" :size="13" />{{ t('Waiting for the key') }}</span>
           <fieldset class="flags" :disabled="!!row.rules.lock">
             <legend class="visually-hidden">{{ t('Access of {name}', { name: row.member.name || row.member.email }) }}</legend>
             <label v-for="flag in flagNames" :key="flag" class="flag" :title="flagHint(flag)">
@@ -184,6 +206,7 @@ onMounted(() => {
             </label>
           </fieldset>
           <p v-if="lockText(row)" class="hint lock"><AppIcon name="lock" :size="14" />{{ lockText(row) }}</p>
+          <p v-if="sealsKey(row)" class="hint"><AppIcon name="key" :size="14" />{{ t('Saving also hands them this mailbox’s key, sealed in this browser. It asks for your password if you have not entered it in the last ten minutes.') }}</p>
           <p v-if="problems[row.member.user_id]" class="alert" role="alert">{{ describe(problems[row.member.user_id]!) }}</p>
           <div v-if="changed(row)" class="row-save">
             <span class="dim">{{ t('Now: {flags}', { flags: grantSummary(row.held) }) }}</span>
@@ -238,8 +261,9 @@ onMounted(() => {
 .flag:has(input:checked) { border-color: var(--accent); background: var(--accent-dim); font-weight: 600; }
 .flag:has(input:disabled) { cursor: default; opacity: .65; }
 .flag input { width: auto; min-height: 0; margin: 0; accent-color: var(--accent); }
-.lock { display: flex; align-items: flex-start; gap: 6px; }
-.lock .app-icon { flex: none; margin-top: 2px; }
+.lock, .access-row > .hint { display: flex; align-items: flex-start; gap: 6px; }
+.lock .app-icon, .access-row > .hint .app-icon { flex: none; margin-top: 2px; }
+.waiting-key { justify-self: start; display: inline-flex; align-items: center; gap: 5px; color: var(--warn-text); }
 .row-save { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; }
 .row-save .dim { margin-right: auto; font-size: 12px; }
 .flag-legend { display: grid; gap: 6px; margin: 0; font-size: 12px; line-height: 1.45; }

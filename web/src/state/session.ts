@@ -259,6 +259,22 @@ export async function forgetRemembered(): Promise<void> {
   if (login) await clearLocalSession(login.id).catch(() => {})
 }
 
+/** What runs right after a sign-in in this page (onSignIn). */
+const signInListeners = new Set<() => void>()
+
+/**
+ * onSignIn runs listener right after every sign-in this page makes
+ * (beginSession), once the session is the current one; never after a
+ * session restored from this browser's record, nor a password change's
+ * replacement. It answers what stops it. What only a sign-in's step-up time
+ * allows without asking for the password again, a mailbox's first key
+ * (docs/key-scheme.md section 12.14), starts here.
+ */
+export function onSignIn(listener: () => void): () => void {
+  signInListeners.add(listener)
+  return () => { signInListeners.delete(listener) }
+}
+
 /**
  * beginSession makes a session the server just issued the current one: every
  * sign-in ends here (state/account.ts, once its ceremony is done; and
@@ -267,6 +283,9 @@ export async function forgetRemembered(): Promise<void> {
  */
 export async function beginSession(reply: SessionReply, keyed = false): Promise<void> {
   await adopt(loginFrom(reply), reply.user, reply.expires_at, reply.authenticated_at ?? 0, keyed)
+  for (const listener of [...signInListeners]) {
+    try { listener() } catch { /* What follows a sign-in never undoes it. */ }
+  }
 }
 
 /**
@@ -352,19 +371,24 @@ export function markKeyed(userID: string): void {
   if (identity() === userID) session.keyed = true
 }
 
-/** The server's ten minutes (docs/key-scheme.md section 11), less a margin for the clocks and the request. */
-const STEP_UP_FRESH_S = 10 * 60 - 30
+/** The server's ten minutes (docs/key-scheme.md section 11). */
+const STEP_UP_WINDOW_S = 10 * 60
+/** What freshStepUp leaves of them by default: a margin for the clocks and the request. */
+export const STEP_UP_MARGIN_S = 30
 
 /**
  * freshStepUp says whether the session proved its person recently enough for
- * what the step-up guards. The step-up time is the server's, so it is judged
- * by the server's clock (state/connection.ts serverNow), never this
- * browser's: a browser whose clock runs ahead would otherwise find a step-up
- * it just made already old, and ask for the password again and again.
+ * what the step-up guards, with margin seconds of the ten minutes still to
+ * spare: a call that takes long before the server checks it again (linking
+ * a mailbox, which signs in to the mail server first) asks for more. The
+ * step-up time is the server's, so it is judged by the server's clock
+ * (state/connection.ts serverNow), never this browser's: a browser whose
+ * clock runs ahead would otherwise find a step-up it just made already old,
+ * and ask for the password again and again.
  */
-export function freshStepUp(now = serverNow()): boolean {
+export function freshStepUp(now = serverNow(), margin = STEP_UP_MARGIN_S): boolean {
   const at = session.authenticatedAt
-  return at > 0 && now / 1000 - at < STEP_UP_FRESH_S
+  return at > 0 && now / 1000 - at < STEP_UP_WINDOW_S - margin
 }
 
 export async function updateProfile(name: string): Promise<void> {

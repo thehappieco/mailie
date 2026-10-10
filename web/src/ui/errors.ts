@@ -242,6 +242,32 @@ function specific(failure: Failure): string | undefined {
       if (code === 'bad_request') return t('The server did not accept this access: Act needs Read, Manage is given to members only, and only active members of the team can be given access.')
       if (code === 'not_found') return t('This person, or this mailbox, is no longer in the team.')
       return undefined
+    case 'give-read':
+      if (code === 'not_authorized') return t('Only an owner or an admin of the team who reads this mailbox gives Read on it.')
+      if (code === 'conflict') return t('This mailbox’s key changed, or this person was given it or lost their account key, meanwhile. What is shown was read again: try again.')
+      if (code === 'security') return t('Your key for this mailbox does not open in this browser, so Mailie cannot hand it to anyone. Nothing was sent.')
+      return specific({ op: 'change-access', code })
+    case 'load-mailbox-key':
+      if (code === 'unavailable' || code === 'internal') return t('Could not read this mailbox’s key. Try again in a moment.')
+      if (code === 'not_authorized') return t('You do not hold Read on this mailbox, so its key is not shown to you.')
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      return undefined
+    case 'supply-key':
+      if (code === 'not_authorized') return t('Only someone who reads this mailbox hands its key on.')
+      if (code === 'conflict') return t('This person was handed the key, lost Read on the mailbox, or the key changed, meanwhile. What is shown was read again.')
+      if (code === 'not_found') return t('This person is no longer a member of the team, or the mailbox was removed.')
+      if (code === 'security') return specific({ op: 'give-read', code })
+      return undefined
+    case 'first-key':
+      if (code === 'not_authorized') return t('Only someone who reads this mailbox creates its key.')
+      if (code === 'conflict') return t('This mailbox got its key, or who reads it changed, meanwhile. What is shown was read again.')
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      return undefined
+    case 'new-key':
+      if (code === 'not_authorized') return t('Only the person whose mailbox it is gives it a new key, and a team mailbox never gets one.')
+      if (code === 'conflict') return t('This mailbox’s key changed meanwhile. What is shown was read again.')
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      return undefined
     case 'team-sync-on':
       // The console asked about an older text than the server's.
       if (code === 'bad_request') return edition().sync.changedWhileOpen()
@@ -288,6 +314,7 @@ function general(failure: Failure): string {
     case 'recovery_code': return t('That is not a recovery code. It has 30 letters and digits, in six groups of five.')
     case 'derive_failed': return t('This browser could not process the password. Close other tabs and try again.')
     case 'no_account_key': return t('This browser does not hold your account key. Sign out, sign in again here, and try again.')
+    case 'not_enrolled': return t('Your account has no account key yet. Sign out and sign in again with your password to set it up, then try again.')
     case 'aborted':
     case 'internal':
       return t('Something went wrong on the server. Try again in a moment.')
