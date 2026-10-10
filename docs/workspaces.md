@@ -722,7 +722,7 @@ Changed routes:
 | Route | Change |
 |---|---|
 | `POST /v1/accounts` | optional `workspace_id`; who may link where, as [above](#mailboxes); into a team, optional `sync_consent_version` (the current sync text: the team's consent, given with the link); from a person, `public_key`, `namespace` and `grant` (the mailbox's first key, phase 3), with a fresh step-up |
-| `PUT /v1/accounts/{id}/access/{user_id}` | optional `grant`: required with `read` given on a mailbox that has a key to a person with an account key, refused otherwise (phase 3) |
+| `PUT /v1/accounts/{id}/access/{user_id}` | optional `grant` and `public_key`: required together with `read` given on a mailbox that has a key to a person with an account key, refused otherwise; `public_key` is the key the grant was sealed to, `conflict` unless it is the person's now (phase 3) |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners and admins, a personal mailbox's person, the operator for its own |

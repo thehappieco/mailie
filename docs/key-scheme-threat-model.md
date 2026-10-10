@@ -473,7 +473,8 @@ account key is not its recipient's now refused),
 (every grant it seals opens for its recipient to the mailbox's key and for nobody else, sealed to
 the recipient as the server serves them just before, never as a page listed them before their
 reset, one that opens to a key the sealer chose is refused, a recipient key of low order is
-refused, a mailbox private key is zeroed once sealed, every write waits for a fresh step-up, asked
-only in a browser that holds the person's account key, and first keys follow a sign-in, never a
-restored session). The specification's sections 11 and 12 are what those tests
+refused, a mailbox private key is zeroed once sealed, every write waits for a fresh step-up, giving
+"read" with a grant and handing the key over ask for it only in a browser that holds the person's
+account key (a first or a new key seals only to public keys, and asks for it anywhere), and first
+keys follow a sign-in, never a restored session). The specification's sections 11 and 12 are what those tests
 hold the server and the console to.

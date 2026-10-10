@@ -253,7 +253,8 @@ export async function saveGrant(accountID: string, userID: string, before: Grant
       } catch (error) {
         if (!gives || !(error instanceof ApiError && (error.code === 'bad_request' || error.code === 'conflict')) || !ok()) throw error
         await Promise.all([loadDirectory(), loadMembers(), accounts.list.some(item => item.id === accountID) ? refreshAccount(accountID) : undefined])
-        if (!ok()) return null
+        // The person or the workspace changed while reading again: the refusal stands, never "saved".
+        if (!ok()) throw error
         const now = heldOf(accountID, userID)
         const next = grantChange(now, after)
         // Given Read meanwhile, by someone else: nothing is given now, and what is shown says what they hold.

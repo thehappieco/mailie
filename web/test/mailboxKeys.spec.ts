@@ -341,6 +341,28 @@ describe('giving Read on a mailbox that has a key', () => {
     expect(describeFailure(refusal as Failure)).toBe('The server did not accept this access: Act needs Read, Manage is given to members only, and only active members of the team can be given access.')
   })
 
+  it('keeps a refusal a refusal when the person turns to another workspace while it is read again, never saying it was saved', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let refusedOnce = false
+    let switched = false
+    const members = () => {
+      // Listed again after the refusal: the person turns to their personal workspace meanwhile.
+      if (refusedOnce && !switched) { switched = true; page.workspaces.selectWorkspace(PERSONAL) }
+      return [memberOf(carol)]
+    }
+    const { shared } = await teamMailbox(page, members, ({ method }) => {
+      if (method !== 'PUT') return failure('not_found', 404)
+      refusedOnce = true
+      return failure('bad_request', 400)
+    })
+    const refusal = await page.team.saveGrant(shared.id, carol.user.id, none, reader)
+    expect(switched).toBe(true)
+    expect(refusal).not.toBeNull()
+    expect(refusal).not.toBe('cancelled')
+    expect(sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)).toHaveLength(1)
+  })
+
   it('says the member was given Read meanwhile, and sends nothing again, when the directory read again shows it', async () => {
     const page = await load()
     await signIn(page, ana2)

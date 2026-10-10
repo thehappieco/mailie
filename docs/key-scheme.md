@@ -617,10 +617,14 @@ The server stores a grant only when:
   "read" again after taking it writes a new one.
 
 It **cannot** check that the 88 bytes seal the mailbox's private key, to the recipient's key, under
-the binding: it holds none of those secrets. A grant that is not what it claims only fails to open
-for its recipient, who sees the mailbox as "waiting for the key". The giver's browser seals to the
-public key the server serves for the recipient, refusing one of low order; it has nothing the
-server does not serve to check that key against (threat model, section 5.3).
+the binding: it holds none of those secrets. A grant that is not what it claims fails to open for
+its recipient, and nothing else tells: by the rule of section 12.13 it counts its recipient a
+reader, so the mailbox is not shown as "waiting for the key" and the key cannot be supplied to
+them over it; phase 4, when grants open content, decides the repair (Appendix C). The giver's
+browser seals to the public key the server serves for the recipient, refusing one of low order,
+and names that key with the grant, which the server refuses unless it is the recipient's now
+(Appendix C); it has nothing the server does not serve to check that key against (threat model,
+section 5.3).
 
 ## 10. The envelope domain and kinds
 
