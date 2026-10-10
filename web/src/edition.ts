@@ -124,11 +124,17 @@ export interface Edition {
    * How long this browser keeps the person's account key (docs/key-scheme.md
    * section 7). Unset: a self-hosted server's rule, wiped at sign-out and
    * whenever the page finds no valid session, since every sign-in opens the
-   * password wrap anyway. outlivesSession keeps it past a session that
-   * merely ends (the hosted service's, whose next sign-in then needs no
-   * product key); sign-out wipes it in every edition.
+   * password wrap anyway. outlivesExpiry keeps it past a session that merely
+   * expires (the hosted service's rule, whose next sign-in then needs no
+   * product key): one a page of the console established as expired by the
+   * server's clock, at its expiry timer or by a refusal the server's answer
+   * dates past expires_at, which marks the record until a session begins
+   * with it again. Everything else wipes it: a refusal before the expiry
+   * (revoked, ended by a password change, a recovery or a reset, its person
+   * disabled), a session given up on unchecked, no session record beside an
+   * unmarked key, and sign-out, in every edition (state/session.ts).
    */
-  accountKey?: { outlivesSession?: boolean }
+  accountKey?: { outlivesExpiry?: boolean }
 }
 
 let configured: Edition | null = null

@@ -28,11 +28,29 @@ import { KeySchemeError, normaliseAddress, openBrowserVaultKey, sealBrowserVault
 
 interface VaultRecord {
   version: 1
+  /**
+   * The session that holds the record: its browser login's id
+   * (state/sessionVault.ts BrowserLogin.id), bound when the session begins
+   * (sessionBegan), so that what a session's end does reaches only the record
+   * it held, never one a sign-in since wrote, in this page or another tab.
+   * 'pending:' and a random id while a ceremony that kept the key has not
+   * begun its session yet: no ending reaches it. None on a record written
+   * before holders, which the first session to end settles.
+   */
+  holder?: string
   origin: string
   sealID: string
   /** base64url of the account public key, as the server serves it. */
   publicKey: string
   envelope: BrowserKeyEnvelope
+  /**
+   * Set when the record outlived its session's expiry, which a page
+   * established by the server's clock, on an edition that keeps the key
+   * past one (Edition.accountKey, docs/key-scheme.md section 7): the one
+   * case where the key stays with no session to go with it. A session that
+   * begins with the record clears it.
+   */
+  outlivedExpiry?: true
 }
 
 const database = 'mailie-browser-account'
@@ -42,6 +60,9 @@ const slot = 'current'
 
 /** The record kept for this page when IndexedDB is refused; also the newest one this page wrote. */
 let held: VaultRecord | null = null
+
+/** Whether an ending of the session with this login id reaches the record: the session's own, or one written before holders. */
+const heldBy = (record: VaultRecord, loginID: string): boolean => record.holder === undefined || record.holder === loginID
 
 function currentOrigin(): string {
   return typeof location === 'undefined' ? '' : location.origin
@@ -75,16 +96,22 @@ async function transaction<T>(name: string, mode: IDBTransactionMode, operation:
 
 /**
  * keepAccountKey keeps the account key a ceremony just opened or made, for
- * the person it belongs to, replacing whatever this browser kept. The caller
- * still zeroes its own copy.
+ * the person it belongs to, replacing whatever this browser kept, and answers
+ * the record's pending holder (VaultRecord.holder) until the ceremony's
+ * session begins with it: a ceremony whose session does not begin settles it
+ * with that. The caller still zeroes its own copy.
  */
-export async function keepAccountKey(accountKey: Uint8Array, publicKey: Uint8Array, sealID: string): Promise<void> {
+export async function keepAccountKey(accountKey: Uint8Array, publicKey: Uint8Array, sealID: string): Promise<string> {
   const envelope = await sealBrowserVault(accountKey, publicKey, sealID)
-  const record: VaultRecord = { version: 1, origin: currentOrigin(), sealID, publicKey: toBase64URL(new Uint8Array(publicKey) as Bytes), envelope }
+  const record: VaultRecord = {
+    version: 1, holder: `pending:${crypto.randomUUID()}`, origin: currentOrigin(), sealID,
+    publicKey: toBase64URL(new Uint8Array(publicKey) as Bytes), envelope,
+  }
   held = record
   try {
     await transaction<void>(vaultStore, 'readwrite', (store, done) => { store.put(record, slot); done(undefined) })
   } catch { /* Kept in this page's memory: a reload forgets it. */ }
+  return record.holder!
 }
 
 async function storedRecord(): Promise<VaultRecord | null> {
@@ -139,6 +166,62 @@ export async function wipeAccountKey(): Promise<void> {
   try {
     await transaction<void>(vaultStore, 'readwrite', (store, done) => { store.delete(slot); done(undefined) })
   } catch { /* Nothing stored, nothing to wipe. */ }
+}
+
+/**
+ * sessionBegan binds the record this browser keeps to the session that just
+ * began in this page (VaultRecord.holder), and clears its mark of an expiry
+ * outlived: the session holds the record now, and the record goes with it
+ * when it ends. This page's own copy is bound first, so a browser that
+ * refuses the write still settles it with the session. A session restored
+ * from this browser's record (restored) takes only a record that is its
+ * own, from before holders, or kept past an expiry: never one a session
+ * begun since holds, nor one a ceremony is about to begin its session with.
+ */
+export async function sessionBegan(loginID: string, options: { restored?: boolean } = {}): Promise<void> {
+  const takes = (record: VaultRecord) => !options.restored || heldBy(record, loginID) || record.outlivedExpiry === true
+  if (held && takes(held)) { const { outlivedExpiry: _, ...rest } = held; held = { ...rest, holder: loginID } }
+  try {
+    await transaction<void>(vaultStore, 'readwrite', (store, done) => {
+      const request = store.get(slot)
+      request.onsuccess = () => {
+        const record = request.result as VaultRecord | undefined
+        if (record && takes(record)) { const { outlivedExpiry: _, ...rest } = record; store.put({ ...rest, holder: loginID }, slot) }
+        done(undefined)
+      }
+    })
+  } catch { /* Storage refused: this page's own copy is the session's. */ }
+}
+
+/**
+ * settleRecord settles the record the session with this login id held, and
+ * no other: marked as outliving its expiry (VaultRecord.outlivedExpiry) when
+ * keep is set, wiped otherwise, and left alone when it is another session's
+ * since, or a ceremony's that has not begun its session yet. This page's own
+ * copy goes the same way. A page that ends a session settles the key before
+ * it clears the session's own record, so a page that stops in between leaves
+ * that record to be checked again.
+ */
+export async function settleRecord(loginID: string, keep: boolean): Promise<void> {
+  if (held && heldBy(held, loginID)) held = keep ? { ...held, outlivedExpiry: true } : null
+  try {
+    await transaction<void>(vaultStore, 'readwrite', (store, done) => {
+      const request = store.get(slot)
+      request.onsuccess = () => {
+        const record = request.result as VaultRecord | undefined
+        if (record && heldBy(record, loginID)) {
+          if (keep) store.put({ ...record, outlivedExpiry: true }, slot)
+          else store.delete(slot)
+        }
+        done(undefined)
+      }
+    })
+  } catch { /* Not marked: with no session record, the next page wipes the key. */ }
+}
+
+/** outlivedExpiry says whether the account key this browser kept outlived its session's expiry, and nothing since began a session with it. */
+export async function outlivedExpiry(): Promise<boolean> {
+  return (await storedRecord())?.outlivedExpiry === true
 }
 
 /** forgetHeldAccountKey drops this page's own copy only, for a session another tab ended (and wiped already). */

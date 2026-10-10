@@ -9,7 +9,7 @@
 // decides for itself when to reconnect (state/live.ts).
 
 import { ApiError, failureOf, isServerCode, parseRetryAfter, requestURL } from './http'
-import { markReachable } from '../state/connection'
+import { markReachable, noteServerDate } from '../state/connection'
 
 /** One dispatched event: its type ("message" when the stream named none), its data, and the last id the stream set. */
 export interface StreamMessage { event: string; data: string; lastEventID: string }
@@ -159,6 +159,10 @@ export async function readEventStream(options: StreamOptions): Promise<void> {
     }
     const gateway = response.status === 502 || response.status === 503 || response.status === 504
     markReachable(!gateway)
+    // The daemon's clock, as send() takes it (api/http.ts): a refusal here is
+    // judged by it (state/session.ts). A proxy with no daemon behind it
+    // answers with its own clock.
+    if (!gateway) noteServerDate(response.headers.get('Date'))
     if (!response.ok) {
       const text = await response.text().catch(() => '')
       throw failureOf(response.status, text, parseRetryAfter(response.headers.get('Retry-After')))

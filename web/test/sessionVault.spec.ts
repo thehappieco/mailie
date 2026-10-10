@@ -72,6 +72,17 @@ describe('the browser session vault', () => {
     expect(await raw()).toBeUndefined()
   })
 
+  it('answers a record past its expiry by this browser’s clock only when asked to, for the server to judge, and never one of another origin', async () => {
+    const saved = login({ expiresAt: now() + 60 })
+    await saveLocalSession(saved)
+    vi.spyOn(Date, 'now').mockReturnValue((now() + 120) * 1000)
+    expect(await loadLocalSession({ expired: true })).toEqual(saved)
+    expect(await raw()).toBeDefined()
+    await rewrite(record => { record.origin = 'https://evil.example' })
+    expect(await loadLocalSession({ expired: true })).toBeNull()
+    expect(await raw()).toBeUndefined()
+  })
+
   it('never lets a late write bring back a login that was signed out', async () => {
     const saved = login()
     await clearLocalSession(saved.id)

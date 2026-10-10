@@ -140,14 +140,23 @@ export async function saveLocalSession(login: BrowserLogin): Promise<void> {
   if (replaced) notify({ kind: 'cleared', id: replaced })
 }
 
-export async function loadLocalSession(): Promise<BrowserLogin | null> {
+/**
+ * loadLocalSession opens the login this browser remembers, or answers null
+ * (clearing what it cannot use). One past its expiry by this browser's clock
+ * is cleared too, unless expired is set: then it is answered all the same,
+ * for the server to say whether its own clock agrees (state/session.ts
+ * restore, where an edition keeps the account key past an expiry), or to be
+ * cleared by its id (forgetRemembered).
+ */
+export async function loadLocalSession(options: { expired?: boolean } = {}): Promise<BrowserLogin | null> {
   const stored = await transaction<StoredLogin | undefined>('readonly', (store, done) => {
     const request = store.get(slot)
     request.onsuccess = () => done(request.result as StoredLogin | undefined)
   })
   if (!stored) return null
   try {
-    if (stored.version !== 1 || stored.origin !== currentOrigin() || !(stored.expiresAt > nowSeconds())) throw new Error('expired or foreign browser session')
+    if (stored.version !== 1 || stored.origin !== currentOrigin()) throw new Error('foreign browser session')
+    if (!options.expired && !(stored.expiresAt > nowSeconds())) throw new Error('expired browser session')
     if (typeof CryptoKey === 'undefined' || !(stored.wrappingKey instanceof CryptoKey) || stored.wrappingKey.extractable) throw new Error('invalid browser session key')
     const bytes = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: stored.nonce, additionalData: aad(stored, stored.origin) }, stored.wrappingKey, stored.ciphertext)
     const token = new TextDecoder().decode(bytes)

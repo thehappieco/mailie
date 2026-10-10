@@ -481,9 +481,26 @@ profile.
   whatever happens to the session meanwhile (it expires, or another device signs it out), and a
   copy of the profile taken before then holds the account key (threat model, section 4.6).
 - **On the hosted service** it is wiped at sign-out, in every tab, and kept past a session that
-  merely expires, so that the same person's next sign-in needs no product key (section 6.2). That
-  record, and id.'s own session in the same browser, are a trade-off the threat model states
-  (section 4.6).
+  merely expires, so that the same person's next sign-in needs no product key (section 6.2). It is
+  kept only where a page of the console established that expiry by the server's clock: its expiry
+  timer, which waits by that clock, or a refusal the server's answer dates at or after
+  `expires_at` (its `Date`; a refusal that carried none, and a remembered session past its expiry
+  by the browser's own clock, are put to the server again). That page marks the record before it
+  clears the session's own, and a session that begins with the record clears the mark. The record
+  names the session that holds it (its browser login's random id, bound when the session begins),
+  and what an ending does reaches only the record its session held, never one a session begun
+  since holds, in that page or another tab; a session restored from the browser's own record takes
+  only a record that is its own, from before holders, or kept past an expiry, and a ceremony whose
+  session ended before it could begin settles the key it kept with it. Everything
+  else wipes it, as on a self-hosted server: a refusal before `expires_at` (a revocation, a session
+  ended by a password change, a recovery or a reset, a disabled person), a remembered session the
+  page gives up on without checking, and no usable session record beside an unmarked key. A page
+  that stops halfway leaves either the session's record, which the next page checks again, or an
+  unmarked key, which it wipes. A refusal wipes the record only in a page that receives it before
+  the session's expiry: a browser closed, asleep or offline until then, or a page that asks
+  nothing of the server in between, keeps the record once the expiry has passed, whatever ended
+  the session first. That record, and id.'s own session in the same browser, are a trade-off the
+  threat model states (section 4.6).
 - It is never sent anywhere. Its AES key cannot be exported, so no script reads it out of the
   browser; that does not keep it out of the profile's files. The threat model assumes a copy of
   them carries a usable key, and that a wiped record may stay in them until the browser compacts
@@ -1304,3 +1321,20 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     threat model (section 5.12). An enrolment's answer (sections 12.1, 12.6 and 12.7) records the
     address before the console checks the key it names or keeps the account key, as section 12.7,
     step 2, says of every ceremony. No byte changed.
+- Version 1, section 7's hosted rule made precise (2026-10-09). No byte changed. "A session that
+  merely expires" had no test the console could run, and its flag kept the key past any session the
+  page found no longer valid, a revoked one included. The key now stays only past an expiry a page
+  established by the server's clock (its expiry timer, which now waits by that clock, or a
+  refusal dated past `expires_at`, put to the server again when it carried no `Date` or the
+  browser's clock called it expired), and that page marks the vault's record before clearing the
+  session's; every other ending wipes it, and with no usable session record only a marked key stays;
+  and an ending reaches only the record its session held, which the record now names
+  (`Edition.accountKey.outlivesExpiry`, which replaces `outlivesSession`; the record's `holder`
+  and `outlivedExpiry`; a record from before holders is settled by the first session that ends; the
+  event stream's response now gives the page the server's clock too). Two residuals, both of
+  storage: a page that loads with no session record while another tab is between keeping a new
+  key and beginning its session wipes that key (the sign-in then holds it in its page only, and
+  the next sign-in opens it again); and a browser that keeps refusing writes keeps whatever it last
+  stored, a mark included. Keeping the key wherever the page found no session record, the rule's first
+  draft, was found in review to keep a revoked session's key after a page stopped between clearing
+  that record and wiping the key, or behind a browser clock running ahead.

@@ -9,7 +9,7 @@ import { generateAccountKeys } from '@thehappieco/kit/account'
 import { IDBObjectStore } from 'fake-indexeddb'
 import { deriveKeys, enrol, openWrap, recoveryKeys, type Enrolled } from '../src/crypto/account'
 import { accountServer, DEFAULT_KDF, saltOf, targetOf, type Stored } from './accountServer'
-import { failure, freshModules, json, now, stubPage } from './support'
+import { failure, freshModules, json, now, reply, serve, settle, stubPage } from './support'
 
 const PASSWORD = 'correct horse battery staple'
 const ANA = 'ana@example.test'
@@ -337,6 +337,25 @@ describe('a reset link', { timeout: 30_000 }, () => {
 })
 
 describe('a signed-in person’s password and recovery code', { timeout: 40_000 }, () => {
+  it('does not keep the new account key when the session ended while the server finished the change', async () => {
+    const s = await load()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await s.signIn(ANA, PASSWORD)
+    // The server answers the finish, and before the page takes the new session, this one ends (another tab signed out).
+    const fetchSpy = vi.mocked(globalThis.fetch)
+    const inner = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (input, init) => {
+      const response = await inner(input, init)
+      if (new URL(String(input)).pathname === '/v1/auth/password/finish') await s.signOut()
+      return response
+    })
+    await s.changePassword(PASSWORD, 'the next password of mine')
+    expect(s.session.phase).toBe('signed-out')
+    expect(await s.vault.accountKeyOf(ANA_SEAL, atTarget.enrolment.public_key)).toBeNull()
+    expect(await (await load()).vault.accountKeyOf(ANA_SEAL, atTarget.enrolment.public_key)).toBeNull()
+  })
+
   it('changes the password in two steps over the same account key, and goes on with the session the server answers', async () => {
     const s = await load()
     const server = accountServer()
@@ -564,6 +583,442 @@ describe('the browser vault', () => {
     await s.replaceRecoveryCode(PASSWORD)
     expect(s.recoveryCode.reason).toBe('replaced')
   }, 30_000)
+
+  /** A page of an edition that keeps the account key past a session that merely expires: the hosted service's rule. */
+  async function loadKeepingPastExpiry() {
+    const s = await load()
+    const { configureEdition, edition } = await import('../src/edition')
+    configureEdition({ ...edition(), accountKey: { outlivesExpiry: true } })
+    return s
+  }
+
+  /** Whether the next page load finds the account key in this browser's storage, not in a page's own copy. */
+  async function storedAfterReload(pair: { privateKey: Uint8Array; publicText: string }): Promise<boolean> {
+    const next = await load()
+    return same(await next.vault.accountKeyOf(ANA_SEAL, pair.publicText), pair.privateKey)
+  }
+
+  /** The daemon refusing every token, its clock serverAheadS seconds ahead of the real one (its Date). */
+  function refusingServer(serverAheadS: number, real = Date.now()) {
+    return serve(() => failure('unauthorized', 401, { Date: new Date(real + serverAheadS * 1000).toUTCString() }))
+  }
+
+  /** A session this browser remembers, for another minute by its own clock, holding the key kept beside it, as a sign-in leaves them. */
+  async function remembered(s: Awaited<ReturnType<typeof load>>, expiresAt = now() + 60) {
+    const id = crypto.randomUUID()
+    await s.vault.sessionBegan(id)
+    await s.sessionVault.saveLocalSession({ id, token: 'tok_remembered_00000000000000000000000000000', expiresAt, userID: 'usr_00000000000000a1' })
+  }
+
+  it('keeps the account key past a session the server refused once its clock had passed the expiry, where the edition keeps it so', async () => {
+    const s = await loadKeepingPastExpiry()
+    const pair = await kept(s)
+    await remembered(s)
+    refusingServer(120)
+    await s.restore()
+    expect(s.session.phase).toBe('signed-out')
+    expect(await storedAfterReload(pair)).toBe(true)
+  })
+
+  it('wipes the account key of a session the server refused before its expiry, even where the edition keeps it past one', async () => {
+    const s = await loadKeepingPastExpiry()
+    const pair = await kept(s)
+    await remembered(s)
+    refusingServer(0)
+    await s.restore()
+    expect(s.session.phase).toBe('signed-out')
+    expect(await storedAfterReload(pair)).toBe(false)
+  })
+
+  it('wipes the account key of a session that expired on a self-hosted server', async () => {
+    const s = await load()
+    const pair = await kept(s)
+    await remembered(s)
+    refusingServer(120)
+    await s.restore()
+    expect(await storedAfterReload(pair)).toBe(false)
+  })
+
+  it('asks the server about a session this browser’s clock calls expired, and keeps the key only if the server’s clock agrees', async () => {
+    const real = Date.now()
+    for (const serverAgrees of [true, false]) {
+      const s = await loadKeepingPastExpiry()
+      const pair = await kept(s)
+      await remembered(s)
+      // This browser's clock is two minutes ahead: the record is past its expiry here.
+      vi.spyOn(Date, 'now').mockReturnValue(real + 120_000)
+      const server = refusingServer(serverAgrees ? 120 : 0, real)
+      await s.restore()
+      vi.mocked(Date.now).mockRestore()
+      expect(server.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/v1/auth/me'])
+      expect(s.session.phase).toBe('signed-out')
+      expect(await storedAfterReload(pair)).toBe(serverAgrees)
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('restores a session this browser’s clock calls expired when the server still takes it, where the edition keeps the key past an expiry', async () => {
+    const s = await loadKeepingPastExpiry()
+    const server = accountServer()
+    server.people.set(ANA, stored(atTarget, targetOf(ANA)))
+    await s.signIn(ANA, PASSWORD)
+    const real = Date.now()
+    vi.spyOn(Date, 'now').mockReturnValue(real + 15 * 86_400_000)
+    const next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(next.session.phase).toBe('ready')
+    expect(next.session.keyed).toBe(true)
+  }, 30_000)
+
+  it('keeps the key with no session record only after an expiry a page established, and wipes it after anything else', async () => {
+    // A page established the expiry: the next one, which finds no session record, keeps the key.
+    let s = await loadKeepingPastExpiry()
+    let pair = await kept(s)
+    await remembered(s)
+    refusingServer(120)
+    await s.restore()
+    vi.restoreAllMocks()
+    let next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(next.session.phase).toBe('signed-out')
+    expect(await storedAfterReload(pair)).toBe(true)
+
+    // A key kept beside a session whose record is gone, as when the browser refused to store it: wiped.
+    stubPage()
+    s = await loadKeepingPastExpiry()
+    pair = await kept(s)
+    next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(await storedAfterReload(pair)).toBe(false)
+  })
+
+  it('clears the mark of an expiry outlived as soon as a session begins with the key, by a sign-in or a restore', async () => {
+    const markedKey = async () => {
+      const s = await loadKeepingPastExpiry()
+      const pair = await kept(s)
+      await s.vault.sessionBegan('a-login-that-expired')
+      await s.vault.settleRecord('a-login-that-expired', true)
+      expect(await (await load()).vault.outlivedExpiry()).toBe(true)
+      return { s, pair }
+    }
+    // A sign-in.
+    let { s } = await markedKey()
+    serve(() => new Response(null, { status: 204 }))
+    await s.adoptSession(reply())
+    expect(await s.vault.outlivedExpiry()).toBe(false)
+    expect(await (await load()).vault.outlivedExpiry()).toBe(false)
+    vi.restoreAllMocks()
+
+    // A session this browser remembers, which the server still takes.
+    stubPage()
+    const marked = await markedKey()
+    s = marked.s
+    // The session's record only: the restore binds the marked key to it, and clears the mark.
+    await s.sessionVault.saveLocalSession({ id: crypto.randomUUID(), token: 'tok_remembered_00000000000000000000000000000', expiresAt: now() + 3600, userID: 'usr_00000000000000a1' })
+    const person = { ...reply().user, seal_id: ANA_SEAL, public_key: marked.pair.publicText }
+    serve(() => json({ user: person, session: { id: 'ses_remembered', created_at: now() - 60, expires_at: now() + 3600, authenticated_at: now() } }))
+    const next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(next.session.phase).toBe('ready')
+    expect(next.session.keyed).toBe(true)
+    expect(await (await load()).vault.outlivedExpiry()).toBe(false)
+  })
+
+  it('leaves alone the key a session begun since holds, in this page or another tab, when an ended session is settled late', async () => {
+    // The ended session's re-ask is answered before or past its expiry; the session since begins in page B
+    // with a key of its own, or in page A itself, holding the record already there (an edition's sign-in, a restore).
+    for (const [where, serverPastExpiry] of [['other', false], ['other', true], ['same', false], ['same', true]] as const) {
+      stubPage()
+      const real = Date.now()
+      // Page A's session is refused by the event stream: no Date, so A asks the server again, and that answer is slow.
+      let answer: (response: Response) => void = () => {}
+      const slow = new Promise<Response>(resolve => { answer = resolve })
+      serve(({ token }) => token === 'tok_first_0000000000000000000000000000000000' ? slow : new Response(null, { status: 204 }))
+      const a = await loadKeepingPastExpiry()
+      const first = await kept(a)
+      await a.adoptSession(reply())
+      const ended = (await a.sessionVault.loadLocalSession())!.id
+      await expect(a.authorized(() => Promise.reject(new a.ApiError('unauthorized')))).rejects.toMatchObject({ code: 'unauthorized' })
+
+      let live: { privateKey: Uint8Array; publicText: string }
+      if (where === 'other') {
+        const b = await loadKeepingPastExpiry()
+        live = await kept(b)
+        await b.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+      } else {
+        live = first
+        await a.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+      }
+
+      answer(failure('unauthorized', 401, { Date: new Date(real + (serverPastExpiry ? 15 * 86_400_000 : 0)).toUTCString() }))
+      // A clears its ended session's record only after settling the key.
+      await vi.waitFor(async () => expect(await a.sessionVault.localSessionWasCleared(ended)).toBe(true))
+      expect(await storedAfterReload(live)).toBe(true)
+      expect(await (await load()).vault.outlivedExpiry()).toBe(false)
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('settles a key kept before records named their session with the first session that ends', async () => {
+    const s = await loadKeepingPastExpiry()
+    const pair = await kept(s)
+    // The record as a console from before holders wrote it.
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open('mailie-browser-account', 1)
+      request.onerror = () => reject(request.error)
+      request.onsuccess = () => {
+        const tx = request.result.transaction('vault', 'readwrite')
+        const store = tx.objectStore('vault')
+        const read = store.get('current')
+        read.onsuccess = () => { const { holder: _, ...older } = read.result as Record<string, unknown>; store.put(older, 'current') }
+        tx.oncomplete = () => { request.result.close(); resolve() }
+      }
+    })
+    await s.sessionVault.saveLocalSession({ id: crypto.randomUUID(), token: 'tok_remembered_00000000000000000000000000000', expiresAt: now() + 60, userID: 'usr_00000000000000a1' })
+    refusingServer(0)
+    const next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(await storedAfterReload(pair)).toBe(false)
+  })
+
+  it('gives a slow restore up for the session another tab began meanwhile, and leaves that session its key', async () => {
+    // Page B restores L1 and its answer is slow; meanwhile page A signs in again (L2) with a key of its own.
+    const before = await loadKeepingPastExpiry()
+    await kept(before)
+    await remembered(before, now() + 3600)
+    let answer: (response: Response) => void = () => {}
+    const slow = new Promise<Response>(resolve => { answer = resolve })
+    let second = { privateKey: new Uint8Array(), publicText: '' }
+    const me = () => json({ user: { ...reply().user, seal_id: ANA_SEAL, public_key: second.publicText }, session: { id: 'ses_x', created_at: now() - 60, expires_at: now() + 3600, authenticated_at: now() } })
+    serve(({ token }) => token === 'tok_remembered_00000000000000000000000000000' ? slow : me())
+    const b = await loadKeepingPastExpiry()
+    const restoring = b.restore()
+    await settle(10)
+    const a = await loadKeepingPastExpiry()
+    second = await kept(a)
+    await a.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+    answer(me())
+    await restoring
+    // B holds L2, the session the browser remembers now, never L1.
+    expect(b.session.phase).toBe('ready')
+    expect(await b.authorized(async token => token)).toBe('tok_second_000000000000000000000000000000000')
+    expect(b.session.keyed).toBe(true)
+    // L2 is refused before its expiry: its key goes, from storage too.
+    vi.restoreAllMocks()
+    refusingServer(0)
+    const { me: askMe } = await import('../src/api/auth')
+    await expect(a.authorized(t => askMe(t))).rejects.toMatchObject({ code: 'unauthorized' })
+    await vi.waitFor(async () => expect(await storedAfterReload(second)).toBe(false))
+  })
+
+  it('never lets a restored session take a key a sign-in is about to begin its session with', async () => {
+    const s = await loadKeepingPastExpiry()
+    // A ceremony kept a key (pending) and has not begun its session; the browser still remembers L1.
+    const pending = await kept(s)
+    await s.sessionVault.saveLocalSession({ id: crypto.randomUUID(), token: 'tok_remembered_00000000000000000000000000000', expiresAt: now() + 3600, userID: 'usr_00000000000000a1' })
+    const person = { ...reply().user, seal_id: ANA_SEAL, public_key: pending.publicText }
+    serve(({ path }) => path === '/v1/auth/me' && restoredOnce++ === 0
+      ? json({ user: person, session: { id: 'ses_old', created_at: now() - 60, expires_at: now() + 3600, authenticated_at: now() } })
+      : failure('unauthorized', 401, { Date: new Date().toUTCString() }))
+    let restoredOnce = 0
+    const next = await loadKeepingPastExpiry()
+    await next.restore()
+    expect(next.session.phase).toBe('ready')
+    // L1 is refused before its expiry: the pending key is not its to take with it.
+    const { me } = await import('../src/api/auth')
+    await expect(next.authorized(t => me(t))).rejects.toMatchObject({ code: 'unauthorized' })
+    await settle(20)
+    expect(await storedAfterReload(pending)).toBe(true)
+  })
+
+  it('judges the event stream’s refusal as it opens by that answer’s Date, asking nothing more', async () => {
+    for (const serverPastExpiry of [false, true]) {
+      stubPage()
+      const s = await loadKeepingPastExpiry()
+      const pair = await kept(s)
+      await s.adoptSession(reply())
+      const server = refusingServer(serverPastExpiry ? 15 * 86_400 : 0)
+      const { readEventStream } = await import('../src/api/events')
+      await expect(s.authorized(token => readEventStream({ token, signal: new AbortController().signal, onMessage: () => {} })))
+        .rejects.toMatchObject({ code: 'unauthorized' })
+      await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(serverPastExpiry))
+      expect(server.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(['/v1/events'])
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('settles the key of a session with this page’s own copy only, when the browser refuses to store it', async () => {
+    const s = await loadKeepingPastExpiry()
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('the storage is full', 'QuotaExceededError') })
+    const pair = await kept(s)
+    await s.adoptSession(reply())
+    expect(same(await s.vault.accountKeyOf(ANA_SEAL, pair.publicText), pair.privateKey)).toBe(true)
+    const { me } = await import('../src/api/auth')
+    refusingServer(0)
+    await expect(s.authorized(t => me(t))).rejects.toMatchObject({ code: 'unauthorized' })
+    await vi.waitFor(async () => expect(await s.vault.accountKeyOf(ANA_SEAL, pair.publicText)).toBeNull())
+  })
+
+  /** Records every write to browser storage, as store:operation:key, in order. */
+  function recordWrites(): string[] {
+    const writes: string[] = []
+    const put = IDBObjectStore.prototype.put
+    const del = IDBObjectStore.prototype.delete
+    vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['put']>) {
+      writes.push(`${this.name}:put:${String(args[1])}`)
+      return put.apply(this, args)
+    })
+    vi.spyOn(IDBObjectStore.prototype, 'delete').mockImplementation(function (this: IDBObjectStore, ...args: Parameters<IDBObjectStore['delete']>) {
+      writes.push(`${this.name}:delete:${String(args[0])}`)
+      return del.apply(this, args)
+    })
+    return writes
+  }
+
+  /** Whether the vault was settled (marked when kept, wiped otherwise) before the session's record was cleared. */
+  function settledFirst(writes: string[], keptPastExpiry: boolean): boolean {
+    const vault = writes.findIndex(w => w === (keptPastExpiry ? 'vault:put:current' : 'vault:delete:current'))
+    const cleared = writes.findIndex(w => w.startsWith('session:put:revoked:'))
+    return vault >= 0 && cleared >= 0 && vault < cleared
+  }
+
+  it('settles the key before it clears the session’s record, so a page stopped in between leaves the record to be checked again', async () => {
+    for (const serverPastExpiry of [false, true]) {
+      // In the middle of use, refused through a request, whose answer's Date judges it: nothing is asked again.
+      stubPage()
+      const s = await loadKeepingPastExpiry()
+      await kept(s)
+      await s.adoptSession(reply())
+      let writes = recordWrites()
+      const server = refusingServer(serverPastExpiry ? 15 * 86_400 : 0)
+      const { me } = await import('../src/api/auth')
+      await expect(s.authorized(t => me(t))).rejects.toMatchObject({ code: 'unauthorized' })
+      await vi.waitFor(() => expect(writes.some(w => w.startsWith('session:put:revoked:'))).toBe(true))
+      expect(server).toHaveBeenCalledTimes(1)
+      expect(settledFirst(writes, serverPastExpiry)).toBe(true)
+      vi.restoreAllMocks()
+
+      // A remembered session the server refuses when the page loads.
+      stubPage()
+      const before = await loadKeepingPastExpiry()
+      await kept(before)
+      await remembered(before)
+      refusingServer(serverPastExpiry ? 120 : 0)
+      const next = await loadKeepingPastExpiry()
+      writes = recordWrites()
+      await next.restore()
+      expect(settledFirst(writes, serverPastExpiry)).toBe(true)
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('wipes the account key at once on a self-hosted server, at a refusal in the middle of use and at the expiry, asking nothing more', async () => {
+    const s = await load()
+    const pair = await kept(s)
+    await s.adoptSession(reply())
+    const server = refusingServer(15 * 86_400)
+    await expect(s.authorized(() => Promise.reject(new s.ApiError('unauthorized')))).rejects.toMatchObject({ code: 'unauthorized' })
+    await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(false))
+    expect(server).not.toHaveBeenCalled()
+    vi.restoreAllMocks()
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      stubPage()
+      const t = await load()
+      const other = await kept(t)
+      serve(() => new Response(null, { status: 204 }))
+      await t.adoptSession({ ...reply(), expires_at: now() + 60 })
+      await vi.advanceTimersByTimeAsync(61_000)
+      expect(t.session.phase).toBe('signed-out')
+      await vi.waitFor(async () => expect(await storedAfterReload(other)).toBe(false))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('wipes the account key of a remembered session given up on unchecked, even where the edition keeps it past an expiry', async () => {
+    for (const keeps of [true, false]) {
+      const s = keeps ? await loadKeepingPastExpiry() : await load()
+      const pair = await kept(s)
+      await remembered(s)
+      serve(() => { throw new TypeError('offline') })
+      await s.restore()
+      expect(s.session.restoreFailed).toBe(true)
+      await s.forgetRemembered()
+      expect(s.session.phase).toBe('signed-out')
+      expect(await storedAfterReload(pair)).toBe(false)
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('judges a refusal in the middle of use by the server’s clock, asked again: before the expiry it wipes the key, after it keeps it', async () => {
+    // The refusal carries no Date, as the event stream's error event does; the page asks the server once more.
+    const refused = () => Promise.reject(new s.ApiError('unauthorized'))
+    const real = Date.now()
+    let s = await loadKeepingPastExpiry()
+    let pair = await kept(s)
+    await s.adoptSession(reply())
+    let server = refusingServer(0, real)
+    await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
+    await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(false))
+    expect(s.session.notice).toBe('expired')
+    expect(server.mock.calls.map(([url]) => new URL(String(url)).pathname)).toContain('/v1/auth/me')
+    vi.restoreAllMocks()
+
+    // This browser's clock is fifteen days ahead of the server's, so the session looks expired here:
+    // the server's answer, before its expiry, decides.
+    stubPage()
+    s = await loadKeepingPastExpiry()
+    pair = await kept(s)
+    await s.adoptSession(reply())
+    vi.spyOn(Date, 'now').mockReturnValue(real + 15 * 86_400_000)
+    server = refusingServer(0, real)
+    await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
+    await settle(20)
+    vi.mocked(Date.now).mockRestore()
+    await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(false))
+    vi.restoreAllMocks()
+
+    // The server's clock is past the expiry: the key stays.
+    stubPage()
+    s = await loadKeepingPastExpiry()
+    pair = await kept(s)
+    await s.adoptSession(reply())
+    server = refusingServer(15 * 86_400, real)
+    await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
+    await vi.waitFor(async () => expect(await (await load()).vault.outlivedExpiry()).toBe(true))
+    expect(await storedAfterReload(pair)).toBe(true)
+  })
+
+  it('ends the session at its expiry by the server’s clock, and keeps the key past it, where the edition keeps it so; sign-out wipes it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    try {
+      const s = await loadKeepingPastExpiry()
+      const pair = await kept(s)
+      const { noteServerDate, serverNow } = await import('../src/state/connection')
+      // The server's clock is an hour ahead of this browser's.
+      noteServerDate(new Date(Date.now() + 3_600_000).toUTCString())
+      serve(() => new Response(null, { status: 204 }))
+      await s.adoptSession({ ...reply(), expires_at: Math.floor(serverNow() / 1000) + 60 })
+      // A later answer moves the clock back: the timer already set still ends the session as an expiry.
+      noteServerDate(new Date(Date.now()).toUTCString())
+      await vi.advanceTimersByTimeAsync(59_000)
+      expect(s.session.phase).toBe('ready')
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(s.session.phase).toBe('signed-out')
+      expect(s.session.notice).toBe('expired')
+      await vi.waitFor(async () => expect(await s.vault.outlivedExpiry()).toBe(true))
+      expect(await storedAfterReload(pair)).toBe(true)
+
+      const again = await loadKeepingPastExpiry()
+      await again.adoptSession(reply())
+      await again.signOut()
+      expect(await storedAfterReload(pair)).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 
   it('wipes a record of anyone else instead of opening it', async () => {
     const s = await load()

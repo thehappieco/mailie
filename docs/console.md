@@ -230,7 +230,12 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   person's seal id and public key. It is opened only for the person `GET /v1/auth/me` names (a
   record of anyone else is wiped), and wiped at sign-out and whenever a page of the console finds
   no valid session (expired, revoked, ended by a password change, a recovery or a reset); an
-  edition whose key outlives a session that merely ends says so (`Edition.accountKey`). Nothing
+  edition whose key outlives a session that merely expires says so (`Edition.accountKey`), and
+  keeps it only past a session a page of the console established as expired by the server's clock
+  (its expiry timer, or a refusal whose answer's `Date` is past `expires_at`, asked again when the
+  refusal carried none), marking the record until a session begins with it; a refusal before the
+  expiry, a session given up on unchecked, and no session record beside an unmarked key wipe it
+  there too. Nothing
   runs while the console is closed: a browser closed while signed in keeps the record until the
   console next runs there, whatever happens to the session meanwhile ([`key-scheme-threat-model.md`](key-scheme-threat-model.md)
   section 4.6). The page asks its own copy first, so a browser that refuses IndexedDB, or opens it

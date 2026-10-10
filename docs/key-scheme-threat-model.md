@@ -185,7 +185,11 @@ does: **a copied profile of a signed-in person holds their account key.**
   and found no session, the profile holds nothing that opens without the password, but for what a
   wiped record leaves on disk (below).
 - **Hosted:** the vault outlives a session that merely expires, so that the next sign-in needs no
-  product key, and id.'s own session in the same browser may sign the person in again silently:
+  product key, and a session the server refuses before its expiry (revoked from another device, a
+  password change, a recovery, a reset) wipes it in a page that receives the refusal before that
+  expiry; a browser closed, asleep or offline until then sees none, and keeps the record once the
+  session's expiry has passed (24 hours through id.), as the self-hosted one keeps it until the
+  console runs. id.'s own session in the same browser may sign the person in again silently:
   signing out of Mailie sends the person to id.'s sign-out, which asks whether to end id.'s
   session and never ends it by itself. Whoever uses a browser left with a live id. session can do
   everything a signed-in device can, but not what the step-up guards: id.'s `auth_time` is as old

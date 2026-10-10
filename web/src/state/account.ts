@@ -16,7 +16,7 @@ import { ApiError } from '../api/http'
 import { enrolled, type LoginReply, type Opening, type SessionReply, type UpgradeTicket, type User } from '../api/types'
 import { checkNewPassword, deriveKeys, enrol, newRecovery, openWrap, recoveryKeys, rewrap, type Enrolled } from '../crypto/account'
 import { CeremonyError } from '../crypto/errors'
-import { accountKeyOf, keepAccountKey, rememberEnrolled, rememberedEnrolled } from './accountVault'
+import { accountKeyOf, keepAccountKey, rememberEnrolled, rememberedEnrolled, settleRecord } from './accountVault'
 import { authorized, beginSession, identity, markKeyed, replaceSession, session, steppedUp } from './session'
 import { rememberedPerson } from './sessionVault'
 
@@ -289,8 +289,9 @@ export async function changePassword(current: string, next: string): Promise<voi
     const rewrapped = await rewrap(next, begun, 'new', accountKey, user.seal_id)
     const reply = await authorized(token => auth.finishPasswordChange(token, { ticket: begun.ticket, current_auth_key: keys.authKey, ...rewrapped }))
     if (!reply) throw new ApiError('invalid_response')
-    await keepAccountKey(accountKey, keyOf(user.public_key), user.seal_id)
-    await replaceSession(reply, true)
+    const pending = await keepAccountKey(accountKey, keyOf(user.public_key), user.seal_id)
+    // The session ended while the server answered: the key kept for the new one goes too.
+    if (!await replaceSession(reply, true)) await settleRecord(pending, false)
   } finally {
     accountKey.fill(0)
   }
