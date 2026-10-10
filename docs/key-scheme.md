@@ -1430,22 +1430,39 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     thirty seconds. Resuming an abandoned link carries no key: the row has the one its link wrote,
     and a pending mailbox from before 0014 gets its first key by section 12.14.
   - **Giving "read"** (section 12.13): `PUT /v1/accounts/{id}/access/{user}` takes an optional
-    `grant`, required when the change adds "read" on a mailbox that has a key for a person with a
-    public key, and refused (`400`) with a change that adds no "read": the key goes to a member
-    who holds the flag by the supply route. To a person without a public key, and on a mailbox
+    `grant`, with the `public_key` it was sealed to (below), required when the change adds "read"
+    on a mailbox that has a key for a person with a public key, and refused (`400`) with a change
+    that adds no "read": the key goes to a member who holds the flag by the supply route. To a person without a public key, and on a mailbox
     without a key, "read" is the flag alone, with no step-up. The giver must read the mailbox by
     the rule (an owner or an admin waiting for the key gives nothing), and a grant for someone else
     takes a fresh step-up. The operator's `manage`-only change keeps working on a mailbox that has
     a key. Giving an API key "read" takes the same: the giver reads by the rule.
-  - **Supplying the key**: `PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant}` → the stored
-    grant, from any person who reads the mailbox, after a fresh step-up, to an active member who
-    holds the flag, has a public key and no grant at the current epoch.
+  - **Supplying the key**: `PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant, public_key}` →
+    the stored grant, from any person who reads the mailbox, after a fresh step-up, to an active
+    member who holds the flag, has a public key and no grant at the current epoch.
   - **The first key** (section 12.14): `POST /v1/accounts/{id}/mailbox-key` `{public_key, namespace,
-    grants: [{user_id, grant}]}`, whose grants must be exactly one for its writer and one for every
-    other active member who holds the flag and has a public key: a missing or an extra one is
-    `409`, so a console that raced an enrolment reads the mailbox key again. **A new key** (section
-    12.12): `PUT /v1/accounts/{id}/mailbox-key` `{epoch, public_key, grant}`, the namespace kept
-    and not sent; a team mailbox is `403`.
+    grants: [{user_id, grant, public_key}]}`, whose grants must be exactly one for its writer and
+    one for every other active member who holds the flag and has a public key: a missing or an
+    extra one is `409`, so a console that raced an enrolment reads the mailbox key again. **A new
+    key** (section 12.12): `PUT /v1/accounts/{id}/mailbox-key` `{epoch, public_key, grant}`, the
+    namespace kept and not sent; a team mailbox is `403`.
+  - **The key a grant was sealed to** (narrowing section 9.3). Every grant a browser posts for
+    someone names the account public key it sealed it to: `public_key` (base64url, 32 bytes) beside
+    `grant` when giving "read" and when supplying the key, and in each entry of a first key's
+    `grants`, the writer's own included. The server refuses the grant (`409`) unless that key is
+    the recipient's `users.public_key`, read in the transaction that writes it, and writes nothing
+    of the request. Section 9.3 has the giver's browser seal "to the public key the server serves
+    for the recipient", which leaves a console free to seal to one it read before the recipient's
+    reset (section 12.6 replaces the key and keeps the seal id, so the binding still matches): that
+    grant would count them a reader by the one rule, keep anyone from supplying them the key
+    (they hold a grant at the current epoch), and never open. The server now refuses a grant whose
+    stated key is not the recipient's current one; it still cannot check the bytes, which may seal
+    anything to any key whatever the request names (section 9.3, threat model section 5.3). The
+    console seals to the freshest answer it has, the members list read again just before it seals
+    when giving "read" and the `waiting` entry of the mailbox key it reads in the same call when
+    supplying it, and on a `409` reads again and tries once more. A `public_key` without a grant is
+    `400`. A link's grant and a new key's are the writer's own, sealed to the key of the session
+    that sends them, which a reset ends, and name none.
   - **What a console reads.** For a person signed in only: each account's `mailbox_key` `{epoch,
     public_key, namespace}` and `access.waiting_key`; `GET /v1/accounts/{id}/mailbox-key` for one
     who holds the flag (`403` for one who sees only the card), answering the key pair, their own
@@ -1459,8 +1476,8 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     giver or writer who does not read; a mailbox the caller cannot see and a recipient who is not
     an active member `not_found`; a grant at another epoch than the current one, a grant that
     exists, a mailbox already keyed, a namespace in use, a first key's grants not matching, a
-    recipient without a public key or, for the key, without the flag, and a linker without a public
-    key `conflict`.
+    grant that names another account public key than its recipient's now, a recipient without a
+    public key or, for the key, without the flag, and a linker without a public key `conflict`.
   - **Left to phase 4**: a member whose grant exists but does not open (one forged by whoever held
     a session in its window) cannot be supplied, since the supply needs no grant at the current
     epoch; phase 4, when grants open content, decides how such a grant is replaced.

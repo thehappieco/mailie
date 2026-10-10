@@ -244,7 +244,7 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'give-read':
       if (code === 'not_authorized') return t('Only an owner or an admin of the team who reads this mailbox gives Read on it.')
-      if (code === 'conflict') return t('This mailbox’s key changed, or this person was given it or lost their account key, meanwhile. What is shown was read again: try again.')
+      if (code === 'conflict') return t('Meanwhile, this mailbox’s key, this person’s account key, or what they hold on it changed. What is shown was read again: check it and try again.')
       if (code === 'security') return t('Your key for this mailbox does not open in this browser, so Mailie cannot hand it to anyone. Nothing was sent.')
       return specific({ op: 'change-access', code })
     case 'load-mailbox-key':
@@ -254,7 +254,7 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'supply-key':
       if (code === 'not_authorized') return t('Only someone who reads this mailbox hands its key on.')
-      if (code === 'conflict') return t('This person was handed the key, lost Read on the mailbox, or the key changed, meanwhile. What is shown was read again.')
+      if (code === 'conflict') return t('Meanwhile, this person was handed the key, lost Read on the mailbox, or their account key or the mailbox’s key changed. What is shown was read again.')
       if (code === 'not_found') return t('This person is no longer a member of the team, or the mailbox was removed.')
       if (code === 'security') return specific({ op: 'give-read', code })
       return undefined

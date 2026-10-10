@@ -34,11 +34,30 @@ func (f *fixture) enrol(userID string) {
 	}
 }
 
+// rekey replaces a person's account public key, as their reset would; the
+// grants it deletes are the caller's to delete.
+func (f *fixture) rekey(userID string) {
+	f.t.Helper()
+	if _, err := f.db.Writer().ExecContext(f.t.Context(),
+		`UPDATE users SET public_key = ?, key_replaced_at = key_replaced_at + 1 WHERE id = ?`,
+		authtest.PublicKey(f.t), userID); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// sealed is a grant's shape at epoch for userID, stated to be sealed to their
+// account public key now, as a browser that read them just before sends it.
+func (f *fixture) sealed(userID string, epoch int) *workspace.Sealed {
+	f.t.Helper()
+	s := authtest.Sealed(f.t, f.db, userID, epoch)
+	return &s
+}
+
 // give gives read and what else flags hold with a grant at the current epoch,
 // as an owner or an admin who reads would.
 func (f *fixture) give(accountID, userID string, flags workspace.Flags, epoch int) {
 	f.t.Helper()
-	if _, err := f.ws.SetGrantSealed(f.t.Context(), accountID, userID, flags, authtest.Grant(f.t, epoch), "usr_test", nil); err != nil {
+	if _, err := f.ws.SetGrantSealed(f.t.Context(), accountID, userID, flags, f.sealed(userID, epoch), "usr_test", nil); err != nil {
 		f.t.Fatalf("SetGrantSealed: %v", err)
 	}
 }
@@ -147,7 +166,7 @@ func TestAKeylessMailboxIsReadByTheFlagAlone(t *testing.T) {
 	// Read is given there with the flag alone, and a grant is refused.
 	cid := f.person("cid@example.org")
 	f.join(team.ID, cid.ID, workspace.RoleMember)
-	_, err := f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), authtest.Grant(t, 1), ana.ID, nil)
+	_, err := f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), f.sealed(cid.ID, 1), ana.ID, nil)
 	want(t, "a grant on a mailbox without a key", err, workspace.ErrKeyless)
 	f.grant(box.ID, cid.ID, readOnly())
 	if !f.reads(box.ID, cid.ID) {
@@ -271,7 +290,7 @@ func TestTheLastReaderOfAKeyedTeamMailboxCountsOnlyGrantHolders(t *testing.T) {
 
 	// Once he holds the key, ana is no longer the last.
 	f.enrol(dan.ID)
-	if _, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, ana.ID, 1, authtest.Grant(t, 1), nil); err != nil {
+	if _, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, ana.ID, 1, *f.sealed(dan.ID, 1), nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.ws.Revoke(t.Context(), box.ID, ana.ID, workspace.Flags{}, nil); err != nil {
@@ -310,19 +329,28 @@ func TestGivingReadOnAKeyedMailboxTakesTheRecipientsGrant(t *testing.T) {
 
 	_, err := f.ws.SetGrant(t.Context(), box.ID, cid.ID, readOnly(), ana.ID, nil)
 	want(t, "read without the grant to someone with an account key", err, workspace.ErrSealedGrantNeeded)
-	malformed := authtest.Grant(t, 1)
-	malformed[2] = 2
+	malformed := f.sealed(cid.ID, 1)
+	malformed.Grant[2] = 2
 	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), malformed, ana.ID, nil)
 	want(t, "a grant of another version", err, keyscheme.ErrShape)
-	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), authtest.Grant(t, 2), ana.ID, nil)
+	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), f.sealed(cid.ID, 2), ana.ID, nil)
 	want(t, "a grant at another epoch", err, workspace.ErrEpoch)
-	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, dan.ID, readOnly(), authtest.Grant(t, 1), ana.ID, nil)
+	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, dan.ID, readOnly(), f.sealed(dan.ID, 1), ana.ID, nil)
 	want(t, "a grant to someone without an account key", err, workspace.ErrNotEnrolled)
+	// Sealed, by what the browser says, to a key cid no longer has, or to
+	// another person's.
+	stale := f.sealed(cid.ID, 1)
+	stale.SealedTo = authtest.PublicKey(t)
+	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), stale, ana.ID, nil)
+	want(t, "a grant sealed to another account key", err, workspace.ErrSealedToAnother)
+	stale.SealedTo = nil
+	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readOnly(), stale, ana.ID, nil)
+	want(t, "a grant that names no account key", err, workspace.ErrSealedToAnother)
 	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id IN (?, ?)`, box.ID, cid.ID, dan.ID); n != 0 {
 		t.Fatalf("refused changes stored %d grants", n)
 	}
 
-	g, err := f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readAct(), authtest.Grant(t, 1), ana.ID, nil)
+	g, err := f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, readAct(), f.sealed(cid.ID, 1), ana.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +364,7 @@ func TestGivingReadOnAKeyedMailboxTakesTheRecipientsGrant(t *testing.T) {
 	// A change that adds no read takes no grant: supplying the key is how
 	// someone who holds the flag gets one.
 	_, err = f.ws.SetGrantSealed(t.Context(), box.ID, cid.ID, workspace.Flags{Read: true, Act: true, Send: true},
-		authtest.Grant(t, 1), ana.ID, nil)
+		f.sealed(cid.ID, 1), ana.ID, nil)
 	want(t, "a grant with a change that adds no read", err, workspace.ErrSealedGrantUnwanted)
 	// Nor does it need one: manage beside the read held, as the operator's
 	// command line sends it.
@@ -417,7 +445,7 @@ func TestAMailboxKeyIsWrittenOnce(t *testing.T) {
 
 	_, err := f.ws.WriteFirstKey(t.Context(), box.ID, ana.ID, workspace.FirstKey{
 		PublicKey: authtest.PublicKey(t), Namespace: keyscheme.NewSealID(),
-		Grants: []workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 1)}},
+		Grants: []workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 1), SealedTo: authtest.AccountPublicKey(t, f.db, ana.ID)}},
 	}, nil)
 	want(t, "a second first key", err, workspace.ErrKeyed)
 	err = f.db.Write(t.Context(), func(tx *sql.Tx) error {
@@ -426,7 +454,7 @@ func TestAMailboxKeyIsWrittenOnce(t *testing.T) {
 	want(t, "a link's key on a mailbox that has one", err, workspace.ErrKeyed)
 	_, err = f.ws.WriteFirstKey(t.Context(), other.ID, ana.ID, workspace.FirstKey{
 		PublicKey: authtest.PublicKey(t), Namespace: first.Namespace,
-		Grants: []workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 1)}},
+		Grants: []workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 1), SealedTo: authtest.AccountPublicKey(t, f.db, ana.ID)}},
 	}, nil)
 	want(t, "another mailbox's namespace", err, workspace.ErrNamespaceTaken)
 
@@ -469,7 +497,8 @@ func TestAFirstKeyComesWithAGrantForEveryoneWhoHoldsReadWithAnAccountKey(t *test
 	grant := func(userIDs ...string) []workspace.GrantTo {
 		var out []workspace.GrantTo
 		for _, id := range userIDs {
-			out = append(out, workspace.GrantTo{UserID: id, Grant: authtest.Grant(t, 1)})
+			s := authtest.Sealed(t, f.db, id, 1)
+			out = append(out, workspace.GrantTo{UserID: id, Grant: s.Grant, SealedTo: s.SealedTo})
 		}
 		return out
 	}
@@ -486,9 +515,17 @@ func TestAFirstKeyComesWithAGrantForEveryoneWhoHoldsReadWithAnAccountKey(t *test
 	want(t, "dan, who reads it and has no account key", first(dan.ID, grant(ana.ID, bea.ID)), workspace.ErrNotEnrolled)
 	_, err = f.ws.WriteFirstKey(t.Context(), box.ID, ana.ID, workspace.FirstKey{
 		PublicKey: authtest.PublicKey(t), Namespace: keyscheme.NewSealID(),
-		Grants: []workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 2)}, {UserID: bea.ID, Grant: authtest.Grant(t, 1)}},
+		Grants: append([]workspace.GrantTo{{UserID: ana.ID, Grant: authtest.Grant(t, 2)}}, grant(bea.ID)...),
 	}, nil)
 	want(t, "a grant at epoch 2", err, workspace.ErrEpoch)
+	// Bea's sealed, by what ana's browser says, to a key bea no longer has:
+	// read before her reset.
+	stale := grant(ana.ID, bea.ID)
+	stale[1].SealedTo = authtest.PublicKey(t)
+	want(t, "bea's grant sealed to another account key", first(ana.ID, stale), workspace.ErrSealedToAnother)
+	mine := grant(ana.ID, bea.ID)
+	mine[0].SealedTo = mine[1].SealedTo
+	want(t, "ana's grant sealed to bea's account key", first(ana.ID, mine), workspace.ErrSealedToAnother)
 	_, err = f.ws.WriteFirstKey(t.Context(), box.ID, ana.ID, workspace.FirstKey{
 		PublicKey: make([]byte, 32), Namespace: keyscheme.NewSealID(), Grants: grant(ana.ID, bea.ID),
 	}, nil)
@@ -546,7 +583,8 @@ func TestTheKeyIsSuppliedOnlyToAMemberWhoHoldsReadWithoutAGrant(t *testing.T) {
 	authtest.KeyMailbox(t, f.db, box.ID, ana.ID)
 
 	supply := func(recipient, giver string, epoch int, grant []byte) error {
-		_, err := f.ws.SupplyGrant(t.Context(), box.ID, recipient, giver, epoch, grant, nil)
+		_, err := f.ws.SupplyGrant(t.Context(), box.ID, recipient, giver, epoch,
+			workspace.Sealed{Grant: grant, SealedTo: authtest.AccountPublicKey(t, f.db, recipient)}, nil)
 		return err
 	}
 	want(t, "to someone without an account key", supply(dan.ID, bea.ID, 1, authtest.Grant(t, 1)), workspace.ErrNotEnrolled)
@@ -558,11 +596,20 @@ func TestTheKeyIsSuppliedOnlyToAMemberWhoHoldsReadWithoutAGrant(t *testing.T) {
 	want(t, "a grant at another epoch than it says", supply(dan.ID, ana.ID, 1, authtest.Grant(t, 2)), workspace.ErrEpoch)
 	want(t, "a grant of another length", supply(dan.ID, ana.ID, 1, authtest.Grant(t, 1)[:80]), keyscheme.ErrShape)
 	want(t, "to someone who holds it", supply(bea.ID, ana.ID, 1, authtest.Grant(t, 1)), workspace.ErrSealedGrantExists)
-	_, err := f.ws.SupplyGrant(t.Context(), unkeyed.ID, dan.ID, ana.ID, 1, authtest.Grant(t, 1), nil)
+	_, err := f.ws.SupplyGrant(t.Context(), unkeyed.ID, dan.ID, ana.ID, 1, *f.sealed(dan.ID, 1), nil)
 	want(t, "on a mailbox without a key", err, workspace.ErrKeyless)
+	// Sealed, by what the browser says, to the key dan had before he was
+	// reset: it would count him a reader and never open.
+	before := authtest.AccountPublicKey(t, f.db, dan.ID)
+	f.rekey(dan.ID)
+	_, err = f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, bea.ID, 1, workspace.Sealed{Grant: authtest.Grant(t, 1), SealedTo: before}, nil)
+	want(t, "a grant sealed to dan's account key before his reset", err, workspace.ErrSealedToAnother)
+	if !f.waiting(dan.ID, box.ID) {
+		t.Fatal("a refused supply stored dan's grant")
+	}
 
 	// Any reader may: bea is a member, neither owner nor admin.
-	g, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, bea.ID, 1, authtest.Grant(t, 1), nil)
+	g, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, bea.ID, 1, *f.sealed(dan.ID, 1), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

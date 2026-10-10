@@ -24,10 +24,10 @@ import * as api from '../api/workspaces'
 import { ApiError } from '../api/http'
 import type { GrantFlags, MailboxAccess, Member, MemberChange, TeamInvite, WorkspaceRole } from '../api/types'
 import { edition } from '../edition'
-import { grantChange } from '../ui/access'
+import { flagsOf, grantChange } from '../ui/access'
 import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount } from './accounts'
 import { failure, type Failure, type Operation } from './failure'
-import { sealFromOwn } from './grants'
+import { requireAccountKeyHere, sealFromOwn } from './grants'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
 import { adoptOwnPlace, loadWorkspaces, workspaces } from './workspaces'
@@ -177,6 +177,46 @@ export function readRecipient(accountID: string, userID: string, before: GrantFl
   return member?.seal_id && member.public_key ? member : null
 }
 
+/** What a person holds on a mailbox of the team shown, as the directory last listed it. */
+function heldOf(accountID: string, userID: string): GrantFlags {
+  return flagsOf(directoryEntry(accountID)?.grants.find(grant => grant.user_id === userID))
+}
+
+/** A member of the team shown as the server lists them now: read again to seal to, never taken from the list the page holds. */
+async function memberNow(userID: string): Promise<Member> {
+  const id = teamID()
+  const list = await authorized(token => api.listMembers(token, id))
+  const member = list.find(item => item.user_id === userID)
+  if (!member) throw new ApiError('not_found')
+  return member
+}
+
+/** What a change that sets flags sent last: the account public key its grant was sealed to, or null for the flags alone. */
+interface Sent { to: string | null }
+
+/**
+ * Sets exactly these flags on a person's grant: with their grant when
+ * sealing, sealed here from the caller's own after a fresh step-up, to the
+ * member as the server lists them just before (a reset since the page read
+ * them gave them another account key), naming that key; the flags alone
+ * otherwise. A browser that does not hold the caller's account key is told
+ * so before the step-up is asked: no password typed here mends that.
+ */
+async function setFlags(accountID: string, userID: string, flags: GrantFlags, sealing: boolean, sent: Sent): Promise<void> {
+  sent.to = null
+  if (!sealing) {
+    await authorized(token => api.setAccess(token, accountID, userID, flags))
+    return
+  }
+  requireAccountKeyHere()
+  await withStepUp(async () => {
+    const member = await memberNow(userID)
+    const sealed = await sealFromOwn(accountID, () => member)
+    sent.to = sealed.public_key
+    return authorized(token => api.setAccess(token, accountID, userID, flags, sealed))
+  })
+}
+
 /** What saving a grant came to: done (null), refused (a failure to say), or stopped by the person, who closed the step-up. */
 export type GrantSaved = Failure | null | 'cancelled'
 
@@ -184,27 +224,49 @@ export type GrantSaved = Failure | null | 'cancelled'
  * Sets what a person holds on a mailbox, from what they hold now to what the
  * caller ticked: a revoke when flags only go, the grant set exactly when one
  * comes. Read given on a mailbox that has a key to a person with an account
- * key goes with their grant, sealed here from the caller's own after a fresh
- * step-up (state/stepUp.ts). The directory is read again either way, and the
- * members (whose last reader may have changed); and the caller's own card,
- * when the grant was theirs.
+ * key goes with their grant (setFlags). The directory is read again either
+ * way, and the members (whose last reader may have changed); and the
+ * caller's own card, when the grant was theirs.
+ *
+ * Whether Read goes with a grant is decided from the directory (does the
+ * mailbox have a key) and the members (does the person have an account key)
+ * as the page read them, which nothing tells it are stale: another reader may
+ * have written the mailbox's first key, or the person enrolled, been reset or
+ * been given Read, since. So a change that gives Read and is refused as
+ * bad_request or conflict reads both again, and the mailbox's card, which
+ * carries its key, and is made once more when what it would send now
+ * differs (with a grant now needed, or none, or to another account key); a
+ * person given Read meanwhile is said to be, and nothing is sent again.
+ * What is said of a refusal left is the last attempt's.
  */
 export async function saveGrant(accountID: string, userID: string, before: GrantFlags, after: GrantFlags): Promise<GrantSaved> {
   const change = grantChange(before, after)
   if (change.kind === 'none') return null
   const ok = current()
-  const recipient = change.kind === 'set' ? readRecipient(accountID, userID, before, after) : null
+  const gives = after.read && !before.read
   try {
-    if (change.kind === 'set' && recipient) {
-      await withStepUp(async () => {
-        const sealed = await sealFromOwn(accountID, recipient)
-        return authorized(token => api.setAccess(token, accountID, userID, change.flags, sealed.grant))
-      })
-    } else if (change.kind === 'set') await authorized(token => api.setAccess(token, accountID, userID, change.flags))
-    else await authorized(token => api.revokeAccess(token, accountID, userID, change.flags))
+    if (change.kind === 'revoke') await authorized(token => api.revokeAccess(token, accountID, userID, change.flags))
+    else {
+      const sent: Sent = { to: null }
+      try {
+        await setFlags(accountID, userID, change.flags, readRecipient(accountID, userID, before, after) !== null, sent)
+      } catch (error) {
+        if (!gives || !(error instanceof ApiError && (error.code === 'bad_request' || error.code === 'conflict')) || !ok()) throw error
+        await Promise.all([loadDirectory(), loadMembers(), accounts.list.some(item => item.id === accountID) ? refreshAccount(accountID) : undefined])
+        if (!ok()) return null
+        const now = heldOf(accountID, userID)
+        const next = grantChange(now, after)
+        // Given Read meanwhile, by someone else: nothing is given now, and what is shown says what they hold.
+        if (now.read || next.kind !== 'set') throw new ApiError('conflict')
+        const recipient = readRecipient(accountID, userID, now, after)
+        // Nothing read again changes what goes: the refusal stands, for what it says.
+        if ((recipient?.public_key ?? null) === sent.to) throw error
+        await setFlags(accountID, userID, next.flags, recipient !== null, sent)
+      }
+    }
   } catch (error) {
     if (error instanceof StepUpCancelled) return 'cancelled'
-    const found = refused(recipient ? 'give-read' : 'change-access', error, ok)
+    const found = refused(gives ? 'give-read' : 'change-access', error, ok)
     // Changed elsewhere meanwhile, or gone: what is shown is read again.
     if (ok() && (found.code === 'conflict' || found.code === 'not_found')) { void loadDirectory(); void loadMembers() }
     return found

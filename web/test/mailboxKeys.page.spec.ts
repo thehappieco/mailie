@@ -5,10 +5,13 @@
 // reading; a member waiting is told who can hand the key over, and someone
 // who reads it hands it over after the password, in a grant that opens for
 // the member; a personal mailbox waiting for its key is offered a new one, a
-// team's never; a mailbox without a key is offered its first; and the
-// access panel marks who waits, and says when saving Read hands the key over.
+// team's never; a mailbox without a key is offered its first; the key
+// section reads the key when the sheet opens, not each time a sync replaces
+// the card; and the access panel marks who waits, and says when saving Read
+// hands the key over, or that this browser cannot.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 import { generateAccountKeys } from '@thehappieco/kit/account'
 import { fromBase64URL, toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
 import { generateKeyPair, importPrivateKey, type PrivateKey } from '@thehappieco/kit/hpke'
@@ -20,6 +23,7 @@ import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountSheet from '../src/components/AccountSheet.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import AddAccountDialog from '../src/components/AddAccountDialog.vue'
+import MailboxKeyPanel from '../src/components/MailboxKeyPanel.vue'
 import StepUpPrompt from '../src/components/StepUpPrompt.vue'
 import { accounts, loadAccounts, loadProviders } from '../src/state/accounts'
 import { keepAccountKey } from '../src/state/accountVault'
@@ -68,7 +72,7 @@ const sent = (method: string, path: string) => seen.filter(request => request.me
  * given; route answers the rest, and the step-up's challenge and proof are
  * answered here (the password is derived for real, and never sent).
  */
-async function signedIn(me: Person, route: Route, options: { role?: string; authenticatedAt?: number } = {}) {
+async function signedIn(me: Person, route: Route, options: { role?: string; authenticatedAt?: number; keyed?: boolean } = {}) {
   serve(request => {
     seen.push({ path: request.path, method: request.method, body: request.body })
     if (request.path === '/v1/auth/logout') return new Response(null, { status: 204 })
@@ -77,8 +81,9 @@ async function signedIn(me: Person, route: Route, options: { role?: string; auth
     if (request.path === '/v1/auth/stepup') return json({ authenticated_at: now() })
     return route(request)
   })
-  await keepAccountKey(me.raw.slice(), fromBase64URL(me.user.public_key!, 32), me.user.seal_id!)
-  await beginSession({ ...reply(undefined, me.user), authenticated_at: options.authenticatedAt ?? now() }, true)
+  const keyed = options.keyed ?? true
+  if (keyed) await keepAccountKey(me.raw.slice(), fromBase64URL(me.user.public_key!, 32), me.user.seal_id!)
+  await beginSession({ ...reply(undefined, me.user), authenticated_at: options.authenticatedAt ?? now() }, keyed)
   await loadWorkspaces()
 }
 
@@ -323,5 +328,52 @@ describe('the access panel of a mailbox that has a key', () => {
     await check(find(`input[name="${bea.user.id}-read"]`))
     expect(words(row(bea.user.id))).toContain('Saving also hands them this mailbox’s key, sealed in this browser.')
     expect(session.keyed).toBe(true)
+  })
+
+  it('says, beside a Read that would hand the key over, that this browser does not hold the giver’s account key', async () => {
+    const bea = await person({ id: 'usr_00000000000000b2', email: 'bea@example.test', name: 'Bea Lima', seal_id: crypto.randomUUID() })
+    const member = (p: Person, role = 'member'): Member => ({ user_id: p.user.id, email: p.user.email, name: p.user.name, role, status: 'active', last_owner: false, last_reader_of: [], joined_at: 1, seal_id: p.user.seal_id, public_key: p.user.public_key })
+    const directory: MailboxAccess[] = [{
+      account_id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', state: 'active', readers: 1, no_reader: false, epoch: 1,
+      grants: [{ account_id: 'acc_shared', user_id: ana.id, read: true, act: true, send: true, manage: false, updated_at: 1, sealed: true }],
+    }]
+    await signedIn(ana2, ({ path }) => {
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana2, 'admin'), member(bea)])
+      if (path === `/v1/workspaces/${TEAM}/access`) return json(directory)
+      return failure('not_found', 404)
+    }, { role: 'admin', keyed: false })
+    selectWorkspace(TEAM)
+    await Promise.all([loadMembers(), loadDirectory()])
+    mounted.push(mount(AccessPanel, { accountId: 'acc_shared', email: 'suporte@example.test' }))
+    await flush()
+    await check(find(`input[name="${bea.user.id}-read"]`))
+    const row = words(find(`li[data-user="${bea.user.id}"]`)!)
+    expect(row).toContain('This browser does not hold your account key. Sign out, sign in again here, and try again.')
+    expect(row).not.toContain('Saving also hands them this mailbox’s key')
+  })
+})
+
+describe('the key section of a sheet', () => {
+  it('reads the key and opens the person’s own when the sheet opens, and not again when a sync replaces the card', async () => {
+    const key = await keyedMailbox()
+    const own = toBase64URL(await sealGrant(fromBase64URL(ana2.user.public_key!, 32), key.namespace, ana2.user.seal_id!, 1, key.privateKey))
+    await signedIn(ana2, ({ path, method }) => path === '/v1/accounts/acc_mine/mailbox-key' && method === 'GET'
+      ? json({ epoch: 1, public_key: key.publicKey, namespace: key.namespace, grant: own, waiting: [], suppliers: [], keyless_readers: [] } satisfies MailboxKeyState)
+      : failure('not_found', 404))
+    selectWorkspace(PERSONAL)
+    const props = reactive({ account: account({ id: 'acc_mine', email: 'ana@example.test', state: 'active', workspace_id: PERSONAL, access: full, mailbox_key: { epoch: 1, public_key: key.publicKey, namespace: key.namespace }, sync: syncing() }) })
+    mounted.push(mount(MailboxKeyPanel, props))
+    const reads = () => sent('GET', '/v1/accounts/acc_mine/mailbox-key').length
+    await vi.waitFor(() => expect(reads()).toBe(1))
+    // A sync replaces the card whole, five times, saying nothing new of its key.
+    for (let i = 1; i <= 5; i++) {
+      props.account = { ...props.account, sync: syncing({ messages: 1284 + i }) }
+      await flush()
+    }
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(reads()).toBe(1)
+    // Another epoch is something new: it is read again.
+    props.account = { ...props.account, mailbox_key: { ...props.account.mailbox_key!, epoch: 2 } }
+    await vi.waitFor(() => expect(reads()).toBe(2))
   })
 })

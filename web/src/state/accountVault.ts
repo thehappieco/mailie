@@ -8,8 +8,13 @@
 // (state/sessionVault.ts), one per browser profile. It is opened only for the
 // person the server says is signed in: a record of anyone else is wiped,
 // never opened. It is never sent anywhere. What opens the person's grants
-// takes it as the kit's non-extractable private key (accountPrivateKeyOf);
-// only a new recovery code reads the raw key back out (accountKeyOf). This page also keeps the newest
+// takes it as the kit's non-extractable private key (accountPrivateKeyOf).
+// Three paths read the raw 32 bytes back out (accountKeyOf), each zeroing
+// them once done: a session restored on a page load, to find whether this
+// browser holds the key at all (holdsAccountKey, state/session.ts); a
+// password change, which checks the key kept here is the one the server's
+// wrap holds (state/account.ts changePassword); and a new recovery code,
+// which wraps it again (replaceRecoveryCode). This page also keeps the newest
 // record it wrote in its own memory, and asks that copy first: a browser that
 // refuses IndexedDB (a private window), or opens it and then refuses the
 // write (its storage full), keeps the key for this page only, and a reload
@@ -156,9 +161,10 @@ async function openRecord<T>(sealID: string, publicKey: string, open: (envelope:
 
 /**
  * accountKeyOf returns the raw account key of the person named, which the
- * caller zeroes, or null (openRecord): the one way the console reads the raw
- * key back out of the vault, for the one caller that wraps it again (a new
- * recovery code, docs/key-scheme.md section 12.5).
+ * caller zeroes, or null (openRecord): how the console reads the raw key back
+ * out of the vault, for three callers only (the header above): whether this
+ * browser holds it (holdsAccountKey), a password change's check of it, and a
+ * new recovery code, which wraps it again (docs/key-scheme.md section 12.5).
  */
 export async function accountKeyOf(sealID: string, publicKey: string): Promise<Bytes | null> {
   return openRecord(sealID, publicKey, envelope => openBrowserVaultKey(envelope, sealID))
@@ -174,7 +180,11 @@ export async function accountPrivateKeyOf(sealID: string, publicKey: string): Pr
   return openRecord(sealID, publicKey, envelope => openBrowserVault(envelope, sealID))
 }
 
-/** holdsAccountKey says whether this browser holds the account key of the person named, opening it to be sure. */
+/**
+ * holdsAccountKey says whether this browser holds the account key of the
+ * person named, opening it to be sure: the raw key is read out and zeroed at
+ * once.
+ */
 export async function holdsAccountKey(sealID: string, publicKey: string): Promise<boolean> {
   const key = await accountKeyOf(sealID, publicKey)
   key?.fill(0)

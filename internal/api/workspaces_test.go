@@ -136,7 +136,7 @@ func newSupportTeam(t *testing.T, h *harness) supportTeam {
 // grant sets what Bea holds on the team's mailbox, as Ana.
 func (tm supportTeam) grant(t *testing.T, h *harness, body string) {
 	t.Helper()
-	resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, sealedFor(t, body))
+	resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, sealedFor(t, h, tm.beaID, body))
 	if resp.StatusCode != http.StatusOK {
 		code, msg := decodeError(t, resp)
 		t.Fatalf("granting %s: %d %s %s", body, resp.StatusCode, code, msg)
@@ -465,7 +465,7 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
 		`{"read":true,"act":true,"send":true,"manage":false}`, http.StatusBadRequest)
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
-		sealedFor(t, `{"read":true,"act":true,"send":true,"manage":false}`), http.StatusOK)
+		sealedFor(t, h, tm.beaID, `{"read":true,"act":true,"send":true,"manage":false}`), http.StatusOK)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send,shout", tm.ana, "",
 		http.StatusBadRequest)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send", tm.ana, "",

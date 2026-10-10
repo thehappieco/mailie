@@ -147,7 +147,7 @@ func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
 		{http.MethodGet, "/v1/accounts/acc_0000000000000001/mailbox-key", ""},
 		{http.MethodPost, "/v1/accounts/acc_0000000000000001/mailbox-key", `{"public_key":"a","namespace":"a","grants":[]}`},
 		{http.MethodPut, "/v1/accounts/acc_0000000000000001/mailbox-key", `{"epoch":2,"public_key":"a","grant":"a"}`},
-		{http.MethodPut, "/v1/accounts/acc_0000000000000001/grants/usr_0000000000000001", `{"epoch":1,"grant":"a"}`},
+		{http.MethodPut, "/v1/accounts/acc_0000000000000001/grants/usr_0000000000000001", `{"epoch":1,"grant":"a","public_key":"a"}`},
 	} {
 		resp := h.do(t, route.method, route.path, key, route.body)
 		if resp.StatusCode != http.StatusForbidden {

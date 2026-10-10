@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/keyscheme"
 )
 
@@ -55,10 +56,11 @@ func grantAt(t *testing.T, epoch int) string {
 	return base64.RawURLEncoding.EncodeToString(g)
 }
 
-// sealedFor is a change of flags that gives read on a mailbox whose key is at
-// epoch 1, with the person's grant, as the giver's browser sends it
-// (docs/key-scheme.md section 12.13).
-func sealedFor(t *testing.T, body string) string {
+// sealedFor is a change of flags that gives userID read on a mailbox whose
+// key is at epoch 1, with their grant and the account public key it was
+// sealed to, theirs now, as the giver's browser sends it (docs/key-scheme.md
+// section 12.13).
+func sealedFor(t *testing.T, h *harness, userID, body string) string {
 	t.Helper()
 	var fields map[string]any
 	if err := json.Unmarshal([]byte(body), &fields); err != nil {
@@ -66,6 +68,14 @@ func sealedFor(t *testing.T, body string) string {
 	}
 	if fields["read"] == true {
 		fields["grant"] = grantAt(t, 1)
+		fields["public_key"] = accountKeyOf(t, h, userID)
 	}
 	return jsonOf(t, fields)
+}
+
+// accountKeyOf is a person's account public key as the server serves it now,
+// base64url: what a browser seals their grants to, and names.
+func accountKeyOf(t *testing.T, h *harness, userID string) string {
+	t.Helper()
+	return base64.RawURLEncoding.EncodeToString(authtest.AccountPublicKey(t, h.store, userID))
 }

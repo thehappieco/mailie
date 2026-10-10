@@ -276,19 +276,21 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 // who holds the flag gets one), on a mailbox without a key (ErrKeyless), and
 // for a person without an account key (ErrNotEnrolled), who is given read by
 // the flag alone and waits for the key. It must have a grant's shape
-// (keyscheme.ErrShape) at the mailbox's current epoch (ErrEpoch), and the
-// person no grant at that epoch yet (ErrSealedGrantExists).
+// (keyscheme.ErrShape) at the mailbox's current epoch (ErrEpoch), be sealed,
+// by what its browser says, to the person's account public key now
+// (ErrSealedToAnother), and the person hold no grant at that epoch yet
+// (ErrSealedGrantExists).
 //
 // That the giver reads the mailbox themself, and has a fresh step-up when
 // the recipient is someone else, is the Check's to decide (ReadsNowTx).
-func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID string, flags Flags, sealed []byte, grantedBy string,
+func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID string, flags Flags, sealed *Sealed, grantedBy string,
 	check Check,
 ) (Grant, error) {
 	if err := flags.check(); err != nil {
 		return Grant{}, err
 	}
 	if sealed != nil {
-		if _, err := grantEpoch(sealed); err != nil {
+		if _, err := grantEpoch(sealed.Grant); err != nil {
 			return Grant{}, err
 		}
 	}
@@ -336,7 +338,7 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 			return fmt.Errorf("workspace: set grant: %w", err)
 		}
 		if sealed != nil {
-			if err := insertSealedGrantTx(ctx, tx, accountID, mb.workspaceID, userID, epoch, sealed, grantedBy, now); err != nil {
+			if err := insertSealedGrantTx(ctx, tx, accountID, mb.workspaceID, userID, epoch, sealed.Grant, grantedBy, now); err != nil {
 				return err
 			}
 		}

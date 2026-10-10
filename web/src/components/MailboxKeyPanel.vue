@@ -55,14 +55,21 @@ const shown = computed(() => {
   return unopened.value || waitingPeople.value.length > 0 || !!view.value?.failure || !!view.value?.problem
 })
 
-/** Reads the key whenever what the card says of it changes; a personal mailbox's own key is tried here too. */
+/**
+ * Reads the key when the sheet opens, and again only when what the card says
+ * of it changes: another mailbox, another epoch, Read or the key gained or
+ * lost. The card is replaced whole whenever the mailbox syncs, and that
+ * alone reads nothing again, nor opens the person's own key once more. A
+ * personal mailbox's own key is tried here too. The console's own writes read
+ * the key again themselves (state/mailboxKeys.ts).
+ */
 async function read() {
   if (!waiting.value && !reads.value) return
   await loadMailboxKey(props.account.id)
   if (!team.value && keyed.value && reads.value) await checkOwnGrant(props.account.id)
 }
 onMounted(read)
-watch(() => [props.account.id, props.account.mailbox_key?.epoch, reads.value, waiting.value], read)
+watch([() => props.account.id, () => props.account.mailbox_key?.epoch, reads, waiting], read)
 
 const name = (person: { name: string; email: string }) => person.name || person.email
 

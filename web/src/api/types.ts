@@ -165,12 +165,20 @@ export interface SealedGrant {
   granted_by?: string
   created_at: number
 }
-/** The body of POST /v1/accounts/{id}/mailbox-key: a mailbox's first key, with a grant for everyone who holds read with an account key. */
-export interface FirstKeyRequest { public_key: string; namespace: string; grants: { user_id: string; grant: string }[] }
+/**
+ * The body of POST /v1/accounts/{id}/mailbox-key: a mailbox's first key, with
+ * a grant for everyone who holds read with an account key, each naming the
+ * account public key it was sealed to, which the server holds to theirs now.
+ */
+export interface FirstKeyRequest { public_key: string; namespace: string; grants: { user_id: string; grant: string; public_key: string }[] }
 /** The body of PUT /v1/accounts/{id}/mailbox-key: a personal mailbox's next key, at the epoch after its current one. */
 export interface NewKeyRequest { epoch: number; public_key: string; grant: string }
-/** The body of PUT /v1/accounts/{id}/grants/{user}: the key handed to a member who holds read without it. */
-export interface SupplyKeyRequest { epoch: number; grant: string }
+/**
+ * The body of PUT /v1/accounts/{id}/grants/{user}: the key handed to a member
+ * who holds read without it, naming the account public key it was sealed to,
+ * which the server holds to theirs now.
+ */
+export interface SupplyKeyRequest { epoch: number; grant: string; public_key: string }
 /**
  * available false: the mailbox cannot send now, for a short reason (such as
  * needs_reauth, or no SMTP server) the console never shows as it is.
@@ -599,9 +607,10 @@ export interface GrantFlags { read: boolean; act: boolean; send: boolean; manage
 /**
  * The body of PUT /v1/accounts/{id}/access/{user}: the flags, and with read
  * given on a mailbox that has a key to a person with an account key, their
- * grant at its current epoch.
+ * grant at its current epoch and the account public key it was sealed to,
+ * which the server holds to theirs now.
  */
-export interface GrantChange extends GrantFlags { grant?: string }
+export interface GrantChange extends GrantFlags { grant?: string; public_key?: string }
 /** A change to a membership: a field left out stays as it is. */
 export interface MemberChange { role?: WorkspaceRole; status?: MemberStatus }
 

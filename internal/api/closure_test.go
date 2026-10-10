@@ -102,7 +102,7 @@ func TestDisablingOrDeletingTheLastReaderOverRESTNeedsForce(t *testing.T) {
 	}
 	// Once Bea reads it too, Ana goes; the team's mailbox stays the team's.
 	if resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
-		sealedFor(t, `{"read":true,"act":false,"send":false,"manage":false}`)); resp.StatusCode != http.StatusOK {
+		sealedFor(t, h, tm.beaID, `{"read":true,"act":false,"send":false,"manage":false}`)); resp.StatusCode != http.StatusOK {
 		t.Fatalf("granting Bea read: %d", resp.StatusCode)
 	}
 	if resp := h.do(t, http.MethodPost, "/v1/users/delete", admin, `{"email":"ana@example.com"}`); resp.StatusCode != http.StatusOK {

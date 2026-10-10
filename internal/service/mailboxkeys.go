@@ -109,11 +109,14 @@ type FirstKeyRequest struct {
 	Grants    []GrantToRequest `json:"grants"`
 }
 
-// GrantToRequest is one grant of a first key: to whom, and the grant,
-// base64url of 88 bytes.
+// GrantToRequest is one grant of a first key: to whom, the grant, base64url
+// of 88 bytes, and the account public key the browser sealed it to,
+// base64url of 32 bytes, which must be that person's now: the writer's own
+// included.
 type GrantToRequest struct {
-	UserID string `json:"user_id"`
-	Grant  string `json:"grant"`
+	UserID    string `json:"user_id"`
+	Grant     string `json:"grant"`
+	PublicKey string `json:"public_key"`
 }
 
 // NewKeyRequest is a personal mailbox's next key pair (section 12.12): at
@@ -127,10 +130,12 @@ type NewKeyRequest struct {
 
 // SupplyKeyRequest hands a mailbox's key to a member who holds read on it
 // without a grant (section 12.13): the grant, at the mailbox key's current
-// epoch, which it names.
+// epoch, which it names, and the member's account public key the browser
+// sealed it to, which must be theirs now.
 type SupplyKeyRequest struct {
-	Epoch int    `json:"epoch"`
-	Grant string `json:"grant"`
+	Epoch     int    `json:"epoch"`
+	Grant     string `json:"grant"`
+	PublicKey string `json:"public_key"`
 }
 
 // Errors of mailbox keys.
@@ -149,6 +154,9 @@ var (
 	errTeamKey     = E(CodeNotAuthorized, "a team mailbox is never given a new key: whoever made it would hold its only grant", nil)
 	errGrantNeeded = E(CodeBadRequest,
 		"read on a mailbox that has a key comes with the person's grant, sealed by the browser of someone who reads it", nil)
+	errSealedTo = E(CodeBadRequest,
+		"a grant names the account public key it was sealed to: public_key, base64url of 32 bytes", nil)
+	errSealedToAlone = E(CodeBadRequest, "public_key names what a grant was sealed to, and comes only with one", nil)
 )
 
 // requireStepUp refuses a session whose step-up is not fresh
@@ -223,6 +231,22 @@ func grantBytes(s string) ([]byte, error) {
 		return nil, errBadGrant
 	}
 	return g, nil
+}
+
+// sealedOf decodes a grant a browser sealed for someone, with the account
+// public key it says it sealed it to (docs/key-scheme.md section 9.3), each
+// in its shape. Whether that key is the recipient's now is the write's to
+// find, in its transaction.
+func sealedOf(grant, publicKey string) (workspace.Sealed, error) {
+	g, err := grantBytes(grant)
+	if err != nil {
+		return workspace.Sealed{}, err
+	}
+	to, ok := strictBytes(publicKey, keyscheme.KeyLen)
+	if !ok {
+		return workspace.Sealed{}, errSealedTo
+	}
+	return workspace.Sealed{Grant: g, SealedTo: to}, nil
 }
 
 // checkNamespace refuses a namespace outside its spelling.
@@ -317,8 +341,9 @@ func (s *Service) MailboxKey(ctx context.Context, p Principal, accountID string)
 // a person who reads the mailbox now, by the flag, and has an account key
 // writes it, so that an owner or an admin who reads none of a team's
 // mailboxes cannot take one by keying it. Grants that are not exactly those
-// people's are a conflict: someone enrolled or was given read meanwhile, and
-// the console reads the mailbox key again.
+// people's, or one that names another account public key than its
+// recipient's now, are a conflict: someone enrolled, was given read or was
+// reset meanwhile, and the console reads the mailbox key again.
 func (s *Service) WriteFirstKey(ctx context.Context, p Principal, accountID string, req FirstKeyRequest) (MailboxKeyPair, error) {
 	if err := requireSession(p); err != nil {
 		return MailboxKeyPair{}, err
@@ -335,14 +360,14 @@ func (s *Service) WriteFirstKey(ctx context.Context, p Principal, accountID stri
 	}
 	grants := make([]workspace.GrantTo, 0, len(req.Grants))
 	for _, g := range req.Grants {
-		sealed, err := grantBytes(g.Grant)
+		sealed, err := sealedOf(g.Grant, g.PublicKey)
 		if err != nil {
 			return MailboxKeyPair{}, err
 		}
-		if err := grantAtEpoch(sealed, keyscheme.MinEpoch); err != nil {
+		if err := grantAtEpoch(sealed.Grant, keyscheme.MinEpoch); err != nil {
 			return MailboxKeyPair{}, err
 		}
-		grants = append(grants, workspace.GrantTo{UserID: g.UserID, Grant: sealed})
+		grants = append(grants, workspace.GrantTo{UserID: g.UserID, Grant: sealed.Grant, SealedTo: sealed.SealedTo})
 	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
 	if err != nil {
@@ -416,7 +441,9 @@ func (s *Service) WriteNewKey(ctx context.Context, p Principal, accountID string
 // may, after a fresh step-up, owner, admin or member: it gives nobody read
 // who was not given it. The recipient must be an active member who holds the
 // flag and has an account key; the grant is at the current epoch, which the
-// request names.
+// request names, and names the account public key it was sealed to, which
+// must be the recipient's now (a conflict otherwise: they were reset since
+// the console read them).
 func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID string, req SupplyKeyRequest) (SealedGrant, error) {
 	if err := requireSession(p); err != nil {
 		return SealedGrant{}, err
@@ -424,11 +451,11 @@ func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID 
 	if req.Epoch < keyscheme.MinEpoch || req.Epoch > keyscheme.MaxEpoch {
 		return SealedGrant{}, errBadEpoch
 	}
-	grant, err := grantBytes(req.Grant)
+	sealed, err := sealedOf(req.Grant, req.PublicKey)
 	if err != nil {
 		return SealedGrant{}, err
 	}
-	if err := grantAtEpoch(grant, req.Epoch); err != nil {
+	if err := grantAtEpoch(sealed.Grant, req.Epoch); err != nil {
 		return SealedGrant{}, err
 	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
@@ -438,7 +465,7 @@ func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID 
 	if err := s.requireStepUp(ctx, p); err != nil {
 		return SealedGrant{}, err
 	}
-	g, err := s.workspaces.SupplyGrant(ctx, a.ID, userID, p.UserID, req.Epoch, grant, s.stepUpCheck(ctx, p))
+	g, err := s.workspaces.SupplyGrant(ctx, a.ID, userID, p.UserID, req.Epoch, sealed, s.stepUpCheck(ctx, p))
 	if err != nil {
 		return SealedGrant{}, fromKeys(err, "handing the key on failed")
 	}
@@ -452,8 +479,9 @@ func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID 
 // vocabulary (docs/workspaces.md, "Errors"): a value outside its shape is
 // bad_request; a state that moved under the console — another epoch, a key
 // or a grant already written, a namespace in use, a first key whose grants
-// no longer match, a person without an account key or without the flag — is
-// conflict; a giver who does not read, not_authorized. Everything else is
+// no longer match, a person without an account key or without the flag, a
+// grant sealed to an account key the person no longer has — is conflict; a
+// giver who does not read, not_authorized. Everything else is
 // fromWorkspace's.
 func fromKeys(err error, what string) error {
 	var se *Error
@@ -495,6 +523,9 @@ func fromKeys(err error, what string) error {
 		return E(CodeNotAuthorized, "only someone who reads the mailbox now writes its key or hands it on", err)
 	case errors.Is(err, workspace.ErrTeamKey):
 		return errTeamKey
+	case errors.Is(err, workspace.ErrSealedToAnother):
+		return E(CodeConflict, "that grant was sealed to an account key the person does not have now: they were "+
+			"reset since they were read; read them again, and seal it again", err)
 	default:
 		return fromWorkspace(err, what)
 	}

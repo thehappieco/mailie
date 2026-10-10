@@ -24,7 +24,7 @@ import { CeremonyError } from '../crypto/errors'
 import { newMailboxKey, sealAll } from '../crypto/mailbox'
 import { accounts, accountsSettled, refreshAccount } from './accounts'
 import { failure, type Failure } from './failure'
-import { sealFromOwn, withOwnMailboxKey } from './grants'
+import { onceMore, requireAccountKeyHere, sealFromOwn, withOwnMailboxKey } from './grants'
 import { authorized, freshStepUp, identity, onSignIn, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
 import { refreshTeam } from './team'
@@ -141,7 +141,7 @@ async function firstKey(accountID: string): Promise<boolean> {
     try {
       await authorized(token => api.writeFirstKey(token, accountID, {
         public_key: made.publicKey, namespace: made.namespace,
-        grants: recipients.map((recipient, i) => ({ user_id: recipient.user_id, grant: grants[i]! })),
+        grants: recipients.map((recipient, i) => ({ user_id: recipient.user_id, grant: grants[i]!, public_key: recipient.public_key })),
       }))
       return true
     } catch (error) {
@@ -161,15 +161,18 @@ async function readAgain(accountID: string): Promise<void> {
  * write runs one write of a mailbox's key from its sheet: after a fresh
  * step-up, marked busy meanwhile, its failure said beside it, and what it
  * changed read again. Closing the step-up stops it without a word. A
- * conflict, another write first, reads everything again too.
+ * conflict, another write first, reads everything again too. One that opens
+ * the person's own grant (opens) is refused before the step-up is asked
+ * when this browser does not hold their account key.
  */
-async function write(accountID: string, busy: string, op: Failure['op'], call: () => Promise<unknown>): Promise<boolean> {
+async function write(accountID: string, busy: string, op: Failure['op'], call: () => Promise<unknown>, opens = false): Promise<boolean> {
   const ok = current()
   const view = keyView(accountID)
   if (view.busy) return false
   view.busy = busy
   view.problem = null
   try {
+    if (opens) requireAccountKeyHere()
     await withStepUp(call)
   } catch (error) {
     if (!ok()) return false
@@ -188,14 +191,17 @@ async function write(accountID: string, busy: string, op: Failure['op'], call: (
 
 /**
  * supplyKey hands a mailbox's key to a member who holds Read on it without
- * it (section 12.13): the person's own grant opened here, the key sealed to
- * the member's public key and seal id at its current epoch.
+ * it (section 12.13): the person's own grant opened here, the key sealed at
+ * its current epoch to the member as the answer read in the same call lists
+ * them among those waiting, never as the sheet showed them (a reset since
+ * gave them another account key). A conflict, the server finding the key it
+ * names is not theirs now, reads them again and tries once more.
  */
-export function supplyKey(accountID: string, recipient: KeyRecipient): Promise<boolean> {
-  return write(accountID, recipient.user_id, 'supply-key', async () => {
-    const sealed = await sealFromOwn(accountID, recipient)
+export function supplyKey(accountID: string, recipient: Pick<KeyRecipient, 'user_id'>): Promise<boolean> {
+  return write(accountID, recipient.user_id, 'supply-key', () => onceMore(async () => {
+    const sealed = await sealFromOwn(accountID, state => state.waiting.find(person => person.user_id === recipient.user_id))
     return authorized(token => api.supplyKey(token, accountID, recipient.user_id, sealed))
-  })
+  }), true)
 }
 
 /** writeFirstKey writes the first key of a mailbox without one, from its sheet (section 12.14). */

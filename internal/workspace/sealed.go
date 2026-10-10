@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -79,11 +80,27 @@ type FirstKey struct {
 	Grants    []GrantTo
 }
 
-// GrantTo is one grant of those a key pair is written with: to whom, and the
-// 88 bytes.
+// GrantTo is one grant of those a key pair is written with: to whom, the 88
+// bytes, and the account public key they were sealed to, which must be that
+// person's now (ErrSealedToAnother).
 type GrantTo struct {
-	UserID string
-	Grant  []byte
+	UserID   string
+	Grant    []byte
+	SealedTo []byte
+}
+
+// Sealed is a grant as a browser sends it for someone else: the 88 bytes, and
+// the account public key it says it sealed them to. The server cannot tell
+// what the bytes were sealed to (docs/key-scheme.md section 9.3), but it
+// refuses a grant whose stated key is not its recipient's account public key
+// now (ErrSealedToAnother): what a console that read the recipient before
+// their reset would send, a grant that would count them as a reader and never
+// open.
+type Sealed struct {
+	Grant []byte
+	// SealedTo is the recipient's account public key the browser sealed
+	// Grant to.
+	SealedTo []byte
 }
 
 // NextKey is a new key pair for a personal mailbox (section 12.12): at the
@@ -146,7 +163,21 @@ var (
 	// ErrTeamKey is a new key pair for a team mailbox, which is never given
 	// one (section 12.12): whoever made it would hold its only grant.
 	ErrTeamKey = errors.New("workspace: a team mailbox is never given a new key")
+	// ErrSealedToAnother is a grant whose browser says it sealed it to
+	// another account public key than its recipient's now: one read before
+	// they were reset, whose grant would never open.
+	ErrSealedToAnother = errors.New("workspace: the grant was sealed to another account key than the person's")
 )
+
+// requireSealedTo refuses a grant sealed, by what its browser says, to
+// another account public key than pub, its recipient's now
+// (ErrSealedToAnother).
+func requireSealedTo(pub, sealedTo []byte) error {
+	if len(pub) == 0 || !bytes.Equal(pub, sealedTo) {
+		return ErrSealedToAnother
+	}
+	return nil
+}
 
 // grantEpoch is the epoch a grant names in its header (section 9.1), once
 // its shape is a grant's at that epoch; keyscheme.ErrShape otherwise.
@@ -543,7 +574,7 @@ func DropSealedGrantsOfTx(ctx context.Context, tx *sql.Tx, userID string) error 
 // change of a person's flags does with a grant (docs/key-scheme.md section
 // 9.3): the epoch to write the one sent at, or 0 when none is written.
 // addsRead is the change giving the person read.
-func sealedWithReadTx(ctx context.Context, tx *sql.Tx, accountID, userID string, addsRead bool, sealed []byte) (int, error) {
+func sealedWithReadTx(ctx context.Context, tx *sql.Tx, accountID, userID string, addsRead bool, sealed *Sealed) (int, error) {
 	if sealed == nil && !addsRead {
 		return 0, nil
 	}
@@ -575,7 +606,10 @@ func sealedWithReadTx(ctx context.Context, tx *sql.Tx, accountID, userID string,
 	case pub == nil:
 		return 0, ErrNotEnrolled
 	}
-	if err := checkGrantAt(sealed, key.Epoch); err != nil {
+	if err := requireSealedTo(pub, sealed.SealedTo); err != nil {
+		return 0, err
+	}
+	if err := checkGrantAt(sealed.Grant, key.Epoch); err != nil {
 		return 0, err
 	}
 	switch _, err := sealedGrantOn(ctx, tx, accountID, userID, key.Epoch); {
@@ -643,8 +677,10 @@ func WriteLinkKeyTx(ctx context.Context, tx *sql.Tx, accountID, linker string, k
 // (ErrOperator); a writer who does not read it (ErrNotReader) or has no
 // account key (ErrNotEnrolled); a namespace another mailbox uses
 // (ErrNamespaceTaken); grants that are not exactly one for each of those
-// people (ErrGrantsIncomplete); and what CheckLinkKey refuses of the key pair
-// and of each grant. The writer's fresh step-up is the Check's.
+// people (ErrGrantsIncomplete), or one sealed, by what the browser says, to
+// another account public key than its recipient's now (ErrSealedToAnother);
+// and what CheckLinkKey refuses of the key pair and of each grant. The
+// writer's fresh step-up is the Check's.
 func (r *Repository) WriteFirstKey(ctx context.Context, accountID, writerID string, key FirstKey, check Check) (KeyPair, error) {
 	if err := checkKeyPair(key.PublicKey, key.Namespace); err != nil {
 		return KeyPair{}, err
@@ -689,15 +725,24 @@ func (r *Repository) WriteFirstKey(ctx context.Context, accountID, writerID stri
 			return err
 		}
 		// Who holds read and could open a grant: the writer among them.
-		want, err := listIDs(ctx, tx, `SELECT g.user_id FROM mailbox_access g JOIN users u ON u.id = g.user_id
-			 WHERE g.account_id = ? AND `+store.FlagHolderSQL("g")+` AND u.public_key IS NOT NULL
-			 ORDER BY g.user_id`, accountID)
+		holders, err := recipientsOn(ctx, tx, accountID, store.FlagHolderSQL("g")+` AND u.public_key IS NOT NULL`)
 		if err != nil {
 			return err
+		}
+		want := make([]string, 0, len(holders))
+		keys := make(map[string][]byte, len(holders))
+		for _, h := range holders {
+			want = append(want, h.UserID)
+			keys[h.UserID] = h.PublicKey
 		}
 		slices.Sort(want)
 		if !slices.Equal(want, sent) {
 			return fmt.Errorf("%w: %d sent for %d people", ErrGrantsIncomplete, len(sent), len(want))
+		}
+		for _, g := range key.Grants {
+			if err := requireSealedTo(keys[g.UserID], g.SealedTo); err != nil {
+				return err
+			}
 		}
 		at := now.Unix()
 		if err := insertKeyPairTx(ctx, tx, accountID, keyscheme.MinEpoch, key.PublicKey, key.Namespace, writerID, at); err != nil {
@@ -803,16 +848,18 @@ func (r *Repository) WriteNextKey(ctx context.Context, accountID, personID strin
 // The recipient is an active member of the mailbox's workspace
 // (ErrNotMember) who holds the read flag (ErrNoReadFlag), has an account key
 // (ErrNotEnrolled) and no grant at the current epoch
-// (ErrSealedGrantExists); the mailbox has a key (ErrKeyless); and the grant
-// has a grant's shape (keyscheme.ErrShape) at the current epoch, which epoch
-// names (ErrEpoch). The giver's fresh step-up is the Check's.
-func (r *Repository) SupplyGrant(ctx context.Context, accountID, recipientID, giverID string, epoch int, grant []byte,
+// (ErrSealedGrantExists); the mailbox has a key (ErrKeyless); the grant has
+// a grant's shape (keyscheme.ErrShape) at the current epoch, which epoch
+// names (ErrEpoch); and its browser sealed it, by what it says, to the
+// recipient's account public key now (ErrSealedToAnother). The giver's
+// fresh step-up is the Check's.
+func (r *Repository) SupplyGrant(ctx context.Context, accountID, recipientID, giverID string, epoch int, sealed Sealed,
 	check Check,
 ) (SealedGrant, error) {
 	if err := checkEpoch(epoch); err != nil {
 		return SealedGrant{}, err
 	}
-	if err := checkGrantAt(grant, epoch); err != nil {
+	if err := checkGrantAt(sealed.Grant, epoch); err != nil {
 		return SealedGrant{}, err
 	}
 	now := r.now().UTC().Truncate(time.Second)
@@ -854,13 +901,17 @@ func (r *Repository) SupplyGrant(ctx context.Context, accountID, recipientID, gi
 		if m.PublicKey == nil {
 			return ErrNotEnrolled
 		}
+		if err := requireSealedTo(m.PublicKey, sealed.SealedTo); err != nil {
+			return err
+		}
 		switch _, err := sealedGrantOn(ctx, tx, accountID, recipientID, epoch); {
 		case err == nil:
 			return ErrSealedGrantExists
 		case !errors.Is(err, ErrNoGrant):
 			return err
 		}
-		if err := insertSealedGrantTx(ctx, tx, accountID, mb.workspaceID, recipientID, epoch, grant, giverID, now.Unix()); err != nil {
+		if err := insertSealedGrantTx(ctx, tx, accountID, mb.workspaceID, recipientID, epoch, sealed.Grant, giverID,
+			now.Unix()); err != nil {
 			return err
 		}
 		out, err = sealedGrantOn(ctx, tx, accountID, recipientID, epoch)

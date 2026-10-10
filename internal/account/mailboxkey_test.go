@@ -244,7 +244,7 @@ func TestAKeyedMailboxShowsAMemberWaitingForTheKeyItsCardAndNothingToRead(t *tes
 		authtest.PublicKey(t), dan.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, ana.ID, 1, authtest.Grant(t, 1), nil); err != nil {
+	if _, err := f.ws.SupplyGrant(t.Context(), box.ID, dan.ID, ana.ID, 1, authtest.Sealed(t, f.db, dan.ID, 1), nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.sees(account.Visibility{UserID: dan.ID, Need: workspace.Flags{Read: true, Act: true}}); !slices.Equal(got, []string{box.ID}) {

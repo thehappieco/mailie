@@ -247,6 +247,11 @@ type GrantRequest struct {
 	// refused with anything else. It takes a fresh step-up when the person
 	// is someone else.
 	Grant string `json:"grant,omitempty"`
+	// PublicKey is the person's account public key the browser sealed Grant
+	// to, base64url of 32 bytes: required with a grant, and refused without
+	// one. A grant whose key is not the person's now is a conflict: the
+	// console read them before their reset.
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // Errors of administering a workspace.
@@ -801,7 +806,8 @@ func (s *Service) presentMailboxConsent(c workspace.Consent) *MailboxConsent {
 //     included;
 //   - with what: on a mailbox that has a key, read comes with the person's
 //     grant (docs/key-scheme.md sections 9.3 and 12.13), which the giver's
-//     browser sealed from their own, after a fresh step-up; to a member who
+//     browser sealed from their own, after a fresh step-up, to the account
+//     public key it names, which must be the person's now; to a member who
 //     has no account key yet, and on a mailbox without a key, read is the
 //     flag alone, and the key follows (SupplyKey, WriteFirstKey).
 //
@@ -817,16 +823,20 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 			"read, act, send and manage are all required: the grant is set to exactly them", nil)
 	}
 	flags := workspace.Flags{Read: *req.Read, Act: *req.Act, Send: *req.Send, Manage: *req.Manage}
-	var sealed []byte
-	if req.Grant != "" {
+	var sealed *workspace.Sealed
+	switch {
+	case req.Grant != "":
 		// Sealed by a person's browser, from their own grant: never a key's.
 		if err := requireSession(p); err != nil {
 			return Grant{}, err
 		}
-		var err error
-		if sealed, err = grantBytes(req.Grant); err != nil {
+		got, err := sealedOf(req.Grant, req.PublicKey)
+		if err != nil {
 			return Grant{}, err
 		}
+		sealed = &got
+	case req.PublicKey != "":
+		return Grant{}, errSealedToAlone
 	}
 	a, err := s.accessTarget(ctx, p, accountID)
 	if err != nil {

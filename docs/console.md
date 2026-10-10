@@ -678,12 +678,12 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `DELETE /v1/workspaces/{id}/members/{user}` | owner: anyone, themselves while another owner remains; admin: members; operator | 204; their grants there go, their invites there expire |
 | `GET/POST /v1/workspaces/{id}/invites`, `DELETE …/invites/{invite}` | owner; admin (member invites); operator | team invites: `{email, role?}` → `TeamInvite` with its `url` (201) |
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`: every mailbox, its grants (each with `sealed`: its person holds the key at the current epoch), `readers` (by the one rule), `no_reader`, `epoch` (its key's current one; absent without a key), its own consent to sync (`sync`) and `linked_by`; never the index |
-| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)); operator: `manage` to members only | `{read, act, send, manage, grant?}`, all four flags → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, after a fresh step-up when they are someone else ([Mailbox keys](#mailbox-keys)) |
+| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)); operator: `manage` to members only | `{read, act, send, manage, grant?, public_key?}`, all four flags → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, after a fresh step-up when they are someone else, and `public_key`, the account key it was sealed to, with it ([Mailbox keys](#mailbox-keys)) |
 | `DELETE /v1/accounts/{id}/access/{user}?flags=` | owner or admin, their own flags included; operator | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it; taking `read` takes the person's grants |
 | `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it | `MailboxKeyState` ([Mailbox keys](#mailbox-keys)) |
-| `POST /v1/accounts/{id}/mailbox-key` | session reading it, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant}]}` → `MailboxKeyPair` (201): the first key of a mailbox without one |
+| `POST /v1/accounts/{id}/mailbox-key` | session reading it, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant, public_key}]}` → `MailboxKeyPair` (201): the first key of a mailbox without one |
 | `PUT /v1/accounts/{id}/mailbox-key` | session, a personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`: its next key |
-| `PUT /v1/accounts/{id}/grants/{user}` | session reading it; fresh step-up | `{epoch, grant}` → `SealedGrant`: the key, to a member who holds `read` without it |
+| `PUT /v1/accounts/{id}/grants/{user}` | session reading it; fresh step-up | `{epoch, grant, public_key}` → `SealedGrant`: the key, to a member who holds `read` without it |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller holds a grant on, and every mailbox of a team they own or administer (its card); `?workspace=` narrows the list |
 | `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link; a person sends the mailbox's first key, `public_key`, `namespace` and `grant`, with a fresh step-up |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner or admin, a personal mailbox's person, the operator for its own | remove it, with its index; without the id repeated, `400` and nothing removed |
@@ -785,14 +785,24 @@ person's: an API key is `403`.
   recipient's grant at the current epoch, sealed by the giver's browser from its own; required
   when `read` is added on a mailbox that has a key to a person with an account key, refused
   otherwise. A fresh step-up when the recipient is someone else.
-- **Supplying the key** (`PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant}` → `SealedGrant`):
-  any person who reads the mailbox, owner, admin or member, to an active member who holds `read`,
-  has an account key and no grant at the current epoch; a fresh step-up.
+- **Supplying the key** (`PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant, public_key}` →
+  `SealedGrant`): any person who reads the mailbox, owner, admin or member, to an active member
+  who holds `read`, has an account key and no grant at the current epoch; a fresh step-up.
 - **The first key** (`POST /v1/accounts/{id}/mailbox-key` `{public_key, namespace, grants: [{user_id,
-  grant}]}` → `MailboxKeyPair`, 201, section 12.14): a mailbox without a key, from a person who reads
-  it by the flag and has an account key, with exactly one grant at epoch 1 for them and for every
-  other active member who holds `read` and has an account key (`keyless_readers` below); a fresh
-  step-up. The console writes it right after a sign-in, while that sign-in counts as a step-up.
+  grant, public_key}]}` → `MailboxKeyPair`, 201, section 12.14): a mailbox without a key, from a
+  person who reads it by the flag and has an account key, with exactly one grant at epoch 1 for
+  them and for every other active member who holds `read` and has an account key
+  (`keyless_readers` below); a fresh step-up. The console writes it right after a sign-in, while
+  that sign-in counts as a step-up.
+- **The key a grant was sealed to.** Every grant posted for someone names the account public key
+  it was sealed to: `public_key` (base64url, 32 bytes) beside `grant` when giving read and when
+  supplying the key, and in each of a first key's `grants`, the writer's own included. The server
+  refuses the grant (`409`, nothing written) unless that is the recipient's account key now: a
+  console that read them before their reset (a new account key, the same seal id) would otherwise
+  seal them a grant that counts them a reader, keeps the key from being supplied to them, and
+  never opens. The server still cannot check what the bytes were sealed to; it holds the stated
+  key to the stored one ([`key-scheme.md`](key-scheme.md) section 9.3 and Appendix C). A
+  `public_key` without a grant is `400`.
 - **A new key** (`PUT /v1/accounts/{id}/mailbox-key` `{epoch, public_key, grant}` →
   `MailboxKeyPair`, section 12.12): a personal mailbox's person only, at the epoch after the
   current one, with their own grant, keeping the namespace; every grant of an older epoch goes. A
@@ -828,10 +838,10 @@ person's: an API key is `403`.
 
 | Situation | Code |
 |---|---|
-| a public key, namespace, grant or epoch outside its shape; a grant at odds with the epoch its request names; a person's link without its key, an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400` |
+| a public key, namespace, grant or epoch outside its shape; a grant at odds with the epoch its request names; a grant without the `public_key` it was sealed to, or a `public_key` without a grant; a person's link without its key, an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400` |
 | a step-up more than ten minutes old, or none; a giver or a writer who does not read the mailbox now; a person who sees the mailbox without holding `read` asking for its key; a team mailbox's new key; an API key | `403` |
 | a mailbox the caller cannot see; a recipient who is not an active member of its workspace | `404` |
-| a grant at another epoch than the current one, or a new key at another than the next; a grant that already exists; a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace in use; a recipient without an account key, or without `read` for the key; a person without an account key linking | `409` |
+| a grant at another epoch than the current one, or a new key at another than the next; a grant that already exists; a grant that names another account key than its recipient's now; a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace in use; a recipient without an account key, or without `read` for the key; a person without an account key linking | `409` |
 
 #### The console's half
 
@@ -848,10 +858,14 @@ one ([`key-scheme.md`](key-scheme.md) section 16):
   another key than the mailbox's are all `security`: nothing is sealed or sent.
 - **The account key that opens grants** comes from the browser vault as the kit's
   non-extractable private key (`accountPrivateKeyOf` in `web/src/state/accountVault.ts`, under the
-  vault's rules: the person `GET /v1/auth/me` names, a record of anyone else wiped); only a new
-  recovery code reads the raw key back out. A browser without it (`session.keyed` false: a
-  sign-in elsewhere, storage refused) says `no_account_key`, to sign in again there, before
-  anything is sent. Sealing to someone else needs no account private key.
+  vault's rules: the person `GET /v1/auth/me` names, a record of anyone else wiped). Three paths
+  read the raw key back out (`accountKeyOf`), each zeroing it at once: a session restored on a
+  page load, to set `session.keyed` (`holdsAccountKey`); a password change, which checks the key
+  kept here against the server's wrap; and a new recovery code, which wraps it again. A browser
+  without it (`session.keyed` false: a sign-in elsewhere, storage refused) says `no_account_key`,
+  to sign in again there, before the step-up is asked and before anything is sent: giving Read
+  with a grant and handing the key over check it first, and the access panel says so beside a
+  Read that would carry the key. Sealing to someone else needs no account private key.
 - **Linking** (`state/accounts.ts`): a fresh pair and namespace on every attempt, the linker's
   grant at epoch 1 sealed to their own `user.public_key` under their `seal_id`, sent as
   `public_key`, `namespace` and `grant` in the `POST /v1/accounts` that creates the mailbox, by the
@@ -860,20 +874,34 @@ one ([`key-scheme.md`](key-scheme.md) section 16):
   again (`not_enrolled`) before anything is asked or sent. Finishing an abandoned link sends no
   key: the mailbox has its own.
 - **Giving Read** (`state/team.ts` `saveGrant`): Read added on a mailbox that has a key (the
-  directory's `epoch`) to a member with an account key reads the key (`GET …/mailbox-key`), opens
-  the giver's own grant, seals the key to the member at the current epoch and sends it as `grant`
-  with the four flags, after a step-up; otherwise the flags alone, as before, with no step-up.
+  directory's `epoch`) to a member with an account key reads the member again
+  (`GET /v1/workspaces/{id}/members`) and the key (`GET …/mailbox-key`), opens the giver's own
+  grant, seals the key to the member as that answer lists them, at the current epoch, and sends it
+  as `grant`, with the `public_key` it was sealed to, beside the four flags, after a step-up;
+  otherwise the flags alone, as before, with no step-up. Whether a grant goes is decided from the
+  directory and the members as the page read them, which nothing says are stale (another reader
+  may have written the mailbox's first key, the member enrolled, been reset or been given Read
+  since): a change that gives Read and is refused `400` or `409` reads both again, and the
+  mailbox's card, and is made once more when what it would send differs (with a grant now, without
+  one, or sealed to another key); a member given Read meanwhile is said to be (`give-read`,
+  `conflict`), and a refusal that nothing read again explains is said for what it is. A browser
+  without the giver's account key says so beside the row, and before the step-up is asked.
 - **The key's section of a mailbox's sheet** (`components/MailboxKeyPanel.vue`,
   `state/mailboxKeys.ts`), for anyone who holds Read on it, owner, admin or member: a member who
   waits for the key is told who can hand it over (`suppliers`), or that nobody reads the mailbox
   now; someone who reads it is shown who waits for it (`waiting`) and hands it to each, sealed from
-  their own grant (`PUT …/grants/{user}`); a mailbox read without a key offers its first key,
+  their own grant to the member as the key read in the same call lists them, never as the sheet
+  showed them, and once more after a `409` (`PUT …/grants/{user}`); a mailbox read without a key
+  offers its first key,
   naming whom it is sealed to beside them (`keyless_readers`, `POST …/mailbox-key`); and a
   personal mailbox whose person waits for its key, or whose own grant does not open in this
   browser (tried when its sheet opens), offers a new key at the next epoch, sealed to them alone
   (`PUT …/mailbox-key`). A team mailbox is never offered a new key: one nobody reads keeps its
-  "nobody can read" note, and is only removed. Each write asks for the step-up first, and reads
-  the key, the card and the team's directory again after it, or after a `409`.
+  "nobody can read" note, and is only removed. The section reads the key, and tries the person's
+  own grant, when the sheet opens and when the card says something new of it (another epoch, Read
+  or the key gained or lost), never because a sync replaced the card. Each write asks for the
+  step-up first, and reads the key, the card and the team's directory again after it, or after a
+  `409`.
 - **First keys after a sign-in**: right after every sign-in in this page (`state/session.ts`
   `onSignIn`, from `beginSession`), never on the page load of an older session, while the
   sign-in's step-up time counts and this browser keeps the person's account key, the console reads

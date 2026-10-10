@@ -22,6 +22,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -29,13 +30,14 @@ import (
 // Bea, a member who holds nothing on them until a test grants her something.
 type supportTeam struct {
 	ws       *workspace.Repository
+	db       *store.Store
 	ana, bea service.Principal
 	id       string
 }
 
 func newSupportTeam(t *testing.T, f *fixture) supportTeam {
 	t.Helper()
-	tm := supportTeam{ws: workspace.NewRepository(f.db, nil)}
+	tm := supportTeam{ws: workspace.NewRepository(f.db, nil), db: f.db}
 	tm.ana = f.person(t, "ana@example.com", auth.RoleMember)
 	tm.bea = f.person(t, "bea@example.com", auth.RoleMember)
 	w, err := tm.ws.CreateTeam(t.Context(), "Support", tm.ana.UserID, nil)
@@ -80,15 +82,16 @@ func (tm supportTeam) syncOn(t *testing.T, f *fixture, accountID string) {
 func (tm supportTeam) grant(t *testing.T, accountID string, flags workspace.Flags) {
 	t.Helper()
 	if _, err := tm.ws.SetGrantSealed(t.Context(), accountID, tm.bea.UserID, flags,
-		sealedWith(t, tm.ws, accountID, tm.bea.UserID, flags), tm.ana.UserID, nil); err != nil {
+		sealedWith(t, tm.ws, tm.db, accountID, tm.bea.UserID, flags), tm.ana.UserID, nil); err != nil {
 		t.Fatalf("grant %+v: %v", flags, err)
 	}
 }
 
 // sealedWith is the grant a change of flags gives a person on a mailbox:
-// one at the mailbox key's current epoch when it gives read on a mailbox
-// that has a key, none otherwise.
-func sealedWith(t *testing.T, ws *workspace.Repository, accountID, userID string, flags workspace.Flags) []byte {
+// one at the mailbox key's current epoch, stated to be sealed to their
+// account public key now, when it gives read on a mailbox that has a key;
+// none otherwise.
+func sealedWith(t *testing.T, ws *workspace.Repository, db *store.Store, accountID, userID string, flags workspace.Flags) *workspace.Sealed {
 	t.Helper()
 	if !flags.Read {
 		return nil
@@ -107,7 +110,7 @@ func sealedWith(t *testing.T, ws *workspace.Repository, accountID, userID string
 	case err != nil:
 		t.Fatal(err)
 	}
-	return grantAt(key.Epoch)
+	return &workspace.Sealed{Grant: grantAt(key.Epoch), SealedTo: authtest.AccountPublicKey(t, db, userID)}
 }
 
 func TestStorageCountsOnlyTheMailboxesTheCallerMayRead(t *testing.T) {

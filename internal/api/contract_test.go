@@ -373,7 +373,8 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// Read on a mailbox that has a key comes with the person's grant, which
 	// the giver's browser sealed (docs/key-scheme.md section 12.13).
 	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
-		fmt.Sprintf(`{"read":true,"act":false,"send":true,"manage":false,"grant":%q}`, contractGrant(1, 0x61)))
+		fmt.Sprintf(`{"read":true,"act":false,"send":true,"manage":false,"grant":%q,"public_key":%q}`, contractGrant(1, 0x61),
+			accountKeyOf(t, h, beaID)))
 	// A key of the team, which ana gives read on the mailbox she reads.
 	capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/apikeys", token,
 		fmt.Sprintf(`{"name":"Support bot","scope":"write","mailboxes":[{"account_id":%q,"read":true,"act":true,"send":false}],`+
@@ -423,7 +424,8 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// grant, and then reset: she holds the flag and waits for the key, which
 	// ana, who reads it, supplies.
 	capture("", http.StatusOK, http.MethodPut, "/v1/accounts/"+billingID+"/access/"+carol.ID, token,
-		fmt.Sprintf(`{"read":true,"act":false,"send":false,"manage":false,"grant":%q}`, contractGrant(1, 0x62)))
+		fmt.Sprintf(`{"read":true,"act":false,"send":false,"manage":false,"grant":%q,"public_key":%q}`, contractGrant(1, 0x62),
+			accountKeyOf(t, h, carol.ID)))
 	carolReset, _, err := h.users.CreateReset(t.Context(), carol.ID, false, "cli")
 	if err != nil {
 		t.Fatal(err)
@@ -436,7 +438,7 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("mailbox_key_waiting", http.StatusOK, http.MethodGet, "/v1/accounts/"+billingID+"/mailbox-key", carolToken, "")
 	capture("mailbox_key", http.StatusOK, http.MethodGet, "/v1/accounts/"+billingID+"/mailbox-key", token, "")
 	capture("grant_supplied", http.StatusOK, http.MethodPut, "/v1/accounts/"+billingID+"/grants/"+carol.ID, token,
-		fmt.Sprintf(`{"epoch":1,"grant":%q}`, contractGrant(1, 0x63)))
+		fmt.Sprintf(`{"epoch":1,"grant":%q,"public_key":%q}`, contractGrant(1, 0x63), accountKeyOf(t, h, carol.ID)))
 	// A team mailbox from before the key scheme, which ana and bea read by
 	// the flag: ana writes its first key, sealed to both of them.
 	orders, err := account.NewRepository(h.store, nil).Create(t.Context(), account.Account{
@@ -454,7 +456,8 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		jsonOf(t, map[string]any{
 			"public_key": contractMailboxKey(5), "namespace": contractNamespace(5),
 			"grants": []map[string]any{
-				{"user_id": ana.ID, "grant": contractGrant(1, 0x64)}, {"user_id": beaID, "grant": contractGrant(1, 0x65)},
+				{"user_id": ana.ID, "grant": contractGrant(1, 0x64), "public_key": accountKeyOf(t, h, ana.ID)},
+				{"user_id": beaID, "grant": contractGrant(1, 0x65), "public_key": accountKeyOf(t, h, beaID)},
 			},
 		}))
 	// Ana's own mailbox, given its next key at will (section 12.12).

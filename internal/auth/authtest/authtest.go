@@ -117,6 +117,25 @@ func Grant(t *testing.T, epoch int) []byte {
 	return g
 }
 
+// Sealed is a grant's shape at epoch for userID, as a browser sends it: the
+// 88 bytes, stated to be sealed to the person's account public key as the
+// database holds it now (nil for a person who has not enrolled).
+func Sealed(t *testing.T, db *store.Store, userID string, epoch int) workspace.Sealed {
+	t.Helper()
+	return workspace.Sealed{Grant: Grant(t, epoch), SealedTo: AccountPublicKey(t, db, userID)}
+}
+
+// AccountPublicKey is a person's account public key as the database holds it
+// now: nil until they enrol.
+func AccountPublicKey(t *testing.T, db *store.Store, userID string) []byte {
+	t.Helper()
+	var pub []byte
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT public_key FROM users WHERE id = ?`, userID).Scan(&pub); err != nil {
+		t.Fatalf("authtest: read %s's account key: %v", userID, err)
+	}
+	return pub
+}
+
 // LinkKey is what a linker's browser sends with a link (docs/key-scheme.md
 // section 12.11): the public half of a fresh mailbox key pair, a fresh
 // namespace, and a grant's shape at epoch 1.
@@ -137,9 +156,9 @@ func KeyMailbox(t *testing.T, db *store.Store, accountID, writerID string) works
 	if err != nil {
 		t.Fatalf("authtest: read the mailbox key: %v", err)
 	}
-	grants := []workspace.GrantTo{{UserID: writerID, Grant: Grant(t, 1)}}
+	grants := []workspace.GrantTo{{UserID: writerID, Grant: Grant(t, 1), SealedTo: AccountPublicKey(t, db, writerID)}}
 	for _, r := range state.KeylessReaders {
-		grants = append(grants, workspace.GrantTo{UserID: r.UserID, Grant: Grant(t, 1)})
+		grants = append(grants, workspace.GrantTo{UserID: r.UserID, Grant: Grant(t, 1), SealedTo: r.PublicKey})
 	}
 	key, err := ws.WriteFirstKey(t.Context(), accountID, writerID, workspace.FirstKey{
 		PublicKey: PublicKey(t), Namespace: keyscheme.NewSealID(), Grants: grants,

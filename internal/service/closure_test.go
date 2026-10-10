@@ -705,7 +705,8 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 	}
 	for _, p := range []service.Principal{ana, bea} {
 		if _, err := workspaces.SetGrantSealed(t.Context(), shared.Account.ID, p.UserID,
-			workspace.Flags{Read: true, Manage: true}, grantAt(1), keeper.UserID, nil); err != nil {
+			workspace.Flags{Read: true, Manage: true},
+			&workspace.Sealed{Grant: grantAt(1), SealedTo: authtest.AccountPublicKey(t, f.db, p.UserID)}, keeper.UserID, nil); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -127,7 +127,11 @@ async function save(row: Row) {
   announce(t('Access saved.'))
 }
 
-/** Saving this row's draft hands the person the mailbox's key, sealed here: said before it is saved. */
+/**
+ * Saving this row's draft hands the person the mailbox's key, sealed here:
+ * said before it is saved, or, in a browser that does not hold the caller's
+ * account key, that it cannot be until they sign in again here.
+ */
 const sealsKey = (row: Row): boolean => changed(row) && readRecipient(props.accountId, row.member.user_id, row.held, shown(row)) !== null
 
 /** Why a row's Read cannot go: said beside it, before anyone tries. */
@@ -206,7 +210,7 @@ onMounted(() => {
             </label>
           </fieldset>
           <p v-if="lockText(row)" class="hint lock"><AppIcon name="lock" :size="14" />{{ lockText(row) }}</p>
-          <p v-if="sealsKey(row)" class="hint"><AppIcon name="key" :size="14" />{{ t('Saving also hands them this mailbox’s key, sealed in this browser. It asks for your password if you have not entered it in the last ten minutes.') }}</p>
+          <p v-if="sealsKey(row)" class="hint"><AppIcon name="key" :size="14" />{{ session.keyed ? t('Saving also hands them this mailbox’s key, sealed in this browser. It asks for your password if you have not entered it in the last ten minutes.') : describe({ op: 'give-read', code: 'no_account_key' }) }}</p>
           <p v-if="problems[row.member.user_id]" class="alert" role="alert">{{ describe(problems[row.member.user_id]!) }}</p>
           <div v-if="changed(row)" class="row-save">
             <span class="dim">{{ t('Now: {flags}', { flags: grantSummary(row.held) }) }}</span>

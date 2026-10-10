@@ -56,6 +56,38 @@ func (k browserKey) sealTo(t *testing.T, f *fixture, userID string) string {
 	return b64(grant)
 }
 
+// accountKey is a person's account public key as the server serves it now,
+// base64url: what a browser that read them just before seals to.
+func (f *fixture) accountKey(t *testing.T, userID string) string {
+	t.Helper()
+	user, err := f.users.Get(t.Context(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b64(user.PublicKey)
+}
+
+// give is a PUT of read alone with the person's grant, sealed to their
+// account public key now, which it names.
+func (k browserKey) give(t *testing.T, f *fixture, userID string) service.GrantRequest {
+	t.Helper()
+	return readSealed(k.sealTo(t, f, userID), f.accountKey(t, userID))
+}
+
+// supply is the key handed to a member who waits for it, at the key's
+// epoch, sealed to their account public key now, which it names.
+func (k browserKey) supply(t *testing.T, f *fixture, userID string) service.SupplyKeyRequest {
+	t.Helper()
+	return service.SupplyKeyRequest{Epoch: k.epoch, Grant: k.sealTo(t, f, userID), PublicKey: f.accountKey(t, userID)}
+}
+
+// grantTo is one grant of a first key, sealed to the person's account
+// public key now, which it names.
+func (k browserKey) grantTo(t *testing.T, f *fixture, userID string) service.GrantToRequest {
+	t.Helper()
+	return service.GrantToRequest{UserID: userID, Grant: k.sealTo(t, f, userID), PublicKey: f.accountKey(t, userID)}
+}
+
 // link is req as the linker's browser sends it, with this key pair and their
 // own grant.
 func (k browserKey) link(t *testing.T, f *fixture, p service.Principal, req service.AddAccountRequest) service.AddAccountRequest {
@@ -121,6 +153,14 @@ func (f *fixture) external(t *testing.T, subject, email string) service.Principa
 func readFlag(grant string) service.GrantRequest {
 	req := grantRequest(true, false, false, false)
 	req.Grant = grant
+	return req
+}
+
+// readSealed is a PUT of read alone with grant, stated to be sealed to the
+// account public key publicKey.
+func readSealed(grant, publicKey string) service.GrantRequest {
+	req := readFlag(grant)
+	req.PublicKey = publicKey
 	return req
 }
 
@@ -286,8 +326,14 @@ func TestReadOnAKeyedMailboxIsGivenWithTheRecipientsGrantAndRefusedWithout(t *te
 		return err
 	}
 	wantCode(t, "read without Bea's grant", give(readFlag("")), service.CodeBadRequest)
-	wantCode(t, "read with a grant of another epoch", give(readFlag(b64(grantAt(2)))), service.CodeConflict)
-	wantCode(t, "read with a malformed grant", give(readFlag("not-a-grant")), service.CodeBadRequest)
+	beaKey := f.accountKey(t, tm.bea.UserID)
+	wantCode(t, "read with a grant of another epoch", give(readSealed(b64(grantAt(2)), beaKey)), service.CodeConflict)
+	wantCode(t, "read with a malformed grant", give(readSealed("not-a-grant", beaKey)), service.CodeBadRequest)
+	wantCode(t, "read with a grant that names no account key", give(readFlag(key.sealTo(t, f, tm.bea.UserID))),
+		service.CodeBadRequest)
+	wantCode(t, "read with a grant that names a malformed account key",
+		give(readSealed(key.sealTo(t, f, tm.bea.UserID), beaKey+"A")), service.CodeBadRequest)
+	wantCode(t, "read with an account key and no grant", give(readSealed("", beaKey)), service.CodeBadRequest)
 	if g := accessOf(t, f, tm.ana, shared); g.ID == "" {
 		t.Fatal("Ana lost the mailbox")
 	}
@@ -295,7 +341,7 @@ func TestReadOnAKeyedMailboxIsGivenWithTheRecipientsGrantAndRefusedWithout(t *te
 		t.Fatalf("a refused grant stored Bea's flags")
 	}
 
-	if err := give(readFlag(key.sealTo(t, f, tm.bea.UserID))); err != nil {
+	if err := give(key.give(t, f, tm.bea.UserID)); err != nil {
 		t.Fatalf("read with Bea's grant: %v", err)
 	}
 	if a := accessOf(t, f, tm.bea, shared); !a.Access.Read || a.Access.WaitingKey {
@@ -305,7 +351,7 @@ func TestReadOnAKeyedMailboxIsGivenWithTheRecipientsGrantAndRefusedWithout(t *te
 		t.Errorf("the directory lists Bea as %+v", g)
 	}
 	// A grant comes only with the read it gives: Bea holds read now.
-	wantCode(t, "a grant with read already held", give(readFlag(key.sealTo(t, f, tm.bea.UserID))), service.CodeBadRequest)
+	wantCode(t, "a grant with read already held", give(key.give(t, f, tm.bea.UserID)), service.CodeBadRequest)
 	// Taking read takes the grant, and giving it again needs a new one.
 	if err := f.svc.RevokeAccess(t.Context(), tm.ana, shared, tm.bea.UserID, workspace.Flags{Read: true}); err != nil {
 		t.Fatal(err)
@@ -328,7 +374,8 @@ func TestReadIsGivenByTheFlagAloneToAMemberWithoutAnAccountKeyWhoThenWaitsForThe
 	}
 	// Nothing is sealed to a person with no account key, and the flag alone
 	// needs no step-up.
-	_, err := f.svc.SetAccess(t.Context(), tm.ana, shared, cy.UserID, readFlag(key.sealTo(t, f, tm.ana.UserID)))
+	_, err := f.svc.SetAccess(t.Context(), tm.ana, shared, cy.UserID,
+		readSealed(key.sealTo(t, f, tm.ana.UserID), f.accountKey(t, tm.ana.UserID)))
 	wantCode(t, "a grant for a person without an account key", err, service.CodeConflict)
 	f.stale(t, tm.ana)
 	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, cy.UserID, readFlag("")); err != nil {
@@ -395,7 +442,7 @@ func TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt(t *testing.T) {
 	dan := tm.join(t, f, "dan@example.com", workspace.RoleMember)
 	// Carol administers and reads nothing: she seals nothing, and passes on
 	// no read.
-	_, err := f.svc.SetAccess(t.Context(), carol, shared, dan.UserID, readFlag(key.sealTo(t, f, dan.UserID)))
+	_, err := f.svc.SetAccess(t.Context(), carol, shared, dan.UserID, key.give(t, f, dan.UserID))
 	wantCode(t, "an admin who does not read giving read", err, service.CodeNotAuthorized)
 	// Ana gives Carol the flag, which Carol cannot use without the key she
 	// is not given: an admin waiting for the key passes on nothing either.
@@ -404,9 +451,9 @@ func TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt(t *testing.T) {
 	if a := accessOf(t, f, carol, shared); a.Access.Read || !a.Access.WaitingKey {
 		t.Fatalf("Carol with the flag and no key: %+v", a.Access)
 	}
-	_, err = f.svc.SetAccess(t.Context(), carol, shared, dan.UserID, readFlag(key.sealTo(t, f, dan.UserID)))
+	_, err = f.svc.SetAccess(t.Context(), carol, shared, dan.UserID, key.give(t, f, dan.UserID))
 	wantCode(t, "an admin waiting for the key giving read", err, service.CodeNotAuthorized)
-	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, dan.UserID, readFlag(key.sealTo(t, f, dan.UserID))); err != nil {
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, dan.UserID, key.give(t, f, dan.UserID)); err != nil {
 		t.Fatalf("Ana, who reads it, giving Dan read: %v", err)
 	}
 }
@@ -440,7 +487,7 @@ func TestOnlySomeoneWhoReadsAKeyedMailboxGivesAKeyReadOnIt(t *testing.T) {
 
 	// Supplied the key, she reads it, and passes read on to a key.
 	if _, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, carol.UserID,
-		service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, carol.UserID)}); err != nil {
+		key.supply(t, f, carol.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.CreateWorkspaceKey(t.Context(), carol, tm.id, keyRequest("carol's reader", "read", reads(shared))); err != nil {
@@ -455,11 +502,11 @@ func TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt(t *testing.T) {
 	f, engine := newSyncFixture(t)
 	tm := newSupportTeam(t, f)
 	shared, key := tm.keyedTeamMailbox(t, f, "support@mail.example")
-	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, readFlag(key.sealTo(t, f, tm.bea.UserID))); err != nil {
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, key.give(t, f, tm.bea.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	carol := tm.join(t, f, "carol@example.com", workspace.RoleMember)
-	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, carol.UserID, readFlag(key.sealTo(t, f, carol.UserID))); err != nil {
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, carol.UserID, key.give(t, f, carol.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	// Carol's account key is reset: her grant goes, her flag stays.
@@ -502,7 +549,8 @@ func TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt(t *testing.T) {
 	}
 
 	supply := func(p service.Principal, to string, epoch int, grant string) error {
-		_, err := f.svc.SupplyKey(t.Context(), p, shared, to, service.SupplyKeyRequest{Epoch: epoch, Grant: grant})
+		_, err := f.svc.SupplyKey(t.Context(), p, shared, to,
+			service.SupplyKeyRequest{Epoch: epoch, Grant: grant, PublicKey: f.accountKey(t, to)})
 		return err
 	}
 	// Carol, who waits, supplies nobody; a grant at another epoch is a
@@ -520,7 +568,7 @@ func TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt(t *testing.T) {
 	// Bea, a member who reads it, supplies the key: no owner or admin needed.
 	reconciled := len(engine.reconciledIDs())
 	got, err := f.svc.SupplyKey(t.Context(), tm.bea, shared, carol.UserID,
-		service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, carol.UserID)})
+		key.supply(t, f, carol.UserID))
 	if err != nil {
 		t.Fatalf("Bea supplying the key: %v", err)
 	}
@@ -534,6 +582,88 @@ func TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt(t *testing.T) {
 		t.Error("the engine did not hear of the mailbox whose readers changed")
 	}
 	wantCode(t, "supplying it twice", supply(tm.ana, carol.UserID, 1, key.sealTo(t, f, carol.UserID)), service.CodeConflict)
+}
+
+// resetKey completes a reset of a person's account key, as their browser
+// would: a new account public key, the same seal id, their grants gone.
+func (f *fixture) resetKey(t *testing.T, userID, email string) {
+	t.Helper()
+	code, _, err := f.users.CreateReset(t.Context(), userID, true, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CompleteReset(t.Context(), service.ResetRequest{Reset: code, Email: email,
+		Enrolment: wireEnrolment(t)}, "authtest"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAGrantSealedToAPersonAsReadBeforeTheirResetIsAConflictThatWritesNothing(t *testing.T) {
+	// A console reads a person's account public key, the person is reset
+	// before it sends what it sealed to it, and the server, which cannot
+	// tell what the bytes were sealed to, refuses the grant by the key it
+	// names (docs/key-scheme.md section 9.3, Appendix C): giving read,
+	// handing the key over and a first key alike, writing nothing. Sealed
+	// again to the key the server serves now, each goes through.
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	shared, key := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	carol := tm.join(t, f, "carol@example.com", workspace.RoleMember)
+	carolHolds := func() (flags, grants int) {
+		return f.count(t, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ?`, shared, carol.UserID),
+			f.count(t, `SELECT count(*) FROM mailbox_grants WHERE account_id = ? AND user_id = ?`, shared, carol.UserID)
+	}
+
+	// Giving read: sealed to Carol as Ana's page read her, then she is reset.
+	stale := key.give(t, f, carol.UserID)
+	f.resetKey(t, carol.UserID, "carol@example.com")
+	_, err := f.svc.SetAccess(t.Context(), tm.ana, shared, carol.UserID, stale)
+	wantCode(t, "read with a grant sealed to Carol's key before her reset", err, service.CodeConflict)
+	if flags, grants := carolHolds(); flags != 0 || grants != 0 {
+		t.Fatalf("the refused give stored %d flags and %d grants of Carol's", flags, grants)
+	}
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, carol.UserID, key.give(t, f, carol.UserID)); err != nil {
+		t.Fatalf("read with a grant sealed to Carol's key now: %v", err)
+	}
+
+	// Handing the key over: Carol waits for it after another reset, and is
+	// reset again between the sheet's reading and the supply.
+	f.resetKey(t, carol.UserID, "carol@example.com")
+	stale2 := key.supply(t, f, carol.UserID)
+	f.resetKey(t, carol.UserID, "carol@example.com")
+	_, err = f.svc.SupplyKey(t.Context(), tm.ana, shared, carol.UserID, stale2)
+	wantCode(t, "the key sealed to Carol's key before her reset", err, service.CodeConflict)
+	if flags, grants := carolHolds(); flags != 1 || grants != 0 {
+		t.Fatalf("after the refused supply Carol holds %d flags and %d grants, want the flag alone", flags, grants)
+	}
+	if _, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, carol.UserID, key.supply(t, f, carol.UserID)); err != nil {
+		t.Fatalf("the key sealed to Carol's key now: %v", err)
+	}
+
+	// A first key: Bea reads a mailbox without one by the flag, and is reset
+	// after Ana's console sealed to her.
+	const orders = "acc_00000000000000e1"
+	tm.link(t, f, orders, "orders@mail.example")
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, orders, tm.bea.UserID, readFlag("")); err != nil {
+		t.Fatal(err)
+	}
+	first := newBrowserKey(t, "", 1)
+	sealed := []service.GrantToRequest{first.grantTo(t, f, tm.ana.UserID), first.grantTo(t, f, tm.bea.UserID)}
+	f.resetKey(t, tm.bea.UserID, "bea@example.com")
+	_, err = f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
+		PublicKey: b64(first.public), Namespace: first.namespace, Grants: sealed,
+	})
+	wantCode(t, "a first key sealed to Bea's key before her reset", err, service.CodeConflict)
+	if n := f.count(t, `SELECT (SELECT count(*) FROM mailbox_keys WHERE account_id = ?) +
+		(SELECT count(*) FROM mailbox_grants WHERE account_id = ?)`, orders, orders); n != 0 {
+		t.Fatalf("the refused first key left %d rows", n)
+	}
+	if _, err := f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
+		PublicKey: b64(first.public), Namespace: first.namespace,
+		Grants: []service.GrantToRequest{first.grantTo(t, f, tm.ana.UserID), first.grantTo(t, f, tm.bea.UserID)},
+	}); err != nil {
+		t.Fatalf("the first key sealed to Bea's key now: %v", err)
+	}
 }
 
 func TestTheMailboxKeyIsReadOnlyByAPersonWhoHoldsReadOnIt(t *testing.T) {
@@ -588,7 +718,7 @@ func TestTheFirstKeyOfAMailboxComesWithAGrantForEveryoneWhoReadsItWithAnAccountK
 	first := func(p service.Principal, to ...string) error {
 		req := service.FirstKeyRequest{PublicKey: b64(key.public), Namespace: key.namespace}
 		for _, id := range to {
-			req.Grants = append(req.Grants, service.GrantToRequest{UserID: id, Grant: key.sealTo(t, f, id)})
+			req.Grants = append(req.Grants, key.grantTo(t, f, id))
 		}
 		_, err := f.svc.WriteFirstKey(t.Context(), p, orders, req)
 		return err
@@ -651,7 +781,7 @@ func TestAStreamHearsAFirstKeyTakeReadFromAReaderWithoutAnAccountKey(t *testing.
 	key := newBrowserKey(t, "", 1)
 	if _, err := f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
 		PublicKey: b64(key.public), Namespace: key.namespace,
-		Grants: []service.GrantToRequest{{UserID: tm.ana.UserID, Grant: key.sealTo(t, f, tm.ana.UserID)}},
+		Grants: []service.GrantToRequest{key.grantTo(t, f, tm.ana.UserID)},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -687,7 +817,7 @@ func TestAStreamHearsTheSuppliedKeyGiveRead(t *testing.T) {
 		streams[who] = st
 	}
 	if _, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, tm.bea.UserID,
-		service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, tm.bea.UserID)}); err != nil {
+		key.supply(t, f, tm.bea.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	if changes, err := streams["Bea"].CheckAccess(t.Context()); err != nil || len(changes) != 1 ||
@@ -848,7 +978,7 @@ func TestEveryKeyWriteNeedsAStepUpWithinTenMinutes(t *testing.T) {
 	}, {
 		"giving read with a grant",
 		func() error {
-			_, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, readFlag(key.sealTo(t, f, tm.bea.UserID)))
+			_, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, key.give(t, f, tm.bea.UserID))
 			return err
 		},
 		func() int { return f.count(t, `SELECT count(*) FROM mailbox_grants WHERE user_id = ?`, tm.bea.UserID) },
@@ -856,7 +986,7 @@ func TestEveryKeyWriteNeedsAStepUpWithinTenMinutes(t *testing.T) {
 		"supplying the key",
 		func() error {
 			_, err := f.svc.SupplyKey(t.Context(), tm.ana, shared, carol.UserID,
-				service.SupplyKeyRequest{Epoch: 1, Grant: key.sealTo(t, f, carol.UserID)})
+				key.supply(t, f, carol.UserID))
 			return err
 		},
 		func() int { return f.count(t, `SELECT count(*) FROM mailbox_grants WHERE user_id = ?`, carol.UserID) },
@@ -865,7 +995,7 @@ func TestEveryKeyWriteNeedsAStepUpWithinTenMinutes(t *testing.T) {
 		func() error {
 			_, err := f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
 				PublicKey: b64(ordersKey.public), Namespace: ordersKey.namespace,
-				Grants: []service.GrantToRequest{{UserID: tm.ana.UserID, Grant: ordersKey.sealTo(t, f, tm.ana.UserID)}},
+				Grants: []service.GrantToRequest{ordersKey.grantTo(t, f, tm.ana.UserID)},
 			})
 			return err
 		},
@@ -1015,14 +1145,14 @@ func TestNoMailboxPrivateKeyReachesTheDatabase(t *testing.T) {
 	var keys []browserKey
 	shared, sharedKey := tm.keyedTeamMailbox(t, f, "support@mail.example")
 	keys = append(keys, sharedKey)
-	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, readFlag(sharedKey.sealTo(t, f, tm.bea.UserID))); err != nil {
+	if _, err := f.svc.SetAccess(t.Context(), tm.ana, shared, tm.bea.UserID, sharedKey.give(t, f, tm.bea.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	carol := tm.join(t, f, "carol@example.com", workspace.RoleMember)
 	f.exec(t, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage, granted_by, created_at, updated_at)
 		VALUES (?, ?, ?, 1, 0, 0, 0, ?, 0, 0)`, shared, tm.id, carol.UserID, tm.ana.UserID)
 	if _, err := f.svc.SupplyKey(t.Context(), tm.bea, shared, carol.UserID,
-		service.SupplyKeyRequest{Epoch: 1, Grant: sharedKey.sealTo(t, f, carol.UserID)}); err != nil {
+		sharedKey.supply(t, f, carol.UserID)); err != nil {
 		t.Fatal(err)
 	}
 	const orders = "acc_00000000000000e1"
@@ -1034,8 +1164,7 @@ func TestNoMailboxPrivateKeyReachesTheDatabase(t *testing.T) {
 	keys = append(keys, first)
 	if _, err := f.svc.WriteFirstKey(t.Context(), tm.ana, orders, service.FirstKeyRequest{
 		PublicKey: b64(first.public), Namespace: first.namespace, Grants: []service.GrantToRequest{
-			{UserID: tm.ana.UserID, Grant: first.sealTo(t, f, tm.ana.UserID)},
-			{UserID: tm.bea.UserID, Grant: first.sealTo(t, f, tm.bea.UserID)},
+			first.grantTo(t, f, tm.ana.UserID), first.grantTo(t, f, tm.bea.UserID),
 		},
 	}); err != nil {
 		t.Fatal(err)

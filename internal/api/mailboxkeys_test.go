@@ -51,7 +51,8 @@ func TestTheMailboxKeyRoutesAreThinOverTheService(t *testing.T) {
 		`UPDATE sessions SET authenticated_at = authenticated_at - 660 WHERE user_id = ?`, tm.anaID); err != nil {
 		t.Fatal(err)
 	}
-	give := sealedFor(t, `{"read":true,"act":false,"send":false,"manage":false}`)
+	const readAlone = `{"read":true,"act":false,"send":false,"manage":false}`
+	give := sealedFor(t, h, tm.beaID, readAlone)
 	resp := status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, give, http.StatusForbidden)
 	if code, _ := decodeError(t, resp); code != "not_authorized" {
 		t.Errorf("a stale step-up answered %s", code)
@@ -78,7 +79,9 @@ func TestTheMailboxKeyRoutesAreThinOverTheService(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+carolUser.ID, tm.ana, give, http.StatusOK)
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+carolUser.ID, tm.ana, sealedFor(t, h, carolUser.ID, readAlone),
+		http.StatusOK)
+	beforeReset := accountKeyOf(t, h, carolUser.ID)
 	code, _, err := h.users.CreateReset(t.Context(), carolUser.ID, false, "cli")
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +104,17 @@ func TestTheMailboxKeyRoutesAreThinOverTheService(t *testing.T) {
 	if len(state.Waiting) != 1 || state.Waiting[0].UserID != carolUser.ID {
 		t.Errorf("Bea's console offers %+v", state.Waiting)
 	}
-	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/grants/"+carolUser.ID, tm.bea,
-		fmt.Sprintf(`{"epoch":1,"grant":%q}`, grantAt(t, 1)), http.StatusOK)
+	// Sealed to the key Carol had before her reset, it is a conflict; to
+	// hers now, it goes through.
+	supply := func(publicKey string) string {
+		return fmt.Sprintf(`{"epoch":1,"grant":%q,"public_key":%q}`, grantAt(t, 1), publicKey)
+	}
+	resp = status(http.MethodPut, "/v1/accounts/"+tm.shared+"/grants/"+carolUser.ID, tm.bea, supply(beforeReset), http.StatusConflict)
+	if code, _ := decodeError(t, resp); code != "conflict" {
+		t.Errorf("a grant sealed to Carol's key before her reset answered %s", code)
+	}
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/grants/"+carolUser.ID, tm.bea, supply(accountKeyOf(t, h, carolUser.ID)),
+		http.StatusOK)
 	account.Access.Read, account.Access.WaitingKey = false, false
 	decodeInto(t, status(http.MethodGet, "/v1/accounts/"+tm.shared, carol, "", http.StatusOK), &account)
 	if !account.Access.Read || account.Access.WaitingKey {
@@ -112,7 +124,7 @@ func TestTheMailboxKeyRoutesAreThinOverTheService(t *testing.T) {
 	// The mailbox has a key: no first key; and a team's is never renewed.
 	status(http.MethodPost, keyPath, tm.ana, jsonOf(t, map[string]any{
 		"public_key": mailboxPublicKey(t), "namespace": keyscheme.NewSealID(),
-		"grants": []map[string]any{{"user_id": tm.anaID, "grant": grantAt(t, 1)}},
+		"grants": []map[string]any{{"user_id": tm.anaID, "grant": grantAt(t, 1), "public_key": accountKeyOf(t, h, tm.anaID)}},
 	}), http.StatusConflict)
 	status(http.MethodPut, keyPath, tm.ana, jsonOf(t, map[string]any{
 		"epoch": 2, "public_key": mailboxPublicKey(t), "grant": grantAt(t, 2),
@@ -165,12 +177,12 @@ func TestNoRouteTakesAMailboxPrivateKey(t *testing.T) {
 		{"linking a mailbox", http.MethodPost, "/v1/accounts",
 			linkAs(t, tm.ana, h.passwordAccount(t, "ana.work@mail.example")), http.StatusCreated},
 		{"giving read with a grant", http.MethodPut, "/v1/accounts/" + tm.shared + "/access/" + tm.beaID,
-			sealedFor(t, `{"read":true,"act":false,"send":false,"manage":false}`), http.StatusOK},
+			sealedFor(t, h, tm.beaID, `{"read":true,"act":false,"send":false,"manage":false}`), http.StatusOK},
 		{"supplying the key", http.MethodPut, "/v1/accounts/" + tm.shared + "/grants/" + carol.ID,
-			jsonOf(t, map[string]any{"epoch": 1, "grant": grantAt(t, 1)}), http.StatusOK},
+			jsonOf(t, map[string]any{"epoch": 1, "grant": grantAt(t, 1), "public_key": accountKeyOf(t, h, carol.ID)}), http.StatusOK},
 		{"a first key", http.MethodPost, "/v1/accounts/" + orders.ID + "/mailbox-key", jsonOf(t, map[string]any{
 			"public_key": mailboxPublicKey(t), "namespace": keyscheme.NewSealID(),
-			"grants": []map[string]any{{"user_id": tm.anaID, "grant": grantAt(t, 1)}},
+			"grants": []map[string]any{{"user_id": tm.anaID, "grant": grantAt(t, 1), "public_key": accountKeyOf(t, h, tm.anaID)}},
 		}), http.StatusCreated},
 		{"a new key", http.MethodPut, "/v1/accounts/" + personal + "/mailbox-key", jsonOf(t, map[string]any{
 			"epoch": 2, "public_key": mailboxPublicKey(t), "grant": grantAt(t, 2),

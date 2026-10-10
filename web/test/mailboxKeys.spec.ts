@@ -3,17 +3,26 @@
 // the routes: a grant this console seals opens for its recipient, with their
 // account key, to the mailbox key whose public half the server holds; Read
 // on a mailbox that has a key goes with a grant only to someone with an
-// account key; the key is handed to a member who waits for it; first keys
-// are written right after a sign-in and never on a restored session; a
-// personal mailbox gets a new key at the next epoch; and every write asks
-// for the step-up first when the session's is stale, sending nothing until
-// it is given.
+// account key; the key is handed to a member who waits for it; every grant
+// is sealed to its recipient as the server serves them just before, never as
+// the page listed them before their reset, names the key it was sealed to,
+// and is sealed once more on a conflict; a Read refused because what the page
+// read went stale is read again and given once more; first keys are written
+// right after a sign-in and never on a restored session; a personal mailbox
+// gets a new key at the next epoch; every write asks for the step-up first
+// when the session's is stale, sending nothing until it is given, and never
+// in a browser that does not hold the person's account key; and only the
+// paths the vault names read the raw account key out of it.
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { generateAccountKeys } from '@thehappieco/kit/account'
 import { fromBase64URL, toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
 import { generateKeyPair, importPrivateKey, type PrivateKey } from '@thehappieco/kit/hpke'
 import { checkGrantShape, openGrant, sealGrant } from '@thehappieco/kit/profiles/mailie'
 import type { Account, GrantChange, KeyRecipient, MailboxAccess, MailboxKeyState, Member, User, Workspace } from '../src/api/types'
+import type { Failure } from '../src/state/failure'
 import { account, ana, failure, freshModules, json, now, reply, serve, settle, stubPage, type Route } from './support'
 
 const TEAM = 'wsp_000000000000bbbb'
@@ -93,12 +102,15 @@ function route(answer: Route) {
 let ana2: Person
 let bea: Person
 let carol: Person
+/** Carol after a reset: the same person and seal id, another account key. */
+let carolAfterReset: Person
 beforeEach(async () => {
   stubPage()
   seen = []
   ana2 = await person(ana.id, ana.email, ana.seal_id)
   bea = await person('usr_00000000000000b2', 'bea@example.test')
   carol = await person('usr_00000000000000c3', 'carol@example.test')
+  carolAfterReset = await person(carol.user.id, carol.user.email, carol.user.seal_id)
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
@@ -148,6 +160,24 @@ describe('a mailbox’s keys in this browser', () => {
 })
 
 describe('the account key that opens grants', () => {
+  it('is read raw out of the vault only on the paths the vault’s own description names', () => {
+    const src = fileURLToPath(new URL('../src', import.meta.url))
+    const readers = new Set<string>()
+    for (const entry of readdirSync(src, { withFileTypes: true, recursive: true })) {
+      if (!entry.isFile() || !/\.(ts|vue)$/.test(entry.name)) continue
+      const text = readFileSync(join(entry.parentPath, entry.name), 'utf8')
+      for (const call of text.matchAll(/\baccountKeyOf\(/g)) {
+        if (/function accountKeyOf\($/.test(text.slice(0, call.index! + call[0].length))) continue
+        const declared = [...text.slice(0, call.index).matchAll(/function (\w+)/g)].at(-1)
+        readers.add(declared?.[1] ?? '(top level)')
+      }
+    }
+    expect([...readers].sort()).toEqual(['changePassword', 'holdsAccountKey', 'replaceRecoveryCode'])
+    const vault = readFileSync(join(src, 'state', 'accountVault.ts'), 'utf8')
+    const header = vault.slice(0, vault.indexOf('\nimport '))
+    for (const reader of readers) expect(header, reader).toContain(reader)
+  })
+
   it('opens as the kit’s private key for the person named only, and a record of anyone else is wiped', async () => {
     const page = await load()
     await page.vault.keepAccountKey(ana2.raw.slice(), fromBase64URL(ana2.user.public_key!, 32), ana2.user.seal_id!)
@@ -159,20 +189,25 @@ describe('the account key that opens grants', () => {
   })
 })
 
-/** Ana administers Support and reads its mailbox, keyed at epoch 1; who else holds what is the test's. */
-async function teamMailbox(page: Page, members: Member[], answer: Route = () => failure('not_found', 404)) {
+/**
+ * Ana administers Support and reads its mailbox, keyed at epoch 1; who else
+ * holds what is the test's: the members as each read lists them, and who
+ * waits for the key as each read of it does.
+ */
+async function teamMailbox(page: Page, members: Member[] | (() => Member[]), answer: Route = () => failure('not_found', 404), waiting: () => KeyRecipient[] = () => []) {
   const key = await mailboxKey()
   const own = await grantTo(ana2, key)
   const shared = account({ id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access: { read: true, act: true, send: true, manage: true }, mailbox_key: { epoch: 1, public_key: key.publicKey, namespace: key.namespace } })
-  const state = (): MailboxKeyState => ({ epoch: 1, public_key: key.publicKey, namespace: key.namespace, grant: own, waiting: [], suppliers: [], keyless_readers: [] })
+  const state = (): MailboxKeyState => ({ epoch: 1, public_key: key.publicKey, namespace: key.namespace, grant: own, waiting: waiting(), suppliers: [], keyless_readers: [] })
   const directory = (): MailboxAccess[] => [{
     account_id: shared.id, email: shared.email, provider: 'imap', state: 'active', readers: 1, no_reader: false, epoch: 1,
     grants: [{ account_id: shared.id, user_id: ana.id, read: true, act: true, send: true, manage: false, updated_at: 1, sealed: true }],
   }]
+  const listed = typeof members === 'function' ? members : () => members
   route(request => {
     const { path, method } = request
     if (path === '/v1/workspaces' && method === 'GET') return json([personal, support])
-    if (path === `/v1/workspaces/${TEAM}/members`) return json([memberOf(ana2, 'admin'), ...members])
+    if (path === `/v1/workspaces/${TEAM}/members`) return json([memberOf(ana2, 'admin'), ...listed()])
     if (path === `/v1/workspaces/${TEAM}/access`) return json(directory())
     if (path === '/v1/accounts' && method === 'GET') return json([shared])
     if (path === `/v1/accounts/${shared.id}` && method === 'GET') return json(shared)
@@ -198,9 +233,143 @@ describe('giving Read on a mailbox that has a key', () => {
     expect(await page.team.saveGrant(shared.id, carol.user.id, none, reader)).toBeNull()
     const [put] = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)
     const body = put!.body as GrantChange
-    expect(Object.keys(body).sort()).toEqual(['act', 'grant', 'manage', 'read', 'send'])
+    expect(Object.keys(body).sort()).toEqual(['act', 'grant', 'manage', 'public_key', 'read', 'send'])
+    expect(body.public_key).toBe(carol.user.public_key)
     expect(same(await opensFor(carol, key, body.grant!), key.privateKey)).toBe(true)
     await expect(opensFor(bea, key, body.grant!)).rejects.toThrow()
+  })
+
+  it('seals to the member as the server lists them when it is saved, not as the page listed them before their reset', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let listed = carol
+    const { key, shared } = await teamMailbox(page, () => [memberOf(listed)], ({ path, method, body }) => path === `/v1/accounts/acc_shared/access/${carol.user.id}` && method === 'PUT'
+      ? json({ account_id: 'acc_shared', user_id: carol.user.id, ...(body as object), grant: undefined, public_key: undefined, updated_at: 2, sealed: true })
+      : failure('not_found', 404))
+    // Carol is reset once the page has read her: a new account key, the same seal id.
+    listed = carolAfterReset
+    expect(page.team.memberOf(carol.user.id)!.public_key).toBe(carol.user.public_key)
+    expect(await page.team.saveGrant(shared.id, carol.user.id, none, reader)).toBeNull()
+    const body = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)[0]!.body as GrantChange
+    expect(body.public_key).toBe(carolAfterReset.user.public_key)
+    expect(same(await opensFor(carolAfterReset, key, body.grant!), key.privateKey)).toBe(true)
+    await expect(opensFor(carol, key, body.grant!)).rejects.toThrow()
+  })
+
+  it('reads the member again and seals once more when the server finds the key it names is not theirs now', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let current = carol
+    let reads = 0
+    const { key, shared } = await teamMailbox(page, () => {
+      const listed = current
+      // Carol is reset right after the read that saving makes before it seals.
+      if (++reads === 2) current = carolAfterReset
+      return [memberOf(listed)]
+    }, ({ path, method, body }) => {
+      if (path !== `/v1/accounts/acc_shared/access/${carol.user.id}` || method !== 'PUT') return failure('not_found', 404)
+      if ((body as GrantChange).public_key !== current.user.public_key) return failure('conflict', 409)
+      return json({ account_id: 'acc_shared', user_id: carol.user.id, read: true, act: false, send: false, manage: false, updated_at: 2, sealed: true })
+    })
+    expect(await page.team.saveGrant(shared.id, carol.user.id, none, reader)).toBeNull()
+    const puts = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`).map(request => request.body as GrantChange)
+    expect(puts.map(body => body.public_key)).toEqual([carol.user.public_key, carolAfterReset.user.public_key])
+    expect(same(await opensFor(carolAfterReset, key, puts[1]!.grant!), key.privateKey)).toBe(true)
+  })
+
+  it('reads the directory and the members again when a Read sent without a grant is refused, and gives it with the grant the mailbox’s new key needs', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    const key = await mailboxKey()
+    const own = await grantTo(ana2, key)
+    // Read by the flag when the page read the directory; keyed by another reader since.
+    let keyed = false
+    const directory = (): MailboxAccess[] => [{
+      account_id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', state: 'active', readers: 1, no_reader: false, ...(keyed ? { epoch: 1 } : {}),
+      grants: [{ account_id: 'acc_shared', user_id: ana.id, read: true, act: true, send: true, manage: false, updated_at: 1, sealed: keyed }],
+    }]
+    route(({ path, method, body }) => {
+      if (path === '/v1/workspaces') return json([personal, support])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([memberOf(ana2, 'admin'), memberOf(carol)])
+      if (path === `/v1/workspaces/${TEAM}/access`) return json(directory())
+      if (path === '/v1/accounts/acc_shared/mailbox-key') return json({ epoch: 1, public_key: key.publicKey, namespace: key.namespace, grant: own, waiting: [], suppliers: [], keyless_readers: [] } satisfies MailboxKeyState)
+      if (path === `/v1/accounts/acc_shared/access/${carol.user.id}` && method === 'PUT') {
+        const sentBody = body as GrantChange
+        if (!sentBody.grant) return failure('bad_request', 400)
+        return json({ account_id: 'acc_shared', user_id: carol.user.id, read: true, act: false, send: false, manage: false, updated_at: 2, sealed: true })
+      }
+      return failure('not_found', 404)
+    })
+    await page.workspaces.loadWorkspaces()
+    page.workspaces.selectWorkspace(TEAM)
+    await Promise.all([page.team.loadMembers(), page.team.loadDirectory()])
+    keyed = true
+    const directoryReads = sent('GET', `/v1/workspaces/${TEAM}/access`).length
+    expect(await page.team.saveGrant('acc_shared', carol.user.id, none, reader)).toBeNull()
+    const puts = sent('PUT', `/v1/accounts/acc_shared/access/${carol.user.id}`).map(request => request.body as GrantChange)
+    expect(puts).toHaveLength(2)
+    expect(puts[0]).toEqual(reader)
+    expect(puts[1]!.public_key).toBe(carol.user.public_key)
+    expect(same(await opensFor(carol, key, puts[1]!.grant!), key.privateKey)).toBe(true)
+    expect(sent('GET', `/v1/workspaces/${TEAM}/access`).length).toBeGreaterThan(directoryReads)
+  })
+
+  it('gives Read with the grant to a member who enrolled since the page listed them, once the flags alone are refused', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let enrolled = false
+    const { key, shared } = await teamMailbox(page, () => [enrolled ? memberOf(carol) : { ...memberOf(carol), public_key: undefined }], ({ path, method, body }) => {
+      if (path !== `/v1/accounts/acc_shared/access/${carol.user.id}` || method !== 'PUT') return failure('not_found', 404)
+      if (!(body as GrantChange).grant) return failure('bad_request', 400)
+      return json({ account_id: 'acc_shared', user_id: carol.user.id, read: true, act: false, send: false, manage: false, updated_at: 2, sealed: true })
+    })
+    enrolled = true
+    expect(await page.team.saveGrant(shared.id, carol.user.id, none, reader)).toBeNull()
+    const puts = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`).map(request => request.body as GrantChange)
+    expect(puts.map(body => !!body.grant)).toEqual([false, true])
+    expect(same(await opensFor(carol, key, puts[1]!.grant!), key.privateKey)).toBe(true)
+  })
+
+  it('sends nothing again when what was read again changes nothing, and says why it was refused', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    const { shared } = await teamMailbox(page, [memberOf(carol)], ({ method }) => method === 'PUT' ? failure('bad_request', 400) : failure('not_found', 404))
+    const refusal = await page.team.saveGrant(shared.id, carol.user.id, none, reader)
+    expect(refusal).toEqual({ op: 'give-read', code: 'bad_request' })
+    expect(sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)).toHaveLength(1)
+    const { describe: describeFailure } = await import('../src/ui/errors')
+    expect(describeFailure(refusal as Failure)).toBe('The server did not accept this access: Act needs Read, Manage is given to members only, and only active members of the team can be given access.')
+  })
+
+  it('says the member was given Read meanwhile, and sends nothing again, when the directory read again shows it', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    const key = await mailboxKey()
+    const own = await grantTo(ana2, key)
+    // Bea gives Carol Read, with her grant, once the page has read the directory.
+    let given = false
+    const grants = () => [
+      { account_id: 'acc_shared', user_id: ana.id, read: true, act: true, send: true, manage: false, updated_at: 1, sealed: true },
+      ...(given ? [{ account_id: 'acc_shared', user_id: carol.user.id, read: true, act: false, send: false, manage: false, updated_at: 2, sealed: true }] : []),
+    ]
+    route(({ path, method }) => {
+      if (path === '/v1/workspaces') return json([personal, support])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([memberOf(ana2, 'admin'), memberOf(carol)])
+      if (path === `/v1/workspaces/${TEAM}/access`) return json([{ account_id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', state: 'active', readers: given ? 2 : 1, no_reader: false, epoch: 1, grants: grants() }] satisfies MailboxAccess[])
+      if (path === '/v1/accounts/acc_shared/mailbox-key') return json({ epoch: 1, public_key: key.publicKey, namespace: key.namespace, grant: own, waiting: [], suppliers: [], keyless_readers: [] } satisfies MailboxKeyState)
+      // A grant with a change that gives no Read, as the server now finds it.
+      if (path === `/v1/accounts/acc_shared/access/${carol.user.id}` && method === 'PUT') return failure('bad_request', 400)
+      return failure('not_found', 404)
+    })
+    await page.workspaces.loadWorkspaces()
+    page.workspaces.selectWorkspace(TEAM)
+    await Promise.all([page.team.loadMembers(), page.team.loadDirectory()])
+    given = true
+    // Ana ticked Read and Act; Bea gave Read alone: what Carol holds now is not what Ana saw.
+    const refusal = await page.team.saveGrant('acc_shared', carol.user.id, none, { ...reader, act: true })
+    expect(sent('PUT', `/v1/accounts/acc_shared/access/${carol.user.id}`)).toHaveLength(1)
+    expect(refusal).toEqual({ op: 'give-read', code: 'conflict' })
+    expect(page.team.directoryEntry('acc_shared')!.grants.some(grant => grant.user_id === carol.user.id && grant.read)).toBe(true)
   })
 
   it('gives Read by the flag alone to a member without an account key, asking for no step-up', async () => {
@@ -259,13 +428,14 @@ describe('handing the key to a member who waits for it', () => {
     await signIn(page, ana2)
     const { key, shared } = await teamMailbox(page, [memberOf(carol)], ({ path, method, body }) => path === `/v1/accounts/acc_shared/grants/${carol.user.id}` && method === 'PUT'
       ? json({ account_id: 'acc_shared', user_id: carol.user.id, epoch: 1, grant: (body as { grant: string }).grant, granted_by: ana.id, created_at: 2 })
-      : failure('not_found', 404))
+      : failure('not_found', 404), () => [recipient(carol)])
     await page.keys.loadMailboxKey(shared.id)
     expect(await page.keys.supplyKey(shared.id, recipient(carol))).toBe(true)
     const [put] = sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`)
-    const body = put!.body as { epoch: number; grant: string }
-    expect(Object.keys(body).sort()).toEqual(['epoch', 'grant'])
+    const body = put!.body as { epoch: number; grant: string; public_key: string }
+    expect(Object.keys(body).sort()).toEqual(['epoch', 'grant', 'public_key'])
     expect(body.epoch).toBe(1)
+    expect(body.public_key).toBe(carol.user.public_key)
     expect(same(await opensFor(carol, key, body.grant), key.privateKey)).toBe(true)
     expect(sent('GET', `/v1/accounts/${shared.id}/mailbox-key`).length).toBeGreaterThan(1)
     expect(page.keys.keyView(shared.id)).toMatchObject({ busy: '', problem: null })
@@ -290,7 +460,7 @@ describe('handing the key to a member who waits for it', () => {
     await signIn(page, ana2, { authenticatedAt: now() - 11 * 60 })
     const { shared } = await teamMailbox(page, [memberOf(carol)], ({ method, body }) => method === 'PUT'
       ? json({ account_id: 'acc_shared', user_id: carol.user.id, epoch: 1, grant: (body as { grant: string }).grant, created_at: 2 })
-      : failure('not_found', 404))
+      : failure('not_found', 404), () => [recipient(carol)])
     const handing = page.keys.supplyKey(shared.id, recipient(carol))
     await vi.waitFor(() => expect(page.stepUp.stepUpPrompt.open).toBe(true))
     expect(sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`)).toEqual([])
@@ -298,6 +468,90 @@ describe('handing the key to a member who waits for it', () => {
     page.stepUp.stepUpGiven()
     expect(await handing).toBe(true)
     expect(sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`)).toHaveLength(1)
+  })
+})
+
+describe('sealing to a member read before their reset', () => {
+  /** Carol waits for the key of Support's mailbox, as each read of it says; the server takes a grant only sealed to her key now. */
+  async function waitingCarol(page: Page, waiting: () => Person, current: () => Person) {
+    return teamMailbox(page, [memberOf(carol)], ({ path, method, body }) => {
+      if (path !== `/v1/accounts/acc_shared/grants/${carol.user.id}` || method !== 'PUT') return failure('not_found', 404)
+      const sentBody = body as { grant: string; public_key: string }
+      if (sentBody.public_key !== current().user.public_key) return failure('conflict', 409)
+      return json({ account_id: 'acc_shared', user_id: carol.user.id, epoch: 1, grant: sentBody.grant, granted_by: ana.id, created_at: 2 })
+    }, () => [recipient(waiting())])
+  }
+
+  it('hands the key to the member as the answer read in the same call lists them, not as the sheet showed them', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let now = carol
+    const { key, shared } = await waitingCarol(page, () => now, () => now)
+    await page.keys.loadMailboxKey(shared.id)
+    const shown = page.keys.keyView(shared.id).state!.waiting[0]!
+    // Carol is reset while the sheet is open: she still waits, with another account key.
+    now = carolAfterReset
+    expect(await page.keys.supplyKey(shared.id, shown)).toBe(true)
+    const body = sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`)[0]!.body as { grant: string; public_key: string }
+    expect(body.public_key).toBe(carolAfterReset.user.public_key)
+    expect(same(await opensFor(carolAfterReset, key, body.grant), key.privateKey)).toBe(true)
+    await expect(opensFor(carol, key, body.grant)).rejects.toThrow()
+  })
+
+  it('reads the key again and hands it over once more when the server finds the key it names is not the member’s now', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let current = carol
+    let reads = 0
+    const { key, shared } = await waitingCarol(page, () => {
+      const listed = current
+      // Carol is reset right after the read the hand-over seals from.
+      if (++reads === 1) current = carolAfterReset
+      return listed
+    }, () => current)
+    expect(await page.keys.supplyKey(shared.id, recipient(carol))).toBe(true)
+    const bodies = sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`).map(request => request.body as { grant: string; public_key: string })
+    expect(bodies.map(body => body.public_key)).toEqual([carol.user.public_key, carolAfterReset.user.public_key])
+    expect(same(await opensFor(carolAfterReset, key, bodies[1]!.grant), key.privateKey)).toBe(true)
+  })
+
+  it('says the member no longer waits, and seals nothing, when the answer read in the same call does not list them', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let waiting = true
+    const { shared } = await teamMailbox(page, [memberOf(carol)], () => failure('not_found', 404), () => waiting ? [recipient(carol)] : [])
+    await page.keys.loadMailboxKey(shared.id)
+    // Someone else handed it to her meanwhile.
+    waiting = false
+    expect(await page.keys.supplyKey(shared.id, recipient(carol))).toBe(false)
+    expect(page.keys.keyView(shared.id).problem).toEqual({ op: 'supply-key', code: 'conflict' })
+    expect(sent('PUT', `/v1/accounts/${shared.id}/grants/${carol.user.id}`)).toEqual([])
+  })
+})
+
+describe('a browser that does not hold the person’s account key', () => {
+  it('says so before asking for the step-up to give Read with a grant, and sends nothing', async () => {
+    const page = await load()
+    await signIn(page, ana2, { keyed: false, authenticatedAt: now() - 11 * 60 })
+    const { shared } = await teamMailbox(page, [memberOf(carol)])
+    const saving = page.team.saveGrant(shared.id, carol.user.id, none, reader)
+    await settle()
+    expect(page.stepUp.stepUpPrompt.open).toBe(false)
+    expect(await saving).toEqual({ op: 'give-read', code: 'no_account_key' })
+    expect(sent('GET', `/v1/accounts/${shared.id}/mailbox-key`)).toEqual([])
+    expect(sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)).toEqual([])
+  })
+
+  it('says so before asking for the step-up to hand the key over, and sends nothing', async () => {
+    const page = await load()
+    await signIn(page, ana2, { keyed: false, authenticatedAt: now() - 11 * 60 })
+    const { shared } = await teamMailbox(page, [memberOf(carol)], () => failure('not_found', 404), () => [recipient(carol)])
+    const handing = page.keys.supplyKey(shared.id, recipient(carol))
+    await settle()
+    expect(page.stepUp.stepUpPrompt.open).toBe(false)
+    expect(await handing).toBe(false)
+    expect(page.keys.keyView(shared.id).problem).toEqual({ op: 'supply-key', code: 'no_account_key' })
+    expect(sent('GET', `/v1/accounts/${shared.id}/mailbox-key`)).toEqual([])
   })
 })
 
@@ -323,7 +577,7 @@ describe('first keys', () => {
     return { readers }
   }
   const written = () => seen.filter(request => request.method === 'POST' && request.path.endsWith('/mailbox-key'))
-  const pair = (body: unknown) => body as { public_key: string; namespace: string; grants: { user_id: string; grant: string }[] }
+  const pair = (body: unknown) => body as { public_key: string; namespace: string; grants: { user_id: string; grant: string; public_key: string }[] }
 
   it('writes one for every mailbox the person reads without one, right after a sign-in, sealed to everyone who reads it with an account key', async () => {
     const page = await load()
@@ -335,6 +589,7 @@ describe('first keys', () => {
     expect(written().map(request => request.path)).toEqual(['/v1/accounts/acc_a/mailbox-key', '/v1/accounts/acc_b/mailbox-key'])
     const [a, b] = written().map(request => pair(request.body))
     expect(a!.grants.map(grant => grant.user_id)).toEqual([ana.id, bea.user.id])
+    expect(a!.grants.map(grant => grant.public_key)).toEqual([ana2.user.public_key, bea.user.public_key])
     expect(b!.grants.map(grant => grant.user_id)).toEqual([ana.id])
     // Each opens for its recipient to the one key whose public half was sent; the keys differ, and so do the namespaces.
     const keyA = { epoch: 1, namespace: a!.namespace, publicKey: a!.public_key }
