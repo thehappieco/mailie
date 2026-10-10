@@ -441,7 +441,10 @@ describe('the browser vault', () => {
   async function kept(s: Awaited<ReturnType<typeof load>>) {
     const pair = await generateAccountKeys()
     await s.vault.keepAccountKey(pair.privateKey, pair.publicKey, ANA_SEAL)
-    return { ...pair, publicText: toBase64URL(pair.publicKey) }
+    const publicText = toBase64URL(pair.publicKey)
+    /** Ana's session as the server answers one, naming this key: what a sign-in that kept it adopts. */
+    const signedIn = (token?: string) => reply(token, { ...reply().user, seal_id: ANA_SEAL, public_key: publicText })
+    return { ...pair, publicText, signedIn }
   }
 
   it('keeps the account key only as ciphertext under a key the page cannot export', async () => {
@@ -668,9 +671,9 @@ describe('the browser vault', () => {
       return { s, pair }
     }
     // A sign-in.
-    let { s } = await markedKey()
+    let { s, pair } = await markedKey()
     serve(() => new Response(null, { status: 204 }))
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     expect(await s.vault.outlivedExpiry()).toBe(false)
     expect(await (await load()).vault.outlivedExpiry()).toBe(false)
     vi.restoreAllMocks()
@@ -702,18 +705,19 @@ describe('the browser vault', () => {
       serve(({ token }) => token === 'tok_first_0000000000000000000000000000000000' ? slow : new Response(null, { status: 204 }))
       const a = await loadKeepingPastExpiry()
       const first = await kept(a)
-      await a.adoptSession(reply())
+      await a.adoptSession(first.signedIn())
       const ended = (await a.sessionVault.loadLocalSession())!.id
       await expect(a.authorized(() => Promise.reject(new a.ApiError('unauthorized')))).rejects.toMatchObject({ code: 'unauthorized' })
 
       let live: { privateKey: Uint8Array; publicText: string }
       if (where === 'other') {
         const b = await loadKeepingPastExpiry()
-        live = await kept(b)
-        await b.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+        const own = await kept(b)
+        live = own
+        await b.adoptSession(own.signedIn('tok_second_000000000000000000000000000000000'))
       } else {
         live = first
-        await a.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+        await a.adoptSession(first.signedIn('tok_second_000000000000000000000000000000000'))
       }
 
       answer(failure('unauthorized', 401, { Date: new Date(real + (serverPastExpiry ? 15 * 86_400_000 : 0)).toUTCString() }))
@@ -758,8 +762,9 @@ describe('the browser vault', () => {
     const restoring = b.restore()
     await settle(10)
     const a = await loadKeepingPastExpiry()
-    second = await kept(a)
-    await a.adoptSession(reply('tok_second_000000000000000000000000000000000'))
+    const own = await kept(a)
+    second = own
+    await a.adoptSession(own.signedIn('tok_second_000000000000000000000000000000000'))
     answer(me())
     await restoring
     // B holds L2, the session the browser remembers now, never L1.
@@ -799,7 +804,7 @@ describe('the browser vault', () => {
       stubPage()
       const s = await loadKeepingPastExpiry()
       const pair = await kept(s)
-      await s.adoptSession(reply())
+      await s.adoptSession(pair.signedIn())
       const server = refusingServer(serverPastExpiry ? 15 * 86_400 : 0)
       const { readEventStream } = await import('../src/api/events')
       await expect(s.authorized(token => readEventStream({ token, signal: new AbortController().signal, onMessage: () => {} })))
@@ -814,7 +819,7 @@ describe('the browser vault', () => {
     const s = await loadKeepingPastExpiry()
     vi.spyOn(IDBObjectStore.prototype, 'put').mockImplementation(() => { throw new DOMException('the storage is full', 'QuotaExceededError') })
     const pair = await kept(s)
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     expect(same(await s.vault.accountKeyOf(ANA_SEAL, pair.publicText), pair.privateKey)).toBe(true)
     const { me } = await import('../src/api/auth')
     refusingServer(0)
@@ -850,8 +855,8 @@ describe('the browser vault', () => {
       // In the middle of use, refused through a request, whose answer's Date judges it: nothing is asked again.
       stubPage()
       const s = await loadKeepingPastExpiry()
-      await kept(s)
-      await s.adoptSession(reply())
+      const pair = await kept(s)
+      await s.adoptSession(pair.signedIn())
       let writes = recordWrites()
       const server = refusingServer(serverPastExpiry ? 15 * 86_400 : 0)
       const { me } = await import('../src/api/auth')
@@ -878,7 +883,7 @@ describe('the browser vault', () => {
   it('wipes the account key at once on a self-hosted server, at a refusal in the middle of use and at the expiry, asking nothing more', async () => {
     const s = await load()
     const pair = await kept(s)
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     const server = refusingServer(15 * 86_400)
     await expect(s.authorized(() => Promise.reject(new s.ApiError('unauthorized')))).rejects.toMatchObject({ code: 'unauthorized' })
     await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(false))
@@ -891,7 +896,7 @@ describe('the browser vault', () => {
       const t = await load()
       const other = await kept(t)
       serve(() => new Response(null, { status: 204 }))
-      await t.adoptSession({ ...reply(), expires_at: now() + 60 })
+      await t.adoptSession({ ...other.signedIn(), expires_at: now() + 60 })
       await vi.advanceTimersByTimeAsync(61_000)
       expect(t.session.phase).toBe('signed-out')
       await vi.waitFor(async () => expect(await storedAfterReload(other)).toBe(false))
@@ -921,7 +926,7 @@ describe('the browser vault', () => {
     const real = Date.now()
     let s = await loadKeepingPastExpiry()
     let pair = await kept(s)
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     let server = refusingServer(0, real)
     await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
     await vi.waitFor(async () => expect(await storedAfterReload(pair)).toBe(false))
@@ -934,7 +939,7 @@ describe('the browser vault', () => {
     stubPage()
     s = await loadKeepingPastExpiry()
     pair = await kept(s)
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     vi.spyOn(Date, 'now').mockReturnValue(real + 15 * 86_400_000)
     server = refusingServer(0, real)
     await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
@@ -947,7 +952,7 @@ describe('the browser vault', () => {
     stubPage()
     s = await loadKeepingPastExpiry()
     pair = await kept(s)
-    await s.adoptSession(reply())
+    await s.adoptSession(pair.signedIn())
     server = refusingServer(15 * 86_400, real)
     await expect(s.authorized(refused)).rejects.toMatchObject({ code: 'unauthorized' })
     await vi.waitFor(async () => expect(await (await load()).vault.outlivedExpiry()).toBe(true))
@@ -963,7 +968,7 @@ describe('the browser vault', () => {
       // The server's clock is an hour ahead of this browser's.
       noteServerDate(new Date(Date.now() + 3_600_000).toUTCString())
       serve(() => new Response(null, { status: 204 }))
-      await s.adoptSession({ ...reply(), expires_at: Math.floor(serverNow() / 1000) + 60 })
+      await s.adoptSession({ ...pair.signedIn(), expires_at: Math.floor(serverNow() / 1000) + 60 })
       // A later answer moves the clock back: the timer already set still ends the session as an expiry.
       noteServerDate(new Date(Date.now()).toUTCString())
       await vi.advanceTimersByTimeAsync(59_000)
@@ -975,7 +980,7 @@ describe('the browser vault', () => {
       expect(await storedAfterReload(pair)).toBe(true)
 
       const again = await loadKeepingPastExpiry()
-      await again.adoptSession(reply())
+      await again.adoptSession(pair.signedIn())
       await again.signOut()
       expect(await storedAfterReload(pair)).toBe(false)
     } finally {

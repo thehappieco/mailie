@@ -22,6 +22,7 @@ import { readsNow, type GrantFlags, type MailboxKey, type Member } from '../api/
 import { dropKeyMailbox } from '../state/apikeys'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
+import { stepUpHint } from '../state/stepUp'
 import { directoryEntry, loadDirectory, loadMembers, personName, readRecipient, saveGrant, team } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
 import {
@@ -210,7 +211,7 @@ onMounted(() => {
             </label>
           </fieldset>
           <p v-if="lockText(row)" class="hint lock"><AppIcon name="lock" :size="14" />{{ lockText(row) }}</p>
-          <p v-if="sealsKey(row)" class="hint"><AppIcon name="key" :size="14" />{{ session.keyed ? t('Saving also hands them this mailbox’s key, sealed in this browser. It asks for your password if you have not entered it in the last ten minutes.') : describe({ op: 'give-read', code: 'no_account_key' }) }}</p>
+          <p v-if="sealsKey(row)" class="hint"><AppIcon name="key" :size="14" />{{ session.keyed ? t('Saving also hands them this mailbox’s key, sealed in this browser.') + ' ' + stepUpHint() : describe({ op: 'give-read', code: 'no_account_key' }) }}</p>
           <p v-if="problems[row.member.user_id]" class="alert" role="alert">{{ describe(problems[row.member.user_id]!) }}</p>
           <div v-if="changed(row)" class="row-save">
             <span class="dim">{{ t('Now: {flags}', { flags: grantSummary(row.held) }) }}</span>

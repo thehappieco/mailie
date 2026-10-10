@@ -3,13 +3,13 @@
   "grant": "TUwBAQEAAQBERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERERA",
   "keyless_readers": [],
   "namespace": "00000000-0000-4000-a000-000000000004",
-  "public_key": "Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc",
+  "public_key": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg",
   "suppliers": [],
   "waiting": [
     {
       "email": "carol@example.com",
       "name": "",
-      "public_key": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg",
+      "public_key": "OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk",
       "seal_id": "00000000-0000-4000-8000-000000000003",
       "user_id": "usr_0000000000000002"
     }

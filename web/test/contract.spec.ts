@@ -129,10 +129,12 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(isSessionReply(fixture('login'), true)).toBe(false)
     expect(plain.authenticated_at).toBeGreaterThan(0)
     expect(enrolled(plain.user)).toBe(true)
-    // A person who signs in only another way has a seal id, and no account key yet.
+    // A person who signs in only another way has a seal id and an account key (their sign-in's
+    // first session comes with it, docs/key-scheme.md section 12.10), and no password.
     const external = fixture('me_without_password') as Me
     expect(external.user.seal_id).toBeTruthy()
-    expect(enrolled(external.user)).toBe(false)
+    expect(enrolled(external.user)).toBe(true)
+    expect(hasPassword(external.user)).toBe(false)
   })
 
   it('names every salt and parameter set a browser derives under as one it accepts', () => {

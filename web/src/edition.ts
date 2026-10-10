@@ -24,6 +24,13 @@ export interface AgreementText {
   component: Component
 }
 
+/**
+ * What a step-up is asked for (docs/key-scheme.md section 11; state/stepUp.ts):
+ * linking a mailbox ('link'), giving Read with a grant ('grant'), or writing
+ * or handing on a mailbox's key ('key').
+ */
+export type StepUpReason = 'link' | 'grant' | 'key'
+
 /** A permission's text, and what the core says when it is not the one the server asks about. */
 export interface PermissionText extends AgreementText {
   /** The server asks about another revision than this page carries: it changed while the page was open. */
@@ -63,6 +70,13 @@ export interface Edition {
     indexHint(): string
     /** In the dialog that turns actions off: what stops. */
     actionsOff(): string
+    /**
+     * Beside a write that needs a step-up (giving Read with a grant, a
+     * mailbox's key): when the person is asked to prove themselves again.
+     * Unset: the core's sentence, which names the password the core's
+     * step-up asks for. An edition that sets stepUp words it its own way.
+     */
+    stepUpHint?(): string
   }
   /**
    * Whether the API keys section shows how to reach the MCP server at this
@@ -96,8 +110,29 @@ export interface Edition {
    * the appearance menu above, the notes about a session that ended or a
    * mailbox waiting to finish connecting, and legal.signInFooter below. An
    * invitation link signs nobody up through it. Unset: the core's card.
+   *
+   * A sign-in that opened or made the person's account key keeps it first
+   * (keepAccountKey, state/accountVault.ts), then adopts the session, which
+   * begins keyed when this browser holds the key of the person it names; one
+   * that never adopts its session settles the key it kept
+   * (settleRecord(holder, false)).
    */
   signIn?: Component
+  /**
+   * The edition's own step-up (docs/key-scheme.md section 11), in place of
+   * the core's password dialog (components/StepUpDialog.vue): for people who
+   * prove themselves again another way, such as signing in again at their
+   * identity provider. state/stepUp.ts calls it when a flow needs a fresh
+   * step-up, once for every flow waiting then, with what the first of them
+   * asked it for. It resolves once this session's step-up time is fresh,
+   * which the edition records with steppedUp (state/session.ts) from what its
+   * route answered, and the flows go on; it rejects with StepUpCancelled
+   * (state/stepUp.ts) when the person gives up, which stops them without a
+   * word, and with any other error to stop them with that one. It may be
+   * called after awaits, out of the click that started the flow, so a window
+   * it opens needs a click of its own. Unset: the password dialog.
+   */
+  stepUp?: (reason: StepUpReason) => Promise<void>
   /**
    * Called once the person has signed out on purpose (from the frame, the
    * account section, or everywhere), after the core has ended the session in

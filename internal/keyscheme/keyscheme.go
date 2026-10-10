@@ -17,20 +17,24 @@
 //
 // Who calls what: the browser makes every key and every wrap and grant (the
 // console, through mailie.ts); the server only checks shapes and spellings
-// (CheckAccountWrapShape, CheckGrantShape, CheckPublicKey, ValidSealID,
-// ValidNamespace), normalises addresses as it stores them
+// (CheckAccountWrapShape, CheckGrantShape, CheckPlatformWrapShape,
+// CheckPublicKey, ValidSealID, ValidNamespace, ValidProductKeyID),
+// normalises addresses as it stores them
 // (NormaliseAddress) and derives the salts it hands out (DecoySalt). The Go
 // functions that seal and open exist for the vectors, the tests and tools
 // that run on a person's own machine.
 package keyscheme
 
 import (
+	"strings"
+
 	"github.com/google/uuid"
 
 	"github.com/thehappieco/kit/account"
 	"github.com/thehappieco/kit/hpke"
 	"github.com/thehappieco/kit/platformwrap"
 	"github.com/thehappieco/kit/profiles/mailie"
+	"github.com/thehappieco/kit/profiles/platform"
 	"github.com/thehappieco/kit/seal"
 )
 
@@ -279,6 +283,27 @@ func PlatformWrap() platformwrap.Profile { return mailie.PlatformWrap() }
 // equal to the sub is ErrBinding, whatever the sub's version.
 func PlatformWrapBinding(sealID, sub string, productKeyEpoch int, accountPublicKey []byte) (platformwrap.Binding, error) {
 	return mailie.PlatformWrapBinding(sealID, sub, productKeyEpoch, accountPublicKey)
+}
+
+// ErrPlatformWrap is every refusal of a platform wrap, its shape's included:
+// the kit's sentinel itself.
+var ErrPlatformWrap = platformwrap.ErrPlatformWrap
+
+// CheckPlatformWrapShape is what the server checks of a platform wrap it is
+// sent, which it cannot open: the kit's platformwrap.CheckShape, 61 bytes
+// starting with 0x03, the same for every product (so the server keeps
+// Mailie's in a column of its own, platform_wraps). A refusal matches
+// ErrPlatformWrap.
+func CheckPlatformWrapShape(wrap []byte) error { return platformwrap.CheckShape(wrap) }
+
+// ValidProductKeyID reports whether id is a product key id of Mailie's
+// product, in its one spelling: "mailie:", then the epoch, 1 to 2^31 - 1 in
+// decimal without a sign or a leading zero (the kit's
+// platform.ValidProductKeyID, for the product of PlatformWrap). It is the id
+// an identity provider names the product key it delivers by, which the
+// server pins and binds a platform wrap to, as the provider spells it.
+func ValidProductKeyID(id string) bool {
+	return platform.ValidProductKeyID(id) && strings.HasPrefix(id, mailie.PlatformWrapProduct+":")
 }
 
 // ---------------------------------------------------------------------------

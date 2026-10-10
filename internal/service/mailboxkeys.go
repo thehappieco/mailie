@@ -141,7 +141,7 @@ type SupplyKeyRequest struct {
 // Errors of mailbox keys.
 var (
 	errNoAccountKey = E(CodeConflict,
-		"your account has no account key yet, and a mailbox you link is keyed to it; sign in with your password first", nil)
+		"your account has no account key yet, and a mailbox you link is keyed to it", nil)
 	errLinkKeyNeeded = E(CodeBadRequest,
 		"a person links a mailbox with its key: public_key, namespace and grant, made by the browser", nil)
 	errOperatorKey = E(CodeBadRequest,

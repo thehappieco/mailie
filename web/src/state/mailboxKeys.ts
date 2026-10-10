@@ -173,7 +173,7 @@ async function write(accountID: string, busy: string, op: Failure['op'], call: (
   view.problem = null
   try {
     if (opens) requireAccountKeyHere()
-    await withStepUp(call)
+    await withStepUp('key', call)
   } catch (error) {
     if (!ok()) return false
     keyView(accountID).busy = ''

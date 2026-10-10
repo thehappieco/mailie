@@ -742,6 +742,16 @@ The release that brings mailbox keys ([`key-scheme.md`](key-scheme.md) sections 
   mailboxes are read by the flag again, and the console writes their keys again when you upgrade
   again.
 
+### Account keys of people who sign in through an identity provider (migration 0015)
+
+The release that brings migration 0015 adds two empty tables and changes no row. They hold the
+account key of people who sign in through an identity provider, which only a binary that embeds the
+daemon with an extension brings ([`console.md`](console.md#signing-in-through-an-extension)):
+`mailserver serve` has none, and leaves them empty. **Back up first**, as above: an older binary
+refuses schema 15. Where an extension signs people in, a person without an account key is given no
+session any more: their next sign-in through the provider makes one
+([`key-scheme.md`](key-scheme.md) section 12.10).
+
 ### The upgrade leaves (the release after the key scheme's)
 
 The release after the one that brings the key scheme removes the upgrade of accounts made before it

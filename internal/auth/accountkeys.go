@@ -842,16 +842,22 @@ func (u *Users) MarkExternalStepUp(ctx context.Context, userID, sessionID string
 }
 
 // ExternalStepUp finishes a step-up through an identity provider: the
-// provider says (issuer, subject) authenticated at authTime. It is refused
-// with ErrStepUpRefused, changing nothing, unless the session has a mark
-// younger than StepUpWindow, authTime is after the mark and not after now,
-// and (issuer, subject) is the identity linked to the session's person: a
-// step-up as anyone else proves nothing about this session, whatever its
-// time. Otherwise the mark is used and the session's step-up time becomes
-// authTime. It never creates a session, nor changes another one or whose
-// this one is.
-func (u *Users) ExternalStepUp(ctx context.Context, userID, sessionID, issuer, subject string, authTime time.Time) error {
-	return u.store.Write(ctx, func(tx *sql.Tx) error {
+// provider says the identity (in.Issuer, in.Subject) authenticated at
+// in.AuthTime. It is refused with ErrStepUpRefused, changing nothing, unless
+// the session has a mark younger than StepUpWindow, the authentication time
+// is after the mark (in whole seconds, strictly: one clock, the host's, in
+// production) and not after now, and the identity is the one linked to the
+// session's person: a step-up as anyone else proves nothing about this
+// session, whatever its time. The product key the provider names for the
+// identity is then compared with the one pinned under its id, read only
+// (requireProductKeyTx): another key, or one under an id nothing is pinned
+// under, is ErrProductKeyChanged, and changes nothing; a step-up never pins.
+// Otherwise the mark is used and the session's step-up time becomes the
+// authentication time, which it returns. It never creates a session, nor
+// changes another one or whose this one is.
+func (u *Users) ExternalStepUp(ctx context.Context, userID, sessionID string, in ExternalProof) (time.Time, error) {
+	var at time.Time
+	err := u.store.Write(ctx, func(tx *sql.Tx) error {
 		now := u.now()
 		if err := requireLiveSessionTx(ctx, tx, userID, sessionID, now); err != nil {
 			return err
@@ -861,23 +867,30 @@ func (u *Users) ExternalStepUp(ctx context.Context, userID, sessionID, issuer, s
 			Scan(&mark); err != nil {
 			return fmt.Errorf("auth: step up: %w", err)
 		}
-		at := authTime.Unix()
-		if mark == 0 || now.Sub(time.Unix(mark, 0)) > StepUpWindow || at <= mark || authTime.After(now) {
+		at = in.AuthTime.UTC().Truncate(time.Second)
+		if mark == 0 || now.Sub(time.Unix(mark, 0)) > StepUpWindow || at.Unix() <= mark || in.AuthTime.After(now) {
 			return ErrStepUpRefused
 		}
 		var linked int
 		if err := tx.QueryRowContext(ctx,
 			`SELECT count(*) FROM user_identities WHERE issuer = ? AND subject = ? AND user_id = ?`,
-			issuer, subject, userID).Scan(&linked); err != nil {
+			in.Issuer, in.Subject, userID).Scan(&linked); err != nil {
 			return fmt.Errorf("auth: step up: %w", err)
 		}
 		if linked == 0 {
 			return ErrStepUpRefused
 		}
+		if err := requireProductKeyTx(ctx, tx, in); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `UPDATE sessions SET authenticated_at = ?, stepup_mark_at = 0 WHERE id = ?`,
-			at, sessionID)
+			at.Unix(), sessionID)
 		return err
 	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return at, nil
 }
 
 // Reset is a reset invitation as the operator sees it. The code is not here:
@@ -892,8 +905,8 @@ type Reset struct {
 // CreateReset makes a reset invitation for a person and returns the only copy
 // of its code (docs/key-scheme.md section 12.6): a single-use link that
 // gives the person a new password, recovery code and account key, and
-// deletes every grant sealed to their old key. A person's earlier reset
-// invitation still waiting is replaced.
+// deletes every grant sealed to their old key and every platform wrap of it.
+// A person's earlier reset invitation still waiting is replaced.
 //
 // Deleting a person's grants takes "read" from them on every mailbox that has
 // a key, so without force it is refused, with a BlockedError naming the
@@ -1101,10 +1114,14 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 		// Every grant sealed to the old key goes here, in this transaction:
 		// their flags stay, and on every mailbox that has a key they wait for
 		// it again (a new key for their own, a reader's for a team's). Every
-		// platform wrap of the person goes too, in the table the hosted
-		// service brings.
+		// platform wrap of the person goes too (platform_wraps, migration
+		// 0015): each wraps the old key, which their page would refuse to
+		// open as theirs once the new public key below is written.
 		if err := workspace.DropSealedGrantsOfTx(ctx, tx, userID); err != nil {
 			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM platform_wraps WHERE user_id = ?`, userID); err != nil {
+			return fmt.Errorf("auth: reset: delete the platform wraps: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE users SET public_key = ?1, key_replaced_at = max(?2, key_replaced_at + 1),
 			auth_verifier = ?3, kdf_salt = ?4, kdf_m = ?5, kdf_t = ?6, kdf_p = ?7, password_wrap = ?8, recovery_wrap = ?9,
@@ -1138,9 +1155,10 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 	return token, session, user, nil
 }
 
-// SweepTickets deletes the tickets and the reset invitations that have
-// expired, and reports how many it deleted. Neither is a record of anything:
-// an expired one is only a hash nobody can use.
+// SweepTickets deletes the tickets, the enrolment tickets of first sign-ins
+// through an identity provider and the reset invitations that have expired,
+// and reports how many it deleted. None is a record of anything: an expired
+// one is only a hash nobody can use.
 func (u *Users) SweepTickets(ctx context.Context) (int, error) {
 	now := u.now().Unix()
 	var n int
@@ -1149,11 +1167,15 @@ func (u *Users) SweepTickets(ctx context.Context) (int, error) {
 		if err != nil {
 			return fmt.Errorf("auth: sweep tickets: %w", err)
 		}
+		enrolments, err := execCount(ctx, tx, `DELETE FROM external_enrolments WHERE expires_at <= ?`, now)
+		if err != nil {
+			return fmt.Errorf("auth: sweep enrolment tickets: %w", err)
+		}
 		resets, err := execCount(ctx, tx, `DELETE FROM reset_invites WHERE expires_at <= ?`, now)
 		if err != nil {
 			return fmt.Errorf("auth: sweep reset invitations: %w", err)
 		}
-		n = tickets + resets
+		n = tickets + enrolments + resets
 		return nil
 	})
 	return n, err
@@ -1275,11 +1297,16 @@ func consumeTicketTx(ctx context.Context, tx *sql.Tx, hash []byte, now time.Time
 	return t, nil
 }
 
-// dropTicketsTx deletes every ticket of a person: a ceremony that changes
-// their secrets makes every other one moot.
+// dropTicketsTx deletes every ticket of a person, a first sign-in's
+// enrolment tickets included: a ceremony that changes their secrets makes
+// every other one moot, and disabling them must leave none to work once they
+// are switched back on.
 func dropTicketsTx(ctx context.Context, tx *sql.Tx, userID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_tickets WHERE user_id = ?`, userID); err != nil {
 		return fmt.Errorf("auth: drop tickets: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM external_enrolments WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("auth: drop enrolment tickets: %w", err)
 	}
 	return nil
 }

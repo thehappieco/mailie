@@ -17,6 +17,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -337,4 +338,95 @@ func SignIn(t *testing.T, users *auth.Users, email string) string {
 		t.Fatalf("authtest: sign in as %s: %v", email, err)
 	}
 	return login.Token
+}
+
+// ProductKeyID is the id of the product key the identity provider of the
+// tests delivers (docs/key-scheme.md section 6), as a provider names it.
+const ProductKeyID = "mailie:1"
+
+// ProductKey is the product public key the identity provider of the tests
+// names for an identity: 32 bytes the extension pins, which the server only
+// ever compares.
+func ProductKey(subject string) []byte {
+	sum := sha256.Sum256([]byte("authtest product key of " + subject))
+	return sum[:]
+}
+
+// PlatformWrap is 61 random bytes starting with 0x03: a platform wrap's
+// shape (docs/key-scheme.md section 6.1), wrapping nothing. The server only
+// ever checks the shape of a platform wrap, which it cannot open.
+func PlatformWrap(t *testing.T) []byte {
+	t.Helper()
+	w := make([]byte, 61)
+	if _, err := rand.Read(w); err != nil {
+		t.Fatal(err)
+	}
+	w[0] = 0x03
+	if err := keyscheme.CheckPlatformWrapShape(w); err != nil {
+		t.Fatalf("authtest: a platform wrap: %v", err)
+	}
+	return w
+}
+
+// PinProductKey pins ProductKey(subject) under ProductKeyID for the identity,
+// as an extension does before the sign-in its provider delivered the key to.
+func PinProductKey(t *testing.T, users *auth.Users, issuer, subject string) {
+	t.Helper()
+	if _, _, err := users.PinKey(t.Context(), issuer, subject, ProductKeyID, ProductKey(subject)); err != nil {
+		t.Fatalf("authtest: pin the product key of %s: %v", subject, err)
+	}
+}
+
+// SignInExternal signs a person in through an identity provider as the page
+// of an extension whose provider delivers the product key does: the
+// extension pins the key (PinProductKey); the page signs in for the identity
+// alone, and when the person has no account key yet
+// (auth.ErrAccountKeyNeeded), signs in again asking for the product key and
+// enrols them with a fresh public key and a platform wrap's shape
+// (auth.Users.EnrolExternal), which opens their session. It returns the
+// session's token, the session and the person, and fails the test on any
+// other refusal.
+func SignInExternal(t *testing.T, users *auth.Users, in auth.ExternalSignIn) (string, auth.Session, auth.User) {
+	t.Helper()
+	PinProductKey(t, users, in.Issuer, in.Subject)
+	signed, err := users.SignInExternal(t.Context(), in)
+	if errors.Is(err, auth.ErrAccountKeyNeeded) {
+		in.WantsKey, in.ProductKeyID = true, ProductKeyID
+		signed, err = users.SignInExternal(t.Context(), in)
+	}
+	if err != nil {
+		t.Fatalf("authtest: sign in through %s as %s: %v", in.Issuer, in.Subject, err)
+	}
+	if signed.Token != "" {
+		return signed.Token, signed.Session, signed.User
+	}
+	token, session, user, err := users.EnrolExternal(t.Context(), auth.ExternalEnrolment{
+		Ticket: signed.Ticket, PublicKey: PublicKey(t), PlatformWrap: PlatformWrap(t), ProductKeyID: ProductKeyID,
+		UserAgent: in.UserAgent,
+	})
+	if err != nil {
+		t.Fatalf("authtest: enrol %s: %v", in.Subject, err)
+	}
+	return token, session, user
+}
+
+// LegacySession opens a session for a person made by NewLegacyUser, as one
+// opened before the key scheme was: the only way a person without an
+// account key holds a session now. It returns its token. Its step-up time is
+// none.
+func LegacySession(t *testing.T, db *store.Store, userID string) string {
+	t.Helper()
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(raw)
+	now := db.Now().UTC().Truncate(time.Second)
+	if _, err := db.Writer().ExecContext(t.Context(),
+		`INSERT INTO sessions(id, user_id, token_hash, user_agent, created_at, last_seen_at, expires_at)
+		 VALUES (?, ?, ?, 'authtest', ?, ?, ?)`,
+		"ses_"+randomHex(t, 8), userID, sum[:], now.Unix(), now.Unix(), now.Add(auth.SessionTTL).Unix()); err != nil {
+		t.Fatalf("authtest: open a session from before the key scheme: %v", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
 }

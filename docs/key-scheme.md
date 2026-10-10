@@ -443,10 +443,14 @@ The product key is asked for (the `account_key` scope, kit §11.14) only when th
 (section 7) does not hold the person's account key:
 
 - **First sign-in** (the person has no `users.public_key`): the page asks for the key, makes the
-  account key, wraps it under `K_pw` and sends the public key and the wrap (section 12.10).
+  account key, wraps it under `K_pw` and sends the public key and the wrap (section 12.10). Such a
+  person is never given a session before that: a sign-in for the identity alone is refused
+  (`needs_key`), and the page signs in again asking for the key.
 - **A browser without the key** (a new device, or after signing out, which wipes the vault): the
   page asks for the key, the server answers the wrap for the person and the pinned
-  `product_key_id`, the page opens it and keeps the account key in the vault.
+  `product_key_id`, the page opens it and keeps the account key in the vault. A person who has an
+  account key and no wrap at that id (one a reset invitation made, section 17.2) is refused
+  (`no_wrap`), with no session.
 - **Otherwise** the sign-in is identity only, without the scope (silent when id.'s session allows),
   and the vault is opened after the server names the person (section 7). A silent sign-in proves
   nothing new, so it is no step-up: the session's step-up time is id.'s `auth_time`, never the
@@ -459,9 +463,24 @@ password and its recovery code loses the root, and with it this wrap (section 12
 
 ### 6.3 What the server stores and checks
 
-`platform_wraps` (informative): the wrap per person and `product_key_id`, insert only, checked with
-the kit's `platformwrap.CheckShape` (61 bytes starting with `0x03`), in a column of its own, since
-the shape of a wrap is the same for every product (kit §6.8). The server never opens one.
+`platform_wraps` (migration 0015): the wrap per person and `product_key_id`, in a column of its own,
+since the shape of a wrap is the same for every product (kit §6.8). The server never opens one.
+
+- **Checked:** the wrap's shape with the kit's `platformwrap.CheckShape`
+  (`keyscheme.CheckPlatformWrapShape`: 61 bytes starting with `0x03`); the `product_key_id` as
+  Mailie's in its one spelling (`keyscheme.ValidProductKeyID`: `mailie:` and an epoch from 1 to
+  2^31 − 1 without a leading zero, exactly as id. names it), and pinned for the identity that signs
+  in (`identity_key_pins`); the public key as section 4's. The schema holds the wrap's length and
+  first byte, and the id's spelling.
+- **Insert only:** a trigger refuses an update and a second insert under the same person and id,
+  whatever its conflict clause. A wrap is deleted only with its person, or by the reset invitation
+  (section 12.6), which replaces the account key and deletes every wrap of the old one in its
+  transaction.
+- **The first sign-in's ticket** (`external_enrolments`, section 12.10): single use, ten minutes,
+  stored as SHA-256, bound to the person, the identity (issuer and `sub`) and the pinned
+  `product_key_id`, carrying the sign-in's `auth_time` and session length; deleted with the person,
+  by the person's other ceremonies and disabling, by their enrolment, and by the hourly sweep once
+  expired.
 
 ## 7. The browser vault
 
@@ -701,8 +720,10 @@ actions when that time is more than 10 minutes old, or later than the server's o
   12.6; in the release that brought this scheme, the upgrade's enrolment, 12.7), and a step-up; on
   the server's clock.
 - **What sets the time, hosted:** id.'s `auth_time`, from the userinfo of the access token the
-  sign-in (section 12.8) or the step-up presented, never the server's clock; an `auth_time` later
-  than the server's now is refused. A silent sign-in (identity only, answered from id.'s session,
+  sign-in (section 12.8) or the step-up presented, never the server's clock; a step-up's
+  `auth_time` later than the server's now is refused, and a sign-in's is taken as now (Appendix C).
+  A first sign-in's enrolment (section 12.10) opens the session with the `auth_time` of the
+  sign-in that issued its ticket. A silent sign-in (identity only, answered from id.'s session,
   section 6.2) carries id.'s earlier authentication time, so it opens no window unless that
   authentication was itself within the last 10 minutes.
 - **A sign-in counts.** For 10 minutes after a sign-in that sets the time, the session needs no
@@ -720,17 +741,21 @@ actions when that time is more than 10 minutes old, or later than the server's o
     bound to that session, single use, valid for 10 minutes. The page signs in at id. again with
     `prompt=login` and without the `account_key` scope, and posts the access token to `stepup` on
     the same session. The server reads id.'s userinfo and refuses unless its issuer and `sub` are
-    the external identity linked to the session's person, its `client_id` is Mailie's, and its
-    `auth_time` is after the mark and not after the server's now; then it consumes the mark and
-    sets that session's step-up time to `auth_time`. A step-up as anyone else is refused and
-    changes nothing, whatever its `auth_time`: id. never compares `login_hint` with the account
-    that signs in, so the server compares the `sub`.
+    the external identity linked to the session's person, its `client_id` is Mailie's, its
+    `auth_time` is after the mark (in whole seconds, strictly: id. and Mailie share one host
+    clock in production) and not after the server's now, and the product key it names is the one
+    pinned under its `product_key_id` (compared, read only: a step-up never pins, and another key,
+    or an id nothing is pinned under, is refused and raises the alert a sign-in raises); then it
+    consumes the mark and sets that session's step-up time to `auth_time`. A step-up as anyone
+    else is refused and changes nothing, whatever its `auth_time`: id. never compares `login_hint`
+    with the account that signs in, so the server compares the `sub`.
   - Neither creates a session, changes another one, or changes whose the session is. The
     platform's own console does it the other way (`id-v1`, "Step-up": a step-up is a fresh sign-in
     that replaces the session, so a session is always its last authenticator's); Mailie keeps the
     session and checks the identity instead.
 - **Tested with the server's code** (`internal/auth/accountkeys_test.go`,
   `TestAStepUpProvesOnlyTheSessionsOwnPerson`, `TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity`,
+  `TestAnExternalStepUpComparesTheProductKeyWithThePinAndNeverPins`,
   `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`; for the actions on mailbox keys,
   `internal/service/mailboxkeys_test.go`, `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes` and
   `TestChangingFlagsWithoutAGrantNeedsNoStepUp` and `TestALinkWhoseStepUpEndedDuringItsLoginStoresNothing`,
@@ -896,8 +921,11 @@ reader comes first.
 
 The hosted service's equivalent, a person whose platform wrap no longer opens because id. issued
 them a new root (they lost both id.'s password and its recovery code, which by design loses what
-the root opened), is the same replacement, started at sign-in; what starts it is left to the
-hosted service's step of phase 3 (an open question of section 17).
+the root opened), does not arise in id. v1, which has no key reset: the root never changes for a
+`sub`, and such a person makes a new id. account, a new `sub`, which signing in refuses for an
+address that has a person here (an identity never takes over a person). The operator closes the
+old person first (`user disable`, then `user delete`), and the new identity signs in as a new
+person (section 17, question 2).
 
 ### 12.7 The upgrade of existing self-hosted accounts (removed)
 
@@ -945,10 +973,17 @@ ADDRESS`), which enrols a person who was not and clears the old hash; the releas
 
 As section 6.2. The server's answer to the page names the person's `sub`, `product_key_id` and pinned
 key (kit §11.15), and, for Mailie, `seal_id`, `public_key` and, when the page asked for the key, the
-platform wrap for that `product_key_id`. The page opens the vault or the wrap, and compares the
-account key's public half with `public_key` either way. The server sets the new session's step-up
-time to the userinfo's `auth_time`, at most its own now, never to the moment of the sign-in
-(section 11).
+platform wrap for that `product_key_id`. The page says whether it asked: id.'s userinfo names the
+product key whether or not the authorization did. The page opens the vault or the wrap, and
+compares the account key's public half with `public_key` either way. The server sets the new
+session's step-up time to the userinfo's `auth_time`, at most its own now, never to the moment of
+the sign-in (section 11).
+
+Only a person who has an account key is given a session. One who has none is answered, when the
+page asked for the key, the ticket of section 12.10 and no session, and otherwise refused
+(`needs_key`), creating and linking nothing. One who has an account key and no wrap at the pinned
+`product_key_id` is refused when the page asked for the key (`no_wrap`, section 17.2), with no
+session.
 
 ### 12.9 Step-up
 
@@ -956,11 +991,17 @@ Section 11.
 
 ### 12.10 First sign-in on the hosted service
 
-The page asked for the product key; the server answers that the person has no public key yet. The
-page makes the account key, seals the platform wrap under the delivered `sk_p` for (seal id, sub,
-pinned `product_key_id`, public key), and sends `{public_key, platform_wrap}`; the server checks
-both and writes them once. There is no password and no recovery code on the hosted service:
-recovery is id.'s (section 6.2).
+The page asked for the product key; the person has no public key yet. The server answers, in place
+of a session, a single-use enrolment ticket (ten minutes, stored as SHA-256, bound to the person,
+the identity and the pinned `product_key_id`, section 6.3) and the person's seal id. The page makes
+the account key, seals the platform wrap under the delivered `sk_p` for (seal id, sub, pinned
+`product_key_id`, public key), and sends `{ticket, public_key, platform_wrap}` with the
+`product_key_id` it sealed under. In one transaction the server uses the ticket (unexpired, issued
+for that `product_key_id`, its person active and its identity still theirs), writes `public_key`
+once and the wrap insert only, both checked for their shapes, and opens the session, whose length
+and step-up time are those of the sign-in that issued the ticket. No session exists before: a
+session token copied from a browser never chooses a person's account key. There is no password and
+no recovery code on the hosted service: recovery is id.'s (section 6.2).
 
 ### 12.11 Linking a mailbox
 
@@ -1144,7 +1185,7 @@ Go `internal/keyscheme/server.go` and, in `mailie.ts`, the console's helpers.
 | Account wraps | `AccountWrapAAD`, `SealAccountWrap`, `OpenAccountWrap`, `CheckAccountWrapShape` (the kit's) | `accountWrapAAD`, `sealAccountWrap`, `openAccountWrap`, `checkAccountWrapShape` (the kit's) |
 | Seal ids, namespaces, public keys | `ValidSealID`, `ValidNamespace`, `PublicKey`, `CheckPublicKey`, `ErrPublicKey` (the kit's); `server.go`: `NewSealID` (the core's) | `isSealID`, `isNamespace` (the kit's); `newNamespace` (the console's) |
 | Domain, kinds, grants | `SealDomain`, `Kind`, `GrantRow`, `GrantInfo`, `GrantAAD`, `SealGrant`, `OpenGrant`, `CheckGrantShape` (the kit's) | `mailieSeal`, `Kind`, `kindName`, `grantRow`, `grantInfo`, `grantAAD`, `sealGrant`, `openGrant`, `checkGrantShape` (the kit's) |
-| Platform wrap | `PlatformWrap`, `PlatformWrapBinding` (the kit's) | `mailiePlatformWrap`, `platformWrapBinding`, `sealMailiePlatformWrap`, `openMailiePlatformWrap` (the kit's) |
+| Platform wrap | `PlatformWrap`, `PlatformWrapBinding`, `CheckPlatformWrapShape`, `ValidProductKeyID`, `ErrPlatformWrap` (the kit's) | `mailiePlatformWrap`, `platformWrapBinding`, `sealMailiePlatformWrap`, `openMailiePlatformWrap` (the kit's) |
 | Browser vault | `BrowserVaultAAD`, the vectors' reference (the kit's) | `mailieBrowserVault`, `browserVaultAAD`, `sealBrowserVault`, `openBrowserVault` (the kit's); `openBrowserVaultKey` (the console's) |
 | Errors (section 13) | `ErrBinding`, `ErrShape`, `ErrPublicKey` (the kit's sentinels) | `MailieError`, `isMailieError` (the kit's) |
 | Vectors | `vectors_test.go`, `testdata/`; `TestTheVectorsAreTheKitsFrozenOnes` holds `testdata/` to the kit's `vectors/mailie/key-scheme-v1`, byte for byte | `web/test/keyscheme.spec.ts` |
@@ -1183,6 +1224,19 @@ on a restored session, section 12.14, and a personal mailbox's new key, section 
 with the kit's real cryptography: every grant the console seals opens for its recipient, with
 `openGrant`, to the key whose public half the server holds.
 
+The server's half of the hosted sections (6.3, 11's hosted step-up, 12.8 and 12.10) is
+provider-neutral, for an extension of the daemon to call: migration 0015
+(`internal/store/migrations/0015_platform_wraps.sql`), `internal/auth/platformwraps.go` (the
+ticket, the enrolment, the wrap answered and the read-only pin comparison) with
+`internal/auth/identities.go` (the sign-in) and `accountkeys.go` (the step-up, and the reset that
+deletes the wraps), and `internal/service/external.go` (`SignInExternal`, `EnrolExternal`,
+`MarkExternalStepUp`, `ExternalStepUp`), held by `internal/auth/platformwraps_test.go` and
+`internal/service/external_test.go`; the hosted service's extension adds only the provider's
+protocol and its routes. The console's seams for it are `Edition.stepUp` and
+`Edition.copy.stepUpHint` (`web/src/edition.ts`, asked by `web/src/state/stepUp.ts`) and
+`adoptSession` (`web/src/state/session.ts`), which begins keyed when the edition's sign-in kept the
+key of the person it names, held by `web/test/editionStepUp.spec.ts`.
+
 ## 17. Open questions
 
 Decisions this specification left to the owner or to a later step, each without a byte that
@@ -1192,7 +1246,13 @@ depends on it. Those settled on 2026-10-09 say so.
    sealer, as the send-hash root is, never an operator-provided variable.
 2. **The hosted service's lost key.** What starts the replacement of section 12.6 when a person's
    platform wrap no longer opens (a new root at id.), and how a new product-key epoch is handled
-   when the vault holds the account key (re-wrap) and when it does not.
+   when the vault holds the account key (re-wrap) and when it does not. Settled for id. v1 on
+   2026-10-10 (Appendix C): v1 has no key reset, so a root never changes for a `sub` and a lost
+   root is a new id. account, which the operator meets by closing the old person (section 12.6);
+   a person with an account key and no wrap at the pinned `product_key_id` (one a reset invitation
+   made while id. was off, or a new epoch) is refused when a sign-in asks for the key (`no_wrap`),
+   with no session, and closing and recreating them is the operator's way. A re-wrap under a new
+   epoch waits until id. has one.
 3. **The new-password minimum.** Settled by the owner: twelve code points, the platform's (section
    5.1), for new passwords only.
 4. **The open console and the kit's names.** Settled: the console's sources import the kit by its
@@ -1524,3 +1584,50 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     as the forms that choose a new password do. The earlier entries of this appendix that name the
     upgrade's routes, its ticket and the console's memory describe the release that brought this
     scheme.
+- Version 1, the hosted half of sections 6, 11, 12.8 and 12.10 (2026-10-10). No byte changed. The
+  owner decided that Mailie follows Wappie's structure where this document was silent, adapted to
+  it (the seal id, never the `sub`, as the wrap's user id; section 7's hosted vault rule). The
+  core's half is provider-neutral: it names no provider, and an extension of the daemon calls it
+  (section 16). What the code had to choose, recorded here:
+  - **Where the wraps live.** `platform_wraps` is the core's (migration 0015), since an extension
+    reaches no store: one row per person and `product_key_id`, the wrap's shape and the id's
+    spelling held by the schema too, insert only, deleted with the person or by the reset
+    invitation (section 6.3). Section 6.3 was informative, and is normative now.
+  - **What authorizes the first write** (section 12.10). A single-use ticket, as Wappie's, never
+    the session: a first sign-in that asked for the key, of a person without `public_key`, opens no
+    session, and is answered the ticket and the seal id; the enrolment `{ticket, public_key,
+    platform_wrap, product_key_id}` writes both and opens the session. The ticket lives in a table
+    of its own (`external_enrolments`), since `auth_tickets` holds a password target such a person
+    does not have. A sign-in for the identity alone of a person without `public_key` is refused
+    (`needs_key`, a `conflict` whose cause the extension tells apart) and creates and links
+    nothing, so no session ever exists for a hosted person without an account key, and a session
+    copied in the seconds before the first write cannot choose one. Two tabs that both sign in
+    first: the first enrolment deletes the person's other tickets, and the second tab signs in
+    again, which answers the wrap.
+  - **How the server knows the page asked for the key** (section 12.8): the page says so (the
+    extension passes `WantsKey`), since id.'s userinfo names the product key either way. The wrap is
+    answered only then, and only at the `product_key_id` the extension pinned for the identity
+    (checked again, read only, by the core).
+  - **No wrap at the pinned id** (section 17.2): `no_wrap`, a `conflict` whose cause the extension
+    tells apart, with no session. In id. v1 the root never changes for a `sub`, so this is a person
+    whose account key a reset invitation made (id. turned off and on again); closing and
+    recreating them is the operator's way. A re-wrap under a new epoch waits until id. has one.
+  - **The step-up compares the product key with the pin** (section 11), read only, as Wappie's
+    does: another key under the pinned id, an id nothing is pinned under, or no key named for an
+    identity that has keys pinned is refused (a `conflict` whose cause is the changed key), logged
+    as an error, the alert the extension raises for a sign-in, and changes nothing; a step-up never
+    pins. An identity of a provider that delivers no product key, which has nothing pinned, steps
+    up without one. The strict `auth_time` after the mark, in whole seconds, stays, against
+    Wappie's minute of leeway before the start: id. and Mailie share one host clock in production.
+    The step-up answers the session's new step-up time, which is `auth_time`.
+  - **The words.** The refusals of a missing account key and of a stale step-up no longer tell a
+    person to sign in or step up with a password: the console translates codes and never shows a
+    message, and the hosted edition words them its own way.
+  - **The console's seams.** An edition may bring its own step-up (`Edition.stepUp`), asked once
+    for every flow waiting in place of the password dialog, with what the first flow asked it for
+    (a link, a grant, a key), and its own words for the sentence beside a guarded write
+    (`Edition.copy.stepUpHint`); its errors are worded by its describer, as before. An edition's
+    sign-in that kept the account key it opened or made begins a keyed session (`adoptSession`
+    asks the vault, as a restore does, and wipes a key of anyone else), so what follows a sign-in
+    in the page that adopts it (the first keys of section 12.14, while the step-up time is fresh)
+    follows it as it follows a password sign-in.

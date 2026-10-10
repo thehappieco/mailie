@@ -143,13 +143,10 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 func TestAPersonsOwnProfileSaysWhetherTheyHaveAPassword(t *testing.T) {
 	h := newHarness(t, false)
 	authtest.NewUser(t, h.store, "ana@example.com", auth.RoleMember)
-	external, _, _, err := h.users.SignInExternal(t.Context(), auth.ExternalSignIn{
+	external, _, _ := authtest.SignInExternal(t, h.users, auth.ExternalSignIn{
 		Issuer: "https://accounts.example.com", Subject: "subject-of-cy", Email: "cy@example.com",
 		EmailVerified: true, TTL: auth.SessionTTL,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	for token, want := range map[string]bool{h.signIn(t, "ana@example.com").Token: true, external: false} {
 		var me struct {
 			User struct {

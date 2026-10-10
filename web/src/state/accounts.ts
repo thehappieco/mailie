@@ -544,7 +544,7 @@ export const LINK_STEP_UP_MARGIN_S = 120
 async function addWithKey(body: AddAccountRequest): Promise<AddAccountResult> {
   const linker = session.user
   if (!linker || !enrolled(linker)) throw new CeremonyError('not_enrolled')
-  return withStepUp(async () => {
+  return withStepUp('link', async () => {
     const key = await linkKey(linker)
     return authorized(token => api.addAccount(token, { ...body, ...key }))
   }, LINK_STEP_UP_MARGIN_S)

@@ -33,14 +33,11 @@ func external(subject, email string) auth.ExternalSignIn {
 	}
 }
 
-// signInExternal signs in through the provider, failing the test on a refusal.
+// signInExternal signs in through the provider as its page does, enrolling a
+// person who has no account key yet, and fails the test on a refusal.
 func signInExternal(t *testing.T, users *auth.Users, in auth.ExternalSignIn) (string, auth.Session, auth.User) {
 	t.Helper()
-	token, session, user, err := users.SignInExternal(t.Context(), in)
-	if err != nil {
-		t.Fatalf("SignInExternal(%s, %s): %v", in.Subject, in.Email, err)
-	}
-	return token, session, user
+	return authtest.SignInExternal(t, users, in)
 }
 
 func count(t *testing.T, db *store.Store, query string, args ...any) int {
@@ -112,7 +109,7 @@ func TestAnExternalSessionLastsMoreThanNothingAndNoLongerThanAPasswordSession(t 
 	for _, ttl := range []time.Duration{0, -time.Hour, auth.SessionTTL + time.Second, 30 * 24 * time.Hour} {
 		in := external("subject-of-cy", "cy@example.com")
 		in.TTL = ttl
-		if _, _, _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrInvalidSessionTTL) {
+		if _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrInvalidSessionTTL) {
 			t.Errorf("a session of %v: %v, want ErrInvalidSessionTTL", ttl, err)
 		}
 	}
@@ -186,7 +183,7 @@ func TestAFirstSeenIdentityNeedsAVerifiedAddress(t *testing.T) {
 	for _, email := range []string{"Ana@Example.com", "nobody@example.com"} {
 		in := external("subject-of-someone", email)
 		in.EmailVerified = false
-		if _, _, _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrEmailNotVerified) {
+		if _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrEmailNotVerified) {
 			t.Errorf("%s, unverified: %v, want ErrEmailNotVerified", email, err)
 		}
 	}
@@ -217,7 +214,8 @@ func TestAFirstSeenIdentityNeedsAVerifiedAddress(t *testing.T) {
 func rowsOf(t *testing.T, db *store.Store) []string {
 	t.Helper()
 	var out []string
-	for _, table := range []string{"users", "sessions", "user_identities", "workspaces", "workspace_members", "mailbox_access", "invites"} {
+	for _, table := range []string{"users", "sessions", "user_identities", "workspaces", "workspace_members", "mailbox_access", "invites",
+		"platform_wraps", "external_enrolments"} {
 		func() {
 			rows, err := db.Reader().QueryContext(t.Context(), `SELECT * FROM `+table)
 			if err != nil {
@@ -270,9 +268,13 @@ func TestAnExternalIdentityNeverTakesOverAnExistingAddress(t *testing.T) {
 		"Cy's subject from another provider":  withIssuer(external("subject-of-cy", "cy@example.com"), other),
 		"Cy's address from another provider":  withIssuer(external("subject-of-someone", "Cy@example.com"), other),
 	} {
-		token, session, user, err := users.SignInExternal(t.Context(), in)
-		if !errors.Is(err, auth.ErrEmailTaken) || token != "" || session != (auth.Session{}) || user.ID != "" {
-			t.Errorf("%s: signed in %+v (%v), want ErrEmailTaken and nobody", name, user, err)
+		for _, wantsKey := range []bool{false, true} {
+			in.WantsKey, in.ProductKeyID = wantsKey, authtest.ProductKeyID
+			authtest.PinProductKey(t, users, in.Issuer, in.Subject)
+			signed, err := users.SignInExternal(t.Context(), in)
+			if !errors.Is(err, auth.ErrEmailTaken) || !reflect.DeepEqual(signed, auth.ExternalSignedIn{}) {
+				t.Errorf("%s (asking for the key: %v): signed in %+v (%v), want ErrEmailTaken and nobody", name, wantsKey, signed, err)
+			}
 		}
 	}
 
@@ -316,12 +318,12 @@ func TestADisabledPersonIsRefusedAnExternalSignInAndNothingIsLinked(t *testing.T
 	}
 
 	// Cy's own identity: refused, as a disabled person's password sign-in is.
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-cy", "cy@example.com")); !errors.Is(err, auth.ErrUserDisabled) {
+	if _, err := users.SignInExternal(t.Context(), external("subject-of-cy", "cy@example.com")); !errors.Is(err, auth.ErrUserDisabled) {
 		t.Errorf("a disabled person's identity: %v, want ErrUserDisabled", err)
 	}
 	// An identity seen for the first time with her address takes her over
 	// no more than anybody's: disabled, she is still somebody here.
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+	if _, err := users.SignInExternal(t.Context(), external("subject-of-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Errorf("a disabled person's address: %v, want ErrEmailTaken", err)
 	}
 	if n := count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, ana.ID); n != 0 {
@@ -503,9 +505,9 @@ func TestAProviderNameNeverKeepsAPersonOut(t *testing.T) {
 	for _, name := range []string{long, "Dee\tLima", "\xff", ""} {
 		in := external("subject-of-cy", "cy@example.com")
 		in.Name = name
-		_, _, user, err := users.SignInExternal(t.Context(), in)
-		if err != nil || user.Name != "Cy Lima" {
-			t.Errorf("provider name %q: %+v, %v; want her signed in as Cy Lima", name, user, err)
+		signed, err := users.SignInExternal(t.Context(), in)
+		if err != nil || signed.Token == "" || signed.User.Name != "Cy Lima" {
+			t.Errorf("provider name %q: %+v, %v; want her signed in as Cy Lima", name, signed.User, err)
 		}
 	}
 	if n := count(t, db, `SELECT count(*) FROM users`); n != 4 {
@@ -524,8 +526,8 @@ func TestALookalikeAddressNeverBecomesAnotherPersonsAddress(t *testing.T) {
 	// somebody here, or of somebody to come; nobody is created with it.
 	for _, email := range []string{"\u212Aaren@example.com", "\u0130da@example.com", "\u2126mega@example.com"} {
 		in := external("subject-of-"+email, email)
-		if _, _, user, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrInvalidEmail) {
-			t.Errorf("%s signed in %+v (%v), want ErrInvalidEmail", email, user, err)
+		if signed, err := users.SignInExternal(t.Context(), in); !errors.Is(err, auth.ErrInvalidEmail) {
+			t.Errorf("%s signed in %+v (%v), want ErrInvalidEmail", email, signed.User, err)
 		}
 	}
 	if n := count(t, db, `SELECT count(*) FROM user_identities`) + count(t, db, `SELECT count(*) FROM users`); n != 2 {
@@ -535,8 +537,8 @@ func TestALookalikeAddressNeverBecomesAnotherPersonsAddress(t *testing.T) {
 	// A letter whose lower case is its own pair is the same address, as it
 	// always was: Karen's, which is hers and nobody else's to take, and a
 	// new person's with a letter beyond ASCII.
-	if _, _, user, err := users.SignInExternal(t.Context(), external("subject-of-karen", "KAREN@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
-		t.Errorf("her own address in capitals signed in %+v (%v), want ErrEmailTaken", user, err)
+	if signed, err := users.SignInExternal(t.Context(), external("subject-of-karen", "KAREN@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+		t.Errorf("her own address in capitals signed in %+v (%v), want ErrEmailTaken", signed.User, err)
 	}
 	_, _, ase := signInExternal(t, users, external("subject-of-ase", "\u00C5se@example.com"))
 	if ase.Email != "\u00E5se@example.com" {
@@ -554,6 +556,8 @@ func TestAPinGoesOnlyWithItsPerson(t *testing.T) {
 	users, db, _ := newUsers(t)
 	_, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
 	_, _, dee := signInExternal(t, users, external("subject-of-dee", "dee@example.com"))
+	// Each sign-in pinned its product key; two more keys for Cy, one more
+	// for Dee, and one for an identity that signs nobody in.
 	for _, pin := range []struct{ subject, keyID string }{
 		{"subject-of-cy", "k1"}, {"subject-of-cy", "k2"}, {"subject-of-dee", "k1"}, {"subject-of-nobody", "k1"},
 	} {
@@ -574,7 +578,7 @@ func TestAPinGoesOnlyWithItsPerson(t *testing.T) {
 	if _, err := users.Disable(t.Context(), cy.ID, false); err != nil {
 		t.Fatal(err)
 	}
-	if pins("subject-of-cy") != 2 {
+	if pins("subject-of-cy") != 3 {
 		t.Fatal("disabling her took her pins")
 	}
 
@@ -592,7 +596,7 @@ func TestAPinGoesOnlyWithItsPerson(t *testing.T) {
 		t.Fatalf("after deleting her: %+v, %d pins left", removed, pins("subject-of-cy"))
 	}
 	// Nobody else's went with her.
-	if pins("subject-of-dee") != 1 || pins("subject-of-nobody") != 1 ||
+	if pins("subject-of-dee") != 2 || pins("subject-of-nobody") != 1 ||
 		count(t, db, `SELECT count(*) FROM user_identities WHERE user_id = ?`, dee.ID) != 1 {
 		t.Error("deleting her took somebody else's identity or pins")
 	}
@@ -625,15 +629,15 @@ func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 	pin("subject-of-unverified")
 	unverified := external("subject-of-unverified", "someone@example.com")
 	unverified.EmailVerified = false
-	if _, _, _, err := users.SignInExternal(t.Context(), unverified); !errors.Is(err, auth.ErrEmailNotVerified) {
+	if _, err := users.SignInExternal(t.Context(), unverified); !errors.Is(err, auth.ErrEmailNotVerified) {
 		t.Fatal(err)
 	}
 	pin("subject-of-another-ana")
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-another-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+	if _, err := users.SignInExternal(t.Context(), external("subject-of-another-ana", "ana@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Fatal(err)
 	}
 	pin("subject-of-bob")
-	if _, _, _, err := users.SignInExternal(t.Context(), external("subject-of-bob", "bob@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
+	if _, err := users.SignInExternal(t.Context(), external("subject-of-bob", "bob@example.com")); !errors.Is(err, auth.ErrEmailTaken) {
 		t.Fatal(err)
 	}
 
@@ -643,18 +647,19 @@ func TestAPinForASignInThatWasRefusedIsSweptSoon(t *testing.T) {
 		t.Fatalf("a sweep within the grace deleted %d (%v)", n, err)
 	}
 	// After it, the pins of the refused sign-ins go: they are the provider's
-	// id and key for identities that sign nobody in here. Ana's stays,
-	// however old, while her identity signs her in.
+	// id and key for identities that sign nobody in here. Ana's two (the one
+	// her sign-in pinned, and k1) stay, however old, while her identity
+	// signs her in.
 	*clock = start.Add(auth.UnlinkedPinGrace + time.Second)
 	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 3 {
 		t.Fatalf("the sweep deleted %d (%v), want the 3 pins of refused sign-ins", n, err)
 	}
-	if pins("subject-of-unverified")+pins("subject-of-another-ana")+pins("subject-of-bob") != 0 || pins("subject-of-ana") != 1 {
+	if pins("subject-of-unverified")+pins("subject-of-another-ana")+pins("subject-of-bob") != 0 || pins("subject-of-ana") != 2 {
 		t.Errorf("after the sweep: %d, %d, %d and %d pins", pins("subject-of-unverified"), pins("subject-of-another-ana"),
 			pins("subject-of-bob"), pins("subject-of-ana"))
 	}
 	*clock = start.Add(365 * 24 * time.Hour)
-	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 0 || pins("subject-of-ana") != 1 {
+	if n, err := users.SweepUnlinkedPins(t.Context()); err != nil || n != 0 || pins("subject-of-ana") != 2 {
 		t.Errorf("a year on the sweep deleted %d (%v), and %d of ana's pins are left", n, err, pins("subject-of-ana"))
 	}
 }
@@ -700,7 +705,7 @@ func TestAnExternalSignInRefusesWhatCannotNameAPerson(t *testing.T) {
 	} {
 		in := external("subject-of-cy", "cy@example.com")
 		change.edit(&in)
-		if _, _, _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, change.want) {
+		if _, err := users.SignInExternal(t.Context(), in); !errors.Is(err, change.want) {
 			t.Errorf("%s: %v, want %v", name, err, change.want)
 		}
 	}
@@ -708,7 +713,7 @@ func TestAnExternalSignInRefusesWhatCannotNameAPerson(t *testing.T) {
 		t.Errorf("refusals created %d people", n)
 	}
 	// The longest subject there is still names someone.
-	if _, _, _, err := users.SignInExternal(t.Context(), external(strings.Repeat("s", auth.MaxSubjectLength), "cy@example.com")); err != nil {
-		t.Errorf("a subject of %d bytes: %v", auth.MaxSubjectLength, err)
+	if _, _, cy := signInExternal(t, users, external(strings.Repeat("s", auth.MaxSubjectLength), "cy@example.com")); cy.ID == "" {
+		t.Errorf("a subject of %d bytes named nobody", auth.MaxSubjectLength)
 	}
 }

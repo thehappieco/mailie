@@ -12,14 +12,16 @@
 //   and to everyone else who reads it with an account key (the console
 //   writes it by itself right after a sign-in).
 //
-// Each write asks for the password first unless it was entered in the last
-// ten minutes (state/stepUp.ts). A team mailbox is never given a new key:
-// one nobody can read keeps the card's "nobody can read" note, and is only
-// removed. Nothing is drawn when there is nothing to say.
+// Each write asks for a step-up first (the password, or the edition's own)
+// unless the last was within ten minutes (state/stepUp.ts). A team mailbox
+// is never given a new key: one nobody can read keeps the card's "nobody can
+// read" note, and is only removed. Nothing is drawn when there is nothing to
+// say.
 import { computed, onMounted, watch } from 'vue'
 import { enrolled, type Account, type KeyRecipient } from '../api/types'
 import { checkOwnGrant, loadMailboxKey, mailboxKeys, supplyKey, writeFirstKey, writeNewKey } from '../state/mailboxKeys'
 import { session } from '../state/session'
+import { stepUpHint } from '../state/stepUp'
 import { workspaces } from '../state/workspaces'
 import { accessOf, waitsForKey } from '../ui/access'
 import { announce } from '../ui/announce'
@@ -43,7 +45,7 @@ const keylessReaders = computed(() => view.value?.state?.keyless_readers ?? [])
 /** The person's own key of their personal mailbox does not open in this browser: a new key mends it. */
 const unopened = computed(() => !team.value && reads.value && keyed.value && view.value?.opens === 'no')
 
-/** Whether a write is offered here, each of which may ask for the password first. */
+/** Whether a write is offered here, each of which may ask for a step-up first. */
 const offersWrite = computed(() => withKey.value && ((waiting.value && !team.value) || unopened.value
   || (reads.value && keyed.value && waitingPeople.value.length > 0 && session.keyed) || (reads.value && !keyed.value)))
 
@@ -140,7 +142,7 @@ async function supply(person: KeyRecipient) {
       <button class="primary small" type="button" :disabled="!!busy || !view?.loaded" @click="firstKey"><AppIcon name="key" :size="16" />{{ busy === 'first' ? t('Creating…') : t('Create its key') }}</button>
     </template>
 
-    <p v-if="offersWrite" class="hint">{{ t('It asks for your password if you have not entered it in the last ten minutes.') }}</p>
+    <p v-if="offersWrite" class="hint">{{ stepUpHint() }}</p>
     <p v-if="view?.problem" class="alert" role="alert">{{ describe(view.problem) }}</p>
   </section>
 </template>

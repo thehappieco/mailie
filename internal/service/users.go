@@ -674,7 +674,7 @@ func fromUsers(err error, what string) error {
 		return E(CodeNotAuthorized, "that step is not valid any more: it was used, has expired, or belongs to "+
 			"another sign-in; start again", err)
 	case errors.Is(err, auth.ErrStepUpNeeded):
-		return E(CodeNotAuthorized, "this needs your password again: step up first", err)
+		return E(CodeNotAuthorized, "this needs a sign-in or a step-up within the last ten minutes: step up first", err)
 	case errors.Is(err, auth.ErrStepUpRefused):
 		return E(CodeNotAuthorized, "the step-up does not prove this session's person", err)
 	case errors.Is(err, auth.ErrBadCredentials):

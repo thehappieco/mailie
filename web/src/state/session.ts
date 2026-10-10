@@ -293,11 +293,16 @@ export async function beginSession(reply: SessionReply, keyed = false): Promise<
  * person in: it hands over what its route answered, a session as POST
  * /v1/auth/signup answers one, and the session begins exactly as a password
  * sign-in's does, stored for this browser and its other tabs, with the person
- * it names. A reply of any other shape is refused (ApiError
- * 'invalid_response') and changes nothing.
+ * it names. It begins keyed when this browser holds the account key of that
+ * person, as a remembered session is restored: the key the edition's sign-in
+ * kept for them just before (keepAccountKey), or one a session of theirs
+ * kept past its expiry; a key of anyone else is wiped first. A reply of any
+ * other shape is refused (ApiError 'invalid_response') and changes nothing.
  */
 export async function adoptSession(reply: unknown): Promise<void> {
-  await beginSession(checked(reply, isSessionReply))
+  const answer = checked(reply, isSessionReply)
+  const keyed = enrolled(answer.user) && await holdsAccountKey(answer.user.seal_id!, answer.user.public_key!)
+  await beginSession(answer, keyed)
 }
 
 /**

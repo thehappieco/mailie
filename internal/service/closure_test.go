@@ -372,6 +372,17 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		}
 	}
 
+	// The platform wraps of ana and bob, under the product key their
+	// provider delivers, and an enrolment ticket for each, as a first
+	// sign-in through it would leave: deleting her takes hers with her row.
+	for i, id := range []string{ana.UserID, bob.UserID} {
+		f.exec(t, `INSERT INTO platform_wraps(user_id, product_key_id, wrap, created_at) VALUES (?, 'mailie:1', ?, ?)`,
+			id, authtest.PlatformWrap(t), now)
+		f.exec(t, `INSERT INTO external_enrolments(hash, user_id, issuer, subject, product_key_id, auth_time, session_ttl,
+			created_at, expires_at) VALUES (?, ?, ?, ?, 'mailie:1', 0, 3600, ?, ?)`,
+			bytes.Repeat([]byte{byte(i + 1)}, 32), id, issuer, []string{"subject-of-ana", "subject-of-bob"}[i], now, now+600)
+	}
+
 	// A recovery under way for ana and for bob, and a reset invitation for
 	// each: deleting her takes hers with her row.
 	for _, email := range []string{"ana@example.com", "bob@example.com"} {

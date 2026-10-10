@@ -165,7 +165,7 @@ async function submit() {
   let workspaceID: string
   try {
     // A person without an account key is told so by the link itself, before any step-up.
-    if (enrolled(session.user)) await ensureStepUp(LINK_STEP_UP_MARGIN_S)
+    if (enrolled(session.user)) await ensureStepUp('link', LINK_STEP_UP_MARGIN_S)
     workspaceID = await goTo()
   } catch (error) {
     if (error instanceof StepUpCancelled) return

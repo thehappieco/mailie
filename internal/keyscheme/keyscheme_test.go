@@ -303,6 +303,53 @@ func TestThePlatformWrapsUserIDIsTheSealIDNeverTheSub(t *testing.T) {
 	}
 }
 
+// The server cannot open a platform wrap: it takes one of the right shape,
+// a real one or not, and refuses every other, an account wrap included.
+func TestTheServerChecksAPlatformWrapsShapeAndNothingMore(t *testing.T) {
+	accountKey := bytes.Repeat([]byte{5}, 32)
+	b, err := keyscheme.PlatformWrapBinding(keyscheme.NewSealID(), "019a8b2c-3d4e-7f60-8a71-b2c3d4e5f607", 1, public(t, accountKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := platformwrap.Seal(keyscheme.PlatformWrap(), nil, bytes.Repeat([]byte{6}, 32), accountKey, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shaped := append([]byte{0x03}, bytes.Repeat([]byte{0xa5}, 60)...)
+	for name, wrap := range map[string][]byte{"a sealed wrap": sealed, "61 bytes starting with 0x03": shaped} {
+		if err := keyscheme.CheckPlatformWrapShape(wrap); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	accountWrap := append([]byte{keyscheme.AccountWrapHeader}, shaped[1:]...)
+	for name, wrap := range map[string][]byte{
+		"none": nil, "60 bytes": shaped[:60], "62 bytes": append(append([]byte{}, shaped...), 0),
+		"an account wrap's header": accountWrap, "a grant's magic": append([]byte{0x4d}, shaped[1:]...),
+	} {
+		if err := keyscheme.CheckPlatformWrapShape(wrap); !errors.Is(err, keyscheme.ErrPlatformWrap) {
+			t.Errorf("%s: %v, want ErrPlatformWrap", name, err)
+		}
+	}
+}
+
+// A product key id names one of Mailie's product keys in one spelling, so
+// that one key never has two ids, nor two products one.
+func TestAProductKeyIDIsMailiesInItsOneSpelling(t *testing.T) {
+	for _, id := range []string{"mailie:1", "mailie:42", "mailie:2147483647"} {
+		if !keyscheme.ValidProductKeyID(id) {
+			t.Errorf("%q was refused", id)
+		}
+	}
+	for _, id := range []string{
+		"", "mailie", "mailie:", "mailie:0", "mailie:01", "mailie:+1", "mailie:-1", "mailie:1 ", " mailie:1",
+		"mailie:2147483648", "Mailie:1", "wappie:1", "mailie:1:2", "mailie:١",
+	} {
+		if keyscheme.ValidProductKeyID(id) {
+			t.Errorf("%q was taken", id)
+		}
+	}
+}
+
 func TestTheBrowserVaultBindsTheSealIDNotTheAddress(t *testing.T) {
 	pub := public(t, bytes.Repeat([]byte{4}, 32))
 	id := keyscheme.NewSealID()

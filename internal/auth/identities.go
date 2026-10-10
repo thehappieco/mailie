@@ -36,7 +36,11 @@ import (
 //     addresses. The new person is an instance member without a password,
 //     named as the provider names them;
 //   - the session lasts what the extension asks, never more than SessionTTL,
-//     and nothing extends it.
+//     and nothing extends it;
+//   - only a person who has an account key gets one: a person who has none
+//     gets a single-use ticket instead, with which their page writes the
+//     account key and its wrap under the product key the provider delivered
+//     (EnrolExternal, platformwraps.go), which opens the session.
 //
 // It also keeps the public keys an identity is known by (identity_key_pins):
 // each pinned the first time its key id is seen and never replaced, and gone
@@ -107,48 +111,87 @@ type ExternalSignIn struct {
 	// answered from a session of its own opens no step-up window
 	// (docs/key-scheme.md section 11). Zero is none.
 	AuthTime time.Time
+	// WantsKey says that the sign-in asked the provider for the product
+	// key, which the provider delivered to the person's page alone
+	// (docs/key-scheme.md section 6.2): the page can then open the person's
+	// platform wrap, or make their account key and wrap it. ProductKeyID is
+	// that key's id, "mailie:<epoch>" as the provider names it, which the
+	// extension pinned for the identity (PinKey) and checked before calling;
+	// it is looked at only with WantsKey, and must be pinned for this
+	// identity (ErrProductKeyNotPinned).
+	WantsKey     bool
+	ProductKeyID string
 }
 
-// SignInExternal signs in the person an identity provider vouched for, and
-// starts a session for them that expires TTL after it starts. In one
-// transaction: the pair already linked signs in its person; otherwise, with
-// an address the provider verified that nobody here has, a new person is
-// created for it, an instance member with no password, with what the
+// ExternalSignedIn is what a sign-in through an identity provider answers:
+// a session, or, for a person who has no account key yet, the ticket that
+// enrols them (EnrolExternal) and no session.
+type ExternalSignedIn struct {
+	// Token is the session's, and exists only in this answer; "" when no
+	// session was started.
+	Token   string
+	Session Session
+	// User is the person, a new one included, with their seal id and, once
+	// they have one, their account public key.
+	User User
+	// PlatformWrap is the person's platform wrap at the sign-in's
+	// ProductKeyID, when it asked for the key and they have an account key.
+	PlatformWrap []byte
+	// Ticket, for a person who has no account key, when the sign-in asked
+	// for the key, is the single-use enrolment ticket that writes it and
+	// opens their session (EnrolExternal), valid until TicketExpiresAt.
+	Ticket          string
+	TicketExpiresAt time.Time
+}
+
+// SignInExternal signs in the person an identity provider vouched for. In
+// one transaction: the pair already linked signs in its person; otherwise,
+// with an address the provider verified that nobody here has, a new person
+// is created for it, an instance member with no password, with what the
 // workspace source creates for a person, as sign-up creates one, and the pair
-// is linked to them.
+// is linked to them. Then:
+//
+//   - a person who has an account key is given a session that expires TTL
+//     after it starts, and, when the sign-in asked for the product key, their
+//     platform wrap at its ProductKeyID; none stored there is ErrNoPlatformWrap
+//     (docs/key-scheme.md section 17.2), and starts no session;
+//   - a person who has none is given no session: a sign-in that asked for the
+//     product key is answered a single-use enrolment ticket (section 12.10),
+//     and one that did not ErrAccountKeyNeeded, which creates and links
+//     nothing. A session never exists for such a person, so nobody who
+//     copies one chooses their account key.
 //
 // An address somebody here has already is refused with ErrEmailTaken, and
 // nothing is created or linked: an identity never takes over a person who
 // exists, however they sign in. The person of a linked identity who is
 // disabled is refused with ErrUserDisabled. No password is hashed, so this
 // takes no hashing slot.
-func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, Session, User, error) {
+func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (ExternalSignedIn, error) {
 	if err := CheckIssuer(in.Issuer); err != nil {
-		return "", Session{}, User{}, err
+		return ExternalSignedIn{}, err
 	}
 	if err := checkSubject(in.Subject); err != nil {
-		return "", Session{}, User{}, err
+		return ExternalSignedIn{}, err
 	}
 	email, err := NormalizeEmail(in.Email)
 	if err != nil {
-		return "", Session{}, User{}, err
+		return ExternalSignedIn{}, err
 	}
 	if in.TTL <= 0 || in.TTL > SessionTTL {
-		return "", Session{}, User{}, ErrInvalidSessionTTL
+		return ExternalSignedIn{}, ErrInvalidSessionTTL
+	}
+	if in.WantsKey && !keyscheme.ValidProductKeyID(in.ProductKeyID) {
+		return ExternalSignedIn{}, ErrInvalidProductKeyID
 	}
 
 	now := u.now().UTC().Truncate(time.Second)
-	var (
-		token   string
-		session Session
-		user    User
-	)
+	var out ExternalSignedIn
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
 		userID, err := u.identifyTx(ctx, tx, in, email, now)
 		if err != nil {
 			return err
 		}
-		user, err = scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, userID))
+		user, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, userID))
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrUserNotFound
@@ -158,17 +201,37 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (string, 
 			// Only a linked identity's person can be: a new one is active.
 			return ErrUserDisabled
 		}
+		if in.WantsKey {
+			if err := requirePinTx(ctx, tx, in.Issuer, in.Subject, in.ProductKeyID); err != nil {
+				return err
+			}
+		}
 		authenticated := in.AuthTime
 		if authenticated.After(now) {
 			authenticated = now
 		}
-		token, session, err = startSessionTx(ctx, tx, user.ID, in.UserAgent, now, in.TTL, authenticated)
+		out = ExternalSignedIn{User: user}
+		if len(user.PublicKey) == 0 {
+			if !in.WantsKey {
+				// Returning rolls back what identifyTx created: the
+				// sign-in with the key creates the person again.
+				return ErrAccountKeyNeeded
+			}
+			out.Ticket, out.TicketExpiresAt, err = issueEnrolmentTx(ctx, tx, user.ID, in, authenticated, now)
+			return err
+		}
+		if in.WantsKey {
+			if out.PlatformWrap, err = platformWrapTx(ctx, tx, user.ID, in.ProductKeyID); err != nil {
+				return err
+			}
+		}
+		out.Token, out.Session, err = startSessionTx(ctx, tx, user.ID, in.UserAgent, now, in.TTL, authenticated)
 		return err
 	})
 	if err != nil {
-		return "", Session{}, User{}, err
+		return ExternalSignedIn{}, err
 	}
-	return token, session, user, nil
+	return out, nil
 }
 
 // identifyTx returns the ID of the person in's identity signs in, inside

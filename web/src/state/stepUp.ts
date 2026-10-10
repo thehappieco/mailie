@@ -10,9 +10,16 @@
 // mounted by App.vue over whatever dialog is open): a flow that needs a
 // step-up waits for it, and goes on once it is given, or stops without a
 // word when the person closes it (StepUpCancelled). A sign-out closes it.
+//
+// The prompt is the core's password dialog, or the edition's own step-up
+// where it has one (Edition.stepUp: signing in again at an identity
+// provider, say), which is asked once for every flow waiting, and settles
+// them as the dialog would.
 
 import { reactive, watch } from 'vue'
 import { ApiError } from '../api/http'
+import { edition, type StepUpReason } from '../edition'
+import { t } from '../ui/i18n'
 import { serverNow } from './connection'
 import { freshStepUp, identity, STEP_UP_MARGIN_S } from './session'
 
@@ -24,20 +31,41 @@ export class StepUpCancelled extends Error {
   }
 }
 
-/** Whether the prompt is open. */
-export const stepUpPrompt = reactive<{ open: boolean }>({ open: false })
+/** Whether the prompt is open, and what its first flow asked it for. */
+export const stepUpPrompt = reactive<{ open: boolean; reason: StepUpReason | null }>({ open: false, reason: null })
 
 interface Waiter { resolve: () => void; reject: (error: Error) => void }
 let waiting: Waiter[] = []
+/** Counts the prompts opened and settled: an edition's step-up settles only the prompt it was asked for. */
+let round = 0
 
-function settle(given: boolean): void {
+function settle(given: boolean, error: Error = new StepUpCancelled()): void {
+  round++
   stepUpPrompt.open = false
+  stepUpPrompt.reason = null
   const waiters = waiting
   waiting = []
   for (const waiter of waiters) {
     if (given) waiter.resolve()
-    else waiter.reject(new StepUpCancelled())
+    else waiter.reject(error)
   }
+}
+
+/**
+ * Runs the edition's step-up for the prompt just opened, and settles that
+ * prompt as it ends: given when it resolves, refused with what it rejects
+ * with. A prompt settled meanwhile (a sign-out, another person) is left as
+ * it is.
+ */
+async function editionStepUp(own: (reason: StepUpReason) => Promise<void>, reason: StepUpReason): Promise<void> {
+  const asked = round
+  try {
+    await own(reason)
+  } catch (error) {
+    if (asked === round) settle(false, error instanceof Error ? error : new StepUpCancelled())
+    return
+  }
+  if (asked === round) settle(true)
 }
 
 /** The prompt's step-up went through: every flow waiting for it goes on. */
@@ -53,38 +81,56 @@ export function stepUpRefused(): void {
 // Another person, or nobody: nothing waits for a step-up of the one before.
 watch(identity, () => { if (stepUpPrompt.open || waiting.length) stepUpRefused() }, { flush: 'sync' })
 
-/** askStepUp opens the prompt, or joins the one open, and settles when it is given or closed. */
-export function askStepUp(): Promise<void> {
+/**
+ * askStepUp opens the prompt for reason, or joins the one open, and settles
+ * when it is given or closed. Where the edition has a step-up of its own,
+ * opening the prompt asks it, once.
+ */
+export function askStepUp(reason: StepUpReason): Promise<void> {
   return new Promise((resolve, reject) => {
     waiting.push({ resolve, reject })
+    if (stepUpPrompt.open) return
     stepUpPrompt.open = true
+    stepUpPrompt.reason = reason
+    const own = edition().stepUp
+    if (own) void editionStepUp(own, reason)
   })
 }
 
 /**
- * ensureStepUp asks for the step-up unless the session's is fresh with
- * margin seconds to spare. It rejects with StepUpCancelled when the person
- * closes the prompt.
+ * ensureStepUp asks for the step-up for reason unless the session's is fresh
+ * with margin seconds to spare. It rejects with StepUpCancelled when the
+ * person closes the prompt.
  */
-export async function ensureStepUp(margin = STEP_UP_MARGIN_S): Promise<void> {
-  if (!freshStepUp(serverNow(), margin)) await askStepUp()
+export async function ensureStepUp(reason: StepUpReason, margin = STEP_UP_MARGIN_S): Promise<void> {
+  if (!freshStepUp(serverNow(), margin)) await askStepUp(reason)
 }
 
 /**
- * withStepUp makes a call that needs a fresh step-up: asked first when the
- * session's is not, with margin seconds to spare. A refusal (not_authorized)
- * after which the step-up is no longer fresh was the step-up going stale on
- * the way, not a role: it is asked again, and the call made once more; any
- * other refusal is the call's. call is run again whole, so whatever it seals
- * is sealed anew.
+ * withStepUp makes a call that needs a fresh step-up, for reason: asked
+ * first when the session's is not, with margin seconds to spare. A refusal
+ * (not_authorized) after which the step-up is no longer fresh was the
+ * step-up going stale on the way, not a role: it is asked again, and the
+ * call made once more; any other refusal is the call's. call is run again
+ * whole, so whatever it seals is sealed anew.
  */
-export async function withStepUp<T>(call: () => Promise<T>, margin = STEP_UP_MARGIN_S): Promise<T> {
-  await ensureStepUp(margin)
+export async function withStepUp<T>(reason: StepUpReason, call: () => Promise<T>, margin = STEP_UP_MARGIN_S): Promise<T> {
+  await ensureStepUp(reason, margin)
   try {
     return await call()
   } catch (error) {
     if (!(error instanceof ApiError && error.code === 'not_authorized') || freshStepUp()) throw error
-    await askStepUp()
+    await askStepUp(reason)
     return call()
   }
+}
+
+/**
+ * stepUpHint is the sentence beside a write that needs a step-up: when the
+ * person is asked to prove themselves again. The edition's, where it words
+ * it its own way (Edition.copy.stepUpHint); otherwise the core's, which
+ * names the password its dialog asks for.
+ */
+export function stepUpHint(): string {
+  return edition().copy.stepUpHint?.() ?? t('It asks for your password if you have not entered it in the last ten minutes.')
 }

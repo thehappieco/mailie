@@ -72,10 +72,27 @@ appearance menu above, the notes about an ended session or a mailbox waiting to 
 `legal.signInFooter` below); no invitation signs anyone up there. Its component calls
 `adoptSession(reply)` (`state/session.ts`) with what its route answered, the shape
 `POST /v1/auth/login` answers: the same path the password sign-in takes to store the session and
-load the person, so no edition keeps a session of its own. `signedOut` is called once the person has
-signed out on purpose, after the session ended in this browser and the server was told, never when
-one expires, is refused or ends in another tab; an edition may navigate away there. A person whose
-`has_password` is `false` is not offered to change a password. The open edition sets none of these.
+load the person, so no edition keeps a session of its own. A sign-in that opened or made the
+person's account key keeps it first (`keepAccountKey`, `state/accountVault.ts`) and then adopts:
+`adoptSession` begins the session keyed when this browser holds the key of the person the reply
+names, as a restore does, and wipes a key of anyone else; one that never adopts settles the key it
+kept (`settleRecord`). `signedOut` is called once the person has signed out on purpose, after the
+session ended in this browser and the server was told, never when one expires, is refused or ends
+in another tab; an edition may navigate away there. A person whose `has_password` is `false` is not
+offered to change a password.
+
+Such an edition may also bring its own **step-up** (`stepUp(reason)`), in place of the password
+dialog: `state/stepUp.ts` calls it when a flow needs a fresh step-up, once for every flow waiting
+then, with what the first of them asked it for (`'link'`, `'grant'` or `'key'`). It resolves once
+the session's step-up time is fresh, recorded with `steppedUp` (`state/session.ts`) from what its
+own route answered, and the flows go on; it rejects with `StepUpCancelled` when the person gives
+up, which stops them without a word, or with any other error to stop them with that one. A prompt
+settled meanwhile (a sign-out, another person) is not settled again by its late answer. It may be
+called after awaits, outside the click that started the flow, so a window it opens needs a click of
+its own. `copy.stepUpHint` words the sentence beside a guarded write, which the core's names the
+password; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
+failures, whose core words send a person to the administrator for a reset link. The open edition
+sets none of these.
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
@@ -257,9 +274,11 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   dialog is open, unless the session's `authenticated_at` leaves 30 seconds of the ten minutes (two
   minutes for a link, which the server checks again after its login to the mail server, up to 30
   seconds later); the flow goes on once the password is proved (`POST /v1/auth/stepup`), and stops
-  without a word, sending nothing, when the dialog is closed. A `403` after which the step-up is no
-  longer fresh was the step-up going stale on the way: the prompt is shown again and the call made
-  once more, with keys and grants sealed anew; any other `403` is the call's. The console judges
+  without a word, sending nothing, when the dialog is closed. An edition with a step-up of its own
+  (`Edition.stepUp`, [Editions](#editions)) is asked instead, and the dialog is not drawn. A `403`
+  after which the step-up is no longer fresh was the step-up going stale on the way: the prompt is
+  shown again and the call made once more, with keys and grants sealed anew; any other `403` is
+  the call's. The console judges
   the session's `authenticated_at` by the server's clock, as the `Date` of the server's answers
   gives it (`state/connection.ts`), never by its own: a browser whose clock runs ahead would
   otherwise find a step-up it just made already old.
@@ -319,9 +338,14 @@ mailbox others read syncs under; the refusal names those teams and mailboxes.
 A binary that embeds the daemon (`internal/app`) may sign people in through an identity provider it
 trusts, on routes of its own (`Options.Extensions`). The core has no provider and names none: the
 extension does the provider's protocol, then calls `Service.SignInExternal` with who the provider
-says the person is, and answers its page with the `Session` that comes back, exactly as
-`POST /v1/auth/login` answers the console; the console adopts it the same way
-(`adoptSession`, below). No route of the core calls it.
+says the person is, and answers its page with the `Session` that comes back (or the enrolment
+ticket, below), exactly as `POST /v1/auth/login` answers the console; the console adopts it the
+same way (`adoptSession`, [Editions](#editions)). No route of the core calls it. What an extension
+calls, all of it in `internal/service/external.go`: `SignInExternal`, `EnrolExternal`,
+`PinIdentityKey`, `MarkExternalStepUp` and `ExternalStepUp`. Each refusal is one of the fixed codes,
+and the extension tells apart the ones its page acts on by their cause (`errors.Is`):
+`auth.ErrEmailTaken` (an address somebody here has), `auth.ErrAccountKeyNeeded`,
+`auth.ErrNoPlatformWrap` and `auth.ErrProductKeyChanged` (below).
 
 - **Identities.** The provider names a person by its **issuer**, an origin exactly as a browser
   writes one (`https://host[:port]`, or `http://` on loopback or a name under `.localhost`, with no
@@ -339,8 +363,8 @@ says the person is, and answers its page with the `Session` that comes back, exa
   one; the instance invitations waiting for the address are spent, as signing up spends them. The
   name is the provider's, so it is made into one the server takes (control characters become
   spaces, a name past 120 characters is cut) rather than refused; the person a linked pair signs in
-  keeps theirs, whatever the provider now calls them. All of this, and the session, is one
-  transaction.
+  keeps theirs, whatever the provider now calls them. All of this, and the session or the
+  enrolment ticket (below), is one transaction.
 - **An identity never takes over a person who exists.** Accounts are never linked by matching
   addresses: when somebody here already has the address, compared without regard to case, the
   sign-in is refused (`conflict`) and nothing is created or linked, whoever they are, however they
@@ -353,16 +377,41 @@ says the person is, and answers its page with the `Session` that comes back, exa
   link their mailboxes again. A disabled person whose own pair signs in is refused
   (`unauthorized`), as their password sign-in is.
 - **No password.** Such a person's `password_hash` is empty, they have not enrolled in the key
-  scheme, and `password_changed_at` is 0. No auth key signs them in (it is checked against a dummy
-  verifier, as an unknown address is), and `user.has_password` is `false`. A reset invitation
-  (`user password --bootstrap`) gives them one.
+  scheme's password, and `password_changed_at` is 0. No auth key signs them in (it is checked
+  against a dummy verifier, as an unknown address is), and `user.has_password` is `false`. A reset
+  invitation (`user password --bootstrap`) gives them one, and a new account key: it deletes every
+  platform wrap of the old one.
+- **The account key** ([`key-scheme.md`](key-scheme.md) sections 6, 12.8 and 12.10). A provider may
+  deliver a product key to the person's page alone, whose public half the extension pins
+  (`PinIdentityKey`); the page keeps the person's account key wrapped under it, a platform wrap the
+  server stores (`platform_wraps`) and never opens. Only a person who has an account key is given a
+  session:
+  - `ExternalSignIn.WantsKey` says the page asked for the product key, and `ProductKeyID` names it
+    (`mailie:<epoch>`, pinned for the identity). Answered `ExternalSignedIn`: the session and, with
+    `WantsKey`, `platform_wrap` (base64url, the person's wrap at that id), for the page to open;
+  - a person without an account key gets no session. With `WantsKey` they are answered
+    `enrolment` (`{ticket, seal_id, expires_at}`: single use, ten minutes, bound to the person, the
+    identity and the product key id), and their page makes the account key and its wrap and sends
+    them with the ticket, which the extension passes to `Service.EnrolExternal({ticket, public_key,
+    platform_wrap, product_key_id})`: the public key is written once, the wrap stored insert only,
+    and the session the sign-in would have opened (its length and its step-up time) is answered.
+    Without `WantsKey` the sign-in is a `conflict` caused by `auth.ErrAccountKeyNeeded`, which
+    created and linked nothing: the page signs in again asking for the key. So a session never
+    exists for such a person, and nobody who copies one chooses their account key;
+  - a person who has an account key and no wrap at the pinned id (one a reset invitation made) is
+    a `conflict` caused by `auth.ErrNoPlatformWrap` when the sign-in asks for the key, with no
+    session; for the identity alone they sign in as before.
 - **The step-up time** of a session an extension starts is the provider's authentication time
   (`ExternalSignIn.AuthTime`, OpenID Connect's `auth_time`), at most now, never the moment of the
   sign-in: a sign-in the provider answered from its own session opens no step-up window. The
   extension's step-up is `Service.MarkExternalStepUp` (a mark on the session, used once, valid ten
-  minutes) and then `Service.ExternalStepUp` with the provider's issuer, subject and authentication
-  time, which refuses any identity but the one linked to the session's person and any time not
-  after the mark.
+  minutes) and then `Service.ExternalStepUp` with what the provider says (`ExternalStepUpProof`:
+  the issuer, subject and authentication time, and the product key it names for the identity now),
+  which refuses any identity but the one linked to the session's person and any time not after the
+  mark, then compares the product key with the one pinned under its id, read only: another key, or
+  an id nothing is pinned under, is a `conflict` caused by `auth.ErrProductKeyChanged`, logged as an
+  error, and a step-up never pins. A provider that delivers no product key names none, which only an
+  identity with nothing pinned may do. It answers the session's new step-up time.
 - **The session's lifetime** is the extension's to choose: more than nothing and at most 14 days
   (`auth.SessionTTL`), absolute from its start. Nothing renews a session on use, and no statement
   can move an existing session's expiry later: the schema refuses an update that would

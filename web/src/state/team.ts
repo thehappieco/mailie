@@ -209,7 +209,7 @@ async function setFlags(accountID: string, userID: string, flags: GrantFlags, se
     return
   }
   requireAccountKeyHere()
-  await withStepUp(async () => {
+  await withStepUp('grant', async () => {
     const member = await memberNow(userID)
     const sealed = await sealFromOwn(accountID, () => member)
     sent.to = sealed.public_key

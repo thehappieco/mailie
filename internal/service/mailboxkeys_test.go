@@ -134,15 +134,14 @@ func accessOf(t *testing.T, f *fixture, p service.Principal, accountID string) s
 	return a
 }
 
-// external is a person who signs in only through an identity provider, with
-// no account key yet.
-func (f *fixture) external(t *testing.T, subject, email string) service.Principal {
+// keyless is a person with no account key, signed in: one who signed up
+// before the key scheme, never enrolled, and still holds a session from
+// then. Nobody else without an account key holds a session: a sign-in
+// through an identity provider gives none before the key is written.
+func (f *fixture) keyless(t *testing.T, email string) service.Principal {
 	t.Helper()
-	session, err := f.svc.SignInExternal(t.Context(), vouched(subject, email))
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := f.users.AuthenticateSession(t.Context(), session.Token)
+	user := authtest.NewLegacyUser(t, f.db, email, auth.RoleMember)
+	p, err := f.users.AuthenticateSession(t.Context(), authtest.LegacySession(t, f.db, user.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,10 +305,10 @@ func TestALinkWithoutItsKeyOrWithAMalformedOneStoresNothing(t *testing.T) {
 }
 
 func TestAPersonWithoutAnAccountKeyCannotLinkAMailbox(t *testing.T) {
-	// Signed in through an identity provider, with no account key yet:
-	// nothing could be sealed to them, so nothing is linked.
+	// Signed in, with no account key yet: nothing could be sealed to them,
+	// so nothing is linked.
 	f := newFixture(t)
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	_, err := f.svc.AddAccount(t.Context(), cy, keyed(cy, service.AddAccountRequest{Email: "cy@gmail.com", Flow: "loopback"}))
 	wantCode(t, "linking without an account key", err, service.CodeConflict)
 	if n := f.count(t, `SELECT count(*) FROM accounts`); n != 0 {
@@ -366,7 +365,7 @@ func TestReadIsGivenByTheFlagAloneToAMemberWithoutAnAccountKeyWhoThenWaitsForThe
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
 	shared, key := tm.keyedTeamMailbox(t, f, "support@mail.example")
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
 	}); err != nil {
@@ -407,7 +406,7 @@ func TestAMemberWaitingForTheKeyIsRefusedTheAccessRoutesNotToldTheMailboxIsMissi
 	f := newFixture(t)
 	tm := newSupportTeam(t, f)
 	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
 	}); err != nil {
@@ -695,7 +694,7 @@ func TestTheFirstKeyOfAMailboxComesWithAGrantForEveryoneWhoReadsItWithAnAccountK
 	const orders = "acc_00000000000000e1"
 	tm.link(t, f, orders, "orders@mail.example")
 	carol := tm.join(t, f, "carol@example.com", workspace.RoleAdmin)
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
 	}); err != nil {
@@ -757,7 +756,7 @@ func TestAStreamHearsAFirstKeyTakeReadFromAReaderWithoutAnAccountKey(t *testing.
 	tm := newSupportTeam(t, f)
 	const orders = "acc_00000000000000e1"
 	tm.link(t, f, orders, "orders@mail.example")
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
 	}); err != nil {
@@ -1077,7 +1076,7 @@ func TestChangingFlagsWithoutAGrantNeedsNoStepUp(t *testing.T) {
 	tm := newSupportTeam(t, f)
 	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
 	dan := tm.join(t, f, "dan@example.com", workspace.RoleMember)
-	cy := f.external(t, "subject-of-cy", "cy@example.com")
+	cy := f.keyless(t, "cy@example.com")
 	if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
 		return tm.ws.AddMemberTx(t.Context(), tx, tm.id, cy.UserID, workspace.RoleMember, time.Now())
 	}); err != nil {

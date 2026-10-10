@@ -835,7 +835,7 @@ func TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity(t *testing.T) 
 	}
 	now := clock.Truncate(time.Second)
 	// No mark yet.
-	if err := users.ExternalStepUp(t.Context(), cy.ID, sid, issuer, "subject-of-cy", now); !errors.Is(err, auth.ErrStepUpRefused) {
+	if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved("subject-of-cy", now)); !errors.Is(err, auth.ErrStepUpRefused) {
 		t.Errorf("a step-up without a mark: %v", err)
 	}
 	mark, err := users.MarkExternalStepUp(t.Context(), cy.ID, sid)
@@ -852,7 +852,7 @@ func TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity(t *testing.T) 
 		"an authentication at the mark":     {"subject-of-cy", mark},
 		"an authentication after now":       {"subject-of-cy", clock.Add(time.Minute)},
 	} {
-		if err := users.ExternalStepUp(t.Context(), cy.ID, sid, issuer, c.subject, c.at); !errors.Is(err, auth.ErrStepUpRefused) {
+		if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved(c.subject, c.at)); !errors.Is(err, auth.ErrStepUpRefused) {
 			t.Errorf("%s: %v, want ErrStepUpRefused", name, err)
 		}
 	}
@@ -860,15 +860,16 @@ func TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity(t *testing.T) 
 		t.Fatalf("a refused step-up freshened the session: %v", err)
 	}
 	at := clock.Add(-10 * time.Second)
-	if err := users.ExternalStepUp(t.Context(), cy.ID, sid, issuer, "subject-of-cy", at); err != nil {
-		t.Fatalf("Cy's own step-up: %v", err)
+	got, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved("subject-of-cy", at))
+	if err != nil || !got.Equal(at.Truncate(time.Second)) {
+		t.Fatalf("Cy's own step-up: %v, %v", got, err)
 	}
 	s, err := users.Session(t.Context(), sid)
 	if err != nil || !s.AuthenticatedAt.Equal(at.Truncate(time.Second)) {
 		t.Errorf("the step-up time is %v (%v), want the provider's %v", s.AuthenticatedAt, err, at)
 	}
 	// The mark was used.
-	if err := users.ExternalStepUp(t.Context(), cy.ID, sid, issuer, "subject-of-cy", clock.Truncate(time.Second)); !errors.Is(err, auth.ErrStepUpRefused) {
+	if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved("subject-of-cy", clock.Truncate(time.Second))); !errors.Is(err, auth.ErrStepUpRefused) {
 		t.Errorf("a mark worked twice: %v", err)
 	}
 	// And a mark older than ten minutes proves nothing.
@@ -876,8 +877,81 @@ func TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity(t *testing.T) 
 		t.Fatal(err)
 	}
 	*clock = clock.Add(auth.StepUpWindow + time.Second)
-	if err := users.ExternalStepUp(t.Context(), cy.ID, sid, issuer, "subject-of-cy", clock.Truncate(time.Second)); !errors.Is(err, auth.ErrStepUpRefused) {
+	if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved("subject-of-cy", clock.Truncate(time.Second))); !errors.Is(err, auth.ErrStepUpRefused) {
 		t.Errorf("an old mark: %v", err)
+	}
+}
+
+// proved is the provider's word that subject authenticated at, naming the
+// product key its sign-in pinned (authtest.SignInExternal).
+func proved(subject string, at time.Time) auth.ExternalProof {
+	return auth.ExternalProof{
+		Issuer: issuer, Subject: subject, AuthTime: at,
+		ProductKeyID: authtest.ProductKeyID, ProductKey: authtest.ProductKey(subject),
+	}
+}
+
+func TestAnExternalStepUpComparesTheProductKeyWithThePinAndNeverPins(t *testing.T) {
+	users, db, clock := newUsers(t)
+	token, _, cy := signInExternal(t, users, external("subject-of-cy", "cy@example.com"))
+	sid := sessionOf(t, users, token)
+	pins := func() int {
+		return count(t, db, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-cy'`)
+	}
+	before := pins()
+
+	// The provider names another key than the one pinned under its id, or a
+	// key under an id nothing is pinned under, or none for an identity that
+	// has keys pinned: refused, whatever else the step-up proves, the mark
+	// kept, the session unchanged, and nothing pinned.
+	for name, edit := range map[string]func(*auth.ExternalProof){
+		"another key under the pinned id": func(p *auth.ExternalProof) { p.ProductKey = authtest.ProductKey("someone else") },
+		"a key under a new id":            func(p *auth.ExternalProof) { p.ProductKeyID = "mailie:2" },
+		"no key at all":                   func(p *auth.ExternalProof) { p.ProductKeyID, p.ProductKey = "", nil },
+	} {
+		if _, err := users.MarkExternalStepUp(t.Context(), cy.ID, sid); err != nil {
+			t.Fatal(err)
+		}
+		*clock = clock.Add(time.Minute)
+		p := proved("subject-of-cy", clock.Add(-time.Second))
+		edit(&p)
+		if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, p); !errors.Is(err, auth.ErrProductKeyChanged) {
+			t.Errorf("%s: %v, want ErrProductKeyChanged", name, err)
+		}
+		if err := users.RequireStepUp(t.Context(), cy.ID, sid); !errors.Is(err, auth.ErrStepUpNeeded) {
+			t.Errorf("%s freshened the session: %v", name, err)
+		}
+		if n := pins(); n != before {
+			t.Errorf("%s: %d pins, want the %d there were", name, n, before)
+		}
+	}
+	// The mark the last refusal left is still good for the pinned key.
+	if _, err := users.ExternalStepUp(t.Context(), cy.ID, sid, proved("subject-of-cy", clock.Add(-time.Second))); err != nil {
+		t.Fatalf("the pinned key: %v", err)
+	}
+
+	// A provider that delivers no product key pins none, and its step-up
+	// names none. Dee's identity is made into one: her pins go, which the
+	// schema allows only while the identity is not linked.
+	deeToken, _, dee := signInExternal(t, users, external("subject-of-dee", "dee@example.com"))
+	deeSession := sessionOf(t, users, deeToken)
+	for _, stmt := range []string{
+		`DELETE FROM user_identities WHERE subject = 'subject-of-dee'`,
+		`DELETE FROM identity_key_pins WHERE subject = 'subject-of-dee'`,
+		`INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES ('` + issuer + `', 'subject-of-dee', '` + dee.ID + `', 0)`,
+	} {
+		if _, err := db.Writer().ExecContext(t.Context(), stmt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := users.MarkExternalStepUp(t.Context(), dee.ID, deeSession); err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(time.Minute)
+	if _, err := users.ExternalStepUp(t.Context(), dee.ID, deeSession, auth.ExternalProof{
+		Issuer: issuer, Subject: "subject-of-dee", AuthTime: clock.Add(-time.Second),
+	}); err != nil {
+		t.Errorf("a step-up through a provider without product keys: %v", err)
 	}
 }
 

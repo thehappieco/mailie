@@ -137,7 +137,9 @@ days (less on the hosted service).
 
 **Can:** everything the person can do through the server without proving who they are: in phase 3
 that includes reading their mailboxes through the server, and acting and sending as their flags
-allow; ask for their grants and platform wrap, which open nothing without their account key.
+allow; ask for their grants, which open nothing without their account key. The platform wrap is
+answered only to a sign-in through id., with an access token of its own, never to a session (spec
+§12.8), and opens nothing without `sk_p` either.
 
 **Can, if it was copied within 10 minutes of the session's sign-in or last step-up** (spec §11):
 also what the step-up guards, until those 10 minutes end: give an accomplice "read" with 88 bytes
@@ -157,7 +159,11 @@ the session's own person: the self-hosted one checks an auth key against that pe
 only, and the hosted one refuses an id. sign-in whose issuer and `sub` are not the identity linked
 to that person, so signing in as oneself does not step up someone else's session. Without the
 step-up, a stolen owner's session could give an accomplice "read" with 88 bytes of the right shape,
-because in phase 3 the server checks that a grant exists, not that it opens.
+because in phase 3 the server checks that a grant exists, not that it opens. Nor can it choose the
+account key of a hosted person who has none: no session exists for such a person before their
+first sign-in writes the key, with a single-use ticket that sign-in's answer carries (spec
+§12.10); whoever copied that answer within its ten minutes could write a key of their own, which
+then locks the person out of their wrap, the residual of section 5.12.
 
 ### 4.6 A stolen device
 
@@ -419,6 +425,15 @@ server that held that answer most likely held its request too, with the password
 residual of that one release, which ended with the upgrade (section 5.5): nothing issues such a
 ticket now, and one left in a database finishes nothing.
 
+The hosted service's first sign-in (spec §12.10) answers a ticket bound to no secret either, since
+the person has none yet: whoever saw that answer, within its 10 minutes and before the person's
+page used it, could write an account key and a wrap-shaped blob of their own, which the server
+cannot tell from a real wrap (spec §6.3), and so lock the person out of every later sign-in that
+asks for the key, until the operator closes the account. It gives them nothing to read: the
+person's mailboxes are linked after it, keyed to the key they hold. The ticket is used once and
+deleted with the person's enrolment, and no session exists for the person before it, so a session
+token copied from a browser cannot do the same.
+
 ## 6. Where each defence is tested
 
 | Defence | Vectors | Tests |
@@ -480,5 +495,15 @@ reset, one that opens to a key the sealer chose is refused, a recipient key of l
 refused, a mailbox private key is zeroed once sealed, every write waits for a fresh step-up, giving
 "read" with a grant and handing the key over ask for it only in a browser that holds the person's
 account key (a first or a new key seals only to public keys, and asks for it anywhere), and first
-keys follow a sign-in, never a restored session). The specification's sections 11 and 12 are what those tests
-hold the server and the console to.
+keys follow a sign-in, never a restored session). The hosted half of sections 6.3, 11, 12.8 and
+12.10 is tested in `internal/auth/platformwraps_test.go` (no session for a person without an
+account key; a first sign-in's ticket used once, for its product key id, its active and linked
+person and ten minutes only; the public key written once and the wrap insert only; the shapes; the
+wrap answered only at the pinned id, `no_wrap` otherwise; a reset deletes the person's wraps, and
+deleting them their wraps and tickets), `internal/auth/accountkeys_test.go` (a step-up compares the
+product key with the pin and never pins), `internal/service/external_test.go` (the same through
+the service, with the causes an extension tells apart, and the step-up's alert logged),
+`internal/store/migrate_fifteen_test.go` (the schema's own refusals) and
+`web/test/editionStepUp.spec.ts` (an edition's step-up in place of the password dialog, and a
+session adopted keyed only for the person whose key the browser holds). The specification's
+sections 11 and 12 are what those tests hold the server and the console to.

@@ -68,20 +68,43 @@ func seeded(t *testing.T) (cfg config.Config, anaSession, inviteCode string) {
 
 func TestAnExtensionSignsPeopleInWhereExternalSignInOnlyTurnsPasswordsOff(t *testing.T) {
 	// The extension a binary that embeds the daemon would mount: it has
-	// done its provider's protocol, and answers as POST /v1/auth/login
-	// answers the console.
+	// done its provider's protocol, which delivered the product key to the
+	// person's page and named its public half, pinned here; the page made
+	// the person's account key and wrapped it (a public key and a wrap's
+	// shape, here). It answers as POST /v1/auth/login answers the console.
+	enc := base64.RawURLEncoding.EncodeToString
+	publicKey, wrap := enc(authtest.PublicKey(t)), enc(authtest.PlatformWrap(t))
 	signIn := func(_ context.Context, r *Router, d Deps) error {
 		r.HandleFunc("POST /v1/auth/provider", func(w http.ResponseWriter, req *http.Request) {
-			session, err := d.Service.SignInExternal(req.Context(), service.ExternalSignIn{
+			ctx := req.Context()
+			in := service.ExternalSignIn{
 				Issuer: "https://accounts.example.com", Subject: "subject-of-cy", Email: "cy@example.com",
 				EmailVerified: true, Name: "Cy Lima", UserAgent: req.UserAgent(), TTL: 24 * time.Hour,
-			})
+				WantsKey: true, ProductKeyID: authtest.ProductKeyID,
+			}
+			if _, _, err := d.Service.PinIdentityKey(ctx, in.Issuer, in.Subject, in.ProductKeyID,
+				authtest.ProductKey(in.Subject)); err != nil {
+				http.Error(w, service.MessageOf(err), http.StatusForbidden)
+				return
+			}
+			signed, err := d.Service.SignInExternal(ctx, in)
 			if err != nil {
 				http.Error(w, service.MessageOf(err), http.StatusForbidden)
 				return
 			}
+			if signed.Session == nil {
+				session, err := d.Service.EnrolExternal(ctx, service.ExternalEnrolment{
+					Ticket: signed.Enrolment.Ticket, PublicKey: publicKey, PlatformWrap: wrap,
+					ProductKeyID: in.ProductKeyID, UserAgent: req.UserAgent(),
+				})
+				if err != nil {
+					http.Error(w, service.MessageOf(err), http.StatusForbidden)
+					return
+				}
+				signed.Session = &session
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(session)
+			_ = json.NewEncoder(w).Encode(signed.Session)
 		})
 		return nil
 	}

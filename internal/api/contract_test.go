@@ -383,15 +383,13 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("access", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
 
 	// A person who signs in only through an identity provider, as an
-	// extension of the daemon signs them in: no password to change, and a
-	// session of the length the extension asked for.
-	external, _, _, err := h.users.SignInExternal(t.Context(), auth.ExternalSignIn{
+	// extension of the daemon signs them in: no password to change, an
+	// account key their page made with the product key, and a session of the
+	// length the extension asked for.
+	external, _, _ := authtest.SignInExternal(t, h.users, auth.ExternalSignIn{
 		Issuer: "https://accounts.example.com", Subject: "subject-of-cy", Email: "cy@example.com",
 		EmailVerified: true, Name: "Cy Lima", TTL: 24 * time.Hour,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	capture("me_without_password", http.StatusOK, http.MethodGet, "/v1/auth/me", external, "")
 
 	// An account not at its target (its address changed, say) is named the

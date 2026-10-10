@@ -24,8 +24,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/app` — the daemon's assembly (`app.Run`), which `serve` calls and another binary may
   too; `Options.Extensions` mounts routes before the console's catch-all, refused at start if one
   names a host, duplicates or would take a request from a core route. An extension signs people in
-  through a provider with `Service.SignInExternal`/`PinIdentityKey`; `Options.ExternalSignInOnly`
-  (never set by `serve`) has the service refuse every password and invitation route.
+  through a provider with `Service.SignInExternal`/`PinIdentityKey`, writes a first account key
+  with the sign-in's ticket (`EnrolExternal`) and steps up through it
+  (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only);
+  `Options.ExternalSignInOnly` (never set by `serve`) has the service refuse every password and
+  invitation route.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
@@ -78,7 +81,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   External identities (issuer + subject, linked only to the new person a first sign-in with a
   verified address creates; an existing address is a conflict, never a link) and their key pins
   (insert only, deleted only with the person, or by the hourly sweep when no sign-in linked them);
-  a person who signs in that way has an empty password hash, which no password check accepts.
+  a person who signs in that way has an empty password hash, which no password check accepts, and
+  a session only once they have an account key: a first sign-in asking for the product key gets a
+  single-use ticket, and its enrolment writes the public key once and the platform wrap
+  (`platformwraps.go`, migration 0015: insert only, deleted with the person or by a reset).
   `authtest` creates cheap users and keys for tests.
 - `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix. An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
