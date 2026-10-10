@@ -15,6 +15,8 @@ package keyscheme_test
 // checks; on any toolchain every case is opened, computed or refused again
 // (TestTheGoSideOpensEveryVector). Every case written was first run through
 // the same dispatcher, so a refusal is recorded only if the code refuses it.
+// The kit's v0.7.0 froze these files as its vectors/mailie/key-scheme-v1,
+// and the profile they run through is the kit's (TestTheVectorsAreTheKitsFrozenOnes).
 
 import (
 	"bytes"
@@ -29,6 +31,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"iter"
 	"maps"
 	"os"
@@ -45,9 +48,11 @@ import (
 	"github.com/thehappieco/kit/account"
 	"github.com/thehappieco/kit/hpke"
 	"github.com/thehappieco/kit/platformwrap"
+	"github.com/thehappieco/kit/profiles/mailie"
 	"github.com/thehappieco/kit/profiles/platform"
 	"github.com/thehappieco/kit/profiles/wappie"
 	"github.com/thehappieco/kit/seal"
+	"github.com/thehappieco/kit/vectors"
 
 	"github.com/thehappieco/mailie/internal/keyscheme"
 )
@@ -978,10 +983,62 @@ func TestTheVectorsAreWhatTheProfileWrites(t *testing.T) {
 	}
 }
 
+// vectorFiles are the files of testdata/, which the kit freezes under
+// kitVectors.
+var vectorFiles = []string{"account-go.json", "grant-go.json", "platform-wrap-go.json", "browser-vault-go.json"}
+
+// kitVectors is where the kit's vectors.FS holds Mailie's frozen vectors.
+const kitVectors = "mailie/key-scheme-v1"
+
+// TestTheVectorsAreTheKitsFrozenOnes holds testdata/ to the kit's copy, byte
+// for byte and file for file: the profile this package re-exports is the
+// kit's profiles/mailie, which the kit froze from these files (its SPEC
+// Appendix D), so neither side can change a byte of version 1 alone. A new
+// version of the scheme is new vectors in both, never an edit of these.
+func TestTheVectorsAreTheKitsFrozenOnes(t *testing.T) {
+	entries, err := fs.ReadDir(vectors.FS, kitVectors)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var theirs []string
+	for _, e := range entries {
+		theirs = append(theirs, e.Name())
+	}
+	if ours := slices.Sorted(slices.Values(vectorFiles)); !slices.Equal(ours, theirs) {
+		t.Fatalf("the kit freezes %v, testdata holds %v", theirs, ours)
+	}
+	for _, name := range vectorFiles {
+		ours, err := os.ReadFile(filepath.Join(testdata, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		frozen, err := fs.ReadFile(vectors.FS, kitVectors+"/"+name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(ours, frozen) {
+			t.Errorf("%s is not the kit's %s/%s", name, kitVectors, name)
+		}
+	}
+}
+
+// The sentinels are the kit's own values, so errors.Is on this package's
+// matches what the kit's profile returns.
+func TestTheProfilesSentinelsAreTheKits(t *testing.T) {
+	for _, s := range [][2]error{{keyscheme.ErrBinding, mailie.ErrBinding}, {keyscheme.ErrShape, mailie.ErrShape}, {keyscheme.ErrPublicKey, mailie.ErrPublicKey}} {
+		if !errors.Is(s[0], s[1]) {
+			t.Errorf("%v is not the kit's %v", s[0], s[1])
+		}
+	}
+	if _, err := mailie.GrantRow("not a namespace", keyscheme.NewSealID(), 1); !errors.Is(err, keyscheme.ErrBinding) {
+		t.Fatalf("the kit's refusal: %v", err)
+	}
+}
+
 // TestTheGoSideOpensEveryVector runs every committed case Go handles: what it
 // computes, opens or refuses, whatever the toolchain.
 func TestTheGoSideOpensEveryVector(t *testing.T) {
-	for _, name := range []string{"account-go.json", "grant-go.json", "platform-wrap-go.json", "browser-vault-go.json"} {
+	for _, name := range vectorFiles {
 		data, err := os.ReadFile(filepath.Join(testdata, name))
 		if err != nil {
 			t.Fatal(err)

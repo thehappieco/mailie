@@ -96,8 +96,8 @@ github.com/segmentio/encoding v0.5.4 h1:OW1VRern8Nw6ITAtwSZ7Idrl3MXCFwXHPgqESYfv
 github.com/segmentio/encoding v0.5.4/go.mod h1:HS1ZKa3kSN32ZHVZ7ZLPLXWvOVIiZtyJnO1gPH1sKt0=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
-github.com/thehappieco/kit v0.6.0 h1:HpN6Qd7kHP3l/YKpBwzCLwWw4lW7QgYDWXyq++jxY5k=
-github.com/thehappieco/kit v0.6.0/go.mod h1:lusRfGVJtCDV+nlXvEK8b7IA5XyKlDxbVgLfxEB4+Pg=
+github.com/thehappieco/kit v0.7.0 h1:bGfKPSHqHxhBAblmlaRxcMw1jwZbpXKIYWwI95/HgcQ=
+github.com/thehappieco/kit v0.7.0/go.mod h1:lusRfGVJtCDV+nlXvEK8b7IA5XyKlDxbVgLfxEB4+Pg=
 github.com/wneessen/go-mail v0.8.1 h1:tVcncj02/QySVFw3zr/kXOzZcuFQqBNT6K+Rbgm/pcM=
 github.com/wneessen/go-mail v0.8.1/go.mod h1:dWZ61zadzCIyvB4y1/YzC5O7MrbbzBfPkARmbosdf8w=
 github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zIM+UJPGz4=

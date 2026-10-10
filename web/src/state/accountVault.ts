@@ -24,7 +24,7 @@
 // address it saw enrol for as long as the page lives.
 
 import { toBase64URL, type Bytes } from '@thehappieco/kit/bytes'
-import { KeySchemeError, normaliseAddress, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope } from '../crypto/mailie'
+import { isMailieError, normaliseAddress, openBrowserVaultKey, sealBrowserVault, type BrowserKeyEnvelope } from '../crypto/mailie'
 
 interface VaultRecord {
   version: 1
@@ -148,7 +148,7 @@ export async function accountKeyOf(sealID: string, publicKey: string): Promise<B
   try {
     return await openBrowserVaultKey(record.envelope, sealID)
   } catch (error) {
-    if (error instanceof KeySchemeError) await wipeAccountKey()
+    if (isMailieError(error)) await wipeAccountKey()
     return null
   }
 }

@@ -16,11 +16,12 @@ import { deriveProductKey, isPlatformError, PASSWORD_PROFILE, recoveryCodeFromBy
 import { KIND_CONTENT_KEY, KIND_GRANT, KIND_USER_WRAP } from '@thehappieco/kit/seal'
 import {
   ACCOUNT_WRAP_HEADER, ACCOUNT_WRAP_LEN, ACCOUNT_WRAP_TAG, ACCOUNT_WRAP_VERSION, AccountError, BROWSER_VAULT_TAG, BROWSER_VAULT_VERSION,
-  DEFAULT_KDF, GRANT_LEN, Kind, KeySchemeError, MAX_EPOCH, MIN_EPOCH, PASSWORD_AUTH_LABEL, PASSWORD_WRAP_LABEL,
+  DEFAULT_KDF, GRANT_LEN, Kind, MailieError, MAX_EPOCH, MIN_EPOCH, PASSWORD_AUTH_LABEL, PASSWORD_WRAP_LABEL,
   RECOVERY_AUTH_LABEL, RECOVERY_WRAP_LABEL, SALT_LEN, SEAL_LABEL, SEAL_MAGIC, SealError, accountWrapAAD, browserVaultAAD,
   checkAccountWrapShape, checkGrantShape, checkKDF, grantAAD, grantInfo, grantRow, isNamespace, isSealID, kindName, mailieAccount,
   mailieBrowserVault, mailiePlatformWrap, mailieSeal, newNamespace, normaliseAddress, openAccountWrap, openBrowserVault, openGrant,
-  openMailiePlatformWrap, platformWrapBinding, prepareNewPassword, sealAccountWrap, sealBrowserVault, sealGrant, sealMailiePlatformWrap,
+  openBrowserVaultKey, openMailiePlatformWrap, platformWrapBinding, prepareNewPassword, sealAccountWrap, sealBrowserVault, sealGrant,
+  sealMailiePlatformWrap,
 } from '../src/crypto/mailie'
 
 interface Case {
@@ -117,7 +118,7 @@ async function withNonce<T>(nonce: Uint8Array, f: () => Promise<T>): Promise<T> 
 }
 
 function errorOf(err: unknown): { code: string; reason?: string } {
-  if (err instanceof KeySchemeError) return { code: err.code }
+  if (err instanceof MailieError) return { code: err.code }
   if (err instanceof AccountError) return { code: err.code, reason: err.reason }
   if (err instanceof SealError) return { code: err.code }
   if (isPlatformWrapError(err)) return { code: 'platform_wrap' }
@@ -333,8 +334,19 @@ describe('the key scheme in the browser', () => {
     const other = await publicFromPrivate(crypto.getRandomValues(new Uint8Array(32)) as Bytes)
     await expect(openBrowserVault({ ...record, publicRaw: other }, sealID)).rejects.toMatchObject({ code: 'vault' })
     await expect(openBrowserVault({ ...record, nonce: new Uint8Array(11) as Bytes }, sealID)).rejects.toMatchObject({ code: 'vault' })
-    expect(() => browserVaultAAD('ana@example.com', pub)).toThrow(KeySchemeError)
+    expect(() => browserVaultAAD('ana@example.com', pub)).toThrow(MailieError)
     await expect(sealBrowserVault(key.subarray(0, 31), pub, sealID)).rejects.toMatchObject({ code: 'binding' })
+  })
+
+  it('reads the raw account key back only for its person, and refuses anyone else with the kit’s vault error the console wipes on', async () => {
+    const key = crypto.getRandomValues(new Uint8Array(32)) as Bytes
+    const pub = await publicFromPrivate(key)
+    const record = await sealBrowserVault(key, pub, sealID)
+    expect(await openBrowserVaultKey(record, sealID)).toEqual(key)
+    const other = openBrowserVaultKey(record, 'd1a4c6e8-2b3f-4a5d-9e7f-0a1b2c3d4e50')
+    await expect(other).rejects.toBeInstanceOf(MailieError)
+    await expect(other).rejects.toMatchObject({ code: 'vault' })
+    await expect(openBrowserVaultKey(record, 'ana@example.com')).rejects.toMatchObject({ code: 'binding' })
   })
 
   it('keys an address as the server stores it, so another spelling of an enrolled address is the same address', () => {

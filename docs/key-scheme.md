@@ -7,10 +7,14 @@
   names it gives are informative until the server serves them, when [`console.md`](console.md) and
   the contract fixtures name them. The server serves those of sections 12.1 to 12.7 under
   `/v1/auth/` (Appendix C).
-- Built on: The Happie Co's kit, `github.com/thehappieco/kit` v0.6.0 in Go and
-  `@thehappieco/kit` 0.6.0 in TypeScript. Its `SPEC.md` is cited as "kit §n". This document is
+- Built on: The Happie Co's kit, `github.com/thehappieco/kit` v0.7.0 in Go and
+  `@thehappieco/kit` 0.7.0 in TypeScript. Its `SPEC.md` is cited as "kit §n". This document is
   Mailie's profile of it (kit §3): labels, headers, magic, kinds and additional data, and the
-  rules around them. **It adds no cryptographic construction of its own.**
+  rules around them. **It adds no cryptographic construction of its own.** Since v0.7.0 the kit
+  publishes this profile itself (Go `profiles/mailie`, TypeScript
+  `@thehappieco/kit/profiles/mailie`, kit Appendix D), frozen by this document's vectors, which it
+  carries as `vectors/mailie/key-scheme-v1`; the core uses it, and keeps only what the kit leaves
+  to Mailie (section 16).
 - Vectors: `internal/keyscheme/testdata/*.json`, cited as `file#case-id`: 248 cases, 150 of which
   must fail (section 14).
 - Code: Go [`internal/keyscheme`](../internal/keyscheme), TypeScript
@@ -1025,9 +1029,9 @@ are unchanged: nothing is sealed yet. Phase 4 decides both with service identiti
 
 | Code | Reason | Meaning | Go | TypeScript |
 |---|---|---|---|---|
-| `binding` | | an input outside its spelling (section 2), refused before anything is derived, sealed or opened; a platform wrap's seal id equal to the sub (section 6.1) | `keyscheme.ErrBinding` | `KeySchemeError` `binding` |
-| `shape` | | the server's check of a wrap or grant it stores | `keyscheme.ErrShape` | `KeySchemeError` `shape` |
-| `public_key` | | a public key the server refuses to store (section 4) | `keyscheme.ErrPublicKey` | (the server's only) |
+| `binding` | | an input outside its spelling (section 2), refused before anything is derived, sealed or opened; a platform wrap's seal id equal to the sub (section 6.1) | `keyscheme.ErrBinding` (the kit's `mailie.ErrBinding`) | `MailieError` `binding` |
+| `shape` | | the server's check of a wrap or grant it stores | `keyscheme.ErrShape` (the kit's `mailie.ErrShape`) | `MailieError` `shape` |
+| `public_key` | | a public key the server refuses to store (section 4) | `keyscheme.ErrPublicKey` (the kit's `mailie.ErrPublicKey`) | (the server's only) |
 | `password` | `rejected` | the preparation refused a password being presented | `account.Error` | `AccountError` |
 | `password_too_short`, `password_too_long`, `password_invalid` | | the platform's preparation refused a new password (section 5.1), before anything is derived | `platform.ErrPasswordTooShort`, `ErrPasswordTooLong`, `ErrPasswordInvalid` (`platform.ErrorCode`) | `PlatformError` with that code (`prepareNewPassword`) |
 | `kdf` | `out_of_bounds`, `unsupported_alg` | parameters or salt outside section 5.2 | `account.Error` | `AccountError` |
@@ -1037,7 +1041,7 @@ are unchanged: nothing is sealed yet. Phase 4 decides both with service identiti
 | `short`, `magic`, `version`, `suite`, `mode` | | a grant's header (section 9.2) | `seal.ErrShort` and the rest | `SealError` |
 | `authentication` | | a grant that does not open as this person's grant of this mailbox's key at this epoch | `seal.ErrAuthentication` | `SealError` |
 | `invalid_key` | | sealing to a missing or low-order public key | `seal.ErrInvalidKey` | `SealError` |
-| `vault` | | a browser vault record that does not open for the person named (section 7): another seal id, another public key, not a record; the console wipes it | | `KeySchemeError` `vault` (`openBrowserVault`) |
+| `vault` | | a browser vault record that does not open for the person named (section 7): another seal id, another public key, not a record; the console wipes it | | `MailieError` `vault` (`openBrowserVault`, `openBrowserVaultKey`) |
 
 Codes, never messages, cross the boundary; the console translates them (as it does every server
 code), and no message repeats a key, a password, a code or an address. The server's answers to the
@@ -1112,20 +1116,30 @@ sections 5.3 and 5.4).
 
 ## 16. The code
 
-| What | Go | TypeScript |
+The profile is the kit's (kit Appendix D): Go `github.com/thehappieco/kit/profiles/mailie`,
+TypeScript `@thehappieco/kit/profiles/mailie`, both since v0.7.0. The core names it in one place on
+each side: Go [`internal/keyscheme/keyscheme.go`](../internal/keyscheme/keyscheme.go) gives the
+kit's values the core's names (type aliases, the kit's constants and sentinels, and forwarders),
+and TypeScript [`web/src/crypto/mailie.ts`](../web/src/crypto/mailie.ts) re-exports the kit's
+module whole. Neither restates what the kit publishes; what the kit leaves to Mailie (the salt the
+server hands out, the address as it stores it, drawing seal ids and namespaces) stays beside it:
+Go `internal/keyscheme/server.go` and, in `mailie.ts`, the console's helpers.
+
+| What | Go (`internal/keyscheme`) | TypeScript (`web/src/crypto/mailie.ts`) |
 |---|---|---|
-| Account profile, labels, bounds | `internal/keyscheme/account.go`: `Account`, `DefaultKDF` | `web/src/crypto/mailie.ts`: `mailieAccount`, `DEFAULT_KDF`, `checkKDF`, `prepareNewPassword` |
-| Addresses, server salt | `NormaliseAddress`, `DecoySalt` | `normaliseAddress` |
-| Account wraps | `AccountWrapAAD`, `SealAccountWrap`, `OpenAccountWrap`, `CheckAccountWrapShape` | `accountWrapAAD`, `sealAccountWrap`, `openAccountWrap`, `checkAccountWrapShape` |
-| Seal ids, namespaces, public keys | `keyscheme.go`: `ValidSealID`, `ValidNamespace`, `NewSealID`, `PublicKey`, `CheckPublicKey`, `ErrPublicKey` | `isSealID`, `isNamespace`, `newNamespace` |
-| Domain, kinds, grants | `grant.go`: `SealDomain`, `Kind`, `GrantRow`, `GrantInfo`, `GrantAAD`, `SealGrant`, `OpenGrant`, `CheckGrantShape` | `mailieSeal`, `Kind`, `kindName`, `grantRow`, `grantInfo`, `grantAAD`, `sealGrant`, `openGrant`, `checkGrantShape` |
-| Platform wrap | `platform.go`: `PlatformWrap`, `PlatformWrapBinding` | `mailiePlatformWrap`, `platformWrapBinding`, `sealMailiePlatformWrap`, `openMailiePlatformWrap` |
-| Browser vault | `BrowserVaultAAD` (the vectors' reference) | `mailieBrowserVault`, `browserVaultAAD`, `sealBrowserVault`, `openBrowserVault` |
-| Vectors | `vectors_test.go`, `testdata/` | `web/test/keyscheme.spec.ts` |
+| Account profile, labels, bounds | `Account`, `DefaultKDF` (the kit's) | `mailieAccount`, `DEFAULT_KDF`, `checkKDF`, `prepareNewPassword` (the kit's) |
+| Addresses, server salt | `server.go`: `NormaliseAddress`, `DecoySalt`, `SaltLabel` (the core's) | `normaliseAddress` (the console's) |
+| Account wraps | `AccountWrapAAD`, `SealAccountWrap`, `OpenAccountWrap`, `CheckAccountWrapShape` (the kit's) | `accountWrapAAD`, `sealAccountWrap`, `openAccountWrap`, `checkAccountWrapShape` (the kit's) |
+| Seal ids, namespaces, public keys | `ValidSealID`, `ValidNamespace`, `PublicKey`, `CheckPublicKey`, `ErrPublicKey` (the kit's); `server.go`: `NewSealID` (the core's) | `isSealID`, `isNamespace` (the kit's); `newNamespace` (the console's) |
+| Domain, kinds, grants | `SealDomain`, `Kind`, `GrantRow`, `GrantInfo`, `GrantAAD`, `SealGrant`, `OpenGrant`, `CheckGrantShape` (the kit's) | `mailieSeal`, `Kind`, `kindName`, `grantRow`, `grantInfo`, `grantAAD`, `sealGrant`, `openGrant`, `checkGrantShape` (the kit's) |
+| Platform wrap | `PlatformWrap`, `PlatformWrapBinding` (the kit's) | `mailiePlatformWrap`, `platformWrapBinding`, `sealMailiePlatformWrap`, `openMailiePlatformWrap` (the kit's) |
+| Browser vault | `BrowserVaultAAD`, the vectors' reference (the kit's) | `mailieBrowserVault`, `browserVaultAAD`, `sealBrowserVault`, `openBrowserVault` (the kit's); `openBrowserVaultKey` (the console's) |
+| Errors (section 13) | `ErrBinding`, `ErrShape`, `ErrPublicKey` (the kit's sentinels) | `MailieError`, `isMailieError` (the kit's) |
+| Vectors | `vectors_test.go`, `testdata/`; `TestTheVectorsAreTheKitsFrozenOnes` holds `testdata/` to the kit's `vectors/mailie/key-scheme-v1`, byte for byte | `web/test/keyscheme.spec.ts` |
 | Guarantees | `keyscheme_test.go` | `web/test/keyscheme.spec.ts` |
 
 The kit modules underneath: Go `account`, `seal`, `hpke`, `platformwrap`, `profiles/mailie`,
-`profiles/platform`, `jcs`; TypeScript `@thehappieco/kit/account`, `/seal`, `/hpke`,
+`profiles/platform`, `jcs`, `vectors`; TypeScript `@thehappieco/kit/account`, `/seal`, `/hpke`,
 `/platformwrap`, `/profiles/mailie`, `/profiles/platform/core`, `/browserAccount`, `/jcs`,
 `/bytes`. The server's half of sections 11 and 12.1 to 12.7 is migration 0013
 (`internal/store/migrations/0013_account_keys.sql`), `internal/auth/accountkeys.go` (the
@@ -1161,9 +1175,10 @@ depends on it. Those settled on 2026-10-09 say so.
    grants to (threat model, section 5.3) and remember a mailbox's keys across epochs (section 5.4):
    the defences left against a server or a database writer that substitutes a person's key or
    writes a mailbox a new epoch with a key of its own.
-7. **The kit's Appendix D.** Asked on 2026-10-09: the kit's v0.7.0 takes Mailie's profile, frozen
+7. **The kit's Appendix D.** Settled on 2026-10-09: the kit's v0.7.0 took Mailie's profile, frozen
    from this specification's vectors, and its Appendix D records Mailie's `user_id` rule (the seal
-   id, never the `sub`; section 6.1).
+   id, never the `sub`; section 6.1). The core uses the kit's profile since (section 16, Appendix
+   C).
 
 ## Appendix A. The Mailie profile
 
@@ -1338,3 +1353,14 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   stored, a mark included. Keeping the key wherever the page found no session record, the rule's first
   draft, was found in review to keep a revoked session's key after a page stopped between clearing
   that record and wiping the key, or behind a browser clock running ahead.
+- Version 1, the profile from the kit (2026-10-09). No byte changed. The kit's v0.7.0 publishes
+  this profile, frozen from these vectors (its `profiles/mailie` in Go and TypeScript, kit
+  Appendix D, and `vectors/mailie/key-scheme-v1`, the four files of `internal/keyscheme/testdata`
+  byte for byte), and the core now uses it instead of its own copy: `internal/keyscheme` keeps its
+  names as aliases and forwarders of the kit's, and `web/src/crypto/mailie.ts` re-exports the
+  kit's module; only what the kit leaves to Mailie stays in the core (section 16). Go writes the
+  same files with `-update`, TypeScript opens every case as before, and
+  `TestTheVectorsAreTheKitsFrozenOnes` holds `testdata/` to the kit's copy. The profile's own
+  refusals in the console are now the kit's `MailieError`, with the same codes (`binding`,
+  `shape`, `vault`), in place of the console's `KeySchemeError`: the vault is wiped on one, and a
+  ceremony takes one for a security error, as before (section 13).

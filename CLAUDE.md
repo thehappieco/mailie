@@ -53,11 +53,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/keyscheme` — Mailie's profile of the kit's key scheme (phase 3), parameters and checks
   only: account wraps bound to the seal id (never the address), the server's salt, the wrap under
   the product key, the browser vault's AAD, the seal domain `ML`/`mlv1` and kinds, grants at
-  `GrantRow(namespace, namespace, seal id, epoch)`. Its vectors (`testdata/`, `-update` on
-  `TestTheVectorsAreWhatTheProfileWrites`) are written by Go and opened by
-  `web/src/crypto/mailie.ts` (`web/test/keyscheme.spec.ts`); never edit them by hand. A byte that
-  changes is a new label, header or kind and a new version of `docs/key-scheme.md`, never an edit.
-  See `docs/key-scheme.md` and `docs/key-scheme-threat-model.md`.
+  `GrantRow(namespace, namespace, seal id, epoch)`. The profile is the kit's `profiles/mailie`
+  (v0.7.0), which `keyscheme.go` gives the core's names as aliases and forwarders, and
+  `web/src/crypto/mailie.ts` re-exports from `@thehappieco/kit/profiles/mailie`; only the server's
+  helpers stay here (`server.go`: the address as stored, the salt it hands out, drawing seal ids),
+  and in the console `normaliseAddress`, `newNamespace` and `openBrowserVaultKey`. Its vectors
+  (`testdata/`, `-update` on `TestTheVectorsAreWhatTheProfileWrites`) are written by Go and opened
+  by `web/src/crypto/mailie.ts` (`web/test/keyscheme.spec.ts`); never edit them by hand. The kit
+  froze them as its `vectors/mailie/key-scheme-v1`, held equal byte for byte
+  (`TestTheVectorsAreTheKitsFrozenOnes`). A byte that changes is a new label, header or kind and a
+  new version of `docs/key-scheme.md` and of the kit's vectors, never an edit. See
+  `docs/key-scheme.md` and `docs/key-scheme-threat-model.md`.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
   expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key

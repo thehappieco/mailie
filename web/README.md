@@ -52,8 +52,10 @@ cloud's `2026-09-` revisions). The one spelling of the company it sets aside is 
 name in an import of the kit, `@thehappieco/kit`, which is code and never reaches a screen.
 `npm run build` fails on an output file that has one (`vite.config.ts`), whatever brought it in.
 
-`src/crypto/mailie.ts` is Mailie's profile of the kit's key scheme (`../docs/key-scheme.md`), not
-yet called by any screen. `test/keyscheme.spec.ts` holds it to the golden vectors the Go side writes
+`src/crypto/mailie.ts` is Mailie's profile of the kit's key scheme (`../docs/key-scheme.md`): the
+kit's own since 0.7.0 (`@thehappieco/kit/profiles/mailie`), re-exported with the few helpers the
+kit leaves to the console, which the ceremonies use through `src/crypto/account.ts`.
+`test/keyscheme.spec.ts` holds it to the golden vectors the Go side writes
 (`../internal/keyscheme/testdata`, `go test ./internal/keyscheme -run
 TestTheVectorsAreWhatTheProfileWrites -update`), including every case that must fail; as with the
 contract fixtures, a missing file is a failure, never something to create from here. The kit is
