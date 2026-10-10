@@ -251,13 +251,17 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   (`zk_enrolled_at`) is one way, with no password hash beside it: the schema holds all three.
   Changing the password and replacing the recovery code take the current auth key in the same
   request, never a session alone (a recovery code a session could set is a password it could set).
-  Giving `read` with a grant and writing mailbox keys will need a step-up within ten minutes on
-  that session once mailboxes have keys (phase 3's next step; a sign-in counts, the hosted one is
-  id.'s `auth_time`, never the sign-in's moment); until then nothing asks for one. Every enrolment
+  Writing a mailbox key and a grant for someone else (linking, `read` given with a grant,
+  supplying the key, a first or a new key) takes a step-up within ten minutes on that session,
+  checked again in the transaction that writes (a sign-in counts, the hosted one is id.'s
+  `auth_time`, never the sign-in's moment); flags alone take none. The browser makes every mailbox
+  key and seals every grant (`web/src/crypto/mailbox.ts`); the server checks their shapes, writes
+  each key and grant once, and never receives a private key. Every enrolment
   is told the seal id and the target before it seals: `signup/open` (the seal id drawn once per
   invitation, which `signup` must name), `reset/open` and `upgrade/login`; a reset's new password is
   derived under what `reset/open` answers (the target the reset stores), never the challenge's
-  answer; without `--force` a reset refuses the last reader of any team mailbox, a team they are
+  answer; without `--force` a reset refuses the last reader of any team mailbox that has a key (it
+  deletes the person's grants; on a keyless mailbox they keep reading by the flag), a team they are
   alone in included (closing a person leaves that team out: it goes with them). The upgrade's
   password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) exists in the release that
   brings the scheme only. New passwords have at least twelve code points. The console's half
@@ -273,7 +277,11 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   the operator's; who linked one is attribution only, `linked_by`). A person sees one as an active
   member of its workspace holding a grant on it, or as its owner or admin, who manage every
   mailbox of the workspace by their role — its card, re-authorizing, who holds what — and each use
-  needs its flag; an instance key reaches only the operator workspace's. Another workspace's
+  needs its flag. On a mailbox that has a key (`docs/key-scheme.md`, sections 8 and 9), `read` is
+  the flag and a grant at its current epoch, one SQL rule (`store.ReaderSQL`) for access, listing,
+  the last reader and sync eligibility; a member waiting for the key keeps the card and reads
+  nothing, and taking `read` deletes the person's grants in the same transaction. An instance key
+  reaches only the operator workspace's, whose mailboxes have no key. Another workspace's
   mailbox, or one the caller neither holds anything on nor manages, is `not_found`, never
   `forbidden`; listing filters in SQL with the same rule as fetching one. No role reads, acts or
   sends: `read` passes only from an owner or an admin who reads the mailbox now, `act` and `send`

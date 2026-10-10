@@ -719,8 +719,9 @@ actions when that time is more than 10 minutes old, or later than the server's o
   `TestAStepUpProvesOnlyTheSessionsOwnPerson`, `TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity`,
   `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`; for the actions on mailbox keys,
   `internal/service/mailboxkeys_test.go`, `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes` and
-  `TestChangingFlagsWithoutAGrantNeedsNoStepUp`, and over REST
-  `TestTheMailboxKeyRoutesAreThinOverTheService`): a step-up as another person or
+  `TestChangingFlagsWithoutAGrantNeedsNoStepUp` and `TestALinkWhoseStepUpEndedDuringItsLoginStoresNothing`,
+  and over REST `TestTheMailboxKeyRoutesAreThinOverTheService` and
+  `TestNoRouteTakesAMailboxPrivateKey`): a step-up as another person or
   another id. identity is refused; a silent sign-in does not freshen the time; each action above
   is refused past the 10 minutes, writing nothing, and accepted within them after a sign-in or a
   step-up; and what writes no key nor a grant for someone else (flags alone, "read" by the flag to
@@ -959,8 +960,9 @@ recovery is id.'s (section 6.2).
 
 Section 8. The browser makes the key pair and the namespace, seals the linker's grant at epoch 1
 to their own public key, and sends `{public_key, namespace, grant}` with the request that creates
-the mailbox (every path that links one: the password form, the web OAuth flow, and resuming an
-abandoned link), with a fresh step-up (section 11). The server checks the step-up, the public key,
+the mailbox (every path that links one: the password form and the web OAuth flow), with a fresh
+step-up (section 11). Resuming an abandoned link sends no key: the mailbox it resumes holds the
+one its link wrote (Appendix C). The server checks the step-up, the public key,
 the namespace's spelling and uniqueness, and the grant's shape at epoch 1 for the linker. It never
 makes a mailbox key itself.
 
