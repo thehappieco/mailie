@@ -60,9 +60,11 @@ verifier is the same offline oracle.
   recovery wrap only to a recovery proof, never to a session alone. Every way a sign-in can fail
   costs the same work and gets the same answer. Changing the password and replacing the recovery
   code each need the current auth key in the same request: a session alone, however recent its
-  sign-in, sets neither. Giving "read" and writing a mailbox's keys will need the person's secret
-  proved within the last ten minutes (a sign-in or a step-up) once mailboxes have keys, the key
-  scheme's next step; until then access is given as before, without one.
+  sign-in, sets neither. Writing a mailbox's key, giving "read" with a grant to someone else and
+  supplying a mailbox's key need the person's secret proved within the last ten minutes on that
+  session (a sign-in or a step-up). A mailbox's key pair is made in a browser; the server stores
+  its public half and the grants sealed of it, which it cannot open, and never its private key. On
+  a mailbox that has a key, reading takes the flag and the person's grant at its current epoch.
 - In the release that brings the key scheme only, a person who signed up before it sends their
   password in clear one last time, at their next sign-in, and a challenge says, to anyone, that such
   an address has an account not yet upgraded. Enrolment is one way: the server then refuses their

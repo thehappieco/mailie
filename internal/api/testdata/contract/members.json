@@ -7,7 +7,9 @@
       "acc_0000000000000006"
     ],
     "name": "Ana Lima",
+    "public_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
     "role": "owner",
+    "seal_id": "00000000-0000-4000-8000-000000000001",
     "status": "active",
     "user_id": "usr_0000000000000001"
   },
@@ -17,7 +19,9 @@
     "last_owner": false,
     "last_reader_of": [],
     "name": "Bea Lima",
+    "public_key": "NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU",
     "role": "member",
+    "seal_id": "00000000-0000-4000-8000-000000000002",
     "status": "active",
     "user_id": "usr_0000000000000003"
   },
@@ -27,7 +31,9 @@
     "last_owner": false,
     "last_reader_of": [],
     "name": "",
+    "public_key": "NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ",
     "role": "member",
+    "seal_id": "00000000-0000-4000-8000-000000000003",
     "status": "active",
     "user_id": "usr_0000000000000002"
   }

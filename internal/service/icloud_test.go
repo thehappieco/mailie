@@ -129,7 +129,7 @@ func TestAnICloudAccountCannotPointElsewhere(t *testing.T) {
 		req := base
 		change(&req)
 		for who, p := range map[string]service.Principal{"a session": session, "an instance key": admin()} {
-			_, err := f.svc.AddAccount(t.Context(), p, req)
+			_, err := f.svc.AddAccount(t.Context(), p, keyed(p, req))
 			if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "Apple's servers") {
 				t.Errorf("%s, %s: %v", name, who, err)
 			}
@@ -139,7 +139,7 @@ func TestAnICloudAccountCannotPointElsewhere(t *testing.T) {
 	// Apple has no OAuth for this server: no password, no account.
 	noPassword := base
 	noPassword.Password = ""
-	_, err := f.svc.AddAccount(t.Context(), session, noPassword)
+	_, err := f.svc.AddAccount(t.Context(), session, keyed(session, noPassword))
 	if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "app-specific password") {
 		t.Errorf("no password: %v", err)
 	}
@@ -156,9 +156,9 @@ func TestAnICloudSignInIsAWholeAddress(t *testing.T) {
 	f := newFixture(t)
 	session := f.person(t, "ana@example.com", auth.RoleMember)
 	for _, login := range []string{"ana", "ana@", "Ana <ana@icloud.com>", "<ana@icloud.com>", "ana@icloud.com, bob@icloud.com"} {
-		_, err := f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{
+		_, err := f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{
 			Email: "ana@lima.example", Provider: "icloud", Password: "abcd-efgh-ijkl-mnop", LoginUser: login,
-		})
+		}))
 		if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "whole address") {
 			t.Errorf("login_user %q: %v", login, err)
 		}
@@ -175,13 +175,13 @@ func TestAnICloudAddressDefaultsToICloud(t *testing.T) {
 		// With no provider named, the address makes it iCloud: servers are
 		// refused as they are for iCloud, and a missing password is asked
 		// for as an app-specific one rather than a generic server's.
-		_, err := f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{
+		_, err := f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{
 			Email: address, Password: "abcd-efgh-ijkl-mnop", IMAPHost: "imap.elsewhere.example", SMTPHost: "smtp.elsewhere.example",
-		})
+		}))
 		if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "Apple's servers") {
 			t.Errorf("%s with servers named: %v", address, err)
 		}
-		_, err = f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{Email: address})
+		_, err = f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{Email: address}))
 		if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "app-specific password") {
 			t.Errorf("%s with no password: %v", address, err)
 		}
@@ -194,7 +194,7 @@ func TestAnICloudAddressDefaultsToICloud(t *testing.T) {
 	// say — and then it is generic IMAP, presented as such.
 	req := f.passwordAccount(t, "ana@icloud.com")
 	req.Provider = "imap"
-	result, err := f.svc.AddAccount(t.Context(), session, req)
+	result, err := f.svc.AddAccount(t.Context(), session, keyed(session, req))
 	if err != nil {
 		t.Fatalf("an Apple address on another server, provider imap: %v", err)
 	}

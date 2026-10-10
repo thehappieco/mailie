@@ -104,9 +104,9 @@ func newSupportTeam(t *testing.T, h *harness) supportTeam {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	added := h.do(t, http.MethodPost, "/v1/accounts", tm.ana,
+	added := h.do(t, http.MethodPost, "/v1/accounts", tm.ana, linkAs(t, tm.ana,
 		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+
-			`,"workspace_id":"`+tm.id+`","sync_consent_version":"`+service.DefaultSyncConsentVersion+`"}`)
+			`,"workspace_id":"`+tm.id+`","sync_consent_version":"`+service.DefaultSyncConsentVersion+`"}`))
 	if added.StatusCode != http.StatusCreated {
 		code, msg := decodeError(t, added)
 		t.Fatalf("linking into the team: %d %s %s", added.StatusCode, code, msg)
@@ -136,7 +136,7 @@ func newSupportTeam(t *testing.T, h *harness) supportTeam {
 // grant sets what Bea holds on the team's mailbox, as Ana.
 func (tm supportTeam) grant(t *testing.T, h *harness, body string) {
 	t.Helper()
-	resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, body)
+	resp := h.do(t, http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana, sealedFor(t, body))
 	if resp.StatusCode != http.StatusOK {
 		code, msg := decodeError(t, resp)
 		t.Fatalf("granting %s: %d %s %s", body, resp.StatusCode, code, msg)
@@ -463,7 +463,9 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
 		`{"read":true,"act":true,"send":true,"manage":true}`, http.StatusBadRequest)
 	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
-		`{"read":true,"act":true,"send":true,"manage":false}`, http.StatusOK)
+		`{"read":true,"act":true,"send":true,"manage":false}`, http.StatusBadRequest)
+	status(http.MethodPut, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID, tm.ana,
+		sealedFor(t, `{"read":true,"act":true,"send":true,"manage":false}`), http.StatusOK)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send,shout", tm.ana, "",
 		http.StatusBadRequest)
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"/access/"+tm.beaID+"?flags=send", tm.ana, "",

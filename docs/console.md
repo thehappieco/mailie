@@ -165,12 +165,17 @@ presented has no minimum.
   (`not_authorized`) and changes nothing. It ends the recoveries opened with the old code.
 - **Step-up.** `POST /v1/auth/stepup {auth_key}` proves the session's own person again: it checks
   the auth key of that person only and refreshes that one session's step-up time
-  (`{authenticated_at}`), as a sign-in, a sign-up or an enrolment sets it. No route asks for it in
-  this release. Giving "read" with a grant, supplying a mailbox's key and writing mailbox keys will
-  ask for one within the last ten minutes once mailboxes have keys, the next step of the key scheme
-  ([`key-scheme.md`](key-scheme.md) section 11); until then access is given as before, with the
-  flag alone. `GET /v1/auth/me` reports the session's `authenticated_at` (0: none), so the console
-  can ask for the password again before it calls such a route rather than after a refusal.
+  (`{authenticated_at}`), as a sign-in, a sign-up or an enrolment sets it. The routes that write a
+  mailbox key or a grant for someone else refuse a session whose step-up time is more than ten
+  minutes old, or none, with `403` (`not_authorized`) and nothing written
+  ([`key-scheme.md`](key-scheme.md) section 11): linking a mailbox (`POST /v1/accounts`), giving
+  "read" with a grant to someone else (`PUT /v1/accounts/{id}/access/{user}` with `grant`),
+  supplying the key (`PUT /v1/accounts/{id}/grants/{user}`), a mailbox's first key and a personal
+  mailbox's new key (`POST` and `PUT /v1/accounts/{id}/mailbox-key`); see
+  [Mailbox keys](#mailbox-keys). Flags alone, `read` by the flag to a person without an account key
+  or on a mailbox without a key included, need none. A sign-in counts for its first ten minutes.
+  `GET /v1/auth/me` reports the session's `authenticated_at` (0: none), so the console can ask for
+  the password again before it calls such a route rather than after a refusal.
 - **Tickets** (re-derivation, password change, recovery, enrolment) are single-use, valid ten
   minutes, stored as SHA-256 and bound to the person; for a password change and a re-derivation,
   to the session and the auth key that earned the ticket, and for a recovery to the recovery proof
@@ -246,11 +251,12 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **A new recovery code** (`components/AccountPanel.vue`) asks for the password every time,
   derives the current auth key under the account's own salt and parameters, and sends it with the
   new wrap and proof; the password is never sent.
-- **The step-up prompt** (`components/StepUpDialog.vue`) is for what the step-up will guard in the
-  next step; nothing asks for it yet. The console judges the session's `authenticated_at` by the
-  server's clock, as the `Date` of the server's answers gives it (`state/connection.ts`), never by
-  its own: a browser whose clock runs ahead would otherwise find a step-up it just made already
-  old.
+- **The step-up prompt** (`components/StepUpDialog.vue`) is for what the step-up guards
+  ([Mailbox keys](#mailbox-keys)); the console's flows that seal mailbox keys and grants, and mount
+  it before each such call, are the next part of phase 3's step 4. The console judges the session's
+  `authenticated_at` by the server's clock, as the `Date` of the server's answers gives it
+  (`state/connection.ts`), never by its own: a browser whose clock runs ahead would otherwise find
+  a step-up it just made already old.
 - **The links.** An invitation (`#invite=…&email=…`) starts with `signup/open`; a reset link
   (`#reset=…&email=…`) with `reset/open`, which says before any password is typed that a link is
   not valid or would take a team mailbox's last reader. Both codes leave the address bar at once.
@@ -444,6 +450,9 @@ adds with an instance key.
 - **No role reads.** `read` passes only from an owner or an admin who reads the mailbox now; `act`
   (to someone who reads) and `send` from any owner or admin, to anyone in the team, themselves
   included. The operator grants `manage` to members and revokes.
+- **On a mailbox that has a key**, reading takes the `read` flag and the person's **grant** at its
+  current epoch ([Mailbox keys](#mailbox-keys)); a member who holds the flag without it waits for
+  the key, sees the card and reads nothing, and is no reader.
 - Another workspace's mailbox, and one the caller neither holds a grant on nor manages by a role,
   answer `not_found`, never `forbidden`; a mailbox the caller sees without the flag an operation
   needs answers `not_authorized`. The rule lives in `internal/service` and runs in SQL on every
@@ -460,8 +469,9 @@ adds with an instance key.
 
 Protections, each `409` and marked in advance in the listings (`last_owner` and `last_reader_of`
 on members, `readers` and `no_reader` on the directory): a team keeps an active owner, and a team
-mailbox someone reads keeps a **reader** — the last person who can read it keeps `read`, and is not
-disabled, removed, or closed without `force`. A team mailbox nobody can read (a forced closure)
+mailbox someone reads keeps a **reader** — the last person who can read it (the flag, and on a
+mailbox that has a key a grant at its current epoch) keeps `read`, and is not disabled, removed,
+reset, or closed without `force`. A team mailbox nobody can read (a forced closure)
 syncs nothing, is never switched on again (`409`), and is marked `no_reader`; its owners and admins
 remove it, or remove it and link it again, or turn its sync off to delete what is still indexed. A team mailbox syncs under its **workspace's consent** ([Sync and consent](#sync-and-consent)).
 
@@ -645,15 +655,19 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
-| `GET /v1/workspaces/{id}/members` | owner or admin; operator (a member: `403`) | `[Member]`, with `last_owner` and `last_reader_of` |
+| `GET /v1/workspaces/{id}/members` | owner or admin; operator (a member: `403`) | `[Member]`, with `last_owner`, `last_reader_of`, and each person's `seal_id` and `public_key` (absent until they enrol), which a grant to them is bound by and sealed to |
 | `PATCH /v1/workspaces/{id}/members/{user}` | owner: anyone's; admin: members', never to admin or owner; operator | `{role?, status?}` → `Member`; any change expires the invites the person made there |
 | `DELETE /v1/workspaces/{id}/members/{user}` | owner: anyone, themselves while another owner remains; admin: members; operator | 204; their grants there go, their invites there expire |
 | `GET/POST /v1/workspaces/{id}/invites`, `DELETE …/invites/{invite}` | owner; admin (member invites); operator | team invites: `{email, role?}` → `TeamInvite` with its `url` (201) |
-| `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`: every mailbox, its grants, `readers`, `no_reader`, its own consent to sync (`sync`) and `linked_by`; never the index |
-| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)); operator: `manage` to members only | `{read, act, send, manage}`, all four → `Grant` |
-| `DELETE /v1/accounts/{id}/access/{user}?flags=` | owner or admin, their own flags included; operator | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it |
+| `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`: every mailbox, its grants (each with `sealed`: its person holds the key at the current epoch), `readers` (by the one rule), `no_reader`, `epoch` (its key's current one; absent without a key), its own consent to sync (`sync`) and `linked_by`; never the index |
+| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)); operator: `manage` to members only | `{read, act, send, manage, grant?}`, all four flags → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, after a fresh step-up when they are someone else ([Mailbox keys](#mailbox-keys)) |
+| `DELETE /v1/accounts/{id}/access/{user}?flags=` | owner or admin, their own flags included; operator | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it; taking `read` takes the person's grants |
+| `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it | `MailboxKeyState` ([Mailbox keys](#mailbox-keys)) |
+| `POST /v1/accounts/{id}/mailbox-key` | session reading it, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant}]}` → `MailboxKeyPair` (201): the first key of a mailbox without one |
+| `PUT /v1/accounts/{id}/mailbox-key` | session, a personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`: its next key |
+| `PUT /v1/accounts/{id}/grants/{user}` | session reading it; fresh step-up | `{epoch, grant}` → `SealedGrant`: the key, to a member who holds `read` without it |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller holds a grant on, and every mailbox of a team they own or administer (its card); `?workspace=` narrows the list |
-| `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link |
+| `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link; a person sends the mailbox's first key, `public_key`, `namespace` and `grant`, with a fresh step-up |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner or admin, a personal mailbox's person, the operator for its own | remove it, with its index; without the id repeated, `400` and nothing removed |
 | `POST /v1/accounts/{id}/oauth/start` | admin, manage | start (or restart) its authorization; the flow is the caller's |
 | `POST /v1/accounts/oauth/callback` | admin, manage | `{redirect_url}` → `Account` (45 s); only the flow's starter |
@@ -696,16 +710,24 @@ not an active member of is `404`, and with `account` as well the account must be
 (`docs/workspaces.md`, "Choosing the workspace in a request").
 
 An account carries `workspace_id`, `linked_by` (absent for the operator's mailboxes) and `access`,
-the caller's own flags as far as their credential's scope reaches; `send.reason` `not_granted` is
-a mailbox the caller may not send from.
+the caller's own flags as far as their credential's scope reaches (`read` is reading now, by the
+one rule); `send.reason` `not_granted` is a mailbox the caller may not send from. For a person
+signed in it also carries `mailbox_key`, `{epoch, public_key, namespace}`, the mailbox's key pair at
+its current epoch (absent for a mailbox without a key), and `access.waiting_key: true` when they
+hold `read` on a mailbox that has a key without a grant at its current epoch. An API key sees
+neither, over REST or MCP.
 
 ## Mailboxes
 
 ### Adding one
 
 `POST /v1/accounts` takes `{email, provider?, display_name?, password?, imap_host?, imap_port?,
-smtp_host?, smtp_port?, smtp_tls?, login_user?, flow?, initial_days?, save_sent_copy?}` and answers
-the account and, for OAuth, the authorization to complete. A password account is **tested before it
+smtp_host?, smtp_port?, smtp_tls?, login_user?, flow?, initial_days?, save_sent_copy?,
+workspace_id?, sync_consent_version?, public_key?, namespace?, grant?}` and answers the account
+and, for OAuth, the authorization to complete. A person's link carries the mailbox's first key
+([Mailbox keys](#mailbox-keys)), written in the transaction that creates the mailbox, on the
+password and the OAuth paths alike; resuming an abandoned link (`POST /v1/accounts/{id}/oauth/start`)
+carries none, since the row has it. A password account is **tested before it
 is saved**: the daemon resolves the hosts, connects and logs in to IMAP (a 30-second budget). A
 refused password, an unreachable server and a host on a private network are `400` with different
 messages, and nothing is stored.
@@ -722,6 +744,73 @@ there is no route yet to replace a stored password, so the mailbox is removed an
 
 Gmail in the console connects only with Google sign-in. An app password works from the command line
 (an instance key), never for a person: it is a credential without scope or expiry.
+
+### Mailbox keys
+
+Phase 3 of the key scheme ([`key-scheme.md`](key-scheme.md) sections 8, 9 and 12.11 to 12.15;
+[`workspaces.md`](workspaces.md), "Mailbox keys and sealed grants"). A mailbox's key pair is made
+by a browser: an X25519 key pair, a **namespace** (a lowercase UUIDv4, the same at every epoch, no
+other mailbox's) and an **epoch** (1, then each new key the next). The server stores the public half
+and the namespace, and **grants**, the private key sealed to one person's account public key, 88
+bytes of base64url (118 characters) it checks for their shape only and cannot open; no route
+takes a private key, and the request decoder refuses an unknown field. Every route here is a
+person's: an API key is `403`.
+
+- **Who reads.** On a mailbox that has a key, the `read` flag and a grant at its current epoch; on
+  one without, the flag alone. A member who holds the flag without the grant **waits for the key**
+  (`access.waiting_key`), and reads nothing of it.
+- **Linking** (`POST /v1/accounts`, section 12.11): `public_key` (base64url of 32 bytes),
+  `namespace` and `grant` (the linker's own, at epoch 1), all three, with a fresh step-up, asked
+  before the mail server is dialled and again in the transaction that stores the mailbox. A
+  person without an account key cannot link (`409`); an instance key's link carries none (`400`).
+- **Giving read** (`PUT /v1/accounts/{id}/access/{user}` with `grant`, section 12.13): the
+  recipient's grant at the current epoch, sealed by the giver's browser from its own; required
+  when `read` is added on a mailbox that has a key to a person with an account key, refused
+  otherwise. A fresh step-up when the recipient is someone else.
+- **Supplying the key** (`PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant}` → `SealedGrant`):
+  any person who reads the mailbox, owner, admin or member, to an active member who holds `read`,
+  has an account key and no grant at the current epoch; a fresh step-up.
+- **The first key** (`POST /v1/accounts/{id}/mailbox-key` `{public_key, namespace, grants: [{user_id,
+  grant}]}` → `MailboxKeyPair`, 201, section 12.14): a mailbox without a key, from a person who reads
+  it by the flag and has an account key, with exactly one grant at epoch 1 for them and for every
+  other active member who holds `read` and has an account key (`keyless_readers` below); a fresh
+  step-up. The console writes it right after a sign-in, while that sign-in counts as a step-up.
+- **A new key** (`PUT /v1/accounts/{id}/mailbox-key` `{epoch, public_key, grant}` →
+  `MailboxKeyPair`, section 12.12): a personal mailbox's person only, at the epoch after the
+  current one, with their own grant, keeping the namespace; every grant of an older epoch goes. A
+  team mailbox is never given one (`403`). After a reset this is how a person reads their own
+  mailboxes again.
+- **What the console reads**: each account's `mailbox_key` and `access.waiting_key` (above), and
+  `GET /v1/accounts/{id}/mailbox-key`, for a person who holds `read` on it (one who sees only its
+  card: `403`), which answers
+
+  ```jsonc
+  {"epoch": 1, "public_key": "…", "namespace": "9d035f2b-…",  // absent for a mailbox without a key
+   "grant": "TUwBAQEAAQ…",      // the caller's own at the current epoch; absent while they wait
+   "waiting": [{"user_id": "usr_…", "email": "…", "name": "…", "seal_id": "…", "public_key": "…"}],
+   "suppliers": [{"user_id": "usr_…", "email": "…", "name": "…"}],
+   "keyless_readers": [{"user_id": "usr_…", "email": "…", "name": "…", "seal_id": "…", "public_key": "…"}]}
+  ```
+
+  `waiting`, for a reader, are the members to supply; `suppliers`, for a member who waits, who
+  reads it now; `keyless_readers`, on a mailbox without a key, whom its first key is sealed to
+  beside its writer. The members list (`GET /v1/workspaces/{id}/members`) carries each person's
+  `seal_id` and `public_key` for an owner or an admin giving read.
+- **Taking read** — a revoke, a membership disabled or removed, the person disabled, deleted or
+  reset — deletes their grants in the same transaction; `event: access` follows every write of a
+  key or a grant.
+
+| Situation | Code |
+|---|---|
+| a public key, namespace, grant or epoch outside its shape; a grant at odds with the epoch its request names; a person's link without its key, an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400` |
+| a step-up more than ten minutes old, or none; a giver or a writer who does not read the mailbox now; a person who sees the mailbox without holding `read` asking for its key; a team mailbox's new key; an API key | `403` |
+| a mailbox the caller cannot see; a recipient who is not an active member of its workspace | `404` |
+| a grant at another epoch than the current one, or a new key at another than the next; a grant that already exists; a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace in use; a recipient without an account key, or without `read` for the key; a person without an account key linking | `409` |
+
+The console's half (sealing and opening in the browser with the kit's `sealGrant` and
+`openGrant`, the step-up dialog before each call, the waiting state on a card) is the next part of
+phase 3's step 4: until it lands, a person's link from the open console carries no key and is
+refused.
 
 ### OAuth flows
 

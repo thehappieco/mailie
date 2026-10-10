@@ -82,7 +82,7 @@ func TestAGrantWithoutTheMailScopeIsRefusedAndStoresNothing(t *testing.T) {
 	})
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
 
-	added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"}))
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestAGrantForAnotherAccountEndsInErrorAndStoresNoToken(t *testing.T) {
 
 	// Through the console: Gmail explains its refusal, and the explanation
 	// is what the operator reads.
-	web, err := f.svc.AddAccount(t.Context(), ana, onServer(t, gmail, service.AddAccountRequest{Email: "ana.work@gmail.com"}))
+	web, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, gmail, service.AddAccountRequest{Email: "ana.work@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +218,9 @@ func TestAMailServerThatIsDownAtConsentKeepsTheGrant(t *testing.T) {
 	host, port := splitHostPort(t, closed.Addr().String())
 	_ = closed.Close()
 
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{
 		Email: "ana@gmail.com", IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: port,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestACallerThatStopsWaitingChangesNothingAboutTheCheck(t *testing.T) {
 				cancel() // the caller gives up while the token is being issued
 			}
 		})
-		added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: c.email}))
+		added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: c.email})))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -293,7 +293,7 @@ func TestARefusalOfAGrantAlreadyReplacedLeavesTheNewOneAlone(t *testing.T) {
 	idp.set(func(f *fakeIDP) { f.onIssue = srv.AcceptToken })
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
 
-	added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"}))
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,7 +387,7 @@ func TestARefusedRefreshedTokenInUseMovesTheAccountToNeedsReauth(t *testing.T) {
 	idp.set(func(f *fakeIDP) { f.onIssue = srv.AcceptToken })
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
 
-	added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"}))
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func TestTheGrantCheckRunsInTheAccountsInteractiveSlot(t *testing.T) {
 		return err
 	})
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-	added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"}))
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,6 +15,11 @@
     "display_name": "Ana (Gmail)",
     "email": "ana@gmail.com",
     "id": "acc_0000000000000001",
+    "mailbox_key": {
+      "epoch": 1,
+      "namespace": "00000000-0000-4000-a000-000000000001",
+      "public_key": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI"
+    },
     "provider": "gmail",
     "save_sent_copy": false,
     "send": {

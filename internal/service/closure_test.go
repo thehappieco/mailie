@@ -285,10 +285,10 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		}
 	}
 	// Mailbox keys and the grants sealed with them: her own mailbox's, which
-	// go with it; the team mailbox bob keyed, sealed to both of them, whose
-	// grant of hers goes with her; and the one she linked into the team and
-	// keyed, sealed to bob too, which stays without her name.
-	authtest.KeyMailbox(t, f.db, anaHome, ana.UserID)
+	// her link wrote and which go with it; the team mailbox bob keyed, sealed
+	// to both of them, whose grant of hers goes with her; and the one she
+	// linked into the team and keyed, sealed to bob too, which stays without
+	// her name.
 	authtest.KeyMailbox(t, f.db, teamBox.ID, bob.UserID)
 	authtest.KeyMailbox(t, f.db, linked.ID, ana.UserID)
 	anaAlone, err := workspaces.CreateTeam(t.Context(), "Ana alone", ana.UserID, nil)
@@ -692,19 +692,19 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 		}
 	}
 
-	own, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "ana@gmail.com", Flow: "loopback"})
+	own, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "ana@gmail.com", Flow: "loopback"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared, err := f.svc.AddAccount(t.Context(), keeper, service.AddAccountRequest{
+	shared, err := f.svc.AddAccount(t.Context(), keeper, keyed(keeper, service.AddAccountRequest{
 		Email: "team@gmail.com", Flow: "loopback", WorkspaceID: team.ID,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, p := range []service.Principal{ana, bea} {
-		if _, err := workspaces.SetGrant(t.Context(), shared.Account.ID, p.UserID,
-			workspace.Flags{Read: true, Manage: true}, keeper.UserID, nil); err != nil {
+		if _, err := workspaces.SetGrantSealed(t.Context(), shared.Account.ID, p.UserID,
+			workspace.Flags{Read: true, Manage: true}, grantAt(1), keeper.UserID, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -822,7 +822,7 @@ func TestConsentFinishingAfterItsOwnerWasDisabledStoresNoGrant(t *testing.T) {
 	f, idp := consentFixture(t, "https://console.mailie.example")
 	f.person(t, "owner@example.com", auth.RoleOwner)
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "ana@gmail.com"})
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "ana@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -861,7 +861,7 @@ func TestAMailboxAddedByARequestThatOutlivedItsPersonIsNotStored(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := f.svc.AddAccount(t.Context(), ana, f.passwordAccount(t, "late@mail.example"))
+	_, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, f.passwordAccount(t, "late@mail.example")))
 	if service.CodeOf(err) != service.CodeUnauthorized {
 		t.Errorf("adding for a disabled person: %v, want unauthorized", err)
 	}

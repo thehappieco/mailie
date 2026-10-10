@@ -19,8 +19,8 @@
     "has_password": true,
     "id": "usr_0000000000000005",
     "name": "",
-    "public_key": "MjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI",
+    "public_key": "NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY",
     "role": "member",
-    "seal_id": "00000000-0000-4000-8000-000000000004"
+    "seal_id": "00000000-0000-4000-8000-000000000005"
   }
 }

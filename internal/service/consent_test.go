@@ -232,7 +232,7 @@ func TestAUserCannotCompleteAnotherUsersOAuthFlow(t *testing.T) {
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	mallory := f.person(t, "mallory@example.com", auth.RoleOwner)
 
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "ana@gmail.com"})
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "ana@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestAWebFlowRedirectsToThePublicOrigin(t *testing.T) {
 		f, _ := consentFixture(t, origin)
 		ana := f.person(t, "ana@example.com", auth.RoleOwner)
 		for address, client := range map[string]string{"ana@gmail.com": "google-web", "ana@outlook.com": "ms-web"} {
-			added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: address})
+			added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: address}))
 			if err != nil {
 				t.Fatalf("%s %s: %v", origin, address, err)
 			}
@@ -319,7 +319,7 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
 
 	// Through the console: the provider sends the browser back with error=.
-	web, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "web@gmail.com"})
+	web, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "web@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 	}
 
 	// A code the provider refuses to exchange.
-	refused, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "refused@gmail.com"})
+	refused, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "refused@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 
 	// This server's own client refused: the operator's problem, said as
 	// such, and no reason to ask the person to consent differently.
-	rejected, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "rejected@gmail.com"})
+	rejected, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "rejected@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func TestAProviderFailureOnTheRedirectIsNotRecordedAsADecline(t *testing.T) {
 		{"invalid_scope", account.ReasonClientRejected, service.CodeInternal},
 		{"server_error", account.ReasonRefused, service.CodeBadRequest},
 	} {
-		added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: c.error + "@gmail.com"})
+		added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: c.error + "@gmail.com"}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -447,7 +447,7 @@ func TestAnAccountWhoseFirstConsentFailedHasNoFoldersToList(t *testing.T) {
 	f, _ := consentFixture(t, "http://localhost:5174")
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
 
-	declined, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "declined@gmail.com"})
+	declined, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "declined@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -455,7 +455,7 @@ func TestAnAccountWhoseFirstConsentFailedHasNoFoldersToList(t *testing.T) {
 		"http://localhost:5174/oauth/return?error=access_denied&state="+stateOf(t, declined.Auth)); err == nil {
 		t.Fatal("a declined consent completed")
 	}
-	abandoned, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "abandoned@gmail.com"})
+	abandoned, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "abandoned@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -480,7 +480,7 @@ func TestAnAttemptNobodyFinishesIsRecordedAsExpired(t *testing.T) {
 	// never comes back, only the sweep notices.
 	f, _ := consentFixture(t, "http://localhost:5174")
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "ana@gmail.com"})
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "ana@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -604,10 +604,10 @@ func TestAWebClientTokenIsRefreshedWithTheWebClient(t *testing.T) {
 
 	connect := func(p service.Principal, email, flow string) string {
 		t.Helper()
-		added, err := f.svc.AddAccount(t.Context(), p, service.AddAccountRequest{
+		added, err := f.svc.AddAccount(t.Context(), p, keyed(p, service.AddAccountRequest{
 			Email: email, Flow: flow, LoginUser: srv.User,
 			IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: port,
-		})
+		}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -652,7 +652,7 @@ func TestAnAccountWhoseClientWasRemovedSaysSo(t *testing.T) {
 	// client or a crash.
 	f, idp := consentFixture(t, "http://localhost:5174")
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{Email: "ana@gmail.com"})
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "ana@gmail.com"}))
 	if err != nil {
 		t.Fatal(err)
 	}

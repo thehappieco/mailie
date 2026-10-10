@@ -4,6 +4,7 @@
   "granted_by": "usr_0000000000000001",
   "manage": false,
   "read": true,
+  "sealed": true,
   "send": true,
   "updated_at": 1790000000,
   "user_id": "usr_0000000000000003"

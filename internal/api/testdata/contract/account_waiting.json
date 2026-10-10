@@ -1,9 +1,10 @@
 {
   "access": {
-    "act": true,
-    "manage": true,
-    "read": true,
-    "send": true
+    "act": false,
+    "manage": false,
+    "read": false,
+    "send": false,
+    "waiting_key": true
   },
   "actions": {
     "archive": false,
@@ -11,18 +12,18 @@
   },
   "auth_kind": "password",
   "created_at": 1790000000,
-  "email": "ana@mail.example",
-  "id": "acc_0000000000000002",
+  "email": "billing@mail.example",
+  "id": "acc_0000000000000006",
   "mailbox_key": {
     "epoch": 1,
-    "namespace": "00000000-0000-4000-a000-000000000002",
-    "public_key": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM"
+    "namespace": "00000000-0000-4000-a000-000000000004",
+    "public_key": "Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc"
   },
   "provider": "imap",
   "save_sent_copy": true,
   "send": {
-    "available": true,
-    "from_name": "Ana Lima"
+    "available": false,
+    "reason": "not_granted"
   },
   "state": "active",
   "sync": {
@@ -34,5 +35,5 @@
     "running": false,
     "state": "off"
   },
-  "workspace_id": "wsp_0000000000000001"
+  "workspace_id": "wsp_0000000000000002"
 }

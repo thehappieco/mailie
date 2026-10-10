@@ -113,9 +113,64 @@ export interface Account {
    * decides either way.
    */
   access?: AccountAccess
+  /**
+   * The mailbox's key pair at its current epoch (docs/key-scheme.md section
+   * 8), for a person signed in: what a grant of it opens to. Absent for a
+   * mailbox without a key, which is read by the flag alone.
+   */
+  mailbox_key?: MailboxKeyPair
 }
-/** What a caller may do with a mailbox: read its index, act on its messages, send from it, manage it. */
-export interface AccountAccess { read: boolean; act: boolean; send: boolean; manage: boolean }
+/**
+ * What a caller may do with a mailbox: read its index, act on its messages,
+ * send from it, manage it. read is reading it now: the flag, and on a mailbox
+ * that has a key a grant at its current epoch. waiting_key marks a person who
+ * holds the flag on such a mailbox without the grant: they read nothing of it
+ * until someone who reads it supplies the key.
+ */
+export interface AccountAccess { read: boolean; act: boolean; send: boolean; manage: boolean; waiting_key?: boolean }
+/**
+ * A mailbox's key pair at one epoch, as the server holds it: the public half
+ * (base64url of 32 bytes) and the namespace, the same at every epoch. The
+ * private key is only ever sealed, in grants.
+ */
+export interface MailboxKeyPair { epoch: number; public_key: string; namespace: string }
+/** A person a grant may be sealed to: their seal id binds it, their account public key is what it is sealed to. */
+export interface KeyRecipient { user_id: string; email: string; name: string; seal_id: string; public_key: string }
+/** A person who reads a mailbox and may hand its key on. */
+export interface KeySupplier { user_id: string; email: string; name: string }
+/**
+ * GET /v1/accounts/{id}/mailbox-key: a mailbox's key as the console of a
+ * person who holds read on it needs it. The key pair and the person's own
+ * grant (absent while they wait for it); waiting, to whom a reader may supply
+ * the key; suppliers, who may supply it to a person waiting; keyless_readers,
+ * on a mailbox without a key, whom its first key is sealed to beside its
+ * writer.
+ */
+export interface MailboxKeyState {
+  epoch?: number
+  public_key?: string
+  namespace?: string
+  grant?: string
+  waiting: KeyRecipient[]
+  suppliers: KeySupplier[]
+  keyless_readers: KeyRecipient[]
+}
+/** A grant the server stored: a mailbox's private key at one epoch sealed to one person, 88 bytes it cannot open. */
+export interface SealedGrant {
+  account_id: string
+  user_id: string
+  epoch: number
+  grant: string
+  /** Who sealed it; absent once that person is deleted. */
+  granted_by?: string
+  created_at: number
+}
+/** The body of POST /v1/accounts/{id}/mailbox-key: a mailbox's first key, with a grant for everyone who holds read with an account key. */
+export interface FirstKeyRequest { public_key: string; namespace: string; grants: { user_id: string; grant: string }[] }
+/** The body of PUT /v1/accounts/{id}/mailbox-key: a personal mailbox's next key, at the epoch after its current one. */
+export interface NewKeyRequest { epoch: number; public_key: string; grant: string }
+/** The body of PUT /v1/accounts/{id}/grants/{user}: the key handed to a member who holds read without it. */
+export interface SupplyKeyRequest { epoch: number; grant: string }
 /**
  * available false: the mailbox cannot send now, for a short reason (such as
  * needs_reauth, or no SMTP server) the console never shows as it is.
@@ -389,6 +444,15 @@ export interface AddAccountRequest {
   smtp_tls?: SMTPSecurity
   login_user?: string
   flow?: FlowKind
+  /**
+   * The mailbox's first key, which the linking browser made
+   * (docs/key-scheme.md section 12.11): the public half, base64url of 32
+   * bytes; a fresh namespace; and the linker's own grant at epoch 1,
+   * base64url of 88 bytes. A person's link carries all three.
+   */
+  public_key?: string
+  namespace?: string
+  grant?: string
 }
 
 /**
@@ -441,6 +505,14 @@ export interface Member {
   last_owner: boolean
   /** The team's mailboxes this person alone can read. Absent from a daemon older than the rule. */
   last_reader_of?: string[]
+  /**
+   * What a grant to the person is bound by and sealed to: their seal id, and
+   * their account public key, absent until they enrol (who is then given
+   * read by the flag alone, and the key later). Absent from a daemon older
+   * than mailbox keys.
+   */
+  seal_id?: string
+  public_key?: string
   joined_at: number
 }
 /** What one person holds on one mailbox. act never comes without read. */
@@ -454,6 +526,12 @@ export interface Grant {
   /** Who set it last: a person's id, a key's, or the migration's; absent once that person is deleted. */
   granted_by?: string
   updated_at: number
+  /**
+   * The person holds the mailbox's key at its current epoch: on a mailbox
+   * that has a key, what reading takes beside read; never on one without.
+   * Absent from a daemon older than mailbox keys.
+   */
+  sealed?: boolean
 }
 /**
  * A mailbox's own agreement to sync, as its workspace's owners and admins
@@ -494,6 +572,8 @@ export interface MailboxAccess {
   /** Absent from a daemon older than the last-reader rule. */
   readers?: number
   no_reader?: boolean
+  /** The mailbox key's current epoch; absent for a mailbox without a key, which is read by the flag alone. */
+  epoch?: number
   grants: Grant[]
   /** The live API keys holding something on it. Absent from a daemon older than workspace keys. */
   keys?: MailboxKey[]
@@ -516,6 +596,12 @@ export interface TeamInvite {
 }
 /** The four flags of a grant, as a request sets them: exactly these. */
 export interface GrantFlags { read: boolean; act: boolean; send: boolean; manage: boolean }
+/**
+ * The body of PUT /v1/accounts/{id}/access/{user}: the flags, and with read
+ * given on a mailbox that has a key to a person with an account key, their
+ * grant at its current epoch.
+ */
+export interface GrantChange extends GrantFlags { grant?: string }
 /** A change to a membership: a field left out stays as it is. */
 export interface MemberChange { role?: WorkspaceRole; status?: MemberStatus }
 
@@ -632,7 +718,7 @@ export function isStepUpReply(v: unknown, strict = false): v is StepUpReply {
 }
 
 export function isAccount(v: unknown, strict = false): v is Account {
-  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'access'], strict)
+  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'access', 'mailbox_key'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
     && oneOf(providerIDs)(v.provider) && oneOf(authKinds)(v.auth_kind) && oneOf(accountStates)(v.state)
     && optional(v.state_reason, text) && optional(v.sync_tier, x => text(x, 64)) && flag(v.save_sent_copy)
@@ -643,11 +729,60 @@ export function isAccount(v: unknown, strict = false): v is Account {
     && optional(v.send, x => isAccountSend(x, strict))
     && (strict ? filled(v.workspace_id, 64) && isAccountAccess(v.access, strict)
       : optional(v.workspace_id, x => filled(x, 64)) && optional(v.access, x => isAccountAccess(x)))
+    && optional(v.mailbox_key, x => isMailboxKeyPair(x, strict))
+    // Only a mailbox that has a key keeps anyone waiting for it.
+    && (!strict || !(v.access as AccountAccess | undefined)?.waiting_key || v.mailbox_key !== undefined)
 }
 
 export function isAccountAccess(v: unknown, strict = false): v is AccountAccess {
-  return record(v) && known(v, ['read', 'act', 'send', 'manage'], strict)
-    && flag(v.read) && flag(v.act) && flag(v.send) && flag(v.manage)
+  return record(v) && known(v, ['read', 'act', 'send', 'manage', 'waiting_key'], strict)
+    && flag(v.read) && flag(v.act) && flag(v.send) && flag(v.manage) && optional(v.waiting_key, flag)
+    // Waiting for the key is reading nothing, and so acting on nothing.
+    && (!strict || !v.waiting_key || (!v.read && !v.act))
+}
+
+/** A grant on the wire: base64url of 88 bytes. */
+export const isGrantText = isB64(88)
+
+export function isMailboxKeyPair(v: unknown, strict = false): v is MailboxKeyPair {
+  return record(v) && known(v, ['epoch', 'public_key', 'namespace'], strict)
+    && epochOf(v.epoch) && isB64(32)(v.public_key) && isSealIDText(v.namespace)
+}
+
+/** An epoch of a mailbox key: 1 to 65535. */
+const epochOf = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 65535
+
+export function isKeyRecipient(v: unknown, strict = false): v is KeyRecipient {
+  return record(v) && known(v, ['user_id', 'email', 'name', 'seal_id', 'public_key'], strict)
+    && filled(v.user_id, 64) && filled(v.email, 320) && text(v.name, 1024) && isSealIDText(v.seal_id) && isB64(32)(v.public_key)
+}
+
+export function isKeySupplier(v: unknown, strict = false): v is KeySupplier {
+  return record(v) && known(v, ['user_id', 'email', 'name'], strict)
+    && filled(v.user_id, 64) && filled(v.email, 320) && text(v.name, 1024)
+}
+
+export function isMailboxKeyState(v: unknown, strict = false): v is MailboxKeyState {
+  if (!record(v) || !known(v, ['epoch', 'public_key', 'namespace', 'grant', 'waiting', 'suppliers', 'keyless_readers'], strict)) return false
+  const keyed = v.epoch !== undefined
+  return optional(v.epoch, epochOf) && optional(v.public_key, isB64(32)) && optional(v.namespace, isSealIDText)
+    && optional(v.grant, isGrantText)
+    && Array.isArray(v.waiting) && v.waiting.every(item => isKeyRecipient(item, strict))
+    && Array.isArray(v.suppliers) && v.suppliers.every(item => isKeySupplier(item, strict))
+    && Array.isArray(v.keyless_readers) && v.keyless_readers.every(item => isKeyRecipient(item, strict))
+    // A key pair is whole or absent; a grant, the waiting and the suppliers
+    // only beside one, and the first key's recipients only without one.
+    && (!strict || ((v.public_key !== undefined) === keyed && (v.namespace !== undefined) === keyed
+      && (keyed || (v.grant === undefined && v.waiting.length === 0 && v.suppliers.length === 0))
+      && (!keyed || v.keyless_readers.length === 0)
+      // Whoever reads it is offered the waiting, whoever waits the suppliers: never both.
+      && (v.grant === undefined || v.suppliers.length === 0) && (v.grant !== undefined || v.waiting.length === 0)))
+}
+
+export function isSealedGrant(v: unknown, strict = false): v is SealedGrant {
+  return record(v) && known(v, ['account_id', 'user_id', 'epoch', 'grant', 'granted_by', 'created_at'], strict)
+    && filled(v.account_id, 64) && filled(v.user_id, 64) && epochOf(v.epoch) && isGrantText(v.grant)
+    && optional(v.granted_by, x => filled(x, 128)) && seconds(v.created_at)
 }
 
 export function isAccountSend(v: unknown, strict = false): v is AccountSend {
@@ -846,11 +981,13 @@ export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {
 const pathIDs = (v: unknown): v is string[] => Array.isArray(v) && v.every(pathID)
 
 export function isMember(v: unknown, strict = false): v is Member {
-  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'last_reader_of', 'joined_at'], strict)
+  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'last_reader_of', 'seal_id', 'public_key', 'joined_at'], strict)
     && pathID(v.user_id) && filled(v.email, 320) && text(v.name, 1024) && word(workspaceRoles, strict)(v.role)
     && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && flag(v.last_owner)
     // The daemon that writes the fixtures always says, [] for none; an older one may not.
     && (strict ? pathIDs(v.last_reader_of) : optional(v.last_reader_of, pathIDs))
+    // Every person has a seal id; an account public key once they enrol.
+    && (strict ? isSealIDText(v.seal_id) : optional(v.seal_id, isSealIDText)) && optional(v.public_key, isB64(32))
     && seconds(v.joined_at)
 }
 
@@ -859,11 +996,23 @@ export function isMemberList(v: unknown, strict = false): v is Member[] {
 }
 
 export function isGrant(v: unknown, strict = false): v is Grant {
-  return record(v) && known(v, ['account_id', 'user_id', 'read', 'act', 'send', 'manage', 'granted_by', 'updated_at'], strict)
+  return record(v) && known(v, ['account_id', 'user_id', 'read', 'act', 'send', 'manage', 'granted_by', 'updated_at', 'sealed'], strict)
     && pathID(v.account_id) && pathID(v.user_id) && flag(v.read) && flag(v.act) && flag(v.send) && flag(v.manage)
     && optional(v.granted_by, x => filled(x, 128)) && seconds(v.updated_at)
-    // Never act without read, and never a grant of nothing: the server deletes those.
-    && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send || v.manage)))
+    // The daemon that writes the fixtures always says; an older one may not.
+    && (strict ? flag(v.sealed) : optional(v.sealed, flag))
+    // Never act without read, and never a grant of nothing: the server deletes those. Taking read takes the key.
+    && (!strict || ((!v.act || v.read) && (v.read || v.act || v.send || v.manage) && (!v.sealed || v.read)))
+}
+
+/**
+ * Whether a person reads a mailbox now, as the directory lists them: read,
+ * and on a mailbox that has a key (an epoch) its key at the current epoch
+ * (docs/key-scheme.md section 12.13). A member who holds read without the key
+ * waits for it, and is no reader.
+ */
+export function readsNow(entry: Pick<MailboxAccess, 'epoch'>, grant: Grant): boolean {
+  return grant.read && (!entry.epoch || grant.sealed === true)
 }
 
 /** Who did something, as the server records it: a person's id, a key's ("key:<prefix>"), or "cli". */
@@ -886,9 +1035,11 @@ export function isMailboxKey(v: unknown, strict = false): v is MailboxKey {
 }
 
 export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess {
-  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'grants', 'keys'], strict)
+  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'epoch', 'grants', 'keys'], strict)
     && pathID(v.account_id) && filled(v.email, 320) && word(providerIDs, strict)(v.provider) && word(accountStates, strict)(v.state)
-    && optional(v.linked_by, actor) && optional(v.sync, x => isMailboxConsent(x, strict))
+    && optional(v.linked_by, actor) && optional(v.sync, x => isMailboxConsent(x, strict)) && optional(v.epoch, epochOf)
+    // Nobody holds the key of a mailbox that has none.
+    && (!strict || v.epoch !== undefined || (Array.isArray(v.grants) && v.grants.every(grant => !(grant as Grant).sealed)))
     // The daemon that writes the fixtures always says; an older one may not.
     && (strict ? counter(v.readers) && flag(v.no_reader) : optional(v.readers, counter) && optional(v.no_reader, flag))
     // Nobody can read a mailbox only when it has no reader.

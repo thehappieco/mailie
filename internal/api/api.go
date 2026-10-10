@@ -120,6 +120,15 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("GET /v1/workspaces/{id}/apikeys/{prefix}/sends", h.authenticated(auth.ScopeRead, opts(), h.listKeySends))
 	mux.Handle("PUT /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setAccess))
 	mux.Handle("DELETE /v1/accounts/{id}/access/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeAccess))
+	// A mailbox's key (docs/key-scheme.md sections 8, 9 and 12.11 to 12.15):
+	// what a person's console reads to seal and open grants, the first key
+	// of a mailbox that has none, a personal mailbox's next one, and the key
+	// handed to a member who holds read without it. The scope admits any
+	// credential; the service refuses a key, which seals and opens nothing.
+	mux.Handle("GET /v1/accounts/{id}/mailbox-key", h.authenticated(auth.ScopeRead, opts(), h.mailboxKey))
+	mux.Handle("POST /v1/accounts/{id}/mailbox-key", h.authenticated(auth.ScopeRead, opts(), h.writeFirstKey))
+	mux.Handle("PUT /v1/accounts/{id}/mailbox-key", h.authenticated(auth.ScopeRead, opts(), h.writeNewKey))
+	mux.Handle("PUT /v1/accounts/{id}/grants/{user}", h.authenticated(auth.ScopeRead, opts(), h.supplyKey))
 
 	mux.Handle("GET /v1/providers", h.authenticated(auth.ScopeRead, opts(), h.providers))
 	mux.Handle("GET /v1/accounts", h.authenticated(auth.ScopeRead, opts(), h.listAccounts))

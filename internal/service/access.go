@@ -41,10 +41,18 @@ var (
 // as the credential they came with reaches (a key's scope). For an instance
 // key, on an operator mailbox, what its scope allows.
 type AccountAccess struct {
+	// Read is reading the mailbox now, by the one rule (docs/key-scheme.md
+	// section 12.13): the flag, and on a mailbox that has a key a grant at
+	// its current epoch. Act needs it.
 	Read   bool `json:"read"`
 	Act    bool `json:"act"`
 	Send   bool `json:"send"`
 	Manage bool `json:"manage"`
+	// WaitingKey is a person signed in who holds read on a mailbox that has
+	// a key, without a grant at its current epoch: they read nothing of it
+	// until someone who reads it supplies the key, or, for their own
+	// personal mailbox, they write it a new one. Never set for an API key.
+	WaitingKey bool `json:"waiting_key,omitempty"`
 }
 
 func presentAccess(f workspace.Flags) AccountAccess {

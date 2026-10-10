@@ -22,9 +22,11 @@ import {
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
   isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
   isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
+  isGrantText, isMailboxKeyPair, isMailboxKeyState, isSealedGrant, isSealIDText, readsNow,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
-  type KeyMailbox, type KeySend, type MailboxAccess, type McpAccess, type Me, type Member, type Provider, type ServerEvent, type SessionReply,
-  type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace, type WorkspaceKey,
+  type KeyMailbox, type KeySend, type MailboxAccess, type MailboxKeyPair, type MailboxKeyState, type McpAccess, type Me, type Member, type Provider,
+  type SealedGrant, type ServerEvent, type SessionReply, type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace,
+  type WorkspaceKey,
 } from '../src/api/types'
 import { invitationLink } from '../src/api/workspaces'
 import { grantChange } from '../src/ui/access'
@@ -95,6 +97,13 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['team_invites', value => isTeamInviteList(value, true)],
   ['access', value => isMailboxAccessList(value, true)],
   ['grant', value => isGrant(value, true)],
+  ['account_waiting', value => isAccount(value, true)],
+  ['mailbox_key', value => isMailboxKeyState(value, true)],
+  ['mailbox_key_waiting', value => isMailboxKeyState(value, true)],
+  ['mailbox_key_keyless', value => isMailboxKeyState(value, true)],
+  ['grant_supplied', value => isSealedGrant(value, true)],
+  ['first_key', value => isMailboxKeyPair(value, true)],
+  ['new_key', value => isMailboxKeyPair(value, true)],
 ]
 
 describe('the HTTP contract the Go handlers answer with', () => {
@@ -363,7 +372,7 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(keyed.length).toBeGreaterThan(0)
     for (const entry of directory) {
       expect(entry.keys, entry.account_id).toBeDefined()
-      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => grant.read).length)
+      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => readsNow(entry, grant)).length)
       for (const key of entry.keys!) if (key.act) expect(scopeActs(key.scope) && key.read, key.prefix).toBe(true)
     }
     // Always listed, [] for none: a directory without them is not this daemon's.
@@ -438,7 +447,7 @@ describe('the HTTP contract the Go handlers answer with', () => {
       const entry = directory.find(item => item.account_id === id)
       expect(entry, id).toBeDefined()
       expect(entry!.readers, id).toBe(1)
-      expect(entry!.grants.filter(grant => grant.read).map(grant => grant.user_id), id).toEqual([userID])
+      expect(entry!.grants.filter(grant => readsNow(entry!, grant)).map(grant => grant.user_id), id).toEqual([userID])
     }
     // And a mailbox two people read marks neither.
     for (const entry of directory.filter(item => (item.readers ?? 0) > 1)) {
@@ -471,8 +480,9 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(directory.length).toBeGreaterThan(0)
     const roleOf = (userID: string) => members.find(member => member.user_id === userID)?.role
     for (const entry of directory) {
-      // Every member listed is active: each grant with read is a reader, and only those.
-      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => grant.read).length)
+      // Every member listed is active: each grant with read is a reader, on a
+      // mailbox that has a key with the key too, and only those.
+      expect(entry.readers, entry.account_id).toBe(entry.grants.filter(grant => readsNow(entry, grant)).length)
       expect(entry.no_reader, entry.account_id).toBe(entry.readers === 0)
       // Owners and admins manage by their role: Manage is stored for members only.
       for (const grant of entry.grants.filter(grant => grant.manage)) expect(roleOf(grant.user_id), grant.user_id).toBe('member')
@@ -501,6 +511,75 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(grantChange(now, { ...now, send: false })).toEqual({ kind: 'revoke', flags: ['send'] })
     expect(grantChange(now, { read: false, act: false, send: false, manage: false })).toEqual({ kind: 'revoke', flags: [] })
     expect(grantChange(now, { ...now, act: true })).toEqual({ kind: 'set', flags: { ...now, act: true } })
+  })
+
+  it('shows a mailbox’s key to a person signed in, the same namespace at every epoch, and none for a mailbox without one', () => {
+    const linked = (fixture('add_account') as AddAccountResult).account
+    const own = fixture('account') as Account
+    for (const account of [linked, own, fixture('account_syncing') as Account]) {
+      expect(account.mailbox_key?.epoch, account.id).toBe(1)
+      expect(isSealIDText(account.mailbox_key?.namespace), account.id).toBe(true)
+    }
+    // A mailbox from before the key scheme is read by the flag alone, and shows no key.
+    expect(fixture('account_icloud')).not.toHaveProperty('mailbox_key')
+    // A personal mailbox's next key keeps its namespace, at the next epoch.
+    const next = fixture('new_key') as MailboxKeyPair
+    expect(next.epoch).toBe(own.mailbox_key!.epoch + 1)
+    expect(next.namespace).toBe(own.mailbox_key!.namespace)
+    expect(next.public_key).not.toBe(own.mailbox_key!.public_key)
+    const first = fixture('first_key') as MailboxKeyPair
+    expect(first.epoch).toBe(1)
+    expect(new Set([linked, own].map(account => account.mailbox_key!.namespace).concat(first.namespace)).size).toBe(3)
+  })
+
+  it('says a member who holds read without the key waits for it, reads nothing of it, and who can supply it', () => {
+    const waiting = fixture('account_waiting') as Account
+    expect(waiting.access).toMatchObject({ read: false, act: false, waiting_key: true })
+    expect(waiting.mailbox_key).toBeDefined()
+    // Nobody waits for the key of a mailbox without one.
+    expect(isAccount({ ...waiting, mailbox_key: undefined }, true)).toBe(false)
+    const theirs = fixture('mailbox_key_waiting') as MailboxKeyState
+    expect(theirs).not.toHaveProperty('grant')
+    expect(theirs.namespace).toBe(waiting.mailbox_key!.namespace)
+    expect(theirs.suppliers.length).toBeGreaterThan(0)
+    expect(theirs.waiting).toEqual([])
+    // Whoever reads it holds their grant, and is offered whoever waits.
+    const reader = fixture('mailbox_key') as MailboxKeyState
+    expect(isGrantText(reader.grant)).toBe(true)
+    expect(reader.suppliers).toEqual([])
+    expect(reader.waiting.map(person => person.user_id)).toContain((fixture('grant_supplied') as SealedGrant).user_id)
+    for (const person of reader.waiting) expect(isSealIDText(person.seal_id), person.user_id).toBe(true)
+    expect(theirs.suppliers.map(person => person.user_id)).toContain((fixture('grant_supplied') as SealedGrant).granted_by)
+    // The key supplied is at the mailbox key's current epoch, 88 bytes the server cannot open.
+    const supplied = fixture('grant_supplied') as SealedGrant
+    expect(supplied.epoch).toBe(reader.epoch)
+    expect(fromBase64URL(supplied.grant, 88)).toHaveLength(88)
+  })
+
+  it('offers the first key of a mailbox without one to everyone else who holds read with an account key', () => {
+    const keyless = fixture('mailbox_key_keyless') as MailboxKeyState
+    expect(keyless).not.toHaveProperty('epoch')
+    expect(keyless.keyless_readers.length).toBeGreaterThan(0)
+    for (const person of keyless.keyless_readers) expect(isSealIDText(person.seal_id), person.user_id).toBe(true)
+    expect(isMailboxKeyState({ ...keyless, grant: (fixture('mailbox_key') as MailboxKeyState).grant }, true)).toBe(false)
+  })
+
+  it('marks who holds a mailbox’s key in the directory, and counts a reader only with it', () => {
+    const directory = fixture('access') as MailboxAccess[]
+    for (const entry of directory) {
+      expect(entry.epoch, entry.account_id).toBe(1)
+      for (const grant of entry.grants) expect(grant.sealed, grant.user_id).toBe(grant.read)
+    }
+    expect((fixture('grant') as Grant).sealed).toBe(true)
+    // A member who holds read without the key reads nothing yet.
+    const grant = directory[0]!.grants[0]!
+    expect(readsNow({ epoch: 1 }, { ...grant, sealed: false })).toBe(false)
+    expect(readsNow({}, { ...grant, sealed: false })).toBe(true)
+    // Members carry what a grant to them is sealed to.
+    for (const member of fixture('members') as Member[]) {
+      expect(isSealIDText(member.seal_id), member.user_id).toBe(true)
+      expect(member.public_key, member.user_id).toBeDefined()
+    }
   })
 
   it('says on every account whether it can send, and why not only when it cannot', () => {

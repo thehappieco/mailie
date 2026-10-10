@@ -388,9 +388,9 @@ func TestAnOwnerLinksAnOAuthTeamMailboxCompletesItAndOnlyTheyCanComplete(t *test
 		t.Fatal(err)
 	}
 
-	added, err := f.svc.AddAccount(t.Context(), ana, service.AddAccountRequest{
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{
 		Email: "support@gmail.com", WorkspaceID: team.ID, SyncConsentVersion: f.consent().Sync,
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +432,7 @@ func TestDeletingTheOnlyMemberOfATeamStopsItsMailboxesWorkersAndAttempts(t *test
 	req := f.passwordAccount(t, "alone@mail.example")
 	req.WorkspaceID = alone.ID
 	req.SyncConsentVersion = f.consent().Sync
-	added, err := f.svc.AddAccount(t.Context(), ana, req)
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, req))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,7 +559,7 @@ func TestClosingTheOnlyMemberOfATeamIsNotRefusedForItsMailbox(t *testing.T) {
 	}
 	req := f.passwordAccount(t, "alone@mail.example")
 	req.WorkspaceID = alone.ID
-	if _, err := f.svc.AddAccount(t.Context(), ana, req); err != nil {
+	if _, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, req)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "ana@example.com"}); err != nil {

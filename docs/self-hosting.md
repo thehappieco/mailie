@@ -692,9 +692,9 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   [A forgotten password](#a-forgotten-password).
 - **Sessions open at the upgrade stay open,** with no step-up time. The person enrols at their next
   sign-in; until then the console asks them to sign in again for what needs their account key
-  (changing the password or the recovery code, each of which asks for the password again). Nothing
-  asks for a step-up in this release; giving access asks for one once mailboxes have keys, the key
-  scheme's next step. Changing the password ends every session, as before.
+  (changing the password or the recovery code, each of which asks for the password again). The
+  release that brings mailbox keys (migration 0014, below) asks for a step-up when a key or a grant
+  is written. Changing the password ends every session, as before.
 - **Going back from this release costs those who signed in on it.** Each browser that enrolled
   someone remembers it, and never sends that person's password in clear again. If you go back
   (below) and later upgrade again, the restored database asks everyone who signed in on this
@@ -706,6 +706,34 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   `/finish`; new routes answer the challenge, recovery, step-up, the reset invitation and the
   upgrade ([`console.md`](console.md#routes)). A script that signed in with a password needs an
   API key instead, as it always should have.
+
+### Mailbox keys (migration 0014)
+
+The release that brings mailbox keys ([`key-scheme.md`](key-scheme.md) sections 8, 9 and 12.11 to
+12.15) adds two tables and changes no row. **Back up first**, as above: going back is that copy.
+
+- **Every mailbox you have stays without a key**, and is read as before, by the "read" flag. The
+  first time someone who reads one signs in to the console on this version (after enrolling, at
+  the upgrade of 0013 or since), their browser writes its key, sealed to everyone else who reads it
+  and has enrolled, while that sign-in counts as a step-up. Mailboxes linked from now on get their
+  key with the link. Operator mailboxes, linked from the command line, keep none.
+- **Members who wait for the key.** Once a mailbox has a key, reading it takes the flag and the
+  person's grant. Someone who holds "read" but had not enrolled when the key was written (they have
+  not signed in since the upgrade of 0013) sees the mailbox as waiting for its key, and reads
+  nothing of it, until someone who reads it hands them the key in the console after they enrol.
+  The same goes for a person you reset (`user password --bootstrap`), on every mailbox that has a
+  key: a reader of a team's mailbox gives them the key again, and their own mailboxes they key
+  again themselves.
+- **A step-up for keys and grants.** Linking a mailbox, giving "read" to someone, handing on a
+  mailbox's key and writing a mailbox's key need the person's password within the last ten
+  minutes (a sign-in counts); the console asks for it again when it is older.
+- **A script that links a mailbox with an API key** links an operator mailbox, as before, which has
+  no key; a person's console sends the key with the link, and a server of this release refuses a
+  person's link without one.
+- **Going back is the backup.** An older binary refuses schema 14; restoring the copy taken before
+  the upgrade, with the version you kept, loses every mailbox key and grant written since: the
+  mailboxes are read by the flag again, and the console writes their keys again when you upgrade
+  again.
 
 ```sh
 # Compose, from deploy/:
@@ -767,12 +795,13 @@ set a password, through the API or the command line: the server never knows one.
 both their password and their recovery code gets a **reset invitation** from the operator, with the
 daemon stopped: `user password --bootstrap` prints a link, valid seven days and once, for that
 person only. With it they choose a new password and get a new recovery code and a new account key;
-their sessions end then, and everything sealed to their old key goes (from the next release, their
-personal mailboxes then need a new key, and a team's mailboxes a reader to give them theirs again).
-Until the link is used, nothing of theirs changes; a newer one replaces it.
+their sessions end then, and everything sealed to their old key goes: their personal mailboxes
+then need a new key, which they write in the console, and a team's mailboxes a reader to give them
+theirs again. Until the link is used, nothing of theirs changes; a newer one replaces it.
 
-It refuses, naming the mailboxes, while the person is the last who can read a team mailbox, even
-in a team they are alone in: nobody could give them read again. Have another member given read
+It refuses, naming the mailboxes, while the person is the last who can read a team mailbox that
+has a key, even in a team they are alone in: nobody could give them its key again. On a team
+mailbox without a key the reset takes nothing, and they keep reading it. Have another member given read
 first, or, when the old key is truly lost, pass `--force`.
 
 ```sh

@@ -9,8 +9,12 @@ manage it by their role, the last reader is protected, and every API key belongs
 was approved by the owner on 2026-10-06. Its first step (migration 0011, team mailboxes) and its
 third (**migration 0012, the workspace's API keys**: `key_access`, the routes, sending by key, the
 command line, the contract fixtures and the open key terms' revision) are implemented on the
-server; the console follows them. Not yet: the platform's workspace source, of which only the stub
-is here. [`console.md`](console.md) describes the routes as the console reads them, and its
+server; the console follows them. Phase 3 of the key scheme adds **mailbox keys and sealed
+grants** (step 4, migration 0014, [`key-scheme.md`](key-scheme.md) sections 8, 9 and 12.11 to
+12.15): on a mailbox that has a key, reading takes the flag and the person's grant at its current
+epoch ([Mailbox keys and sealed grants](#mailbox-keys-and-sealed-grants)); the server's half is
+implemented, the console's sealing follows. Not yet: the platform's workspace source, of which only
+the stub is here. [`console.md`](console.md) describes the routes as the console reads them, and its
 screens. Where this document had to choose between readings of the plan, or found a rule that
 conflicts with the code or with another rule, it says so in
 [Conflicts and resolutions](#conflicts-and-resolutions).
@@ -22,7 +26,10 @@ conflicts with the code or with another rule, it says so in
   the command line act on. A personal mailbox is its person's; a team's mailbox is the **team's**,
   whoever linked it; who linked it is attribution only.
 - Using a mailbox takes **active membership** in its workspace and a **grant** on it: `read`,
-  `act` and `send` each open one use. **Owners and admins manage every mailbox of their workspace
+  `act` and `send` each open one use. On a mailbox that has a **key**, `read` also takes the
+  person's **sealed grant** at its current epoch, the mailbox's private key sealed to them by the
+  browser of someone who reads it; a member who holds the flag without one **waits for the key**,
+  sees the card and reads nothing ([Mailbox keys](#mailbox-keys-and-sealed-grants)). **Owners and admins manage every mailbox of their workspace
   by their role** — its card, re-authorizing it, removing it, who holds what — and **read none of
   them by being one**. `read` passes only from an owner or an admin who reads the mailbox now;
   `act` (to someone who reads) and `send` from any owner or admin. `manage` is stored only for
@@ -179,10 +186,69 @@ Two levels of seeing follow from this:
 - **Any grant, or managing it by the role**, shows the mailbox in `GET /v1/accounts`,
   `GET /v1/accounts/{id}` and `GET /v1/accounts/{id}/sync`: its card — address, provider, state,
   sync counters, `access` — and nothing it holds: no subject, no correspondent, no folder name.
-- **`read`** opens its index: folders, messages, events, storage.
+- **`read`** opens its index: folders, messages, events, storage. On a mailbox that has a key, the
+  flag opens it only beside the person's grant at its current epoch (the one rule below).
 
 Without any grant or role the mailbox does not exist for the caller (`404`). With the card but
 without the flag an operation needs, it is `403 not_authorized`.
+
+### Mailbox keys and sealed grants
+
+Phase 3 of the key scheme, step 4 ([`key-scheme.md`](key-scheme.md) sections 8, 9 and 12.11 to
+12.15; migration 0014). A mailbox's **key pair** is made by a browser, never by the server: an
+X25519 key pair, a **namespace** (a lowercase UUIDv4, the same at every epoch and used by no other
+mailbox) and an **epoch** (1 first, each new key the one after). The server stores the public half
+and the namespace, and **grants**: the private key sealed to one person's account public key, 88
+bytes it checks only for their shape and cannot open. The private key never reaches it.
+
+```sql
+mailbox_keys(account_id, epoch, public_key, namespace, created_by, created_at)
+  PRIMARY KEY (account_id, epoch)                      -- written once; epoch 1, then max + 1
+  FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+mailbox_grants(account_id, workspace_id, user_id, epoch, grant, granted_by, created_at)
+  PRIMARY KEY (account_id, user_id, epoch)             -- written once
+  FOREIGN KEY (account_id, epoch) REFERENCES mailbox_keys(account_id, epoch) ON DELETE CASCADE
+  FOREIGN KEY (workspace_id, user_id) REFERENCES workspace_members(workspace_id, user_id) ON DELETE CASCADE
+  FOREIGN KEY (account_id, workspace_id) REFERENCES accounts(id, workspace_id) ON DELETE CASCADE
+```
+
+The current epoch is the highest row of `mailbox_keys`; older rows stay, and only their grants go.
+Triggers refuse every update but the blanking of `created_by` and `granted_by` when that person is
+deleted, an epoch skipped or written twice, a second namespace for a mailbox or one another uses,
+and a key for an operator mailbox, which has none in phase 3 (nobody holds it). A grant is 88 bytes
+starting with `ML`, for a member of the mailbox's own workspace only.
+
+**Who reads** (section 12.13), one rule in one place (`store.ReaderSQL`, SQL fragments every
+reader of access builds on: `account.Visibility`, `workspace.Access`, the last reader, the
+directory's `readers`, sync eligibility and the team's consent): the `read` flag, as an active
+member active on the instance, and, **on a mailbox that has a key, a grant at its current epoch**.
+On a mailbox without one, the flag alone, as before. `act` counts only where its holder reads. A
+member who holds the flag without the grant **waits for the key**: their card stays, `access.read`
+is false and `access.waiting_key` true. Keys never count, and roles never read.
+
+**Writing keys and grants**, each by a person signed in, with a **fresh step-up** (a sign-in or a
+step-up within ten minutes, section 11), checked before anything slow and again in the transaction
+that writes:
+
+| What | Who | Route |
+|---|---|---|
+| a mailbox's first key, with the linker's grant (section 12.11) | the person who links it; an instance key's link carries none | `POST /v1/accounts` with `{public_key, namespace, grant}` |
+| `read` with the recipient's grant (section 12.13) | an owner or an admin who reads the mailbox now; the step-up when the recipient is someone else | `PUT /v1/accounts/{id}/access/{user}` with `grant` |
+| the key, to a member who holds the flag and has no grant at the current epoch (section 12.13) | **anyone who reads the mailbox now**: it gives nobody `read` who was not given it | `PUT /v1/accounts/{id}/grants/{user}` |
+| the first key of a mailbox without one, with a grant for everyone who holds `read` and has an account key, exactly (section 12.14) | a person who reads it now, by the flag, and has an account key | `POST /v1/accounts/{id}/mailbox-key` |
+| a personal mailbox's next key, deleting every grant of an older epoch (section 12.12) | its person only; a team mailbox never gets one | `PUT /v1/accounts/{id}/mailbox-key` |
+
+To a member without an account key (a person who signs in elsewhere and has none yet), and on a
+mailbox without a key, `read` is the flag alone, with no step-up and no grant, as before; on a
+keyed mailbox they wait for the key, which a reader supplies once they enrol. A grant is refused
+with anything but the `read` it gives.
+
+**Taking `read` takes the grants** (section 12.13), every epoch's, in the transaction that takes
+the flag: a revoke, a `PUT` without `read`, a membership disabled or removed, the person disabled
+on the instance (their flags stay, and count for nothing while they are off), their deletion, and
+the **reset** of their account key, which keeps their flags: on every mailbox that has a key they
+then wait for it, from a reader for a team's, by a new key of their own for a personal one, which
+keeps syncing meanwhile under their consent.
 
 ### People on the instance
 
@@ -345,9 +411,13 @@ included: these routes take a session or the operator's key.
    the operator, who grants `manage` to members and revokes. A member who holds a grant on it sees
    the mailbox and is `403`; anyone else is `404`.
 2. **What.** `read` that the person did not hold passes only from an owner or an admin who **reads
-   the mailbox themselves, now**, checked in the same transaction: this stands in for Wappie's
-   sealed grant, which only a holder of the device key can pass on, and it is what makes "owners
-   and admins read nothing by their role" true rather than one click away. `act` needs `read` after
+   the mailbox themselves, now** (the flag, and on a mailbox that has a key their grant at its
+   current epoch), checked in the same transaction: this stands in for Wappie's sealed grant,
+   which only a holder of the device key can pass on, and it is what makes "owners and admins read
+   nothing by their role" true rather than one click away. On a mailbox that has a key it comes
+   with the recipient's grant, which the giver's browser seals from its own, after a fresh step-up
+   when the recipient is someone else; to a member without an account key it is the flag alone
+   ([Mailbox keys](#mailbox-keys-and-sealed-grants)). `act` needs `read` after
    the change (`CHECK act = 0 OR read = 1`), and `send` nothing: any owner or admin gives them, to
    anyone, themselves included, without holding them. `manage` is stored for members only; for an
    owner or an admin it is `400` ("owners and admins manage every team mailbox by their role").
@@ -391,8 +461,13 @@ tries, as Wappie's directory does; the mutation enforces them regardless.
 
 The **last-reader rule** is Mailie's form of Wappie's `requireRemainingReader`: a team mailbox with
 at least one reader is never left with none. A reader is an active member, active on the instance,
-holding `read`; keys, disabled members and a role on its own never count ("ownership is not a
-recovery path"). Removing the mailbox is not guarded, nor is a role change. The database has one
+holding `read`, and on a mailbox that has a key a grant at its current epoch; keys, disabled
+members, a member waiting for the key and a role on its own never count ("ownership is not a
+recovery path"), and taking a waiting member's flag leaves the readers as they were. The reset of a
+person's account key (`mailserver user password --bootstrap`) deletes their grants and keeps their
+flags, so it refuses, without `--force`, only where they are the last reader of a team mailbox
+**that has a key**; on one without, they keep reading by the flag. After a forced reset, a team
+mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role change. The database has one
 writer, so two changes that would each leave one reader are ordered, and the second is refused.
 The refusal says: "that is the last person who can read a mailbox of the workspace; give another
 member read on it first, or remove the mailbox".
@@ -421,10 +496,10 @@ The seven codes do not change.
 
 | Situation | Code |
 |---|---|
-| a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of | `404 not_found`, never `403` |
-| a mailbox the caller sees, without the flag the operation needs; a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration or key route; a key's send where keys may not send | `403 not_authorized` |
-| a protection; a platform-sourced workspace changed locally; a missing actions or send consent | `409 conflict` |
-| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys` | `400 bad_request` |
+| a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of; a grant's recipient who is not an active member of the mailbox's workspace | `404 not_found`, never `403` |
+| a mailbox the caller sees, without the flag the operation needs (a member waiting for the key reads nothing); a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration, key or mailbox-key route; a key's send where keys may not send; a giver of `read` or of the key, or a first key's writer, who does not read the mailbox now; a step-up more than ten minutes old; a team mailbox's new key | `403 not_authorized` |
+| a protection; a platform-sourced workspace changed locally; a missing actions or send consent; a grant at another epoch than the mailbox key's current one, or a new key at another than the next; a grant that already exists; a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace another mailbox uses; a grant for a person without an account key, or the key for one who holds no `read`; a person without an account key linking a mailbox | `409 conflict` |
+| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys`; a public key, namespace, grant or epoch outside its shape, or a grant at odds with the epoch its request names; a person's link without its key, or an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400 bad_request` |
 
 ## API keys
 
@@ -625,7 +700,11 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins with the invite's role |
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`, every mailbox of the workspace |
 | `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant); session; operator for `manage` | `{read, act, send, manage}`, all four required, not all false → `Grant` |
-| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it |
+| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it; taking `read` deletes the person's grants on the mailbox |
+| `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it (a person who sees only its card: `403`) | `MailboxKeyState`: the key pair, the caller's own grant, and whom they may seal to or who may seal to them |
+| `POST /v1/accounts/{id}/mailbox-key` | session reading it by the flag, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant}]}` → `MailboxKeyPair` (201), the first key of a mailbox without one |
+| `PUT /v1/accounts/{id}/mailbox-key` | session, the personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`, the next key; older grants deleted |
+| `PUT /v1/accounts/{id}/grants/{user_id}` | session reading it; fresh step-up | `{epoch, grant}` → `SealedGrant`: the key, to a member who holds `read` without it |
 | `GET /v1/workspaces/{id}/apikeys` | owner or admin, signed in | `[WorkspaceKey]`: every key of the workspace and the carried-over keys holding one of its mailboxes, revoked and expired ones too, live first |
 | `POST /v1/workspaces/{id}/apikeys` | owner or admin, signed in | `{name, scope, ttl_days, terms_version, mailboxes: [{account_id, read, act, send}]}` → `{key, …WorkspaceKey}` (201), the secret shown once |
 | `DELETE /v1/workspaces/{id}/apikeys/{prefix}` | owner or admin, signed in | `204`; a carried-over key loses the workspace's mailboxes instead |
@@ -642,7 +721,8 @@ Changed routes:
 
 | Route | Change |
 |---|---|
-| `POST /v1/accounts` | optional `workspace_id`; who may link where, as [above](#mailboxes); into a team, optional `sync_consent_version` (the current sync text: the team's consent, given with the link) |
+| `POST /v1/accounts` | optional `workspace_id`; who may link where, as [above](#mailboxes); into a team, optional `sync_consent_version` (the current sync text: the team's consent, given with the link); from a person, `public_key`, `namespace` and `grant` (the mailbox's first key, phase 3), with a fresh step-up |
+| `PUT /v1/accounts/{id}/access/{user_id}` | optional `grant`: required with `read` given on a mailbox that has a key to a person with an account key, refused otherwise (phase 3) |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners and admins, a personal mailbox's person, the operator for its own |
@@ -664,21 +744,24 @@ Shapes:
 // the operator's listing has no role or status, and adds "members" and "mailboxes" counts
 
 // Member ("person_disabled": true only for a person switched off on the instance; last_reader_of
-// lists the team mailboxes they alone read, always present)
+// lists the team mailboxes they alone read, always present; seal_id and public_key are what a
+// grant to them is bound by and sealed to, public_key absent until they enrol)
 {"user_id": "usr_…", "email": "bea@example.org", "name": "Bea Lima", "role": "member",
- "status": "active", "last_owner": false, "last_reader_of": ["acc_…"], "joined_at": 1790000000}
+ "status": "active", "last_owner": false, "last_reader_of": ["acc_…"],
+ "seal_id": "b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4", "public_key": "…", "joined_at": 1790000000}
 
 // MailboxAccess, whose grants are each a Grant. linked_by is attribution only (absent once that
-// person is deleted); readers counts who can read it; no_reader marks a team mailbox nobody can
-// read; sync is the mailbox's own consent (absent for a personal mailbox): migrated marks one the
-// upgrade copied from its linker and nobody confirmed yet, current whether version is the
-// revision asked for now.
+// person is deleted); readers counts who reads it now, by the one rule; no_reader marks a team
+// mailbox nobody can read; epoch is its key's current one (absent without a key); sync is the
+// mailbox's own consent (absent for a personal mailbox): migrated marks one the upgrade copied
+// from its linker and nobody confirmed yet, current whether version is the revision asked for
+// now. A grant's sealed says its person holds the key at the current epoch.
 {"account_id": "acc_…", "email": "support@example.org", "provider": "gmail", "state": "active",
- "linked_by": "usr_…", "readers": 2, "no_reader": false,
+ "linked_by": "usr_…", "readers": 2, "no_reader": false, "epoch": 1,
  "sync": {"enabled": true, "enabled_at": 1790000000, "enabled_by": "usr_…",
           "version": "2026-10-open-sync-3", "current": true},
  "grants": [{"account_id": "acc_…", "user_id": "usr_…", "read": true, "act": true, "send": true,
-             "manage": false, "granted_by": "migration", "updated_at": 1790000000}]}
+             "manage": false, "granted_by": "migration", "updated_at": 1790000000, "sealed": true}]}
 // a Grant's manage is the stored flag, which only a member holds; owners and admins manage by
 // their role, which the members list says
 
@@ -698,6 +781,22 @@ Shapes:
  "last_used_at": 1790003600, "live": true, "terms_version": "2026-10-open-api-keys-2",
  "sends": false}
 
+// MailboxKeyPair: a mailbox's key at one epoch, as Account.mailbox_key, a first key and a new key
+// answer it
+{"epoch": 1, "public_key": "…", "namespace": "9d035f2b-81d0-420e-90e2-bb16e950497b"}
+
+// MailboxKeyState (GET /v1/accounts/{id}/mailbox-key): for a reader, the key pair, their grant and
+// who waits; for a member waiting, the key pair and who may supply it (suppliers: user_id, email,
+// name); on a mailbox without a key, keyless_readers, whom its first key is sealed to
+{"epoch": 1, "public_key": "…", "namespace": "9d035f2b-…", "grant": "TUwBAQEAAQ…",
+ "waiting": [{"user_id": "usr_…", "email": "carol@example.org", "name": "", "seal_id": "…",
+              "public_key": "…"}],
+ "suppliers": [], "keyless_readers": []}
+
+// SealedGrant (PUT /v1/accounts/{id}/grants/{user_id})
+{"account_id": "acc_…", "user_id": "usr_…", "epoch": 1, "grant": "TUwBAQEAAQ…",
+ "granted_by": "usr_…", "created_at": 1790000000}
+
 // TeamInvite (role is the role in the team; url only in the answer that creates it). An instance
 // invite keeps the shape POST /v1/users/invites always answered: {email, role, url, expires_at}.
 {"id": "inv_…", "email": "bea@example.org", "workspace_id": "wsp_…", "role": "member",
@@ -716,7 +815,10 @@ Shapes:
 ```
 
 `access` is what the caller may do: their grant, with `manage` from it or from their role; for an
-instance key, what its scope allows on an operator mailbox.
+instance key, what its scope allows on an operator mailbox. Since 0014, `access.read` is reading
+now, by the one rule; for a person signed in, `access.waiting_key` marks the flag held on a
+mailbox that has a key without a grant, and `mailbox_key` is the mailbox's key pair at its current
+epoch (absent without a key, and for every API key).
 `send.reason` `not_owner` becomes `not_granted` (no `send` flag). The contract fixtures change only
 through `go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`, and the
 console's types and `web/test/contract.spec.ts` hold them to the new fields.
@@ -968,10 +1070,25 @@ mailboxes, an instance key stays the operator's, a revoked one stays revoked. Th
 of key) and on a self-hosted one with teams and keys of every kind, and compare them value by
 value except the columns named.
 
+## Migration 0014
+
+`0014_mailbox_keys.sql`, an ordinary migration: the two tables of
+[Mailbox keys and sealed grants](#mailbox-keys-and-sealed-grants), their triggers and indexes, and
+nothing else. No row of a schema-13 database changes, and **every mailbox stays without a key**,
+read by the flag as before, until a person who reads it and has enrolled writes its first key from
+the console (section 12.14), which it does right after a sign-in. From that first key on, a member
+who held the flag without an account key (one who has not upgraded) waits for the key until a
+reader supplies it once they enrol. Operator mailboxes stay without a key. The tests in
+`internal/store/migrate_fourteen_test.go` hold every table's rows and columns as they were, both
+new tables empty, and each refusal of the schema.
+
 ## Going back
 
-Schemas 10 to 12 are refused by an older binary like any newer one: going back past 0012 is the
-backup taken before the upgrade, restored with the binary of its time.
+Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
+backup taken before the upgrade, restored with the binary of its time. Going back past 0013 or 0014
+is the same, and loses what they hold: past 0014 every mailbox key and grant written since (the
+mailboxes are read by the flag again, and the console writes their first keys again after a
+sign-in); past 0013 every account key, so everyone who enrolled signs in with a reset invitation.
 
 From the release of 0008 on the runner refuses a database whose `user_version` is past the last migration
 the binary embeds (`store.ErrSchemaTooNew`): `Open`, `mailserver migrate` and
@@ -1162,6 +1279,27 @@ Test names state the guarantee. At least:
   `TestMigrationTwelveCarriesOverAKeySpanningWorkspacesFrozen`,
   `TestMigrationTwelveLeavesOperatorKeysAndTheirRestrictionsAlone` and
   `TestMigrationTwelveRefusesWhatItsSchemaForbids`.
+- Mailbox keys (phase 3, step 4): the one rule,
+  `TestAKeylessMailboxIsReadByTheFlagAlone`, `TestAMemberWithTheFlagButNoGrantDoesNotReadAKeyedMailbox`,
+  `TestTheLastReaderOfAKeyedTeamMailboxCountsOnlyGrantHolders`,
+  `TestATeamMailboxWithAKeySyncsOnlyWhileSomeoneHoldsItsGrant` and
+  `TestAKeyedMailboxShowsAMemberWaitingForTheKeyItsCardAndNothingToRead`; writing,
+  `TestAPersonLinksAMailboxWithItsKeyOnThePasswordAndTheOAuthPaths`,
+  `TestALinkWithoutItsKeyOrWithAMalformedOneStoresNothing`,
+  `TestAPersonWithoutAnAccountKeyCannotLinkAMailbox`,
+  `TestReadOnAKeyedMailboxIsGivenWithTheRecipientsGrantAndRefusedWithout`,
+  `TestReadIsGivenByTheFlagAloneToAMemberWithoutAnAccountKeyWhoThenWaitsForTheKey`,
+  `TestOnlySomeoneWhoReadsAKeyedMailboxGivesReadOnIt`, `TestAnyReaderSuppliesTheKeyToAMemberWhoWaitsForIt`,
+  `TestTheFirstKeyOfAMailboxComesWithAGrantForEveryoneWhoReadsItWithAnAccountKey`,
+  `TestOnlyAPersonalMailboxsPersonWritesItANewKeyAndItsOlderGrantsGo` and
+  `TestAMailboxKeyIsWrittenOnce`; taking, `TestTakingReadDeletesTheGrantsInTheSameTransaction`,
+  `TestDisablingAPersonDeletesTheirGrantsAndKeepsTheirFlags`,
+  `TestAResetDeletesEveryGrantOfThePersonAndKeepsTheirFlags` and
+  `TestAResetPersonWaitsForTheKeysOfTheirMailboxesUntilANewKeyOrAReaderGivesThemBack`; the step-up,
+  `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes` and `TestChangingFlagsWithoutAGrantNeedsNoStepUp`;
+  and the boundary, `TestNoMailboxPrivateKeyReachesTheDatabase`, `TestAKeySeesNoMailboxKeyAndWaitsForNone`,
+  `TestAKeysListAccountsCarriesNoMailboxKey` (MCP) and `TestTheMailboxKeyRoutesAreThinOverTheService`
+  (REST, no route taking a private key).
 
 ## Conflicts and resolutions
 
@@ -1389,4 +1527,5 @@ Test names state the guarantee. At least:
 | `.golangci.yml` | `internal/workspace` joins the packages transports may not import |
 | docs | `console.md` (ownership becomes workspaces, routes, storage, events, the current workspace), `architecture.md` and `CLAUDE.md` (the ownership rule), `mcp.md` (instance keys), `self-hosting.md` and the README (the first owner) |
 | `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |
+| 0014 (phase 3, step 4) | `internal/store/migrations/0014_mailbox_keys.sql` and `migrate_fourteen_test.go`; `store/readers.go` (the one rule as SQL fragments); `workspace/sealed.go` (keys and grants written and read), `grants.go`, `reader.go`, `members.go` and `people.go` (the rule, grants taken with `read`); `account/store.go` (`Visibility` by the rule; the link's key in its transaction); `auth` (a disable and a reset take the grants; the reset's guard counts mailboxes with a key); `service/mailboxkeys.go` (the use cases and their step-up), `accounts.go`, `workspaces.go`; `api/mailboxkeys.go`; the contract fixtures and the console's types |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

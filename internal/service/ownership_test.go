@@ -25,7 +25,7 @@ func (f *fixture) person(t *testing.T, email string, role auth.Role) service.Pri
 // mailbox adds a generic IMAP account as p and returns its id.
 func (f *fixture) mailbox(t *testing.T, p service.Principal, email string) string {
 	t.Helper()
-	result, err := f.svc.AddAccount(t.Context(), p, f.passwordAccount(t, email))
+	result, err := f.svc.AddAccount(t.Context(), p, keyed(p, f.passwordAccount(t, email)))
 	if err != nil {
 		t.Fatalf("AddAccount(%s): %v", email, err)
 	}
@@ -233,11 +233,11 @@ func TestAHostedConsoleIsNeverOfferedLoopback(t *testing.T) {
 
 	// Asking for it by name does not get it either, whether adding an
 	// account or re-authorising one.
-	_, err = f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{Email: "ana@gmail.com", Flow: "loopback"})
+	_, err = f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{Email: "ana@gmail.com", Flow: "loopback"}))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("AddAccount with flow=loopback from a hosted console: %v", err)
 	}
-	_, err = f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{Email: "ana@outlook.com"})
+	_, err = f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{Email: "ana@outlook.com"}))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Errorf("a Microsoft account with no usable flow: %v", err)
 	}
@@ -252,7 +252,7 @@ func TestAHostedConsoleIsNeverOfferedLoopback(t *testing.T) {
 	if result.Auth == nil || result.Auth.Flow != "loopback" {
 		t.Errorf("auth = %+v, want the loopback flow", result.Auth)
 	}
-	hers, err := f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{Email: "ana@gmail.com"})
+	hers, err := f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{Email: "ana@gmail.com"}))
 	if err != nil {
 		t.Fatalf("the web flow from a hosted console: %v", err)
 	}
@@ -264,9 +264,9 @@ func TestAHostedConsoleIsNeverOfferedLoopback(t *testing.T) {
 func TestTheConsoleConnectsGmailWithGoogleSignInOnly(t *testing.T) {
 	f := newFixture(t)
 	session := f.person(t, "ana@example.com", auth.RoleOwner)
-	_, err := f.svc.AddAccount(t.Context(), session, service.AddAccountRequest{
+	_, err := f.svc.AddAccount(t.Context(), session, keyed(session, service.AddAccountRequest{
 		Email: "ana@gmail.com", Password: "app-password",
-	})
+	}))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("a session added Gmail with a password: %v", err)
 	}

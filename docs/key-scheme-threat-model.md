@@ -457,7 +457,15 @@ remembered as soon as the server accepts a proof, a recovery or a change that fa
 included, and an enrolment whose answer names another key or whose key the vault refuses; and the
 vault, opened only for the person named, wiped at sign-out and when no session is valid, and kept
 for the page when the browser refuses its write. The sign-in form never says a password is not sent
-while the upgrade may send it (`web/test/signIn.page.spec.ts`). The rest comes in the next step of
-phase 3: that the step-up guards every key written, the first key of a keyless mailbox included; who
-may give "read" and supply the key; the deletion of grants. The specification's sections 11 and 12
-are what those tests hold the server and the console to.
+while the upgrade may send it (`web/test/signIn.page.spec.ts`). The server's half of sections 8, 9
+and 12.11 to 12.15 is tested in `internal/service/mailboxkeys_test.go` (the step-up guarding every
+key and grant written, the first key of a keyless mailbox included, and nothing else; who may give
+"read" with a grant and who may supply the key; the first key's grants, exactly its readers'; a
+personal mailbox's new key; a reset person waiting for their keys; no mailbox private key anywhere
+in the database or its files), `internal/workspace/sealed_test.go` (the one reader rule, the last
+reader by it, the deletion of grants with "read", keys and grants written once),
+`internal/auth/grants_test.go` (a disable and a reset take every grant and keep the flags),
+`internal/api/mailboxkeys_test.go` (the routes, no route taking a private key) and
+`internal/mcp/mailboxkey_test.go` (a key sees none of it); the console's half comes with the next
+part of phase 3's step 4. The specification's sections 11 and 12 are what those tests hold the
+server and the console to.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -73,12 +74,40 @@ func (tm supportTeam) syncOn(t *testing.T, f *fixture, accountID string) {
 	}
 }
 
-// grant sets exactly what Bea holds on a mailbox of the team.
+// grant sets exactly what Bea holds on a mailbox of the team: read given on
+// a mailbox that has a key comes with her grant at its current epoch, as
+// Ana's browser would seal it.
 func (tm supportTeam) grant(t *testing.T, accountID string, flags workspace.Flags) {
 	t.Helper()
-	if _, err := tm.ws.SetGrant(t.Context(), accountID, tm.bea.UserID, flags, tm.ana.UserID, nil); err != nil {
+	if _, err := tm.ws.SetGrantSealed(t.Context(), accountID, tm.bea.UserID, flags,
+		sealedWith(t, tm.ws, accountID, tm.bea.UserID, flags), tm.ana.UserID, nil); err != nil {
 		t.Fatalf("grant %+v: %v", flags, err)
 	}
+}
+
+// sealedWith is the grant a change of flags gives a person on a mailbox:
+// one at the mailbox key's current epoch when it gives read on a mailbox
+// that has a key, none otherwise.
+func sealedWith(t *testing.T, ws *workspace.Repository, accountID, userID string, flags workspace.Flags) []byte {
+	t.Helper()
+	if !flags.Read {
+		return nil
+	}
+	before, err := ws.Grant(t.Context(), accountID, userID)
+	switch {
+	case err == nil && before.Read:
+		return nil
+	case err != nil && !errors.Is(err, workspace.ErrNoGrant):
+		t.Fatal(err)
+	}
+	key, err := ws.CurrentKey(t.Context(), accountID)
+	switch {
+	case errors.Is(err, workspace.ErrKeyless):
+		return nil
+	case err != nil:
+		t.Fatal(err)
+	}
+	return grantAt(key.Epoch)
 }
 
 func TestStorageCountsOnlyTheMailboxesTheCallerMayRead(t *testing.T) {
@@ -161,9 +190,9 @@ func TestAConsentFinishingAfterItsStarterStoppedManagingTheMailboxStoresNoGrant(
 	// say.
 	f, idp := consentFixture(t, "")
 	tm := newSupportTeam(t, f)
-	added, err := f.svc.AddAccount(t.Context(), tm.ana, service.AddAccountRequest{
+	added, err := f.svc.AddAccount(t.Context(), tm.ana, keyed(tm.ana, service.AddAccountRequest{
 		Email: "support@gmail.com", WorkspaceID: tm.id, Flow: "loopback",
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,9 +247,9 @@ func TestLosingManageOfAMailboxEndsTheConsentAttemptsStartedOnIt(t *testing.T) {
 		t.Run(lose.name, func(t *testing.T) {
 			f, idp := consentFixture(t, "")
 			tm := newSupportTeam(t, f)
-			added, err := f.svc.AddAccount(t.Context(), tm.ana, service.AddAccountRequest{
+			added, err := f.svc.AddAccount(t.Context(), tm.ana, keyed(tm.ana, service.AddAccountRequest{
 				Email: "support@gmail.com", WorkspaceID: tm.id, Flow: "loopback",
-			})
+			}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -420,7 +449,7 @@ func TestALinkRefusedInsideItsTransactionKeepsTheRefusalsCode(t *testing.T) {
 		req := f.passwordAccount(t, email)
 		req.WorkspaceID = tm.id
 		req.IMAPHost, req.IMAPPort = proxyTo(t, f.mailServer(t).Addr, meanwhile)
-		_, err := f.svc.AddAccount(ctx, tm.bea, req)
+		_, err := f.svc.AddAccount(ctx, tm.bea, keyed(tm.bea, req))
 		return err
 	}
 

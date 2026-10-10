@@ -1,0 +1,13 @@
+{
+  "keyless_readers": [
+    {
+      "email": "bea@example.com",
+      "name": "Bea Lima",
+      "public_key": "NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU",
+      "seal_id": "00000000-0000-4000-8000-000000000002",
+      "user_id": "usr_0000000000000003"
+    }
+  ],
+  "suppliers": [],
+  "waiting": []
+}

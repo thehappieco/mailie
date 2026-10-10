@@ -620,7 +620,7 @@ func TestAPersonCannotWidenTheInitialSyncWindow(t *testing.T) {
 	for _, days := range []int{-1, 30, 3650} {
 		req := f.passwordAccount(t, "ana"+strconv.Itoa(days)+"@mail.example")
 		req.InitialDays = days
-		if _, err := f.svc.AddAccount(t.Context(), ana, req); service.CodeOf(err) != service.CodeBadRequest {
+		if _, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, req)); service.CodeOf(err) != service.CodeBadRequest {
 			t.Errorf("initial_days %d from a person: %v, want bad_request", days, err)
 		}
 	}
@@ -630,7 +630,7 @@ func TestAPersonCannotWidenTheInitialSyncWindow(t *testing.T) {
 	for _, days := range []int{0, account.PersonInitialDays} {
 		req := f.passwordAccount(t, "ana.ok"+strconv.Itoa(days)+"@mail.example")
 		req.InitialDays = days
-		if _, err := f.svc.AddAccount(t.Context(), ana, req); err != nil {
+		if _, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, req)); err != nil {
 			t.Errorf("initial_days %d from a person: %v", days, err)
 		}
 	}
@@ -659,7 +659,7 @@ func TestAPersonCannotConnectGmailAsAGenericIMAPAccount(t *testing.T) {
 		{Email: "ana@workspace.example", Provider: "imap", IMAPHost: "IMAP.GoogleMail.com.", SMTPHost: "smtp.gmail.com"},
 	} {
 		req.Password = "abcd efgh ijkl mnop"
-		_, err := f.svc.AddAccount(t.Context(), ana, req)
+		_, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, req))
 		if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "Google sign-in") {
 			t.Errorf("%s on %s: %v, want a refusal pointing at Google sign-in", req.Email, req.IMAPHost, err)
 		}

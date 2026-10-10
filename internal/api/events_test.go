@@ -69,7 +69,7 @@ func (h *harness) person(t *testing.T, email string, role auth.Role) string {
 // its id.
 func (h *harness) mailbox(t *testing.T, token, email string) string {
 	t.Helper()
-	resp := h.do(t, http.MethodPost, "/v1/accounts", token, h.passwordAccount(t, email))
+	resp := h.do(t, http.MethodPost, "/v1/accounts", token, linkAs(t, token, h.passwordAccount(t, email)))
 	if resp.StatusCode != http.StatusCreated {
 		code, msg := decodeError(t, resp)
 		t.Fatalf("add %s: %d %s %s", email, resp.StatusCode, code, msg)

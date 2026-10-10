@@ -238,10 +238,10 @@ func TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange
 	billing := f.passwordAccount(t, "billing@mail.example")
 	billing.WorkspaceID = tm.id
 	billing.SyncConsentVersion = "2026-09-open-sync-1"
-	_, err := f.svc.AddAccount(ctx, tm.ana, billing)
+	_, err := f.svc.AddAccount(ctx, tm.ana, keyed(tm.ana, billing))
 	wantCode(t, "linking into the team with an earlier text", err, service.CodeBadRequest)
 	billing.SyncConsentVersion = service.DefaultSyncConsentVersion
-	linked, err := f.svc.AddAccount(ctx, tm.ana, billing)
+	linked, err := f.svc.AddAccount(ctx, tm.ana, keyed(tm.ana, billing))
 	if err != nil {
 		t.Fatalf("linking into the team with the current text: %v", err)
 	}
@@ -252,14 +252,14 @@ func TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange
 	// into one gives none of a team's.
 	personal := f.passwordAccount(t, "ana@mail.example")
 	personal.SyncConsentVersion = service.DefaultSyncConsentVersion
-	_, err = f.svc.AddAccount(ctx, tm.ana, personal)
+	_, err = f.svc.AddAccount(ctx, tm.ana, keyed(tm.ana, personal))
 	wantCode(t, "a personal link naming a sync text", err, service.CodeBadRequest)
 
 	// Linked without it, sync is off until an owner or an admin turns it on
 	// at the current text.
 	orders := f.passwordAccount(t, "orders@mail.example")
 	orders.WorkspaceID = tm.id
-	plain, err := f.svc.AddAccount(ctx, carol, orders)
+	plain, err := f.svc.AddAccount(ctx, carol, keyed(carol, orders))
 	if err != nil {
 		t.Fatal(err)
 	}

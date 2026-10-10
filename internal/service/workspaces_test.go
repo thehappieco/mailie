@@ -416,7 +416,7 @@ func TestATeamMailboxSyncsUnderItsWorkspacesConsent(t *testing.T) {
 	}
 	req := m.passwordAccount(t, "support@mail.example")
 	req.WorkspaceID = tm.id
-	linked, err := m.svc.AddAccount(ctx, tm.ana, req)
+	linked, err := m.svc.AddAccount(ctx, tm.ana, keyed(tm.ana, req))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,6 +13,11 @@
   "created_at": 1790000000,
   "email": "ana@mail.example",
   "id": "acc_0000000000000002",
+  "mailbox_key": {
+    "epoch": 1,
+    "namespace": "00000000-0000-4000-a000-000000000002",
+    "public_key": "MzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzMzM"
+  },
   "provider": "imap",
   "save_sent_copy": true,
   "send": {

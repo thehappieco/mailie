@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"crypto/ecdh"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
@@ -20,6 +21,7 @@ import (
 	goimap "github.com/emersion/go-imap/v2"
 
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/api"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/events"
@@ -43,7 +45,9 @@ const contractDir = "testdata/contract"
 func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	epoch := time.Unix(1790000000, 0).UTC()
 	sync := newLendingEngine()
-	h := newHarnessWith(t, nil, serviceOptions{
+	// No limit on requests: the contract makes more at once than one
+	// address's burst, and what the limits answer is tested on its own.
+	h := newHarnessWith(t, func(h *api.Handler) { h.Limits = nil }, serviceOptions{
 		publicURL: "http://localhost:5174",
 		now:       func() time.Time { return epoch },
 		sync:      sync,
@@ -96,8 +100,10 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("mcp", http.StatusOK, http.MethodGet, "/v1/me/mcp", token, "")
 	capture("invite", http.StatusCreated, http.MethodPost, "/v1/users/invites", token, `{"email":"bea@example.com"}`)
 
+	// A person links a mailbox with its first key, which their browser made
+	// (docs/key-scheme.md section 12.11).
 	added := capture("add_account", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
-		`{"email":"ana@gmail.com","display_name":"Ana (Gmail)","flow":"loopback"}`)
+		jsonOf(t, contractLinkKey(1, map[string]any{"email": "ana@gmail.com", "display_name": "Ana (Gmail)", "flow": "loopback"})))
 	gmail, _ := added["account"].(map[string]any)["id"].(string)
 	capture("auth_flow_loopback", http.StatusOK, http.MethodPost, "/v1/accounts/"+gmail+"/oauth/start", token,
 		`{"flow":"loopback"}`)
@@ -105,7 +111,7 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("auth_flow_web", http.StatusOK, http.MethodPost, "/v1/accounts/"+gmail+"/oauth/start", token, "")
 
 	imap := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
-		h.passwordAccount(t, "ana@mail.example"))
+		withContractKey(t, 2, h.passwordAccount(t, "ana@mail.example")))
 	imapID, _ := imap["account"].(map[string]any)["id"].(string)
 	capture("account", http.StatusOK, http.MethodGet, "/v1/accounts/"+imapID, token, "")
 
@@ -357,14 +363,17 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// Two mailboxes ana links into the team: one with the team's consent to
 	// sync it, given with the link, which bea reads too; one without, which
 	// ana alone reads, so the listings mark her its last reader.
-	shared := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
+	shared := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token, withContractKey(t, 3,
 		strings.TrimSuffix(h.passwordAccount(t, "support@mail.example"), "}")+
-			fmt.Sprintf(`,"workspace_id":%q,"sync_consent_version":%q}`, teamID, service.DefaultSyncConsentVersion))
+			fmt.Sprintf(`,"workspace_id":%q,"sync_consent_version":%q}`, teamID, service.DefaultSyncConsentVersion)))
 	sharedID, _ := shared["account"].(map[string]any)["id"].(string)
-	capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token,
-		strings.TrimSuffix(h.passwordAccount(t, "billing@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID))
+	billing := capture("", http.StatusCreated, http.MethodPost, "/v1/accounts", token, withContractKey(t, 4,
+		strings.TrimSuffix(h.passwordAccount(t, "billing@mail.example"), "}")+fmt.Sprintf(`,"workspace_id":%q}`, teamID)))
+	billingID, _ := billing["account"].(map[string]any)["id"].(string)
+	// Read on a mailbox that has a key comes with the person's grant, which
+	// the giver's browser sealed (docs/key-scheme.md section 12.13).
 	capture("grant", http.StatusOK, http.MethodPut, "/v1/accounts/"+sharedID+"/access/"+beaID, token,
-		`{"read":true,"act":false,"send":true,"manage":false}`)
+		fmt.Sprintf(`{"read":true,"act":false,"send":true,"manage":false,"grant":%q}`, contractGrant(1, 0x61)))
 	// A key of the team, which ana gives read on the mailbox she reads.
 	capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/apikeys", token,
 		fmt.Sprintf(`{"name":"Support bot","scope":"write","mailboxes":[{"account_id":%q,"read":true,"act":true,"send":false}],`+
@@ -409,6 +418,49 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("reset_open", http.StatusOK, http.MethodPost, "/v1/auth/reset/open", "",
 		fmt.Sprintf(`{"reset":%q,"email":"dee@example.com"}`, resetCode))
 
+	// Mailbox keys (docs/key-scheme.md sections 12.12 to 12.14). Carol, a
+	// member of the team, is given read on its billing mailbox with her
+	// grant, and then reset: she holds the flag and waits for the key, which
+	// ana, who reads it, supplies.
+	capture("", http.StatusOK, http.MethodPut, "/v1/accounts/"+billingID+"/access/"+carol.ID, token,
+		fmt.Sprintf(`{"read":true,"act":false,"send":false,"manage":false,"grant":%q}`, contractGrant(1, 0x62)))
+	carolReset, _, err := h.users.CreateReset(t.Context(), carol.ID, false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	carolToken, _, _, err := h.users.CompleteReset(t.Context(), carolReset, "carol@example.com", authtest.Enrolment(t), "authtest")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture("account_waiting", http.StatusOK, http.MethodGet, "/v1/accounts/"+billingID, carolToken, "")
+	capture("mailbox_key_waiting", http.StatusOK, http.MethodGet, "/v1/accounts/"+billingID+"/mailbox-key", carolToken, "")
+	capture("mailbox_key", http.StatusOK, http.MethodGet, "/v1/accounts/"+billingID+"/mailbox-key", token, "")
+	capture("grant_supplied", http.StatusOK, http.MethodPut, "/v1/accounts/"+billingID+"/grants/"+carol.ID, token,
+		fmt.Sprintf(`{"epoch":1,"grant":%q}`, contractGrant(1, 0x63)))
+	// A team mailbox from before the key scheme, which ana and bea read by
+	// the flag: ana writes its first key, sealed to both of them.
+	orders, err := account.NewRepository(h.store, nil).Create(t.Context(), account.Account{
+		ID: "acc_00000000000000e1", WorkspaceID: teamID, Email: "orders@mail.example", Provider: provider.KindIMAP,
+		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "orders@mail.example", State: account.StateActive,
+	}, ana.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture("", http.StatusOK, http.MethodPut, "/v1/accounts/"+orders.ID+"/access/"+beaID, token,
+		`{"read":true,"act":false,"send":false,"manage":false}`)
+	capture("mailbox_key_keyless", http.StatusOK, http.MethodGet, "/v1/accounts/"+orders.ID+"/mailbox-key", token, "")
+	capture("first_key", http.StatusCreated, http.MethodPost, "/v1/accounts/"+orders.ID+"/mailbox-key", token,
+		jsonOf(t, map[string]any{
+			"public_key": contractMailboxKey(5), "namespace": contractNamespace(5),
+			"grants": []map[string]any{
+				{"user_id": ana.ID, "grant": contractGrant(1, 0x64)}, {"user_id": beaID, "grant": contractGrant(1, 0x65)},
+			},
+		}))
+	// Ana's own mailbox, given its next key at will (section 12.12).
+	capture("new_key", http.StatusOK, http.MethodPut, "/v1/accounts/"+imapID+"/mailbox-key", token,
+		jsonOf(t, map[string]any{"epoch": 2, "public_key": contractMailboxKey(6), "grant": contractGrant(2, 0x66)}))
+
 	// A plain session, as signing up, a reset, the upgrade's enrolment and
 	// a password change answer it: here a password change, which ends
 	// every session ana had, so it comes last.
@@ -419,6 +471,50 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		"ticket": ticket, "current_auth_key": authtest.AuthKey, "auth_key": authtest.AuthKey, "kdf": defaultKDF(),
 		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
 	}))
+}
+
+// contractMailboxKey is the public half of a mailbox key pair the contract
+// links or writes, the same every run: the X25519 public key of a private key
+// of n repeated.
+func contractMailboxKey(n byte) string {
+	key, err := ecdh.X25519().NewPrivateKey(bytes.Repeat([]byte{n}, 32))
+	if err != nil {
+		panic(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(key.PublicKey().Bytes())
+}
+
+// contractNamespace is a mailbox's namespace the contract draws, the same
+// every run.
+func contractNamespace(n byte) string {
+	return fmt.Sprintf("00000000-0000-4000-a000-%012x", n)
+}
+
+// contractGrant is a grant's shape at epoch, its body fill repeated, the
+// same every run: what the server checks of a grant, which it cannot open.
+func contractGrant(epoch int, fill byte) string {
+	g := bytes.Repeat([]byte{fill}, 88)
+	copy(g, []byte{0x4d, 0x4c, 0x01, 0x01, 0x01, byte(epoch >> 8), byte(epoch), 0x00})
+	return base64.RawURLEncoding.EncodeToString(g)
+}
+
+// contractLinkKey adds a link's key material to fields: the mailbox key pair
+// n and its linker's grant at epoch 1.
+func contractLinkKey(n byte, fields map[string]any) map[string]any {
+	fields["public_key"] = contractMailboxKey(n)
+	fields["namespace"] = contractNamespace(n)
+	fields["grant"] = contractGrant(1, 0x40+n)
+	return fields
+}
+
+// withContractKey is a link's JSON body with the mailbox key pair n.
+func withContractKey(t *testing.T, n byte, body string) string {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(body), &fields); err != nil {
+		t.Fatal(err)
+	}
+	return jsonOf(t, contractLinkKey(n, fields))
 }
 
 // capsWithoutUIDPlus is a server with MOVE and without UIDPLUS: a move

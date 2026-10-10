@@ -93,7 +93,13 @@ type Member struct {
 	// removed, nor their account closed without force, until someone else
 	// reads them.
 	LastReaderOf []string `json:"last_reader_of"`
-	JoinedAt     int64    `json:"joined_at"`
+	// SealID and PublicKey are what a grant to the person is bound by and
+	// sealed to (docs/key-scheme.md sections 3.1 and 9.1), for an owner or
+	// an admin who gives them read on a mailbox that has a key: their seal
+	// id, and their account public key, absent until they enrol.
+	SealID    string `json:"seal_id,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
+	JoinedAt  int64  `json:"joined_at"`
 }
 
 // MemberRequest changes a member's role, status or both; a field left out
@@ -143,13 +149,18 @@ type MailboxAccess struct {
 	// workspace's; an operator mailbox's switch. Absent for a personal
 	// mailbox, which syncs under its person's own consent.
 	Sync *MailboxConsent `json:"sync,omitempty"`
-	// Readers counts who can read it: active members, active on the
-	// instance, holding read. Keys and roles never count.
+	// Readers counts who reads it now, by the one rule (docs/key-scheme.md
+	// section 12.13): active members, active on the instance, holding read,
+	// and, on a mailbox that has a key, a grant at its current epoch. Keys
+	// and roles never count.
 	Readers int `json:"readers"`
 	// NoReader is a team mailbox nobody can read: it syncs nothing more,
 	// and only removing it and linking it again gives anyone read on it.
-	NoReader bool    `json:"no_reader"`
-	Grants   []Grant `json:"grants"`
+	NoReader bool `json:"no_reader"`
+	// Epoch is the mailbox key's current epoch; absent for a mailbox
+	// without a key, which is read by the flag alone.
+	Epoch  int     `json:"epoch,omitempty"`
+	Grants []Grant `json:"grants"`
 	// Keys are the live API keys holding something on it, by when they
 	// were given it. Keys never count as readers.
 	Keys []MailboxKey `json:"keys"`
@@ -215,6 +226,10 @@ type Grant struct {
 	// absent once that person is deleted.
 	GrantedBy string `json:"granted_by,omitempty"`
 	UpdatedAt int64  `json:"updated_at"`
+	// Sealed is the person holding the mailbox's key at its current epoch
+	// (a grant, docs/key-scheme.md section 9): on a mailbox that has a key,
+	// what reading takes beside the flag. Always false on one without.
+	Sealed bool `json:"sealed"`
 }
 
 // GrantRequest sets exactly what a person holds on a mailbox. Every flag is
@@ -225,6 +240,13 @@ type GrantRequest struct {
 	Act    *bool `json:"act"`
 	Send   *bool `json:"send"`
 	Manage *bool `json:"manage"`
+	// Grant is the mailbox's key sealed to the person at its current epoch
+	// (docs/key-scheme.md sections 9.3 and 12.13), base64url of 88 bytes,
+	// which the giver's browser sealed: required with read given on a
+	// mailbox that has a key to a person who has an account key, and
+	// refused with anything else. It takes a fresh step-up when the person
+	// is someone else.
+	Grant string `json:"grant,omitempty"`
 }
 
 // Errors of administering a workspace.
@@ -729,8 +751,8 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 	for _, mb := range dir {
 		shown := MailboxAccess{
 			AccountID: mb.AccountID, Email: mb.Email, Provider: mb.Provider, State: mb.State,
-			LinkedBy: mb.LinkedBy, Readers: mb.Readers, NoReader: mb.NoReader, Grants: make([]Grant, 0, len(mb.Grants)),
-			Keys: make([]MailboxKey, 0, len(mb.Keys)),
+			LinkedBy: mb.LinkedBy, Readers: mb.Readers, NoReader: mb.NoReader, Epoch: mb.Epoch,
+			Grants: make([]Grant, 0, len(mb.Grants)), Keys: make([]MailboxKey, 0, len(mb.Keys)),
 		}
 		for _, k := range mb.Keys {
 			shown.Keys = append(shown.Keys, MailboxKey{
@@ -776,10 +798,16 @@ func (s *Service) presentMailboxConsent(c workspace.Consent) *MailboxConsent {
 //     reads after the change; manage to members only, whom owners and admins
 //     manage beside by their role;
 //   - to whom: an active member of the mailbox's workspace, the caller
-//     included.
+//     included;
+//   - with what: on a mailbox that has a key, read comes with the person's
+//     grant (docs/key-scheme.md sections 9.3 and 12.13), which the giver's
+//     browser sealed from their own, after a fresh step-up; to a member who
+//     has no account key yet, and on a mailbox without a key, read is the
+//     flag alone, and the key follows (SupplyKey, WriteFirstKey).
 //
-// Taking flags away this way is a revoke, and needs nothing held. The last
-// reader of a team mailbox keeps read (the repository's rule).
+// Taking flags away this way is a revoke, and needs nothing held; taking
+// read deletes the person's grants on the mailbox. The last reader of a team
+// mailbox keeps read (the repository's rule).
 func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID string, req GrantRequest) (Grant, error) {
 	if err := administers(p); err != nil {
 		return Grant{}, err
@@ -789,17 +817,35 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 			"read, act, send and manage are all required: the grant is set to exactly them", nil)
 	}
 	flags := workspace.Flags{Read: *req.Read, Act: *req.Act, Send: *req.Send, Manage: *req.Manage}
+	var sealed []byte
+	if req.Grant != "" {
+		// Sealed by a person's browser, from their own grant: never a key's.
+		if err := requireSession(p); err != nil {
+			return Grant{}, err
+		}
+		var err error
+		if sealed, err = grantBytes(req.Grant); err != nil {
+			return Grant{}, err
+		}
+	}
 	a, err := s.accessTarget(ctx, p, accountID)
 	if err != nil {
 		return Grant{}, err
 	}
-	g, err := s.workspaces.SetGrant(ctx, a.ID, userID, flags, p.Actor(), func(tx *sql.Tx) error {
-		return mayGrantTx(ctx, tx, p, a, userID, flags)
+	g, err := s.workspaces.SetGrantSealed(ctx, a.ID, userID, flags, sealed, p.Actor(), func(tx *sql.Tx) error {
+		if err := mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
+			return err
+		}
+		if sealed != nil && userID != p.UserID {
+			return s.stepUpTx(ctx, tx, p)
+		}
+		return nil
 	})
 	if err != nil {
-		return Grant{}, fromWorkspace(err, "setting the access failed")
+		return Grant{}, fromKeys(err, "setting the access failed")
 	}
 	s.accessChanged()
+	s.reconcile(a.ID)
 	return presentGrant(g), nil
 }
 
@@ -823,6 +869,7 @@ func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, user
 		return fromWorkspace(err, "revoking the access failed")
 	}
 	s.accessChanged()
+	s.reconcile(a.ID)
 	return nil
 }
 
@@ -915,8 +962,10 @@ func administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Acc
 
 // mayGrantTx is the grant rule, re-read inside the transaction that sets the
 // grant: who may, and that read the grant adds passes from someone reading
-// the mailbox now. Act needing read, manage only for a member and the
-// target's place in the workspace are the repository's to check.
+// the mailbox now, by the one rule (the flag, and on a mailbox that has a key
+// a grant at its current epoch). Act needing read, manage only for a member,
+// the target's place in the workspace and the grant that comes with read are
+// the repository's to check.
 func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account, userID string, flags workspace.Flags) error {
 	before, err := workspace.GrantTx(ctx, tx, a.ID, userID)
 	if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
@@ -938,13 +987,11 @@ func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account,
 	if !added.Read {
 		return nil
 	}
-	// The caller is an active member, active on the instance (callerTx):
-	// what they hold counts.
-	mine, err := workspace.GrantTx(ctx, tx, a.ID, p.UserID)
-	if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
+	reads, err := workspace.ReadsNowTx(ctx, tx, a.ID, p.UserID)
+	if err != nil {
 		return err
 	}
-	if !mine.Read {
+	if !reads {
 		return errGrantReadNotHeld
 	}
 	return nil
@@ -990,16 +1037,21 @@ func presentMember(m workspace.Member) Member {
 	if last == nil {
 		last = []string{}
 	}
-	return Member{
+	out := Member{
 		UserID: m.UserID, Email: m.Email, Name: m.Name, Role: string(m.Role), Status: string(m.Status),
 		PersonDisabled: m.PersonDisabled, LastOwner: m.LastOwner, LastReaderOf: last, JoinedAt: m.JoinedAt.Unix(),
+		SealID: m.SealID,
 	}
+	if len(m.PublicKey) > 0 {
+		out.PublicKey = b64(m.PublicKey)
+	}
+	return out
 }
 
 func presentGrant(g workspace.Grant) Grant {
 	return Grant{
 		AccountID: g.AccountID, UserID: g.UserID, Read: g.Read, Act: g.Act, Send: g.Send, Manage: g.Manage,
-		GrantedBy: g.GrantedBy, UpdatedAt: g.UpdatedAt.Unix(),
+		GrantedBy: g.GrantedBy, UpdatedAt: g.UpdatedAt.Unix(), Sealed: g.Sealed,
 	}
 }
 

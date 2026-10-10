@@ -143,6 +143,11 @@ func TestAnAPIKeyCannotUseTheSessionRoutes(t *testing.T) {
 		{http.MethodPost, "/v1/auth/recovery", `{"current_auth_key":"a","recovery_proof":"a"}`},
 		{http.MethodPost, "/v1/auth/stepup", `{"auth_key":"a"}`},
 		{http.MethodPut, "/v1/auth/profile", `{"name":"x"}`},
+		// A mailbox's key: what only a person's browser seals and opens.
+		{http.MethodGet, "/v1/accounts/acc_0000000000000001/mailbox-key", ""},
+		{http.MethodPost, "/v1/accounts/acc_0000000000000001/mailbox-key", `{"public_key":"a","namespace":"a","grants":[]}`},
+		{http.MethodPut, "/v1/accounts/acc_0000000000000001/mailbox-key", `{"epoch":2,"public_key":"a","grant":"a"}`},
+		{http.MethodPut, "/v1/accounts/acc_0000000000000001/grants/usr_0000000000000001", `{"epoch":1,"grant":"a"}`},
 	} {
 		resp := h.do(t, route.method, route.path, key, route.body)
 		if resp.StatusCode != http.StatusForbidden {
@@ -423,7 +428,7 @@ func TestPollingAnAccountEveryTwoSecondsIsNeverThrottled(t *testing.T) {
 	// Each polls its own mailbox: an owner of the instance does not see the
 	// operator's.
 	var hers struct{ Account struct{ ID string } }
-	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, linkAs(t, console, h.passwordAccount(t, "ana@mail.example"))), &hers)
 	consolePath := "/v1/accounts/" + hers.Account.ID
 
 	path := "/v1/accounts/" + added.Account.ID
@@ -594,7 +599,7 @@ func TestAnotherCallersMissesNeverThrottleAGoodCredential(t *testing.T) {
 	// Each polls its own mailbox: an owner of the instance does not see the
 	// operator's.
 	var hers struct{ Account struct{ ID string } }
-	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, linkAs(t, console, h.passwordAccount(t, "ana@mail.example"))), &hers)
 	consolePath := "/v1/accounts/" + hers.Account.ID
 	path := "/v1/accounts/" + added.Account.ID
 
@@ -653,7 +658,7 @@ func TestAnotherClientsFailuresNeverThrottleAValidPoller(t *testing.T) {
 	// Each polls its own mailbox: an owner of the instance does not see the
 	// operator's.
 	var hers struct{ Account struct{ ID string } }
-	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, h.passwordAccount(t, "ana@mail.example")), &hers)
+	decodeInto(t, h.do(t, http.MethodPost, "/v1/accounts", console, linkAs(t, console, h.passwordAccount(t, "ana@mail.example"))), &hers)
 	consolePath := "/v1/accounts/" + hers.Account.ID
 	path := "/v1/accounts/" + added.Account.ID
 	revoked := h.revokedKey(t)

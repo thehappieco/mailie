@@ -997,7 +997,7 @@ func TestASubmissionServerRefusingARefreshedTokenFailsTheSendAndLeavesTheAccount
 	srv := providertest.NewIMAPServer(t, providertest.IMAPOptions{User: "ana@gmail.com", GmailRefusals: true})
 	idp.set(func(f *fakeIDP) { f.onIssue = srv.AcceptToken })
 	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-	added, err := f.svc.AddAccount(t.Context(), ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"}))
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
 	if err != nil {
 		t.Fatal(err)
 	}

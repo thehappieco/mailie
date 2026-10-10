@@ -55,6 +55,12 @@ type Account struct {
 	// Access is what this caller may do with the mailbox: their grant, as
 	// far as their credential's scope reaches.
 	Access AccountAccess `json:"access"`
+	// MailboxKey is the mailbox's key pair at its current epoch
+	// (docs/key-scheme.md section 8), for a person signed in: what a grant of
+	// it opens to, which their console checks. Absent for a mailbox without
+	// a key, read by the flag alone, and for every API key, which seals and
+	// opens nothing.
+	MailboxKey *MailboxKeyPair `json:"mailbox_key,omitempty"`
 }
 
 // Folder is how a folder is presented.
@@ -107,6 +113,16 @@ type AddAccountRequest struct {
 	// mailbox syncs under its person's own consent, and an operator mailbox
 	// is switched on by the operator: neither takes it.
 	SyncConsentVersion string `json:"sync_consent_version,omitempty"`
+	// PublicKey, Namespace and Grant are the mailbox's first key, which the
+	// browser of the person linking it made (docs/key-scheme.md sections 8
+	// and 12.11): the public half of the key pair, base64url of 32 bytes; a
+	// namespace, a lowercase UUIDv4 no other mailbox uses; and the linker's
+	// own grant at epoch 1, base64url of 88 bytes. A person's link carries
+	// all three, after a fresh step-up; an instance key's carries none, since
+	// an operator mailbox has no key.
+	PublicKey string `json:"public_key,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Grant     string `json:"grant,omitempty"`
 }
 
 // AuthFlow is what a caller needs to finish consent.
@@ -195,6 +211,9 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 		s.log.Warn("reading the caller's access failed; showing none", "err", err)
 		grants = map[string]workspace.Flags{}
 	}
+	// The mailbox keys and who waits for one, for a person signed in only:
+	// a key seals and opens nothing (docs/key-scheme.md section 12.15).
+	keyPairs, waiting := s.keysOf(ctx, p, ids)
 	// The sender's own name: a message goes out under the name of whoever
 	// sends it, whoever linked the mailbox.
 	fromName := s.fromName(ctx, p)
@@ -209,6 +228,11 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 		shown.Sync = st
 		shown.Actions = s.actionsOf(ctx, a)
 		shown.Access = presentAccess(held)
+		shown.Access.WaitingKey = waiting[a.ID]
+		if k, ok := keyPairs[a.ID]; ok {
+			pair := presentKeyPair(k)
+			shown.MailboxKey = &pair
+		}
 		shown.Send = sendOf(a, held)
 		if shown.Send.Available {
 			shown.Send.FromName = fromName
@@ -216,6 +240,28 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 		out = append(out, shown)
 	}
 	return out
+}
+
+// keysOf reads, for a person signed in, the key pair at its current epoch of
+// each mailbox named that has one, and those on which they wait for the key:
+// they hold read, and no grant at its current epoch. Nothing for a key. One
+// that cannot be read shows no key, with a warning in the log: every use of
+// the mailbox asks again.
+func (s *Service) keysOf(ctx context.Context, p Principal, ids []string) (map[string]workspace.KeyPair, map[string]bool) {
+	if !p.IsSession() || s.workspaces == nil {
+		return nil, nil
+	}
+	pairs, err := s.workspaces.CurrentKeys(ctx, ids)
+	if err != nil {
+		s.log.Warn("reading the mailbox keys failed; showing none", "err", err)
+		pairs = nil
+	}
+	waiting, err := s.workspaces.WaitingForKey(ctx, p.UserID, ids)
+	if err != nil {
+		s.log.Warn("reading who waits for a mailbox key failed; showing nobody", "err", err)
+		waiting = nil
+	}
+	return pairs, waiting
 }
 
 // AddAccount links a mailbox and starts consent where needed.
@@ -227,6 +273,14 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 // syncs under its person's own consent; a team mailbox under its workspace's,
 // which the link gives when it names the current sync text, and otherwise an
 // owner or an admin gives later.
+//
+// A person links a mailbox with its key (docs/key-scheme.md sections 8 and
+// 12.11): the key pair's public half, its namespace and their own grant,
+// which their browser made, written in the transaction that creates the
+// mailbox, on the password and the OAuth paths alike. That needs an account
+// key of theirs (conflict without one) and a fresh step-up, asked before the
+// mail server is dialled and again in that transaction. An instance key links
+// an operator mailbox, which has no key.
 func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountRequest) (AddAccountResult, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AddAccountResult{}, err
@@ -246,6 +300,26 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 		return AddAccountResult{}, err
 	}
 	add.WorkspaceID, add.Check, add.SyncConsent = link.workspaceID, link.check, link.consent
+	if p.IsSession() {
+		// The person's account key, and their step-up before the login a
+		// password account costs; the transaction that writes the key asks
+		// for the step-up again, which is the one that counts.
+		if err := s.requireAccountKey(ctx, p); err != nil {
+			return AddAccountResult{}, err
+		}
+		if err := s.requireStepUp(ctx, p); err != nil {
+			return AddAccountResult{}, err
+		}
+		check := link.check
+		add.Check = func(tx *sql.Tx) error {
+			if check != nil {
+				if err := check(tx); err != nil {
+					return err
+				}
+			}
+			return s.stepUpTx(ctx, tx, p)
+		}
+	}
 
 	created, flow, err := s.accounts.Add(ctx, add)
 	if created.ID != "" {
@@ -357,6 +431,16 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 			return account.AddRequest{}, err
 		}
 		add.Flow = flow
+	}
+	switch {
+	case p.IsSession():
+		key, err := linkKeyOf(req)
+		if err != nil {
+			return account.AddRequest{}, err
+		}
+		add.Key = key
+	case req.PublicKey != "" || req.Namespace != "" || req.Grant != "":
+		return account.AddRequest{}, errOperatorKey
 	}
 	return add, nil
 }
@@ -882,8 +966,11 @@ func fromAccount(err error, what string) error {
 	case errors.Is(err, account.ErrClientRejected):
 		return E(CodeInternal,
 			"the provider rejected this server's OAuth client; its operator has to check the configuration", err)
+	case errors.Is(err, account.ErrOperatorKey):
+		return errOperatorKey
 	default:
-		return E(CodeInternal, what, err)
+		// The mailbox key the link writes, refused in its transaction.
+		return fromKeys(err, what)
 	}
 }
 

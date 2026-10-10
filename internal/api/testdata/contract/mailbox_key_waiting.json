@@ -1,0 +1,14 @@
+{
+  "epoch": 1,
+  "keyless_readers": [],
+  "namespace": "00000000-0000-4000-a000-000000000004",
+  "public_key": "Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc",
+  "suppliers": [
+    {
+      "email": "ana@example.com",
+      "name": "Ana Lima",
+      "user_id": "usr_0000000000000001"
+    }
+  ],
+  "waiting": []
+}

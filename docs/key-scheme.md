@@ -717,10 +717,14 @@ actions when that time is more than 10 minutes old, or later than the server's o
     session and checks the identity instead.
 - **Tested with the server's code** (`internal/auth/accountkeys_test.go`,
   `TestAStepUpProvesOnlyTheSessionsOwnPerson`, `TestAnExternalStepUpNeedsAFreshMarkAndTheSessionsOwnIdentity`,
-  `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`; the actions on mailbox keys come
-  with them in the next steps of phase 3): a step-up as another person or
+  `TestAnExternalSignInsStepUpTimeIsTheProvidersNeverTheSignIns`; for the actions on mailbox keys,
+  `internal/service/mailboxkeys_test.go`, `TestEveryKeyWriteNeedsAStepUpWithinTenMinutes` and
+  `TestChangingFlagsWithoutAGrantNeedsNoStepUp`, and over REST
+  `TestTheMailboxKeyRoutesAreThinOverTheService`): a step-up as another person or
   another id. identity is refused; a silent sign-in does not freshen the time; each action above
-  is refused past the 10 minutes, and accepted within them after a sign-in or a step-up. That a
+  is refused past the 10 minutes, writing nothing, and accepted within them after a sign-in or a
+  step-up; and what writes no key nor a grant for someone else (flags alone, "read" by the flag to
+  a person without an account key) needs none. That a
   session alone, right after its sign-in, does not replace the recovery code is
   `TestReplacingTheRecoveryCodeNeedsTheCurrentAuthKey` and, over REST,
   `TestASessionAloneCannotReplaceTheRecoveryCodeEvenRightAfterSignIn`.
@@ -1149,8 +1153,12 @@ The console's half is `web/src/crypto/account.ts` (the derivations and wraps of 
 `web/src/state/account.ts` (its requests, in order), `web/src/state/accountVault.ts` (the browser
 vault and the memory of enrolled addresses, sections 7 and 12.7) and the sign-in screens
 (`web/src/components/SignInView.vue`, `RecoveryCodeDialog.vue`, `StepUpDialog.vue`), held by
-`web/test/account.spec.ts`; the mailbox keys and the grants (sections 8, 9, 12.11 to 12.15) come
-in the next step of phase 3 and will point back here.
+`web/test/account.spec.ts`. The server's half of the mailbox keys and the grants (sections 8, 9 and
+12.11 to 12.15) is migration 0014 (`internal/store/migrations/0014_mailbox_keys.sql`), the one
+reader rule in `internal/store/readers.go`, the keys and grants written and read in
+`internal/workspace/sealed.go`, the use cases in `internal/service/mailboxkeys.go` (with the link in
+`accounts.go` and "read" with a grant in `workspaces.go`) and the routes in
+`internal/api/mailboxkeys.go`; the console's half comes in the next part of phase 3's step 4.
 
 ## 17. Open questions
 
@@ -1364,3 +1372,79 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   refusals in the console are now the kit's `MailieError`, with the same codes (`binding`,
   `shape`, `vault`), in place of the console's `KeySchemeError`: the vault is wiped on one, and a
   ceremony takes one for a security error, as before (section 13).
+- Version 1, the server's half of sections 8, 9 and 12.11 to 12.15 (2026-10-10). No byte changed.
+  Where the code had to choose and this document did not, the narrowest choice, recorded here:
+  - **The tables** (migration 0014, an ordinary one, with no view, so later rebuilds stay
+    possible): `mailbox_keys` (mailbox, epoch, public key, namespace, `created_by`, `created_at`;
+    one row per mailbox and epoch) and `mailbox_grants` (mailbox, its workspace, person, epoch, the
+    88 bytes, `granted_by`, `created_at`; one per mailbox, person and epoch). The current epoch is
+    the highest row of `mailbox_keys`, held nowhere else; older rows stay, written once, and only
+    their grants go (section 12.12). Triggers refuse every update but blanking the attribution when
+    that person is deleted, an epoch skipped or written twice, a second namespace for a mailbox or
+    one another uses, and a key for an operator mailbox. A grant references its key row, the
+    membership and the mailbox, each `ON DELETE CASCADE`, so the operator workspace, which has no
+    members, holds none; the schema checks its length and magic, the code its whole shape. Every
+    mailbox that exists at the upgrade stays without a key (section 12.14).
+  - **Who reads** is one SQL rule in one place (`store.ReaderSQL`), which access, listing and
+    fetching (`account.Visibility`), the caller's flags (`workspace.Access`), the last reader, the
+    directory's reader count, sync eligibility and the team's consent all build on. `act` counts
+    only where its holder reads. A member who holds the flag without a grant at the current epoch
+    keeps the mailbox's card, is answered `access.read: false` and `access.waiting_key: true`, and
+    counts as no reader; the access routes choose `403` or `404` by whether a grant row exists, not
+    by the flags it reads to. A personal mailbox whose person lost their grant (a reset) keeps
+    syncing under their consent until they write it a new key.
+  - **Taking "read"** deletes the person's grants on the mailbox, every epoch's, in the
+    transaction that takes the flag: a revoke (also one that leaves `send` or `manage`), a `PUT`
+    without `read`, a membership disabled or removed, and their deletion. **Being disabled on the
+    instance** deletes every grant of the person and keeps their flags, which count for nothing
+    while they are off: switched back on, they wait for the key on every mailbox that has one. The
+    **reset** (section 12.6) deletes every grant and keeps the flags; its last-reader test now
+    counts only team mailboxes **that have a key**, where the reset takes "read", since on one
+    without they keep reading by the flag; that narrows the step-3 choice recorded above, which
+    refused resets that took "read" from nobody yet. After a forced reset the service tells the
+    sync engine of every mailbox the person holds the flag on, and a team mailbox left with no
+    reader stops syncing.
+  - **Linking** (section 12.11): `POST /v1/accounts` carries `public_key`, `namespace` and `grant`
+    flat, as section 12.11 spells them. From a person all three are required (`400` without them),
+    each in its shape, the grant at epoch 1; from an instance key any of them is `400`. A person
+    without `users.public_key` cannot link (`409`). The step-up is checked before the mail server
+    is dialled and again in the transaction that creates the mailbox, which writes the key row and
+    the linker's grant after the mailbox's row and the linker's flags, on the password and the
+    OAuth paths alike; the console's margin for linking is two minutes, for the login check's
+    thirty seconds. Resuming an abandoned link carries no key: the row has the one its link wrote,
+    and a pending mailbox from before 0014 gets its first key by section 12.14.
+  - **Giving "read"** (section 12.13): `PUT /v1/accounts/{id}/access/{user}` takes an optional
+    `grant`, required when the change adds "read" on a mailbox that has a key for a person with a
+    public key, and refused (`400`) with a change that adds no "read": the key goes to a member
+    who holds the flag by the supply route. To a person without a public key, and on a mailbox
+    without a key, "read" is the flag alone, with no step-up. The giver must read the mailbox by
+    the rule (an owner or an admin waiting for the key gives nothing), and a grant for someone else
+    takes a fresh step-up. The operator's `manage`-only change keeps working on a mailbox that has
+    a key. Giving an API key "read" takes the same: the giver reads by the rule.
+  - **Supplying the key**: `PUT /v1/accounts/{id}/grants/{user}` `{epoch, grant}` → the stored
+    grant, from any person who reads the mailbox, after a fresh step-up, to an active member who
+    holds the flag, has a public key and no grant at the current epoch.
+  - **The first key** (section 12.14): `POST /v1/accounts/{id}/mailbox-key` `{public_key, namespace,
+    grants: [{user_id, grant}]}`, whose grants must be exactly one for its writer and one for every
+    other active member who holds the flag and has a public key: a missing or an extra one is
+    `409`, so a console that raced an enrolment reads the mailbox key again. **A new key** (section
+    12.12): `PUT /v1/accounts/{id}/mailbox-key` `{epoch, public_key, grant}`, the namespace kept
+    and not sent; a team mailbox is `403`.
+  - **What a console reads.** For a person signed in only: each account's `mailbox_key` `{epoch,
+    public_key, namespace}` and `access.waiting_key`; `GET /v1/accounts/{id}/mailbox-key` for one
+    who holds the flag (`403` for one who sees only the card), answering the key pair, their own
+    grant at the current epoch, `waiting` (to a reader: the members to supply, with seal id and
+    public key), `suppliers` (to a member waiting: who reads it) and `keyless_readers` (on a
+    mailbox without a key: whom the first key is sealed to); the members list's `seal_id` and
+    `public_key`; the directory's `epoch` and each grant's `sealed`. API keys, over REST and MCP,
+    see none of it.
+  - **Errors.** A public key, namespace, grant or epoch outside its shape, or a grant at odds with
+    the epoch its own request names, is `bad_request`; a stale step-up `not_authorized`, as is a
+    giver or writer who does not read; a mailbox the caller cannot see and a recipient who is not
+    an active member `not_found`; a grant at another epoch than the current one, a grant that
+    exists, a mailbox already keyed, a namespace in use, a first key's grants not matching, a
+    recipient without a public key or, for the key, without the flag, and a linker without a public
+    key `conflict`.
+  - **Left to phase 4**: a member whose grant exists but does not open (one forged by whoever held
+    a session in its window) cannot be supplied, since the supply needs no grant at the current
+    epoch; phase 4, when grants open content, decides how such a grant is replaced.

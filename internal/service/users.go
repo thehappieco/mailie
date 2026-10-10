@@ -571,7 +571,10 @@ func (s *Service) OpenReset(ctx context.Context, req ResetOpenRequest) (ResetOpe
 
 // CompleteReset redeems a reset invitation: the person gets a new password,
 // recovery code and account key, every grant sealed to their old key goes,
-// every session of theirs ends, and this browser is signed in.
+// every session of theirs ends, and this browser is signed in. Their flags
+// stay: on every mailbox that has a key they wait for it again
+// (docs/key-scheme.md section 12.6), and a team mailbox a forced reset left
+// with nobody who reads it stops syncing.
 func (s *Service) CompleteReset(ctx context.Context, req ResetRequest, userAgent string) (Session, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return Session{}, err
@@ -584,6 +587,10 @@ func (s *Service) CompleteReset(ctx context.Context, req ResetRequest, userAgent
 	if err != nil {
 		return Session{}, fromUsers(err, "resetting the password failed")
 	}
+	// What they read by a grant they no longer read; the engine hears of
+	// every mailbox they hold read on, whose readers may have changed.
+	s.accessChanged()
+	s.reconcile(s.readBy(ctx, user.ID)...)
 	return presentSession(token, session, user), nil
 }
 

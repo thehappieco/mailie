@@ -212,17 +212,11 @@ func keyAdminTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string
 }
 
 // readsNowTx reports, inside a write's transaction, whether the caller reads
-// a mailbox right now: a grant with read, as an active member active on the
-// instance (callerTx has checked the membership).
+// a mailbox right now, by the one rule (docs/key-scheme.md section 12.13):
+// the read flag as an active member active on the instance, and on a mailbox
+// that has a key a grant at its current epoch.
 func readsNowTx(ctx context.Context, tx *sql.Tx, p Principal, accountID string) (bool, error) {
-	g, err := workspace.GrantTx(ctx, tx, accountID, p.UserID)
-	switch {
-	case errors.Is(err, workspace.ErrNoGrant):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	return g.Read, nil
+	return workspace.ReadsNowTx(ctx, tx, accountID, p.UserID)
 }
 
 // ListWorkspaceKeys lists a workspace's keys for its owners and admins:

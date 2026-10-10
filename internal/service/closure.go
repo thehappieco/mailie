@@ -83,8 +83,10 @@ type DeletedUser struct {
 
 // DisableUser switches a person off: every session they have ends, every API
 // key they created is revoked, in whichever workspace, every invite they made expires, and every
-// consent attempt they started stops. Their memberships and grants stay, and
-// count for nothing while they are off; the mailboxes of their personal
+// consent attempt they started stops. Their memberships and flags stay, and
+// count for nothing while they are off; the mailbox keys sealed to them go
+// (docs/key-scheme.md section 12.13), so that on a mailbox that has a key
+// they would wait for it again; the mailboxes of their personal
 // workspace stop syncing, and so does a team mailbox whose consent was still
 // bound to theirs, its index deleted (refused without force while somebody
 // else reads it). Other team mailboxes carry on.
