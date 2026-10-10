@@ -306,7 +306,10 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       const icloudCard = page.locator('.account-card').filter({ hasText: 'ana@souza.example' })
       await icloudCard.waitFor()
       await icloudCard.locator('dd', { hasText: /^iCloud$/ }).waitFor()
-      assert.deepEqual(daemon.calls.created.at(-1), { email: 'ana@souza.example', provider: 'icloud', password: APPLE_APP_PASSWORD, login_user: 'ana.souza@icloud.com' }, 'an iCloud request carries no server names or ports, and a custom domain its iCloud sign-in')
+      // The mailbox's key comes with every link (the key scheme's section 12.11); the rest is the form's.
+      const { public_key: linkedKey, namespace: linkedNamespace, grant: linkedGrant, ...icloudRequest } = daemon.calls.created.at(-1)
+      assert.deepEqual(icloudRequest, { email: 'ana@souza.example', provider: 'icloud', password: APPLE_APP_PASSWORD, login_user: 'ana.souza@icloud.com' }, 'an iCloud request carries no server names or ports, and a custom domain its iCloud sign-in')
+      assert.ok(/^[A-Za-z0-9_-]{43}$/.test(linkedKey) && /^[0-9a-f-]{36}$/.test(linkedNamespace) && /^[A-Za-z0-9_-]{118}$/.test(linkedGrant), 'the link carries the mailbox key, its namespace and the linker grant')
 
       // --- connecting Gmail with the loopback flow ------------------------
       await page.getByRole('button', { name: 'Connect an email account' }).first().click()
