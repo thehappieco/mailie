@@ -223,7 +223,8 @@ onBeforeUnmount(() => {
 .console-header { display: flex; align-items: center; gap: 12px; min-height: 96px; padding: 20px 36px; border-bottom: 1px solid var(--console-border); background: var(--bg-panel); flex-shrink: 0; }
 .console-breadcrumb { font-size: 11px; color: var(--text-dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .console-breadcrumb span { margin: 0 7px; color: var(--text-faint); }
-.console-header h1 { margin: 7px 0 0; font-size: 25px; font-weight: 650; letter-spacing: -.7px; line-height: 1.15; }
+/* A title wider than the room an edition's header controls leave it (a phone, a long word) breaks inside the word, hyphenated where the page's language allows, rather than running under them. */
+.console-header h1 { margin: 7px 0 0; font-size: 25px; font-weight: 650; letter-spacing: -.7px; line-height: 1.15; overflow-wrap: anywhere; hyphens: auto; }
 .mobile-menu, .mobile-profile { display: none; }
 .mobile-profile { width: 36px; height: 36px; min-width: 36px; aspect-ratio: 1; flex-shrink: 0; padding: 0; border: 0; overflow: hidden; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-weight: 600; font-size: 13px; }
 .profile-trigger { display: flex; gap: 10px; align-items: center; min-width: 0; flex: 1; text-align: left; padding: 7px 4px; border-radius: 10px; color: var(--text-dim); }
