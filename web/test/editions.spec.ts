@@ -2,13 +2,17 @@
 // core never reaches outside src/ (another edition imports it, never the
 // other way round), the open edition's texts belong to whoever runs the
 // server (no company, no policy link), and its console has the server's
-// sections and nothing to read or send mail with.
+// sections and nothing to read or send mail with. An edition may draw its own
+// brand and appearance control in the frame (Edition.look); the open one
+// draws the core's.
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createSSRApp, h, type Component } from 'vue'
+import { createSSRApp, defineComponent, h, type Component } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
 import OpenConsole from '../src/open/OpenConsole.vue'
 import ActionsText from '../src/open/ActionsText.vue'
 import KeyTermsText from '../src/open/KeyTermsText.vue'
@@ -38,6 +42,7 @@ async function render(component: Component, props: Record<string, unknown> = {})
 }
 
 afterEach(() => {
+  configureEdition(openEdition)
   locale.value = 'en'
   Object.assign(session, { phase: 'signed-out', user: null, expiresAt: 0 })
   Object.assign(accounts, { list: [], loaded: false })
@@ -135,5 +140,66 @@ describe('the open edition', () => {
     const pt = await render(OpenConsole)
     expect(pt).toMatch(/<aside class="console-sidebar" aria-label="Navegação do console"/)
     expect(breadcrumb(pt)).toBe('Console / Caixas de email')
+  })
+})
+
+describe('an edition’s look in the frame', () => {
+  /** An edition's brand, which draws where it is and what it is called, so a spec reads both. */
+  const Brand = defineComponent({
+    name: 'Brand',
+    props: { place: { type: String, required: true }, label: { type: String, required: true } },
+    setup: props => () => h('span', { class: 'edition-brand', role: 'img', 'aria-label': props.label, 'data-place': props.place }),
+  })
+  const Appearance = defineComponent({ name: 'Appearance', render: () => h('div', { class: 'edition-appearance' }, [h('button', { type: 'button' }, 'Theme')]) })
+  /** The page as a browser would get it, without scoped-style attributes and Vue's comment anchors. */
+  const plain = (html: string) => html.replace(/ data-v-[0-9a-f]+/g, '').replace(/<!--[^]*?-->/g, '')
+  /** The sidebar's brand and the header, as the frame draws them. */
+  const sidebarBrand = (html: string) => plain(html).match(/<div class="console-brand">([^]*?)<\/div>/)?.[1] ?? ''
+  const header = (html: string) => plain(html).match(/<header class="console-header">([^]*?)<\/header>/)?.[1] ?? ''
+
+  function signedIn() {
+    vi.stubGlobal('location', new URL('https://mail.example.org/'))
+    Object.assign(session, { phase: 'ready', user: ana, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
+    Object.assign(accounts, { list: [], loaded: true })
+  }
+
+  it('draws the edition’s brand atop the sidebar, told it is in the menu and named as the core names its lockup, and its appearance control in the header', async () => {
+    signedIn()
+    configureEdition({ ...openEdition, look: { brand: Brand, appearance: Appearance } })
+    const html = await render(OpenConsole)
+    expect(sidebarBrand(html)).toBe('<span class="edition-brand" role="img" aria-label="Mailie · Console" data-place="menu"></span>')
+    expect(header(html)).toMatch(/<\/h1><\/div><div class="edition-appearance"><button type="button">Theme<\/button><\/div><button class="mobile-profile"/)
+    for (const core of ['class="lockup"', 'appearance-trigger', 'appearance-dialog']) expect(html).not.toContain(core)
+    // The rest of the frame is the core's.
+    expect(html).toMatch(/<aside class="console-sidebar" aria-label="Console navigation"/)
+    expect(plain(html)).toContain('<h1>Mailboxes</h1>')
+  })
+
+  it('draws only what the edition sets, and the core’s in the other place', async () => {
+    signedIn()
+    configureEdition({ ...openEdition, look: { brand: Brand } })
+    let html = await render(OpenConsole)
+    expect(sidebarBrand(html)).toBe('<span class="edition-brand" role="img" aria-label="Mailie · Console" data-place="menu"></span>')
+    expect(header(html)).toMatch(/<\/h1><\/div><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><button class="mobile-profile"/)
+    expect(html).not.toContain('class="lockup"')
+    expect(html).not.toContain('edition-appearance')
+    configureEdition({ ...openEdition, look: { appearance: Appearance } })
+    html = await render(OpenConsole)
+    expect(sidebarBrand(html)).toMatch(/^<span class="lockup" data-size="34" role="img" aria-label="Mailie · Console"/)
+    expect(header(html)).toMatch(/<\/h1><\/div><div class="edition-appearance"><button type="button">Theme<\/button><\/div><button class="mobile-profile"/)
+    expect(html).not.toContain('appearance-trigger')
+    expect(html).not.toContain('edition-brand')
+  })
+
+  it('is the core’s when the edition sets none: the open edition’s lockup and appearance menu, as before', async () => {
+    signedIn()
+    for (const edition of [openEdition, { ...openEdition, look: {} }]) {
+      configureEdition(edition)
+      const html = await render(OpenConsole)
+      expect(sidebarBrand(html)).toMatch(/^<span class="lockup" data-size="34" role="img" aria-label="Mailie · Console"/)
+      expect(header(html)).toMatch(/<\/h1><\/div><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><button class="mobile-profile"/)
+      expect(html).toContain('appearance-dialog')
+      expect(html).not.toMatch(/edition-brand|edition-appearance/)
+    }
   })
 })

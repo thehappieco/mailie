@@ -86,6 +86,8 @@ const rootLabel = computed(() => edition().shell.rootLabel())
 /** The lockup's name: the product, and the edition's root beside it unless the root is the product itself. */
 const brandLabel = computed(() => rootLabel.value === 'Mailie' ? 'Mailie' : `Mailie · ${rootLabel.value}`)
 const navLabel = computed(() => edition().shell.navLabel())
+/** The edition's own brand and appearance control, drawn instead of the core's lockup and menu when it has them. */
+const { brand, appearance } = edition().look ?? {}
 /** The section shown is the person's own, not the workspace's: their account, or one the edition says is theirs. */
 const personSection = computed(() => current.value.scope === 'person' || current.value.id === props.account)
 /** The workspace shown, named in the header once there is more than one to tell apart, on a section that is the workspace's. */
@@ -154,7 +156,7 @@ onBeforeUnmount(() => {
   <a class="skip-link" href="#console-content" @click.prevent="content?.focus()">{{ t('Skip to content') }}</a>
   <div class="console console-app">
     <aside class="console-sidebar" :aria-label="navLabel">
-      <div class="console-brand"><BrandLockup :size="34" animate="load" :label="brandLabel" /></div>
+      <div class="console-brand"><component :is="brand" v-if="brand" place="menu" :label="brandLabel" /><BrandLockup v-else :size="34" animate="load" :label="brandLabel" /></div>
       <WorkspaceSwitcher />
       <nav class="console-nav" :aria-label="t('Sections')">
         <button v-for="item in sections" :key="item.id" type="button" class="console-nav-item"
@@ -174,7 +176,8 @@ onBeforeUnmount(() => {
       <header class="console-header">
         <button class="icon-btn mobile-menu" type="button" :aria-label="t('Open menu')" aria-haspopup="dialog" :aria-expanded="mobileNav" @click="mobileNav = true"><AppIcon name="menu" :size="23" /></button>
         <div class="grow"><div class="console-breadcrumb">{{ rootLabel }} <span>/</span> <template v-if="workspaceLabel">{{ workspaceLabel }} <span>/</span>{{ ' ' }}</template>{{ current.label }}</div><h1>{{ current.label }}</h1></div>
-        <AppearanceMenu />
+        <component :is="appearance" v-if="appearance" />
+        <AppearanceMenu v-else />
         <button class="mobile-profile" type="button" :aria-label="accountLabel" @click="show(account)"><span aria-hidden="true">{{ initials(profileName) }}</span></button>
       </header>
 

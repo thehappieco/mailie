@@ -2,6 +2,8 @@
 import { createApp } from 'vue'
 
 import App from './App.vue'
+// The palette (its tokens), then the stylesheet, which reads them as the components do.
+import './ui/palette.css'
 import './ui/styles.css'
 import { configureEdition } from './edition'
 import { openEdition } from './open/edition'

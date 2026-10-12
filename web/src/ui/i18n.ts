@@ -20,6 +20,33 @@ export const languageOptions: { value: Locale; label: string }[] = [
 export const locale = ref<Locale>('en')
 const columns: Record<Exclude<Locale, 'en'>, number> = { pt: 0, es: 1, fr: 2, de: 3 }
 const catalog: Catalog = Object.assign({}, ...Object.values(catalogs))
+/** The languages the edition offers (src/edition.ts), or null for every one of the core's. */
+let offered: ReadonlySet<Locale> | null = null
+
+/**
+ * Narrows the languages offered to an edition's list, or back to all of the
+ * core's with null. The list names only the core's languages and always
+ * English, the source text and the last fallback; any other list is refused
+ * and changes nothing. Every catalog keeps its four translations either way
+ * (the catalogs' guard). configureEdition calls this, usually before
+ * initializeLocale; called after it, a language shown that is no longer
+ * offered gives way as initializeLocale chooses (the saved one, the
+ * browser's, then English), saving nothing.
+ */
+export function setOfferedLocales(list: readonly Locale[] | null): void {
+  if (list) {
+    const unknown = list.filter(value => !languageOptions.some(option => option.value === value))
+    if (unknown.length) throw new Error(`i18n: not among the core's languages: ${unknown.join(', ')}`)
+    if (!list.includes('en')) throw new Error("i18n: the languages offered must include 'en', the source text")
+  }
+  offered = list ? new Set(list) : null
+  if (offered && !offered.has(locale.value)) initializeLocale()
+}
+
+/** The languages a person may choose: the offered ones, in the core's order. */
+export function offeredLanguages(): { value: Locale; label: string }[] {
+  return languageOptions.filter(option => offered?.has(option.value) ?? true)
+}
 
 /** Adds an edition's translations. A key the core already has keeps the core's: an edition only adds. */
 export function addCatalogs(...more: Catalog[]): void {
@@ -30,11 +57,13 @@ export function addCatalogs(...more: Catalog[]): void {
   }
 }
 
+/** The offered language a preference or a browser language names (pt-BR is pt), if any. */
 export function supportedLocale(value: string | null | undefined): Locale | undefined {
   const base = value?.toLowerCase().split(/[-_]/)[0]
-  return languageOptions.find((item) => item.value === base)?.value
+  return offeredLanguages().find((item) => item.value === base)?.value
 }
 
+/** The saved language, then the browser's, then English: the first of them that is offered. */
 export function initializeLocale(): void {
   const saved = supportedLocale(readPreference('locale'))
   const languages = typeof navigator === 'undefined' ? [] : navigator.languages ?? [navigator.language]
@@ -47,8 +76,9 @@ function applyLocale(value: Locale): void {
   if (typeof document !== 'undefined') document.documentElement.lang = value === 'pt' ? 'pt-BR' : value
 }
 
+/** Shows and saves a language the person chose. One that is not offered changes and saves nothing. */
 export function setLocale(value: Locale): void {
-  if (!supportedLocale(value)) return
+  if (supportedLocale(value) !== value) return
   applyLocale(value)
   writePreference('locale', value)
 }

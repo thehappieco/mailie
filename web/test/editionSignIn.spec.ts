@@ -2,8 +2,9 @@
 // sign-in in place of the password card (Edition.signIn), the session its
 // route answers adopted as a password sign-in's is (adoptSession), a word
 // after a deliberate sign-out (Edition.signedOut), and no password to change
-// for a person who has none. The open edition sets none of them, and its
-// screens stay as they are.
+// for a person who has none. And its own look atop the card (Edition.look):
+// its brand and appearance control in place of the core's. The open edition
+// sets none of them, and its screens stay as they are.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, defineComponent, h, type Component } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
@@ -27,6 +28,13 @@ const ProviderSignIn = defineComponent({
   render: () => h('div', { class: 'provider-sign-in' }, [h('h1', 'Continue with your provider'), h('button', { type: 'button' }, 'Continue')]),
 })
 const Legal = defineComponent({ name: 'Legal', render: () => h('a', { href: '/legal' }, 'The legal text') })
+/** An edition's brand, which draws where it is and what it is called, so a spec reads both. */
+const Brand = defineComponent({
+  name: 'Brand',
+  props: { place: { type: String, required: true }, label: { type: String, required: true } },
+  setup: props => () => h('span', { class: 'edition-brand', role: 'img', 'aria-label': props.label, 'data-place': props.place }),
+})
+const Appearance = defineComponent({ name: 'Appearance', render: () => h('div', { class: 'edition-appearance' }, [h('button', { type: 'button' }, 'Theme')]) })
 const invitation = { invite: 'SyntheticInviteCode_0123456789abcdefghijklmn', email: 'new@example.test' }
 
 afterEach(() => {
@@ -73,6 +81,39 @@ describe('an edition’s own sign-in', () => {
       expect(html).toContain('Accounts are created by invitation. Ask the administrator of this server for a link.')
       expect(html).not.toContain('provider-sign-in')
       expect(await render(SignInView, { invitation })).toContain('Create your account')
+    }
+  })
+})
+
+describe('an edition’s look atop the signed-out card', () => {
+  it('draws the edition’s brand and appearance control in place of the core’s, the brand told it is on the card and named Mailie', async () => {
+    for (const signIn of [undefined, ProviderSignIn]) {
+      configureEdition({ ...openEdition, signIn, look: { brand: Brand, appearance: Appearance } })
+      const html = await render(SignInView, { invitation: null })
+      expect(html).toContain('<div class="auth-top"><span class="edition-brand" role="img" aria-label="Mailie" data-place="card"></span><div class="edition-appearance"><button type="button">Theme</button></div></div>')
+      for (const core of ['class="lockup"', 'appearance-trigger', 'appearance-dialog']) expect(html).not.toContain(core)
+      expect(html).toContain(signIn ? 'provider-sign-in' : 'name="mailie-login"')
+    }
+  })
+
+  it('draws only what the edition sets, and the core’s in the other place', async () => {
+    configureEdition({ ...openEdition, look: { brand: Brand } })
+    let html = await render(SignInView, { invitation: null })
+    expect(html).toMatch(/<div class="auth-top"><span class="edition-brand"[^>]*data-place="card"><\/span><button type="button" class="appearance-trigger"/)
+    expect(html).not.toContain('class="lockup"')
+    configureEdition({ ...openEdition, look: { appearance: Appearance } })
+    html = await render(SignInView, { invitation: null })
+    expect(html).toMatch(/<div class="auth-top"><span class="lockup" data-size="44" role="img" aria-label="Mailie">[^]*<div class="edition-appearance">/)
+    expect(html).not.toContain('appearance-trigger')
+  })
+
+  it('is the core’s when the edition sets none: the lockup and the appearance menu, as before', async () => {
+    for (const edition of [openEdition, { ...openEdition, look: {} } satisfies Edition]) {
+      configureEdition(edition)
+      const html = await render(SignInView, { invitation: null })
+      expect(html).toMatch(/<div class="auth-top"><span class="lockup" data-size="44" role="img" aria-label="Mailie">[^]*?<\/span><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><\/div><h1>Sign in<\/h1>/)
+      expect(html).toContain('appearance-dialog')
+      expect(html).not.toMatch(/edition-brand|edition-appearance/)
     }
   })
 })

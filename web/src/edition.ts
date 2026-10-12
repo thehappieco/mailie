@@ -14,7 +14,7 @@
 // server names another, the page offers a reload instead of an agreement.
 
 import type { Component } from 'vue'
-import { addCatalogs, type Catalog } from './ui/i18n'
+import { addCatalogs, setOfferedLocales, type Catalog, type Locale } from './ui/i18n'
 import { setSharedDomain } from './ui/preferences'
 
 /** A text a person agrees to, and the revision the server knows it by (MAIL_CONSENT_VERSION_*). */
@@ -30,6 +30,9 @@ export interface AgreementText {
  * or handing on a mailbox's key ('key').
  */
 export type StepUpReason = 'link' | 'grant' | 'key'
+
+/** Where the frame draws the brand: atop the sidebar ('menu'), and atop the signed-out card ('card'). */
+export type BrandPlace = 'menu' | 'card'
 
 /** A permission's text, and what the core says when it is not the one the server asks about. */
 export interface PermissionText extends AgreementText {
@@ -142,6 +145,37 @@ export interface Edition {
   signedOut?: () => void
   /** The line under the wordmark ("by …"), if any. A name, never translated. */
   byline?: string
+  /**
+   * The edition's own look in the places the frame keeps for it: the
+   * sidebar's top and the header (components/ConsoleShell.vue), and the top
+   * of the signed-out card (components/SignInView.vue). Each one set is drawn
+   * instead of the core's there; unset, the core's. Colours and corners are
+   * not set here: they are the tokens of ui/palette.css, which an edition's
+   * entry may declare its own way instead of importing that file.
+   */
+  look?: {
+    /**
+     * The brand, in place of the core's lockup (components/BrandLockup.vue).
+     * Takes `place` (BrandPlace) and `label`: the accessible name the core
+     * gives its lockup there, which the brand carries as its own.
+     */
+    brand?: Component
+    /**
+     * In place of the core's appearance menu (components/AppearanceMenu.vue):
+     * what shows and changes the theme (ui/preferences.ts) and the language
+     * (ui/i18n.ts), among the languages offered. One root element, no props.
+     */
+    appearance?: Component
+  }
+  /**
+   * The languages offered, among the core's (ui/i18n.ts): the only ones a
+   * person may choose, and a saved or browser language outside them is passed
+   * over for the next, then English. English is always among them, and
+   * configureEdition refuses a list without it or with a language the core
+   * does not have. Unset: all of the core's. Every catalog still carries the
+   * four translations.
+   */
+  locales?: readonly Locale[]
   /** A domain whose hosts share the theme and language preferences (a cookie Domain). Unset: this host only. */
   cookieDomain?: string
   /** Where the edition's legal texts go. Nothing is drawn in a place it leaves empty. */
@@ -174,8 +208,16 @@ export interface Edition {
 
 let configured: Edition | null = null
 
-/** Sets the edition. Call before mounting, and before anything renders or asks the server. */
+/**
+ * Sets the edition. Call before mounting, and before anything renders or asks
+ * the server, or chooses the language (initializeLocale). An edition whose
+ * languages it refuses (locales) throws, and changes nothing. An edition may
+ * set itself again before mounting, once the page knows more (how people sign
+ * in, say), after the language was chosen: a language shown that the new one
+ * does not offer then gives way as initializeLocale chooses, saving nothing.
+ */
 export function configureEdition(value: Edition): void {
+  setOfferedLocales(value.locales ?? null)
   configured = value
   setSharedDomain(value.cookieDomain ?? '')
   if (value.catalogs) addCatalogs(...value.catalogs)

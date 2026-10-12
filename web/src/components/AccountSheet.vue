@@ -240,7 +240,7 @@ function authorize() {
 .sheet-backdrop { position: fixed; inset: 0; z-index: 50; background: transparent; display: none; place-items: center; padding: 20px; margin: 0; width: 100%; height: 100dvh; max-width: none; max-height: none; border: 0; overflow: hidden; box-sizing: border-box; }
 .sheet-backdrop[open] { display: grid; }
 .sheet-backdrop::backdrop { background: #0009; backdrop-filter: blur(5px); }
-.sheet { width: min(680px, 100%); max-height: min(90dvh, 950px); display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--line); border-radius: 20px; background: var(--bg-panel); color: var(--text); box-shadow: 0 24px 90px #0005; overflow: hidden; }
+.sheet { width: min(680px, 100%); max-height: min(90dvh, 950px); display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--line); border-radius: var(--dialog-radius); background: var(--bg-panel); color: var(--text); box-shadow: var(--dialog-shadow); overflow: hidden; }
 .sheet-head { padding: 20px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
 .sheet-head h2 { margin: 0; font-size: 20px; overflow-wrap: anywhere; }
 .sheet-head p { margin: 4px 0 0; overflow-wrap: anywhere; }
@@ -278,7 +278,7 @@ function authorize() {
 .sheet-footer { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding: 16px 22px; border-top: 1px solid var(--line); background: var(--bg-raised); flex-shrink: 0; }
 @media (max-width: 600px) {
   .sheet-backdrop { padding: 0; align-items: end; }
-  .sheet { max-height: 96dvh; border-radius: 20px 20px 0 0; }
+  .sheet { max-height: 96dvh; border-radius: var(--dialog-radius) var(--dialog-radius) 0 0; }
   .sheet-head { padding: 16px; }
   .sheet-scroll { padding: 0 16px 16px; }
   .facts div { grid-template-columns: 1fr; gap: 4px; }

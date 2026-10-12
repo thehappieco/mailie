@@ -59,11 +59,45 @@ workspace; the API keys section is the workspace's), a few sentences it words it
 way, whether to show how to connect over MCP, whether people make and run teams on this server
 (`teams`: the open edition's, for the local workspace source), whether the account section names
 the person's role on this server (`serverRole`, the open edition's), and optional extras (a
-byline, legal components, more translations). The core's own sentences never name the frame: they
-say "this page". Other extension points are `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()`
-(`state/live.ts`), `addDescriber()` for an edition's own operations (`ui/errors.ts`,
-`state/failure.ts`), `onActionsConsent()` and the account section's pieces (`AccountPanel`,
-`SyncPermission`, `ActionsPermission`, `PermissionRow`).
+byline, legal components, more translations, its own look and the languages it offers, below). The
+core's own sentences never name the frame: they say "this page". Other extension points are
+`onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()` (`state/live.ts`), `addDescriber()` for an
+edition's own operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account
+section's pieces (`AccountPanel`, `SyncPermission`, `ActionsPermission`, `PermissionRow`).
+
+An edition may draw its own **look** in the places the frame keeps for it (`look`). `look.brand` is
+drawn in place of the core's lockup (`BrandLockup`) atop the sidebar and atop the signed-out card,
+with two props: `place` (`'menu'` or `'card'`, the type `BrandPlace`) and `label`, the accessible
+name the core gives its lockup there ("Mailie" on the card; in the sidebar "Mailie", or "Mailie ·"
+and the edition's root, such as the open edition's "Mailie · Console"), which the brand carries as
+its own. `look.appearance`, one root element and no props, is drawn in place of the appearance menu
+(`AppearanceMenu`) in the header and atop the card, and shows and changes the theme
+(`ui/preferences.ts`) and the language (`ui/i18n.ts`). Each place keeps the core's when the edition
+sets nothing for it; the top of the card wraps, the control below the brand, when the two do not fit
+on one line. `locales` narrows the languages offered to some of the core's five, always with
+`'en'`: `configureEdition` refuses a list without it or with a language the core does not have, and
+changes nothing then. The appearance menu lists only those (`offeredLanguages()`, in the core's
+order); a saved or browser language outside them is passed over for the next one, then English
+(`initializeLocale`); and `setLocale` refuses one not offered, saving nothing. An edition that
+sets itself again after the language was chosen (once the page knows how people sign in, say)
+moves a page that shows a language it no longer offers to the next one the same way, saving
+nothing. The catalogs
+keep their four translations either way. The open edition sets neither.
+
+The console's colours, light and dark, its monospace font, its motion curves and the shapes of a
+few surfaces are custom properties declared in `web/src/ui/palette.css` alone: `styles.css` and
+the components read them and declare none of them (a component keeps only its own, such as the
+lockup's size). The open console's entry (`web/src/main.ts`)
+imports the palette before `styles.css`; another edition's entry may import it the same way, or
+declare the same properties its own way instead of importing it. The shapes default to the open
+console's: `--card-radius` and `--card-shadow` (the signed-out card), `--dialog-radius` and
+`--dialog-shadow` (`ConsoleDialog` and `AccountSheet`, and the rounded side of the drawer and of the
+sheet on a phone), and `--control-radius` (the card's primary button). `web/test/palette.spec.ts`
+holds every `var(--…)` under `web/src` to a declaration under `web/src` (the palette's, or the
+component's own), except `--app-height` and `--app-top`, which `App.vue` writes at run time and
+every read names a fallback for; and it holds the palette's tokens to `palette.css` alone: the list
+in `web/test/palette.ts`, for the light page, the same declarations for dark twice, and the shapes'
+defaults above, with no other stylesheet under `web/src` declaring one.
 
 An edition whose people sign in another way (see
 [Signing in through an extension](#signing-in-through-an-extension)) sets `signIn`, a component

@@ -1,0 +1,120 @@
+/* The palette: the custom properties the console's stylesheets read for its
+   colours, light and dark, its monospace font and motion curves, and the
+   corners and shadows of the sign-in card and the dialogs. Nothing else
+   declares them: an edition's entry imports this file before styles.css, as
+   the open console's does (src/main.ts), or declares the same properties its
+   own way instead (docs/console.md, "Editions"). test/palette.spec.ts holds
+   every var(--…) a source reads to a declaration under src/, and these
+   tokens (the list in test/palette.ts) to this file alone, the shapes at
+   their defaults. */
+
+:root {
+  color-scheme: light;
+
+  --bg: #f0f2f5;
+  --bg-panel: #ffffff;
+  --bg-raised: #ffffff;
+  --bg-hover: #f5f6f6;
+  --bg-active: #e9edef;
+  --bg-input: #ffffff;
+
+  --text: #111b21;
+  /* A shade darker than the sibling's #667781, which is 4.1:1 on --bg: the
+     section intros sit on --bg, and small grey text there must still pass AA. */
+  --text-dim: #5f6e77;
+  --text-faint: #5f7079;
+  --line: #e9edef;
+
+  /* The provisional brand colour (src/brand/mark.ts), 5.4:1 on white. */
+  --brand: #b24b1e;
+  --accent: #b24b1e;
+  --accent-dim: #fbe9df;
+  /* Text-safe on white and on the tinted alert: 6.3:1 and 5.2:1. */
+  --danger: #b8262f;
+  /* --warn is an indicator colour (a dot, a border), 2.4:1 on white, so it
+     never carries text; --warn-text does, at 5.8:1. */
+  --warn: #d4a017;
+  --warn-text: #8a5d00;
+  /* "Connected": a dot, and the text of a success notice. */
+  --ok: #16a879;
+  --ok-text: #0d7550;
+  /* What goes ON a filled accent or danger surface. */
+  --on-accent: #ffffff;
+  --on-danger: #ffffff;
+
+  /* The console's quieter accent: active navigation on its tint (5.2:1). */
+  --console-accent: #a8441a;
+  --console-tint: #fbede6;
+  --console-border: color-mix(in srgb, var(--text) 15%, var(--bg-panel));
+
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* The brand lockup's choreography, the same curves the company site animates
+     its marks with, so every logo in the family moves the same way. */
+  --ease: cubic-bezier(.22, .61, .36, 1);
+  --pop: cubic-bezier(.34, 1.56, .64, 1);
+}
+
+/* Dark, twice: once for the explicit choice, once for a document whose script
+   has not run yet and whose system is dark. The CSP allows no inline script to
+   set data-theme early, so without the second block a dark-mode visitor would
+   see a white page until the bundle loads. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #111b21;
+  --bg-panel: #111b21;
+  --bg-raised: #202c33;
+  --bg-hover: #202c33;
+  --bg-active: #2a3942;
+  --bg-input: #2a3942;
+  --text: #e9edef;
+  --text-dim: #8696a0;
+  --text-faint: #94a5ae;
+  --line: #222d34;
+  --accent: #f08a5d;
+  --accent-dim: #3d2418;
+  --danger: #ff7b7f;
+  --warn-text: #e3b341;
+  --ok-text: #4bd0a0;
+  --on-accent: #2a0f04;
+  --on-danger: #2b0406;
+  --console-accent: #f5a37e;
+  --console-tint: #3a2419;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #111b21;
+    --bg-panel: #111b21;
+    --bg-raised: #202c33;
+    --bg-hover: #202c33;
+    --bg-active: #2a3942;
+    --bg-input: #2a3942;
+    --text: #e9edef;
+    --text-dim: #8696a0;
+    --text-faint: #94a5ae;
+    --line: #222d34;
+    --accent: #f08a5d;
+    --accent-dim: #3d2418;
+    --danger: #ff7b7f;
+    --warn-text: #e3b341;
+    --ok-text: #4bd0a0;
+    --on-accent: #2a0f04;
+    --on-danger: #2b0406;
+    --console-accent: #f5a37e;
+    --console-tint: #3a2419;
+  }
+}
+
+/* Geometry: the sign-in card, the dialogs (ConsoleDialog, AccountSheet, the
+   drawer and the sheet on a phone, where one side stays square), and the
+   card's primary button. */
+:root {
+  --card-radius: 22px;
+  --card-shadow: 0 18px 70px #0000000d;
+  --dialog-radius: 20px;
+  --dialog-shadow: 0 24px 90px #0005;
+  --control-radius: 12px;
+}

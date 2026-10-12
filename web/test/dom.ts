@@ -1,6 +1,7 @@
 // Just enough of a DOM for Vue to mount a component and for a spec to press
-// its buttons: nodes, attributes, listeners, focus, and <dialog>'s
-// showModal. No layout, no CSS, no HTML parsing. The specs otherwise run in
+// its buttons: nodes, attributes (with dataset and classList over them),
+// listeners, focus, <dialog>'s showModal, and animation frames. No layout, no
+// CSS, no HTML parsing. The specs otherwise run in
 // Node and render on the server; this is for what only an event can show
 // (a dialog that stays open on a failure, a switch that asks first).
 //
@@ -131,6 +132,31 @@ class FakeElement extends FakeNode {
   setAttributeNS(_ns: string, name: string, value: unknown): void { this.setAttribute(name, value) }
   removeAttributeNS(_ns: string, name: string): void { this.removeAttribute(name) }
 
+  /** The data-* attributes, by their camelCase names (data-thc-hover is thcHover), as a browser's dataset. */
+  readonly dataset: Record<string, string | undefined> = new Proxy({}, {
+    get: (_, key) => typeof key === 'string' ? this.getAttribute(dataAttribute(key)) ?? undefined : undefined,
+    set: (_, key, value) => { if (typeof key === 'string') this.setAttribute(dataAttribute(key), value); return true },
+    deleteProperty: (_, key) => { if (typeof key === 'string') this.removeAttribute(dataAttribute(key)); return true },
+    has: (_, key) => typeof key === 'string' && this.hasAttribute(dataAttribute(key)),
+    ownKeys: () => [...this.attributes.keys()].filter(name => name.startsWith('data-')).map(name => name.slice(5).replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase())),
+    getOwnPropertyDescriptor: (_, key) => typeof key === 'string' && this.hasAttribute(dataAttribute(key))
+      ? { value: this.getAttribute(dataAttribute(key)), writable: true, enumerable: true, configurable: true } : undefined,
+  })
+
+  /** The class attribute as a set of names, as a browser's classList. */
+  readonly classList = {
+    contains: (name: string): boolean => this.classNames().includes(name),
+    add: (...names: string[]): void => { this.className = [...new Set([...this.classNames(), ...names])].join(' ') },
+    remove: (...names: string[]): void => { this.className = this.classNames().filter(name => !names.includes(name)).join(' ') },
+    toggle: (name: string, force?: boolean): boolean => {
+      const on = force ?? !this.classList.contains(name)
+      if (on) this.classList.add(name)
+      else this.classList.remove(name)
+      return on
+    },
+  }
+  private classNames(): string[] { return this.className.split(/\s+/).filter(Boolean) }
+
   // The DOM properties Vue sets as properties, and a spec reads back.
   get className(): string { return this.getAttribute('class') ?? '' }
   set className(value: string) { this.setAttribute('class', value) }
@@ -193,6 +219,11 @@ class FakeElement extends FakeNode {
 
 class FakeSVGElement extends FakeElement {}
 
+/** A dataset key's attribute: thcHover is data-thc-hover. */
+function dataAttribute(key: string): string {
+  return `data-${key.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`
+}
+
 /** One compound selector: tag, #id, .class, [attr] / [attr="value"] and :not(one of those), in any mix. */
 function matchesOne(element: FakeElement, selector: string): boolean {
   const parts = selector.match(/^[a-z][\w-]*|#[\w-]+|\.[\w-]+|\[[^\]]+\]|:not\([^()]+\)/gi) ?? []
@@ -242,16 +273,34 @@ class FakeDocument extends FakeNode {
 
 class FakeShadowRoot {}
 
+// Animation frames, where Node has none: each one on the next turn of the
+// event loop, which flush() waits for, with the time it ran at.
+const frames = new Map<number, ReturnType<typeof setImmediate>>()
+let lastFrame = 0
+const animationFrames = {
+  requestAnimationFrame: globalThis.requestAnimationFrame ?? ((callback: (time: number) => void): number => {
+    const id = ++lastFrame
+    frames.set(id, setImmediate(() => { frames.delete(id); callback(performance.now()) }))
+    return id
+  }),
+  cancelAnimationFrame: globalThis.cancelAnimationFrame ?? ((id: number): void => {
+    const pending = frames.get(id)
+    frames.delete(id)
+    if (pending) clearImmediate(pending)
+  }),
+}
+
 const fakeDocument = new FakeDocument()
 const fakeWindow = {
   innerWidth: 1280, innerHeight: 900, ShadowRoot: FakeShadowRoot, trustedTypes: undefined,
   getComputedStyle: () => ({ transitionDuration: '', animationDuration: '' }),
   matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
   addEventListener() {}, removeEventListener() {},
+  ...animationFrames,
 }
 Object.assign(globalThis, {
   document: fakeDocument, window: fakeWindow, Node: FakeNode, Element: FakeElement, HTMLElement: FakeElement, SVGElement: FakeSVGElement,
-  Document: FakeDocument, ShadowRoot: FakeShadowRoot,
+  Document: FakeDocument, ShadowRoot: FakeShadowRoot, ...animationFrames,
 })
 
 export type { FakeElement }

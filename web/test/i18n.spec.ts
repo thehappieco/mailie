@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { computed } from 'vue'
+import { computed, createSSRApp, h } from 'vue'
+import { renderToString, type SSRContext } from 'vue/server-renderer'
 import { fileURLToPath } from 'node:url'
-import { addCatalogs, initializeLocale, locale, setLocale, supportedLocale, t } from '../src/ui/i18n'
+import AppearanceMenu from '../src/components/AppearanceMenu.vue'
+import { configureEdition, edition, type Edition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
+import { addCatalogs, initializeLocale, languageOptions, locale, offeredLanguages, setLocale, supportedLocale, t, type Locale } from '../src/ui/i18n'
 import { anyOf, count, since, stamp } from '../src/ui/format'
 import { badTranslations, keysOf, managersGivingAccess, repeatedKeys, sourceFiles, usedKeys, type Catalogs } from './i18nGuard'
+import { memoryStorage } from './support'
 
 const catalogs: Catalogs = import.meta.glob<Record<string, string[]>>('../src/ui/locales/*.json', { eager: true, import: 'default' })
 
@@ -11,7 +16,7 @@ const catalogs: Catalogs = import.meta.glob<Record<string, string[]>>('../src/ui
 function coreSources(): string[] {
   return sourceFiles(fileURLToPath(new URL('../src', import.meta.url)))
 }
-afterEach(() => { locale.value = 'en'; vi.unstubAllGlobals() })
+afterEach(() => { configureEdition(openEdition); locale.value = 'en'; vi.unstubAllGlobals() })
 
 describe('application languages', () => {
   it('recognizes regional language preferences and rejects unsupported values', () => {
@@ -106,5 +111,108 @@ describe('application languages', () => {
     addCatalogs({ 'A sentence only an edition says': ['Uma frase que só uma edição diz', 'x', 'x', 'x'], 'Email accounts': ['Outra coisa', 'x', 'x', 'x'] })
     expect(t('A sentence only an edition says')).toBe('Uma frase que só uma edição diz')
     expect(t('Email accounts')).toBe('Contas de email')
+  })
+})
+
+describe('the languages an edition offers', () => {
+  const three: Edition = { ...openEdition, locales: ['pt', 'en', 'es'] }
+
+  /** The language menu's options, as the appearance dialog lists them. */
+  async function menuOptions(): Promise<string[]> {
+    const context: SSRContext = {}
+    const html = await renderToString(createSSRApp({ render: () => h(AppearanceMenu) }), context)
+    return [...(html + Object.values(context.teleports ?? {}).join('')).matchAll(/<option value="(\w+)"/g)].map(match => match[1]!)
+  }
+
+  /** A page whose preferences are kept in memory: what setLocale writes, and nothing else, lands here. */
+  function stubPreferences(cookie = '') {
+    const storage = memoryStorage()
+    const page = { cookie, documentElement: { lang: '' } }
+    vi.stubGlobal('localStorage', storage)
+    vi.stubGlobal('document', page)
+    vi.stubGlobal('location', new URL('https://mail.example.org/'))
+    return { storage, page }
+  }
+
+  it('are all of the core’s when the edition names none, in the core’s order', async () => {
+    expect(offeredLanguages()).toEqual(languageOptions)
+    expect(offeredLanguages().map(option => option.value)).toEqual(['pt', 'en', 'es', 'fr', 'de'])
+    expect(await menuOptions()).toEqual(['pt', 'en', 'es', 'fr', 'de'])
+  })
+
+  it('are only the edition’s, in the core’s order, in the menu and in what a preference or a browser may name', async () => {
+    configureEdition({ ...openEdition, locales: ['es', 'en', 'pt'] })
+    expect(offeredLanguages().map(option => option.value)).toEqual(['pt', 'en', 'es'])
+    expect(await menuOptions()).toEqual(['pt', 'en', 'es'])
+    expect(supportedLocale('es-MX')).toBe('es')
+    expect(supportedLocale('fr')).toBeUndefined()
+    expect(supportedLocale('de-DE')).toBeUndefined()
+    // The page still carries the French and German translations: an edition only narrows what is offered.
+    locale.value = 'fr'
+    expect(t('Email accounts')).toBe('Comptes e-mail')
+    locale.value = 'de'
+    expect(t('Email accounts')).toBe('E-Mail-Konten')
+  })
+
+  it('move a page already showing one the edition, set again, no longer offers to the next, saving nothing', () => {
+    const { storage, page } = stubPreferences('mailie_locale=fr')
+    vi.stubGlobal('navigator', { languages: ['de-DE', 'es'] })
+    initializeLocale()
+    expect(locale.value).toBe('fr')
+    configureEdition(three)
+    expect(locale.value).toBe('es')
+    expect(page.documentElement.lang).toBe('es')
+    expect(storage.length).toBe(0)
+    expect(page.cookie).toBe('mailie_locale=fr')
+    // One still offered stays, whichever edition comes next.
+    setLocale('pt')
+    for (const next of [three, { ...three, byline: 'again' }, openEdition]) {
+      configureEdition(next)
+      expect(locale.value).toBe('pt')
+    }
+  })
+
+  it('pass over a saved language the edition does not offer for the browser’s, then English', () => {
+    configureEdition(three)
+    stubPreferences('mailie_locale=fr')
+    vi.stubGlobal('navigator', { languages: ['de-DE', 'es'] })
+    initializeLocale()
+    expect(locale.value).toBe('es')
+    expect(document.documentElement.lang).toBe('es')
+    vi.stubGlobal('navigator', { languages: ['de-DE', 'fr-CA'] })
+    initializeLocale()
+    expect(locale.value).toBe('en')
+    // An offered one saved is kept, as before.
+    stubPreferences('mailie_locale=pt')
+    initializeLocale()
+    expect(locale.value).toBe('pt')
+  })
+
+  it('are the only ones a person may choose: another changes and saves nothing', () => {
+    configureEdition(three)
+    const { storage, page } = stubPreferences()
+    locale.value = 'pt'
+    for (const refused of ['de', 'fr', 'pt-BR', '__proto__'] as Locale[]) {
+      setLocale(refused)
+      expect(locale.value).toBe('pt')
+      expect(storage.length).toBe(0)
+      expect(page.cookie).toBe('')
+      expect(page.documentElement.lang).toBe('')
+    }
+    setLocale('es')
+    expect(locale.value).toBe('es')
+    expect(storage.getItem('mailie_locale')).toBe('es')
+    expect(page.cookie).toMatch(/^mailie_locale=es;/)
+  })
+
+  it('always include English, among the core’s languages: any other list is refused, and the edition before stays', () => {
+    configureEdition(three)
+    for (const locales of [['pt', 'es'], [], ['en', 'it'], ['en', 'pt-BR']] as Locale[][]) {
+      expect(() => configureEdition({ ...openEdition, byline: 'refused', locales })).toThrow(locales.includes('en') ? /not among the core's languages/ : /must include 'en'/)
+      expect(edition()).toBe(three)
+      expect(offeredLanguages().map(option => option.value)).toEqual(['pt', 'en', 'es'])
+    }
+    configureEdition(openEdition)
+    expect(offeredLanguages()).toHaveLength(5)
   })
 })

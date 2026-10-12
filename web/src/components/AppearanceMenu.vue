@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { computed, ref, useId } from 'vue'
-import { locale, setLocale, t, languageOptions } from '../ui/i18n'
+import { locale, offeredLanguages, setLocale, t } from '../ui/i18n'
 import { theme, setTheme, type ThemePreference } from '../ui/preferences'
 
 const dialog = ref<HTMLDialogElement | null>(null)
 const titleID = useId()
 const languageID = useId()
+/** The edition's languages (Edition.locales), or all of the core's. */
+const languages = offeredLanguages()
 const themes = computed<{ value: ThemePreference; label: string; path: string }[]>(() => [
   { value: 'light', label: t('Light'), path: 'M12 8a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0-6v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5' },
   { value: 'dark', label: t('Dark'), path: 'M20.9 13A9 9 0 0 1 11 3.1 9 9 0 1 0 20.9 13Z' },
   { value: 'system', label: t('Device'), path: 'M3 4h18v13H3zM8 21h8m-4-4v4' },
 ])
 function changeLanguage(event: Event) {
-  const selected = languageOptions.find(option => option.value === (event.target as HTMLSelectElement).value)
+  const selected = languages.find(option => option.value === (event.target as HTMLSelectElement).value)
   if (selected) setLocale(selected.value)
 }
 </script>
@@ -40,7 +42,7 @@ function changeLanguage(event: Event) {
       <div class="appearance-language">
         <label :for="languageID">{{ t('Language') }}</label>
         <select :id="languageID" :value="locale" @change="changeLanguage">
-          <option v-for="language in languageOptions" :key="language.value" :value="language.value" :lang="language.value">{{ language.label }}</option>
+          <option v-for="language in languages" :key="language.value" :value="language.value" :lang="language.value">{{ language.label }}</option>
         </select>
       </div>
     </dialog>

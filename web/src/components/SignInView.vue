@@ -40,6 +40,8 @@ const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | n
 const legal = edition().legal
 const teams = edition().teams === true
 const editionSignIn = edition().signIn
+/** The edition's own brand and appearance control, drawn instead of the core's lockup and menu when it has them. */
+const { brand, appearance } = edition().look ?? {}
 
 type Mode = 'sign-in' | 'sign-up' | 'recover' | 'reset'
 const mode = ref<Mode>(props.reset ? 'reset' : props.invitation ? 'sign-up' : 'sign-in')
@@ -146,8 +148,10 @@ async function submit(event: SubmitEvent) {
   <div class="unlock">
     <div class="unlock-card">
       <div class="auth-top">
-        <BrandLockup :size="44" animate="load" label="Mailie" />
-        <AppearanceMenu />
+        <component :is="brand" v-if="brand" place="card" label="Mailie" />
+        <BrandLockup v-else :size="44" animate="load" label="Mailie" />
+        <component :is="appearance" v-if="appearance" />
+        <AppearanceMenu v-else />
       </div>
       <template v-if="editionSignIn">
         <p v-if="session.notice === 'expired'" class="note" role="status">{{ t('Your session ended. Sign in again.') }}</p>
@@ -218,10 +222,11 @@ async function submit(event: SubmitEvent) {
 </template>
 
 <style scoped>
-.auth-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
+/* An edition's brand and appearance control may be wider than the core's: the control drops below the brand rather than either being cut. */
+.auth-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
 .auth-top :deep(.appearance-trigger) { margin: -6px -8px 0 0; }
-.unlock-card { border-radius: 22px; box-shadow: 0 18px 70px #0000000d; }
-form .primary { min-height: 46px; border-radius: 12px; margin-top: 6px; }
+.unlock-card { border-radius: var(--card-radius); box-shadow: var(--card-shadow); }
+form .primary { min-height: 46px; border-radius: var(--control-radius); margin-top: 6px; }
 .working { margin: 10px 0 0; text-align: center; }
 .auth-footer { display: grid; justify-items: start; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .auth-footnote { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
