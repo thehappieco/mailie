@@ -1069,6 +1069,8 @@ the database holds, a restored one included, and whichever source the teams came
   or name, accepts an invite into it signed in, creates, lists, changes or revokes its keys, gives
   or takes what anyone holds on its mailboxes, gives or withdraws its consent to sync, or writes,
   reads or supplies a mailbox key there (`403`, "this server does not offer team workspaces yet").
+  A person's own keys (`GET /v1/me/apikeys`) leave a team's keys out, and the team mailboxes a
+  carried-over key holds; revoking a team's key there is refused as through the team's routes.
   The operator still reads its members, its invites and who holds what, and changes none of it.
 - **Its mailboxes sync nothing**: the store's rule for what may be indexed leaves every team's
   mailbox out in such an edition (`store.Options.TeamsWithheld`), so the engine never starts one,

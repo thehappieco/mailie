@@ -508,6 +508,10 @@ func (s *Service) ListKeySends(ctx context.Context, p Principal, workspaceID, pr
 // ListMyAPIKeys lists the keys the person signed in created, in every
 // workspace, with everything each holds: revoked and expired ones too, live
 // ones first, each group newest first. They may revoke any of them.
+//
+// Where teams are withheld, a team's keys are left out, and so are the team
+// mailboxes a carried-over key holds: nothing of a team is listed there, its
+// keys included.
 func (s *Service) ListMyAPIKeys(ctx context.Context, p Principal) ([]WorkspaceKey, error) {
 	if err := requireSession(p); err != nil {
 		return nil, err
@@ -516,7 +520,55 @@ func (s *Service) ListMyAPIKeys(ctx context.Context, p Principal) ([]WorkspaceKe
 	if err != nil {
 		return nil, E(CodeInternal, "listing keys failed", err)
 	}
+	if keys, err = s.withoutTeams(ctx, keys); err != nil {
+		return nil, err
+	}
 	return s.presentKeys(keys), nil
+}
+
+// withoutTeams leaves out, where teams are withheld, the keys of a team and
+// what a carried-over key holds in one. Elsewhere it is keys as they are.
+func (s *Service) withoutTeams(ctx context.Context, keys []auth.Key) ([]auth.Key, error) {
+	if !s.teamsWithheld || s.workspaces == nil {
+		return keys, nil
+	}
+	kinds := map[string]bool{}
+	team := func(id string) (bool, error) {
+		if is, ok := kinds[id]; ok {
+			return is, nil
+		}
+		w, err := s.workspaces.Get(ctx, id)
+		switch {
+		case errors.Is(err, workspace.ErrNotFound):
+			kinds[id] = false
+		case err != nil:
+			return false, E(CodeInternal, "reading the workspace failed", err)
+		default:
+			kinds[id] = w.Kind == workspace.KindTeam
+		}
+		return kinds[id], nil
+	}
+	out := make([]auth.Key, 0, len(keys))
+	for _, k := range keys {
+		if k.WorkspaceID != "" {
+			if is, err := team(k.WorkspaceID); err != nil {
+				return nil, err
+			} else if is {
+				continue
+			}
+		}
+		held := make([]workspace.KeyAccess, 0, len(k.Mailboxes))
+		for _, m := range k.Mailboxes {
+			if is, err := team(m.WorkspaceID); err != nil {
+				return nil, err
+			} else if !is {
+				held = append(held, m)
+			}
+		}
+		k.Mailboxes = held
+		out = append(out, k)
+	}
+	return out, nil
 }
 
 // CreateMyAPIKey is refused: a key is created in a workspace, by its owners
@@ -530,10 +582,25 @@ func (s *Service) CreateMyAPIKey(_ context.Context, p Principal) error {
 
 // RevokeMyAPIKey revokes a key the person signed in created, in whichever
 // workspace. Anybody else's is not found; revoking one already revoked is not
-// an error.
+// an error. Where teams are withheld, a team's key is refused
+// (errTeamsWithheld), as through the team's own routes, and stays as it is.
 func (s *Service) RevokeMyAPIKey(ctx context.Context, p Principal, prefix string) error {
 	if err := requireSession(p); err != nil {
 		return err
+	}
+	if s.teamsWithheld {
+		// A key never moves to another workspace, and a workspace's kind
+		// never changes, so what this reads holds for the revocation.
+		key, err := s.keys.Get(ctx, prefix)
+		switch {
+		case errors.Is(err, auth.ErrNotFound):
+		case err != nil:
+			return E(CodeInternal, "reading the key failed", err)
+		case key.CreatedBy == p.UserID && key.WorkspaceID != "":
+			if err := s.workspaceWithheld(ctx, key.WorkspaceID); err != nil {
+				return err
+			}
+		}
 	}
 	switch err := s.keys.RevokeCreatedBy(ctx, prefix, p.UserID); {
 	case errors.Is(err, auth.ErrNotFound):

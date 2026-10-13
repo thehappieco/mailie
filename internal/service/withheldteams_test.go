@@ -333,3 +333,69 @@ func TestAnEditionThatWithholdsTeamsSyncsNoTeamMailboxAndKeepsItsIndex(t *testin
 		t.Error("an edition that offers teams would not sync the team mailbox again")
 	}
 }
+
+func TestAnEditionThatWithholdsTeamsKeepsTheirKeysOutOfAPersonsOwnKeys(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	ctx := t.Context()
+	const shared = "acc_00000000000000aa"
+	tm.link(t, f, shared, "support@mail.example")
+	own := f.mailbox(t, tm.ana, "ana@mail.example")
+	personal := authtest.Personal(t, f.db, tm.ana.UserID)
+	teamKey, err := f.svc.CreateWorkspaceKey(ctx, tm.ana, tm.id, keyRequest("assistant", "read"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A key of hers migration 0012 carried over, holding her own mailbox and
+	// the team's.
+	carried, err := f.svc.CreateWorkspaceKey(ctx, tm.ana, personal, keyRequest("mine", "read", reads(own)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.carryOver(t, carried.Prefix, shared)
+	mine := func() map[string]service.WorkspaceKey {
+		t.Helper()
+		listed, err := f.svc.ListMyAPIKeys(ctx, tm.ana)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]service.WorkspaceKey{}
+		for _, k := range listed {
+			out[k.Prefix] = k
+		}
+		return out
+	}
+	held := func(k service.WorkspaceKey) []string {
+		var ids []string
+		for _, m := range k.Mailboxes {
+			ids = append(ids, m.AccountID)
+		}
+		slices.Sort(ids)
+		return ids
+	}
+	before := mine()
+	if _, ok := before[teamKey.Prefix]; !ok || len(held(before[carried.Prefix])) != 2 {
+		t.Fatalf("where teams are offered, her keys are %+v", before)
+	}
+
+	f.withholdTeams(t)
+
+	after := mine()
+	if _, ok := after[teamKey.Prefix]; ok {
+		t.Error("her own keys list the withheld team's key")
+	}
+	if got := held(after[carried.Prefix]); !slices.Equal(got, []string{own}) {
+		t.Errorf("her carried-over key is listed holding %v, want her own mailbox alone", got)
+	}
+	wantWithheld(t, "Ana revoking the team's key through her own keys", f.svc.RevokeMyAPIKey(ctx, tm.ana, teamKey.Prefix))
+	if stopped, reason := f.stopped(t, teamKey.Prefix); stopped {
+		t.Errorf("the refused revocation stopped the team's key, for %q", reason)
+	}
+	// Someone else's key is still not found, and her own key of no team
+	// still revokes.
+	bob := f.person(t, "bob@example.com", auth.RoleMember)
+	wantCode(t, "Bob revoking Ana's team key", f.svc.RevokeMyAPIKey(ctx, bob, teamKey.Prefix), service.CodeNotFound)
+	if err := f.svc.RevokeMyAPIKey(ctx, tm.ana, carried.Prefix); err != nil {
+		t.Errorf("Ana revoking her carried-over key: %v", err)
+	}
+}
