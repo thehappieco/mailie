@@ -82,9 +82,14 @@ type Member struct {
 	// membership is listed and reaches nothing.
 	Role   string `json:"role"`
 	Status string `json:"status"`
-	// PersonDisabled is the person switched off on the instance: their
-	// membership counts for nothing until they are back.
+	// PersonDisabled is the person switched off on the instance, disabled
+	// here or suspended: their membership counts for nothing until they are
+	// back.
 	PersonDisabled bool `json:"person_disabled,omitempty"`
+	// PersonSuspended is the person suspended by an extension of the
+	// daemon, and so PersonDisabled too: what they hold is kept, and counts
+	// again once they are resumed.
+	PersonSuspended bool `json:"person_suspended,omitempty"`
 	// LastOwner is the team's only active owner, who cannot be demoted,
 	// disabled or removed until another member is an owner.
 	LastOwner bool `json:"last_owner"`
@@ -156,6 +161,8 @@ type MailboxAccess struct {
 	Readers int `json:"readers"`
 	// NoReader is a team mailbox nobody can read: it syncs nothing more,
 	// and only removing it and linking it again gives anyone read on it.
+	// One that a suspended member would read once resumed is not: it waits
+	// for them.
 	NoReader bool `json:"no_reader"`
 	// Epoch is the mailbox key's current epoch; absent for a mailbox
 	// without a key, which is read by the flag alone.
@@ -1049,8 +1056,8 @@ func presentMember(m workspace.Member) Member {
 	}
 	out := Member{
 		UserID: m.UserID, Email: m.Email, Name: m.Name, Role: string(m.Role), Status: string(m.Status),
-		PersonDisabled: m.PersonDisabled, LastOwner: m.LastOwner, LastReaderOf: last, JoinedAt: m.JoinedAt.Unix(),
-		SealID: m.SealID,
+		PersonDisabled: m.PersonDisabled, PersonSuspended: m.PersonSuspended, LastOwner: m.LastOwner, LastReaderOf: last,
+		JoinedAt: m.JoinedAt.Unix(), SealID: m.SealID,
 	}
 	if len(m.PublicKey) > 0 {
 		out.PublicKey = b64(m.PublicKey)

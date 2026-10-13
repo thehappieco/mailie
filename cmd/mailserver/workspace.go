@@ -172,7 +172,10 @@ func memberList(ctx context.Context, cfg config.Config, args []string) error {
 		if len(m.LastReaderOf) > 0 {
 			notes = append(notes, "last reader of "+strings.Join(m.LastReaderOf, ", "))
 		}
-		if m.PersonDisabled {
+		switch {
+		case m.PersonSuspended:
+			notes = append(notes, "suspended")
+		case m.PersonDisabled:
 			notes = append(notes, "disabled on this server")
 		}
 		//nolint:errcheck // checked by Flush

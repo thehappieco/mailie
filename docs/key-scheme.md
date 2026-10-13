@@ -525,7 +525,7 @@ profile.
   only a record that is its own, from before holders, or kept past an expiry, and a ceremony whose
   session ended before it could begin settles the key it kept with it. Everything
   else wipes it, as on a self-hosted server: a refusal before `expires_at` (a revocation, a session
-  ended by a password change, a recovery or a reset, a disabled person), a remembered session the
+  ended by a password change, a recovery or a reset, a disabled or a suspended person), a remembered session the
   page gives up on without checking, and no usable session record beside an unmarked key. A page
   that stops halfway leaves either the session's record, which the next page checks again, or an
   unmarked key, which it wipes. A refusal wipes the record only in a page that receives it before
@@ -1049,6 +1049,14 @@ key.
 - **Taking:** removing "read", a member leaving the workspace, being disabled or deleted deletes
   the person's grants for the mailbox (all epochs) in the same transaction as the flag. Giving it
   back needs a new grant.
+- **Being suspended** by an extension of the daemon, which follows a decision taken elsewhere,
+  takes nothing: the person's grants persist, sealed to them and unusable, until they are resumed
+  or deleted. While suspended they are not active, so by the first bullet they read nothing; they
+  wait for no key, are supplied none and are sealed none by a first key, count as no reader, and are
+  served no grant, since they hold no session and no sign-in of theirs succeeds. Resumed, they read
+  again where they hold the flag and a grant at the current epoch, and wait where they hold the flag
+  alone. A disable here, which deletes their grants as the bullet above says, stands over a
+  suspension: it clears the suspension, and a resume never lifts it (threat model, section 5.13).
 - **The last reader** of a team mailbox is the last active member who reads it by the first
   bullet: holding the flag **and** a grant at the current epoch on a mailbox that has a key, the
   flag on one that has none; keys and roles never count. Every path that takes "read" away keeps
@@ -1631,3 +1639,34 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     asks the vault, as a restore does, and wipes a key of anyone else), so what follows a sign-in
     in the page that adopts it (the first keys of section 12.14, while the step-up time is fresh)
     follows it as it follows a password sign-in.
+- Version 1, suspension (2026-10-13). No byte changed. An extension of the daemon may suspend a
+  person, following a decision taken elsewhere, and resume them; section 12.13 says what a
+  suspension takes (nothing), and section 7 counts a suspended person among the refusals that wipe
+  the vault. What the code had to choose, recorded here:
+  - **The column.** `users.suspended_at` (migration 0018, an ordinary one): the moment of the
+    suspension, 0 otherwise, with a CHECK that a suspended person's status is `disabled`.
+  - **The status.** `status = 'disabled'` now means "not active", disabled here or suspended, so
+    every rule that reads `status = 'active'` (signing in, sessions, wraps and platform wraps,
+    access, sync, consents, invites, identities) refuses a suspended person with nothing changed in
+    it: a rule left out would refuse too much, never let anyone in.
+  - **The reader rule** (section 12.13, `store.ReaderSQL`) is unchanged in its text and leaves a
+    suspended person out by that status: they read nothing, wait for no key (`store.WaitingSQL`),
+    are supplied none, are sealed none by a first key (whose grants are exactly those of the active
+    members who hold the flag), and count as no reader, for the last-reader protection and for a
+    team mailbox's sync alike. A team mailbox only they would read is not marked as one nobody can
+    read: it waits for them.
+  - **Nothing is served.** Suspending ends their sessions and deletes their tickets and reset
+    invitations in one transaction, and no sign-in of a person who is not active answers a wrap
+    (section 12.2) or a platform wrap (section 12.8), so nothing answers their grant or their
+    account key while they are suspended. The keys they created stop, saying `creator_suspended`.
+  - **They protect nothing.** Neither the last owner of a team, nor the last reader of a mailbox,
+    nor a consent still bound to them holds a suspension up, and while suspended they count in
+    none of them.
+  - **The resume** makes them active again, with no act of any owner or admin: they read where they
+    hold the flag and, on a mailbox that has a key, a grant at its current epoch. A "read" taken
+    meanwhile took their grants with it, and a first key written meanwhile sealed nothing to them,
+    so they wait for it. No session and no key comes back.
+  - **A disable here stands over a suspension.** Disabling a suspended person here deletes their
+    grants as section 12.13 says and clears `suspended_at` in the same statement, so that a resume
+    never lifts it; suspending someone disabled here marks nothing. Who decides a resume decides
+    who reads again: the threat model's section 5.13.

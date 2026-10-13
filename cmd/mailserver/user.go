@@ -390,14 +390,17 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 		return fmt.Errorf("user password: %w; nothing was made", err)
 	}
 	obs.LoggerFrom(ctx).Info("reset invitation made by the operator",
-		"user", user.ID, "forced", reset.Forced, "disabled", user.Disabled)
+		"user", user.ID, "forced", reset.Forced, "disabled", user.Disabled, "suspended", user.Suspended)
 	fmt.Println(auth.ResetLink(base, code, reset.Email))
 	fmt.Fprintf(os.Stderr, "\nreset invitation for %s (%s), expires %s\n", reset.Email, user.ID,
 		reset.ExpiresAt.Local().Format(time.RFC3339))
 	fmt.Fprintln(os.Stderr, "Send the link to that person only. It works once, for that address, and replaces "+
 		"any earlier one. With it they choose a new password and get a new recovery code and account key; "+
 		"their sessions end, and their personal mailboxes need a new key before they open again.")
-	if user.Disabled {
+	switch {
+	case user.Suspended:
+		fmt.Fprintln(os.Stderr, "This person is suspended: the link works only once they are resumed.")
+	case user.Disabled:
 		fmt.Fprintln(os.Stderr, "This person is disabled: the link works only once they are enabled again.")
 	}
 	return nil

@@ -42,9 +42,9 @@ func CurrentGrantSQL(account, user string) string {
 
 // FlagHolderSQL is the condition, over mailbox_access aliased alias, that its
 // holder holds the read flag and it counts: they are an active member of the
-// mailbox's workspace and active on the instance. On a mailbox without a key
-// it is reading (ReaderSQL); on one with a key it is who may be given the
-// key, or waits for it (WaitingSQL).
+// mailbox's workspace and active on the instance (neither disabled nor
+// suspended). On a mailbox without a key it is reading (ReaderSQL); on one
+// with a key it is who may be given the key, or waits for it (WaitingSQL).
 func FlagHolderSQL(alias string) string {
 	return `(` + alias + `.read = 1
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
@@ -57,6 +57,23 @@ func FlagHolderSQL(alias string) string {
 func ReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
 	return `(` + FlagHolderSQL(alias) + `
+	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
+}
+
+// SuspendedReaderSQL is the condition, over mailbox_access aliased alias,
+// that its holder would read the mailbox once resumed: they are suspended by
+// an extension of the daemon (users.suspended_at), which keeps their grants,
+// and are otherwise a reader by the rule above, an active member of the
+// mailbox's workspace holding the read flag and, on a mailbox that has a
+// key, a grant at its current epoch. They read nothing now, and count for
+// nothing anywhere the rule decides: this is only what keeps a mailbox they
+// alone would read from being called one nobody can ever read again.
+func SuspendedReaderSQL(alias string) string {
+	account, user := alias+".account_id", alias+".user_id"
+	return `(` + alias + `.read = 1
+	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
+	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
+	                 AND reader_m.status = 'active' AND reader_u.suspended_at <> 0)
 	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
 }
 

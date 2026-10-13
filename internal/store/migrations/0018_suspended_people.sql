@@ -1,0 +1,36 @@
+-- A person suspended by an extension of the daemon (docs/workspaces.md,
+-- "People on the instance"; docs/key-scheme.md section 12.13).
+--
+-- An ordinary migration: one column is added, nothing else changes, and no
+-- row of a schema-17 database does: every person keeps their status, and
+-- suspended_at is 0 for everyone, a person disabled before this migration
+-- included, who stays disabled here.
+--
+-- users.status 'disabled' now means "not active", for either of two reasons:
+--
+--   - disabled here (suspended_at = 0): by the operator or an owner of this
+--     server, which ends every way the person had in, revokes the keys they
+--     created and deletes every grant sealed to them (section 12.13);
+--     switched back on, they wait for the key on every mailbox that has one;
+--   - suspended (suspended_at <> 0, the moment it began): by an extension
+--     of the daemon, following a decision taken elsewhere, which ends their
+--     sessions, tickets, reset invitations and waiting invites and stops the
+--     keys they created, as a disable does, and keeps their grants and
+--     flags, which count for nothing while they are suspended: they read
+--     nothing and wait for nothing, nobody supplies them a key, and they
+--     protect nothing (no last owner, no last reader). Resumed, they read
+--     again what they hold the flag and a grant at the current epoch on;
+--     no session and no key comes back.
+--
+-- The CHECK holds the second inside the first: a suspended person is never
+-- active, so every rule that reads users.status = 'active' (signing in,
+-- sessions, access, sync, consents, invites, identities, platform wraps)
+-- refuses a suspended person exactly as a disabled one, with nothing changed
+-- in it. A disable here stands over a suspension: it clears suspended_at in
+-- the statement that disables, so that a resume, which acts only on a
+-- suspended person, never lifts it; suspending someone disabled here marks
+-- nothing.
+
+ALTER TABLE users ADD COLUMN suspended_at INTEGER NOT NULL DEFAULT 0
+  CHECK (suspended_at = 0 OR status = 'disabled'); -- when an extension suspended the person; 0 when it
+                                                   -- did not, or a disable here stood over it

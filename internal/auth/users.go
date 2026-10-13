@@ -76,11 +76,18 @@ const maxEmailLength = 254
 
 // User is a person who can sign in. No hash or verifier leaves this package.
 type User struct {
-	ID       string
-	Email    string
-	Name     string
-	Role     Role
+	ID    string
+	Email string
+	Name  string
+	Role  Role
+	// Disabled is a person who is not active: disabled here, or suspended
+	// by an extension of the daemon (Suspended). Neither signs in, holds a
+	// session or a key, or reads anything.
 	Disabled bool
+	// Suspended is a person an extension of the daemon suspended
+	// (Users.Suspend): Disabled too, with their grants kept for when they
+	// are resumed. A disable here stands over it, and clears it.
+	Suspended bool
 	// HasPassword is false for a person who signs in only through an
 	// identity provider (SignInExternal) and has never been given a
 	// password: no password signs them in, and none can be changed. It is
@@ -195,13 +202,13 @@ func NormalizeName(s string) (string, error) {
 // userColumns are a person as User holds them. Whether they have a password
 // is read from the hash and the enrolment, never the hash itself.
 const userColumns = `id, email, name, role, status, (password_hash <> '' OR zk_enrolled_at <> 0), password_changed_at,
-	created_at, updated_at, zk_enrolled_at <> 0, seal_id, public_key`
+	created_at, updated_at, zk_enrolled_at <> 0, seal_id, public_key, suspended_at <> 0`
 
 // userFields are where userColumns scan into; status is the stored one.
 func userFields(user *User, status *string) []any {
 	return []any{&user.ID, &user.Email, &user.Name, &user.Role, status, &user.HasPassword,
 		unixScanner{&user.PasswordChangedAt}, unixScanner{&user.CreatedAt}, unixScanner{&user.UpdatedAt},
-		&user.Enrolled, &user.SealID, &user.PublicKey}
+		&user.Enrolled, &user.SealID, &user.PublicKey, &user.Suspended}
 }
 
 // Get reads one user.
@@ -257,19 +264,37 @@ func (u *Users) SetName(ctx context.Context, id, name string) (User, error) {
 
 // SetDisabled switches a user off or back on. Switching off is Disable, forced:
 // every session ends and every key the user holds is revoked, in the same
-// transaction. Switching back on revives none of them.
+// transaction. Switching back on revives none of them, and lifts only a
+// disable made here: a person an extension suspended is resumed by it
+// (Resume), never here, and is ErrUserSuspended.
 func (u *Users) SetDisabled(ctx context.Context, id string, disabled bool) error {
 	if disabled {
 		_, err := u.Disable(ctx, id, true)
 		return err
 	}
 	return u.store.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ?`,
+		res, err := tx.ExecContext(ctx, `UPDATE users SET status = ?, updated_at = ? WHERE id = ? AND suspended_at = 0`,
 			userActive, u.now().Unix(), id)
 		if err != nil {
 			return fmt.Errorf("auth: set user status: %w", err)
 		}
-		return requireRow(res, ErrUserNotFound)
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("auth: rows affected: %w", err)
+		}
+		if n > 0 {
+			return nil
+		}
+		var suspended bool
+		switch err := tx.QueryRowContext(ctx, `SELECT suspended_at <> 0 FROM users WHERE id = ?`, id).Scan(&suspended); {
+		case errors.Is(err, sql.ErrNoRows):
+			return ErrUserNotFound
+		case err != nil:
+			return fmt.Errorf("auth: set user status: %w", err)
+		case suspended:
+			return ErrUserSuspended
+		}
+		return nil
 	})
 }
 

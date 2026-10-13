@@ -25,7 +25,12 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 //     gave the workspace's consent, and someone reads it (ReaderSQL: an
 //     active member, active on the instance, holding read, and on a mailbox
 //     that has a key a grant at its current epoch). A mailbox nobody reads
-//     indexes nothing more until someone does, or it is removed.
+//     indexes nothing more until someone does, or it is removed. A consent
+//     migration 0011 copied from a person's own, still bound to them,
+//     stands only while they are active: disabling or deleting them stops
+//     it (StopBoundTx), and while an extension has them suspended it
+//     indexes nothing more and keeps what it indexed, as their personal
+//     mailboxes do.
 //
 // A personal mailbox has no reader term: its person may lose their grant (a
 // reset) and write it a new key (docs/key-scheme.md section 12.12), and
@@ -43,11 +48,22 @@ var syncPermitted = `CASE
 	WHEN a.owner_user_id IS NOT NULL THEN EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id
 	                                                AND u.status = 'active' AND u.sync_consent_at <> 0)
 	WHEN a.workspace_id = 'wsp_operator' THEN a.sync_enabled_at <> 0
-	ELSE a.sync_enabled_at <> 0 AND ` + hasReader + ` END`
+	ELSE a.sync_enabled_at <> 0 AND ` + hasReader + ` AND NOT ` + boundToSomeoneOff + ` END`
+
+// boundToSomeoneOff is a mailbox, aliased a, whose consent to sync is still
+// the one migration 0011 copied from a person's own while that person is not
+// active: suspended, since disabling or deleting them stops it.
+var boundToSomeoneOff = `(a.sync_enabled_via = 'migration' AND EXISTS (SELECT 1 FROM users bound_u
+	WHERE bound_u.id = a.sync_enabled_by AND bound_u.status <> 'active'))`
 
 // hasReader is whether a mailbox, aliased a, has a reader, by the one rule
 // (ReaderSQL).
 var hasReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account_id = a.id AND ` + ReaderSQL("r") + `)`
+
+// hasSuspendedReader is whether a mailbox, aliased a, would have a reader
+// once a suspended person is resumed (SuspendedReaderSQL).
+var hasSuspendedReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account_id = a.id AND ` +
+	SuspendedReaderSQL("r") + `)`
 
 // SyncEligibleAccounts lists every account the engine should be syncing,
 // oldest first.
@@ -121,7 +137,8 @@ func syncEligibleOn(ctx context.Context, q queryRower, accountID string) (bool, 
 // sync text, or off, or removes; and those nobody can read, kept stopped ones
 // included, which index nothing more and can never be read again: they can
 // only be removed (and linked again), or turned off to delete what is still
-// indexed.
+// indexed. A mailbox a suspended person would read once resumed is not one
+// of those: it waits for them.
 func (s *Store) TeamSyncNotices(ctx context.Context) (keptStopped, noReader []string, err error) {
 	keptStopped, err = s.teamIDs(ctx, teamsKeptStopped)
 	if err != nil {
@@ -140,11 +157,21 @@ var (
 		WHERE w.kind = 'team' AND a.sync_enabled_via = 'migration' AND a.sync_enabled_at = 0 AND ` + hasReader + `
 		ORDER BY a.created_at, a.id`
 	teamsNobodyReads = `SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		WHERE w.kind = 'team' AND NOT ` + hasReader + ` ORDER BY a.created_at, a.id`
+		WHERE w.kind = 'team' AND NOT ` + hasReader + ` AND NOT ` + hasSuspendedReader + `
+		ORDER BY a.created_at, a.id`
 )
 
-func (s *Store) teamIDs(ctx context.Context, query string) ([]string, error) {
-	rows, err := s.r.QueryContext(ctx, query)
+// BoundTo lists the team mailboxes whose consent to sync is still the one
+// migration 0011 copied from userID's own, oldest first: what syncs nothing
+// while an extension has them suspended (boundToSomeoneOff), and catches up
+// once they are resumed.
+func (s *Store) BoundTo(ctx context.Context, userID string) ([]string, error) {
+	return s.teamIDs(ctx, `SELECT a.id FROM accounts a WHERE a.sync_enabled_via = 'migration' AND a.sync_enabled_by = ?
+		ORDER BY a.created_at, a.id`, userID)
+}
+
+func (s *Store) teamIDs(ctx context.Context, query string, args ...any) ([]string, error) {
+	rows, err := s.r.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list team mailboxes: %w", err)
 	}

@@ -91,7 +91,10 @@ type DeletedUser struct {
 // workspace stop syncing, and so does a team mailbox whose consent was still
 // bound to theirs, its index deleted (refused without force while somebody
 // else reads it). Other team mailboxes carry on.
-// Disabling someone already disabled is not an error.
+// Disabling someone already disabled is not an error. A person an extension
+// suspended is disabled as one who is active is, their grants and what is
+// bound to their consent included, and stays disabled whatever the extension
+// does next: a disable here stands over a suspension.
 func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserRequest) (DisabledUser, error) {
 	user, err := s.closing(ctx, p, req.Email)
 	if err != nil {
@@ -192,6 +195,125 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 		SessionsDeleted: removed.Sessions, KeysDeleted: removed.Keys, InvitesDeleted: removed.Invites,
 		TeamsDeleted: removed.Teams, TeamSyncsStopped: removed.Stopped,
 	}, nil
+}
+
+// Suspending a person is for an extension of the daemon (internal/app's
+// Options.Extensions, through app.Deps), which follows a decision taken
+// elsewhere, as SignInExternal does: no route or command of the core
+// suspends or resumes anyone, and neither takes a principal. A suspension
+// ends what a disable ends — every session, every API key the person
+// created, which says it stopped with their suspension, the invites they
+// made that are still waiting, and the consent attempts they started — and
+// keeps what they hold on mailboxes, flags and sealed grants alike, unusable
+// while they are suspended (docs/key-scheme.md section 12.13): they read
+// nothing, wait for no key, are supplied none, and protect nothing, so
+// nothing a team depends on holds a suspension up. Their personal mailboxes,
+// and a team mailbox whose consent to sync is still bound to theirs
+// (migration 0011), sync nothing meanwhile and keep their index; a team
+// mailbox nobody else reads stops, and waits for them. A resume gives back
+// what they hold, and no session and no key. A disable here, by the operator
+// or an owner of the instance, stands over a suspension: it deletes their
+// grants as it always does, and a resume never lifts it.
+
+// SuspendedPerson is what suspending a person did.
+type SuspendedPerson struct {
+	ID string
+	// Suspended is the person suspended now: false for one disabled here,
+	// whom a suspension leaves exactly as they are.
+	Suspended      bool
+	SessionsEnded  int
+	KeysRevoked    int
+	InvitesExpired int
+}
+
+// SuspendPerson suspends a person, for an extension of the daemon. Nothing
+// refuses it, the last owner of a team and the last reader of a mailbox
+// included, and suspending someone already suspended is not an error.
+func (s *Service) SuspendPerson(ctx context.Context, userID string) (SuspendedPerson, error) {
+	if strings.TrimSpace(userID) == "" {
+		return SuspendedPerson{}, E(CodeBadRequest, "suspending a person needs the person", nil)
+	}
+	done, err := s.users.Suspend(ctx, userID)
+	if err != nil {
+		return SuspendedPerson{}, fromSuspension(err, "suspending the person failed")
+	}
+	out := SuspendedPerson{
+		ID: userID, Suspended: done.Suspended, SessionsEnded: done.Sessions, KeysRevoked: done.Keys,
+		InvitesExpired: done.Invites,
+	}
+	if !done.Suspended {
+		return out, nil
+	}
+	// Whatever they could read, they no longer can.
+	s.accessChanged()
+	// After the commit, as for a disable: they can no longer start or finish
+	// anything.
+	if err := s.accounts.StopFlowsBy(ctx, userID); err != nil {
+		return SuspendedPerson{}, E(CodeInternal, "the person is suspended, but stopping their pending authorisations failed", err)
+	}
+	if err := s.reconcileTheirs(ctx, userID); err != nil {
+		return SuspendedPerson{}, E(CodeInternal, "the person is suspended, but listing their mailboxes to pause them failed", err)
+	}
+	s.log.Info("person suspended", "user", userID, "sessions", done.Sessions, "keys", done.Keys,
+		"invites", done.Invites)
+	return out, nil
+}
+
+// ResumePerson lifts a person's suspension, for the extension that suspended
+// them: they read again every mailbox they hold the read flag and, on one
+// that has a key, a grant at its current epoch on, and their mailboxes catch
+// up. No session and no key comes back. It reports whether the person is
+// active now: false for one disabled here, which a resume never lifts.
+func (s *Service) ResumePerson(ctx context.Context, userID string) (bool, error) {
+	if strings.TrimSpace(userID) == "" {
+		return false, E(CodeBadRequest, "resuming a person needs the person", nil)
+	}
+	active, err := s.users.Resume(ctx, userID)
+	if err != nil {
+		return false, fromSuspension(err, "resuming the person failed")
+	}
+	if !active {
+		return false, nil
+	}
+	s.accessChanged()
+	if err := s.reconcileTheirs(ctx, userID); err != nil {
+		return false, E(CodeInternal, "the person is resumed, but listing their mailboxes to start them failed", err)
+	}
+	s.log.Info("person resumed", "user", userID)
+	return true, nil
+}
+
+// reconcileTheirs tells the sync engine of every mailbox whose eligibility a
+// person's suspension or resume changes, rather than leaving it to notice at
+// its next periodic check: the mailboxes of their personal workspace, those
+// whose consent to sync is still bound to theirs, and those they hold read
+// on, which they may have been the only one to read.
+func (s *Service) reconcileTheirs(ctx context.Context, userID string) error {
+	owned, err := s.accounts.Repo().OwnedBy(ctx, userID)
+	if err != nil {
+		return err
+	}
+	for _, a := range owned {
+		s.reconcile(a.ID)
+	}
+	if s.store != nil {
+		bound, err := s.store.BoundTo(ctx, userID)
+		if err != nil {
+			return err
+		}
+		s.reconcile(bound...)
+	}
+	s.reconcile(s.readBy(ctx, userID)...)
+	return nil
+}
+
+// fromSuspension maps a failure suspending or resuming a person onto the
+// transport vocabulary.
+func fromSuspension(err error, what string) error {
+	if errors.Is(err, auth.ErrUserNotFound) {
+		return E(CodeNotFound, "no such person", err)
+	}
+	return E(CodeInternal, what, err)
 }
 
 // forgetMoves drops what the index remembers of moves on accounts whose index

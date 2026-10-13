@@ -28,6 +28,15 @@ import (
 // team's, and stays; only a consent to sync it still bound to the person
 // (migration 0011) goes with them, and its index with it.
 //
+// An extension of the daemon may also suspend a person, following a decision
+// taken elsewhere (Suspend). A suspended person is not active, as a disabled
+// one is not, and every way they had in ends the same way, their keys
+// included; but their grants on mailboxes stay, sealed to them and unusable,
+// for when the extension resumes them (Resume), and nothing a team depends on
+// holds a suspension up. A disable here stands over a suspension: it deletes
+// their grants as it always does and clears the mark, so that a resume never
+// lifts it; suspending someone disabled here marks nothing.
+//
 // Invites have a retention of their own: one that is never used is deleted
 // InviteRetention after it expires, by the daemon's hourly sweep.
 
@@ -44,8 +53,12 @@ var (
 	// ErrOwnsAccounts is deleting a person while an account still names them
 	// as its owner. The accounts go first, in the same transaction.
 	ErrOwnsAccounts = errors.New("auth: that person still owns accounts")
-	// ErrUserDisabled is a person who has been switched off.
+	// ErrUserDisabled is a person who has been switched off: disabled here,
+	// or suspended.
 	ErrUserDisabled = errors.New("auth: that person is disabled")
+	// ErrUserSuspended is switching back on, here, a person an extension
+	// suspended: only a resume lifts a suspension.
+	ErrUserSuspended = errors.New("auth: that person is suspended")
 )
 
 // BlockedError is a person whose teams depend on them: the last active owner
@@ -99,7 +112,7 @@ func (u *Users) RequireActiveTx(ctx context.Context, tx *sql.Tx, id string) erro
 	return nil
 }
 
-// Ended is what disabling a person ended.
+// Ended is what disabling or suspending a person ended.
 type Ended struct {
 	Sessions int
 	Keys     int
@@ -107,7 +120,8 @@ type Ended struct {
 	// expired.
 	Invites int
 	// Stopped are the team mailboxes whose consent to sync was still bound
-	// to theirs (migration 0011), stopped with their index deleted.
+	// to theirs (migration 0011), stopped with their index deleted. A
+	// suspension stops none.
 	Stopped []string
 }
 
@@ -128,47 +142,47 @@ type Ended struct {
 // transaction, and its index is deleted (store.StopBoundTx). Every other team
 // mailbox carries on: it is the team's.
 //
-// Disabling someone already disabled changes nothing and is not an error: a
-// team mailbox migration 0011 found bound to them, stopped with its index
-// kept, keeps it. The only active owner is not switched off unless force says
-// so, nor somebody their teams depend on (BlockedError).
+// A person an extension suspended is disabled here as one who is active, but
+// for the instance's last owner, which they no longer are: their grants go,
+// what is bound to their consent stops, and the mark goes, so that the
+// disable stands over the suspension and a resume never lifts it.
+//
+// Disabling someone already disabled here changes nothing and is not an
+// error: a team mailbox migration 0011 found bound to them, stopped with its
+// index kept, keeps it. The only active owner is not switched off unless
+// force says so, nor somebody their teams depend on (BlockedError).
 func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, error) {
 	var out Ended
 	now := u.now().Unix()
 	err := u.store.Write(ctx, func(tx *sql.Tx) error {
-		var role, status string
-		err := tx.QueryRowContext(ctx, `SELECT role, status FROM users WHERE id = ?`, id).Scan(&role, &status)
+		var (
+			role, status string
+			suspended    bool
+		)
+		err := tx.QueryRowContext(ctx, `SELECT role, status, suspended_at <> 0 FROM users WHERE id = ?`, id).
+			Scan(&role, &status, &suspended)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrUserNotFound
 		case err != nil:
 			return fmt.Errorf("auth: disable user: %w", err)
 		}
-		if status == userActive && Role(role) == RoleOwner && !force {
+		active := status == userActive
+		disabledHere := !active && !suspended
+		if active && Role(role) == RoleOwner && !force {
 			if err := requireAnotherOwnerTx(ctx, tx, id); err != nil {
 				return err
 			}
 		}
-		if status == userActive {
+		if !disabledHere {
 			if err := u.RequireNoBlocksTx(ctx, tx, id, force); err != nil {
 				return err
 			}
 		}
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET status = ?, updated_at = ? WHERE id = ? AND status <> ?`,
+			`UPDATE users SET status = ?, suspended_at = 0, updated_at = ? WHERE id = ? AND (status <> ? OR suspended_at <> 0)`,
 			userDisabled, now, id, userDisabled); err != nil {
 			return fmt.Errorf("auth: disable user: %w", err)
-		}
-		if out.Sessions, err = revokeSessionsTx(ctx, tx, id, now); err != nil {
-			return err
-		}
-		// Deleted rather than left to fail: a reset invitation would work
-		// again if the person were switched back on, as a key would.
-		if err := dropTicketsTx(ctx, tx, id); err != nil {
-			return err
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM reset_invites WHERE user_id = ?`, id); err != nil {
-			return fmt.Errorf("auth: delete the user's reset invitations: %w", err)
 		}
 		// Being disabled takes the key with "read" (docs/key-scheme.md
 		// section 12.13): deleted, so that switching them back on does not
@@ -176,30 +190,161 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		if err := workspace.DropSealedGrantsOfTx(ctx, tx, id); err != nil {
 			return err
 		}
-		// Revoked rather than left to fail: switching the person back on
-		// must not bring a key back, any more than it brings a session back.
-		// A key stops when the person who created it is closed, whatever it
-		// holds: the key terms they agreed to say so, and the key says why.
-		out.Keys, err = execCount(ctx, tx,
-			`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
-			now, string(workspace.KeyStopCreatorDisabled), id)
-		if err != nil {
-			return fmt.Errorf("auth: revoke the user's keys: %w", err)
+		if out, err = endWaysInTx(ctx, tx, id, now, workspace.KeyStopCreatorDisabled); err != nil {
+			return err
 		}
-		if status != userActive {
+		if disabledHere {
 			// Already off: what disabling them stopped stopped then, and a
 			// mailbox migration 0011 found bound to them, stopped with its
 			// index kept, keeps it until the team decides or they are
 			// deleted.
 			return nil
 		}
-		if out.Invites, err = expireInvitesByTx(ctx, tx, id, now); err != nil {
-			return err
-		}
 		out.Stopped, err = store.StopBoundTx(ctx, tx, id, now)
 		return err
 	})
 	if err != nil {
+		return Ended{}, err
+	}
+	return out, nil
+}
+
+// Suspension is what suspending a person did.
+type Suspension struct {
+	// Suspended is the person suspended now: false for one disabled here,
+	// whom a suspension leaves exactly as they are.
+	Suspended bool
+	// Ended is what it ended; it stops no team mailbox (Stopped is empty).
+	Ended
+}
+
+// Suspend suspends a person for an extension of the daemon, which follows a
+// decision taken elsewhere: SuspendTx in a transaction of its own.
+func (u *Users) Suspend(ctx context.Context, id string) (Suspension, error) {
+	var out Suspension
+	err := u.store.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		out, err = u.SuspendTx(ctx, tx, id)
+		return err
+	})
+	if err != nil {
+		return Suspension{}, err
+	}
+	return out, nil
+}
+
+// SuspendTx suspends a person inside the caller's transaction: their status
+// becomes disabled, with the moment of their suspension (users.suspended_at),
+// and every way they had in ends as a disable ends it: their sessions, the
+// tickets of their ceremonies, their reset invitations, the keys they
+// created (which say they stopped with their creator's suspension) and the
+// invites they made that are still waiting. Their grants on mailboxes stay,
+// flags and sealed grants: they count for nothing while the person is not
+// active, by the one reader rule (store.ReaderSQL), so a suspended person
+// reads nothing, waits for no key, is supplied none, and protects nothing; a
+// resume (Resume) gives them back, never a session or a key. Their personal
+// mailboxes, and a team mailbox whose consent is still bound to theirs
+// (migration 0011), sync nothing meanwhile and keep their index; no team
+// mailbox stops.
+//
+// Nothing refuses it: a suspension is decided elsewhere, and neither the last
+// owner of a team nor the last reader of a mailbox holds it up. Suspending
+// someone already suspended keeps the moment it began and ends whatever is
+// left to end. Suspending someone disabled here marks nothing: a disable
+// here stands over a suspension, which could otherwise be resumed.
+func (u *Users) SuspendTx(ctx context.Context, tx *sql.Tx, id string) (Suspension, error) {
+	var (
+		status    string
+		suspended bool
+	)
+	err := tx.QueryRowContext(ctx, `SELECT status, suspended_at <> 0 FROM users WHERE id = ?`, id).Scan(&status, &suspended)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return Suspension{}, ErrUserNotFound
+	case err != nil:
+		return Suspension{}, fmt.Errorf("auth: suspend user: %w", err)
+	case status != userActive && !suspended:
+		return Suspension{}, nil
+	}
+	now := u.now().Unix()
+	if !suspended {
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET status = ?, suspended_at = ?, updated_at = ? WHERE id = ?`,
+			userDisabled, now, now, id); err != nil {
+			return Suspension{}, fmt.Errorf("auth: suspend user: %w", err)
+		}
+	}
+	ended, err := endWaysInTx(ctx, tx, id, now, workspace.KeyStopCreatorSuspended)
+	if err != nil {
+		return Suspension{}, err
+	}
+	return Suspension{Suspended: true, Ended: ended}, nil
+}
+
+// Resume lifts a person's suspension, for the extension that suspended
+// them: they are active again, and read again every mailbox they hold the
+// read flag and, on one that has a key, a grant at its current epoch on, by
+// the one reader rule; their personal mailboxes catch up. No session and no
+// key comes back: they sign in again, and create keys again.
+//
+// It acts only on a suspended person, and reports whether the person is
+// active now: false for one disabled here, which a resume never lifts.
+// Resuming someone active changes nothing.
+func (u *Users) Resume(ctx context.Context, id string) (bool, error) {
+	var active bool
+	err := u.store.Write(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET status = ?, suspended_at = 0, updated_at = ? WHERE id = ? AND suspended_at <> 0`,
+			userActive, u.now().Unix(), id); err != nil {
+			return fmt.Errorf("auth: resume user: %w", err)
+		}
+		var status string
+		switch err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id = ?`, id).Scan(&status); {
+		case errors.Is(err, sql.ErrNoRows):
+			return ErrUserNotFound
+		case err != nil:
+			return fmt.Errorf("auth: resume user: %w", err)
+		}
+		active = status == userActive
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return active, nil
+}
+
+// endWaysInTx ends, inside the caller's transaction, every way a person who
+// is no longer active had in: their live sessions are revoked, the tickets of
+// their ceremonies under way and their reset invitations are deleted, the
+// live keys they created, in whichever workspace, are revoked for reason, and
+// the invites they made that are still waiting expire.
+func endWaysInTx(ctx context.Context, tx *sql.Tx, id string, now int64, reason workspace.KeyStopReason) (Ended, error) {
+	var (
+		out Ended
+		err error
+	)
+	if out.Sessions, err = revokeSessionsTx(ctx, tx, id, now); err != nil {
+		return Ended{}, err
+	}
+	// Deleted rather than left to fail: a reset invitation would work again
+	// if the person were active again, as a key would.
+	if err := dropTicketsTx(ctx, tx, id); err != nil {
+		return Ended{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM reset_invites WHERE user_id = ?`, id); err != nil {
+		return Ended{}, fmt.Errorf("auth: delete the user's reset invitations: %w", err)
+	}
+	// Revoked rather than left to fail: being active again must not bring a
+	// key back, any more than it brings a session back. A key stops when the
+	// person who created it is closed or suspended, whatever it holds: the
+	// key terms they agreed to say so, and the key says why.
+	out.Keys, err = execCount(ctx, tx,
+		`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
+		now, string(reason), id)
+	if err != nil {
+		return Ended{}, fmt.Errorf("auth: revoke the user's keys: %w", err)
+	}
+	if out.Invites, err = expireInvitesByTx(ctx, tx, id, now); err != nil {
 		return Ended{}, err
 	}
 	return out, nil
@@ -358,8 +503,8 @@ func (u *Users) SweepInvites(ctx context.Context, ahead time.Duration) (int, err
 }
 
 // expireInvitesByTx expires every invite a person made that is still
-// waiting, an instance invite or a team's: once they are disabled or deleted
-// nobody stands behind it. The record stays until the sweep.
+// waiting, an instance invite or a team's: once they are disabled, suspended
+// or deleted nobody stands behind it. The record stays until the sweep.
 func expireInvitesByTx(ctx context.Context, tx *sql.Tx, id string, now int64) (int, error) {
 	n, err := execCount(ctx, tx, `UPDATE invites SET expires_at = ?1
 		WHERE created_by = ?2 AND used_at = 0 AND expires_at > ?1`, now, id)

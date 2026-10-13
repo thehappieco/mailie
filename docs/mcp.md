@@ -34,7 +34,7 @@ same consent. No authorization rule lives in `internal/mcp`.
   and a mailbox given to it is there at the next call. Every account a tool lists carries its
   `workspace_id` and what the key may do with it (`access`). Every owner and admin of the workspace
   sees the key and may revoke it; it also stops when the person who created it leaves the
-  workspace or is disabled or deleted.
+  workspace or is disabled, suspended or deleted.
 - **Instance keys** (the operator's, from `mailserver apikey create`) reach only the operator
   workspace's mailboxes, here and over REST alike, never a workspace's. One restricted to some of
   them that loses one it was opened with is refused at every call of a stdio session with

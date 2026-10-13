@@ -26,7 +26,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   names a host, duplicates or would take a request from a core route. An extension signs people in
   through a provider with `Service.SignInExternal`/`PinIdentityKey`, writes a first account key
   with the sign-in's ticket (`EnrolExternal`) and steps up through it
-  (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only);
+  (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only),
+  and suspends and resumes a person (`SuspendPerson`/`ResumePerson`);
   `Options.ExternalSignInOnly` (never set by `serve`) has the service refuse every password and
   invitation route.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
@@ -72,9 +73,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
   (`read`/`write`/`send`, holding its mailboxes in `key_access`, `internal/workspace/keys.go`);
   `Principal.IsInstance` means the operator workspace's. Also the console's people: users (instance
-  roles `owner`/`member`; a password the server never receives: the key scheme's ceremonies,
-  `accountkeys.go`, store an auth verifier, the account public key written once, the password and
-  recovery wraps, the target salt and parameters; an old server-side password hash of a person who
+  roles `owner`/`member`; active, disabled here, or suspended by an extension (`Suspend`/`Resume`,
+  `suspended_at`, migration 0018: `status = 'disabled'` with the grants kept, unusable, until a
+  resume; a disable here clears it and stands over it); a password the server never receives: the
+  key scheme's ceremonies, `accountkeys.go`, store an auth verifier, the account public key written
+  once, the password and recovery wraps, the target salt and parameters; an old server-side password hash of a person who
   never enrolled is checked by nothing, and a reset invitation clears it), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
   never extended, with a step-up time), the ceremonies' single-use tickets and reset invitations,
   and single-use invites, to the instance or into a team.
@@ -302,7 +305,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mints one); a key reaches exactly what it holds in `key_access`, read live — `read` given only by
   an owner or an admin who reads that mailbox then, `act` and `send` by any of them — and keeps it
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
-  leaves the workspace or is disabled or deleted (not on a demotion).
+  leaves the workspace or is disabled, suspended or deleted (not on a demotion). A suspended person
+  reads nothing, waits for no key, is supplied none and counts in no protection; their grants
+  persist for a resume, which restores no session and no key.
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -320,7 +325,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   in the same transaction: a person's withdrawal only their personal mailboxes', a team's for every
   reader. A team consent migration 0011 copied from its linker (`sync_enabled_via = 'migration'`)
   stays bound to them until confirmed: their withdrawal, disable or deletion stops it and deletes
-  its index (closing them is refused without force while someone else reads it). A team mailbox
+  its index (closing them is refused without force while someone else reads it); their suspension
+  pauses it, as it pauses their personal mailboxes, index kept. A team mailbox
   nobody can read is never switched on. Closing a person without force is refused for the last
   reader of a team that outlives them (any other member, whatever their status), the same test as
   whether the team goes with them. Actions and sending have their own consents, the actor's own,

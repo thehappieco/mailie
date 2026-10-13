@@ -103,7 +103,9 @@ workspace_members(workspace_id, user_id, role, status, created_at, updated_at)  
 
 - `role` is `owner`, `admin` or `member`; `status` is `active` or `disabled`.
 - An **active member** is a membership with `status = 'active'` whose person is active on the
-  instance (`users.status = 'active'`). Every rule below that says "member" means an active one.
+  instance (`users.status = 'active'`: neither disabled here nor suspended, see
+  [People on the instance](#people-on-the-instance)). Every rule below that says "member" means an
+  active one.
 - A disabled membership stays listed but carries no access: disabling deletes the person's grants
   in that workspace in the same transaction, and enabling again restores the membership only, never
   the grants (as Wappie does).
@@ -268,6 +270,38 @@ keeps syncing meanwhile under their consent.
   "whoever signs up first becomes an owner, whatever the invite says" (`auth.SignUp`) is gone (see
   [conflict 6](#conflicts-and-resolutions) for the bootstrap default).
 
+A person who is not active is either **disabled here** or **suspended** (migration 0018).
+`users.status` is `active` or `disabled`, and a disabled person whose `users.suspended_at` is set
+is suspended: by an extension of the daemon, following a decision taken elsewhere
+(`Service.SuspendPerson`; no route or command of the core suspends anyone). The schema holds a
+suspended person disabled (a CHECK), so every rule that asks whether a person is active refuses
+both alike: neither signs in, holds a session or a key, counts as a member, reads, waits for a key,
+gives a consent or counts in a protection. What tells them apart is what they keep:
+
+- **Disabled here** (`mailserver user disable`, or an owner of the instance signed in): every
+  session ends, every key they created stops (`creator_disabled`), the invites they made that are
+  still waiting expire, and every grant sealed to them goes (`docs/key-scheme.md` section 12.13);
+  a migrated team consent still bound to them stops, with its index deleted. Their flags stay:
+  switched back on, they wait for the key on every mailbox that has one.
+- **Suspended:** the same ends — sessions, the tickets of their ceremonies, their reset invitations,
+  their waiting invites, the consent attempts they started, and their keys, which say
+  `creator_suspended` — and nothing they hold goes: memberships, flags and sealed grants stay,
+  unusable while they are suspended. They read nothing and wait for nothing; nobody supplies them
+  the key, gives them `read` with a grant or seals a first key to them; and they hold up no
+  protection, nor does any protection hold up their suspension: no last owner, last reader or
+  bound consent refuses it, and while they are suspended they are nobody's other owner or other
+  reader. Their personal mailboxes, and a migrated team consent still bound to them, sync nothing
+  meanwhile and keep their index; a team mailbox only they would read syncs nothing, and is not
+  marked `no_reader`: it waits for them. **Resuming** them (`Service.ResumePerson`) makes them
+  active again: they read every mailbox they hold `read` on and, on one that has a key, a grant at
+  its current epoch (a first key written meanwhile sealed nothing to them, so they wait for it), and
+  their mailboxes catch up. No session and no key comes back.
+- **A disable here stands over a suspension.** Disabling a suspended person here runs the whole
+  disable (their grants go, a bound consent stops, and the protections are asked again, but for the
+  instance's last owner, which they no longer are) and clears `suspended_at`, so a resume lifts
+  nothing; suspending someone disabled here marks nothing; and switching a suspended person back on
+  here is refused (`auth.ErrUserSuspended`): only a resume lifts a suspension.
+
 Invitations stay single use, bound to one address, valid for 7 days, and their code travels in the
 link's fragment. There are two kinds, in the same `invites` table:
 
@@ -333,8 +367,14 @@ the invites whose creator could no longer make them.
   mailbox only they read, which no reader is left for. Disabling a person stops their personal
   mailboxes (the eligibility rule requires the person active); deleting them removes those, and
   every local team whose only member they were, with its mailboxes. The open sync text says both.
+- **Suspending a person** stops nothing and deletes nothing: their personal mailboxes, and a
+  migrated consent still bound to them (below), sync nothing while they are suspended, since the
+  eligibility rule requires the person, and the person a bound consent is bound to, active; each
+  keeps its index and its consent, and catches up once they are resumed. A team mailbox only they
+  would read waits for them the same way.
 - A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
-  admins see it marked (`no_reader`). Read passes only from someone who reads it, so its sync is
+  admins see it marked (`no_reader`). One a suspended member would read once resumed is not marked:
+  it waits for them. Read passes only from someone who reads it, so its sync is
   never turned on again (`409`), and the way out is removing it, or removing it and linking it
   again (the linker gets `read`); turning it off deletes what is still indexed.
 - **A migrated consent stays bound to its linker.** Migration 0011 copied each team mailbox's
@@ -467,8 +507,8 @@ tries, as Wappie's directory does; the mutation enforces them regardless.
 The **last-reader rule** is Mailie's form of Wappie's `requireRemainingReader`: a team mailbox with
 at least one reader is never left with none. A reader is an active member, active on the instance,
 holding `read`, and on a mailbox that has a key a grant at its current epoch; keys, disabled
-members, a member waiting for the key and a role on its own never count ("ownership is not a
-recovery path"), and taking a waiting member's flag leaves the readers as they were. The reset of a
+members, people disabled or suspended on the instance, a member waiting for the key and a role on
+its own never count ("ownership is not a recovery path"), and taking a waiting member's flag leaves the readers as they were. The reset of a
 person's account key (`mailserver user password --bootstrap`) deletes their grants and keeps their
 flags, so it refuses, without `--force`, only where they are the last reader of a team mailbox
 **that has a key**; on one without, they keep reading by the flag. After a forced reset, a team
@@ -488,6 +528,10 @@ one (`last_owner`) or holds back closing one. The instance's own last-owner rule
 it is. With `force`, a team can be left without an owner (the operator assigns one with `mailserver
 member role`), a team mailbox without a reader, which then syncs nothing and is marked
 `no_reader`, and a bound mailbox stopped with its index deleted.
+A suspension (see [People on the instance](#people-on-the-instance)) is refused by none of these,
+and while suspended a person counts in none of them: not as another owner, another reader, or the
+instance's other active owner. Disabling a suspended person here asks them again, as for anyone
+active, but for the instance's last owner.
 Deleting a person removes the mailboxes of their personal workspace and every local team whose only
 member they were, with its mailboxes, through the account registry's usual clean-up (workers,
 cached credentials, consent attempts, compaction); a team mailbox of a team others are in stays,
@@ -769,7 +813,8 @@ Shapes:
  "role": "admin", "status": "active", "created_at": 1790000000}
 // the operator's listing has no role or status, and adds "members" and "mailboxes" counts
 
-// Member ("person_disabled": true only for a person switched off on the instance; last_reader_of
+// Member ("person_disabled": true only for a person switched off on the instance, disabled here or
+// suspended; "person_suspended": true only for a suspended one; last_reader_of
 // lists the team mailboxes they alone read, always present; seal_id and public_key are what a
 // grant to them is bound by and sealed to, public_key absent until they enrol)
 {"user_id": "usr_…", "email": "bea@example.org", "name": "Bea Lima", "role": "member",
@@ -1130,6 +1175,18 @@ What deleting a person takes with them depends on a team's source (see
 from one side of that rule to the other. The tests in `internal/store/migrate_sixteen_test.go`
 hold every table's rows as they were and each refusal.
 
+## Migration 0018
+
+`0018_suspended_people.sql`, an ordinary migration: one column, `users.suspended_at`, the moment an
+extension suspended the person, 0 otherwise, with a CHECK that a suspended person is disabled
+(`suspended_at = 0 OR status = 'disabled'`). No row of a schema-17 database changes: every person
+keeps their status, and a person disabled before stays disabled here. `status = 'disabled'` now
+means "not active", disabled here or suspended, so every rule that reads `status = 'active'`
+refuses a suspended person with nothing changed in it (see
+[People on the instance](#people-on-the-instance)). The tests in
+`internal/store/migrate_eighteen_test.go` hold every table's rows as they were and the CHECK's
+refusals.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -1300,6 +1357,18 @@ Test names state the guarantee. At least:
   `TestATeamFromAnotherSourceKeepsItsMailboxesWhenItsLastLocalMemberGoes`;
   `TestNoCountOfLocalMembersMakesALastOwnerOfATeamFromAnotherSource`;
   `TestTheLastReaderOfATeamFromAnotherSourceIsNotClosedWithoutForce`.
+- Suspension: `TestSuspendingAPersonEndsTheirSessionsKeysAndInvitesAndKeepsTheirGrants`,
+  `TestASuspendedPersonReadsNothingAndWaitsForNothing`, `TestASuspendedPersonsGrantIsNeverServed`,
+  `TestNobodySuppliesTheKeyToASuspendedPerson`, `TestASuspendedPersonProtectsNothing`,
+  `TestResumingRestoresReadingOnlyWithTheFlagAndAGrantAtTheCurrentEpoch`,
+  `TestResumingBringsBackNoKeyAndNoSession`,
+  `TestASuspendedPersonsPersonalMailboxesPauseAndCatchUpOnResume`,
+  `TestATeamMailboxASuspendedPersonAloneReadsWaitsForThemRatherThanForNobody` and
+  `TestATeamMailboxSyncingUnderASuspendedPersonsOwnConsentPausesAndKeepsItsIndex` (the service);
+  `TestADisableHereStandsOverASuspension`, `TestSuspendingSomeoneDisabledHereChangesNothing` and
+  `TestAKeyStoppedBySuspensionSaysSo` (`internal/auth`);
+  `TestMigrationEighteenAddsTheSuspensionAndChangesNothingElse` and
+  `TestTheSchemaRefusesASuspendedPersonWhoIsActive` (`internal/store`, migration 0018).
 - Migration, in `internal/store`: `TestMigrationEightKeepsEveryRowAndGivesEachPersonTheirMailboxes`
   runs every migration on a database with rows in **every** table, in the smallest shape (one
   owner with two mailboxes, no keys) and in a larger self-hosted shape (several people, one

@@ -368,6 +368,15 @@ keeps it out of `sudo` logs and shell history, and refuse without `--force` to r
 active owner of the server, the last active owner of a team others remain in, or the person a team
 mailbox others read syncs under; the refusal names those teams and mailboxes.
 
+A person may also be **suspended**, by an extension of the daemon that follows a decision taken
+elsewhere (`Service.SuspendPerson` and `Service.ResumePerson`, below; no route or command of the
+core suspends or resumes anyone). A suspension ends what `user disable` ends, and keeps what the
+person holds on mailboxes, their sealed grants included, unusable until they are resumed
+([Workspaces](workspaces.md), "People on the instance"); a resume brings back no session and no
+key. `user disable` stands over a suspension: it deletes the person's grants as for anyone, and a
+resume never lifts it. The members list marks a suspended person (`person_suspended`, beside
+`person_disabled`), and `mailserver member list` says "suspended".
+
 ### Signing in through an extension
 
 A binary that embeds the daemon (`internal/app`) may sign people in through an identity provider it
@@ -376,8 +385,9 @@ extension does the provider's protocol, then calls `Service.SignInExternal` with
 says the person is, and answers its page with the `Session` that comes back (or the enrolment
 ticket, below), exactly as `POST /v1/auth/login` answers the console; the console adopts it the
 same way (`adoptSession`, [Editions](#editions)). No route of the core calls it. What an extension
-calls, all of it in `internal/service/external.go`: `SignInExternal`, `EnrolExternal`,
-`PinIdentityKey`, `MarkExternalStepUp` and `ExternalStepUp`. Each refusal is one of the fixed codes,
+calls, in `internal/service/external.go`: `SignInExternal`, `EnrolExternal`, `PinIdentityKey`,
+`MarkExternalStepUp` and `ExternalStepUp`; and, in `closure.go`, `SuspendPerson` and
+`ResumePerson`, which take the person's id and no principal. Each refusal is one of the fixed codes,
 and the extension tells apart the ones its page acts on by their cause (`errors.Is`):
 `auth.ErrEmailTaken` (an address somebody here has), `auth.ErrAccountKeyNeeded`,
 `auth.ErrNoPlatformWrap` and `auth.ErrProductKeyChanged` (below).
@@ -460,7 +470,8 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   kept short because the provider cannot yet tell this server that it closed or locked someone does
   not close that gap for keys: until it can, the operator disabling the person here
   (`user disable`) is what revokes the keys they created and ends their sessions, in one
-  transaction.
+  transaction. An extension that hears the provider closed or locked someone suspends them
+  (`SuspendPerson`), which does the same, in one transaction, and keeps their grants for a resume.
 - **Key pins.** `Service.PinIdentityKey(issuer, subject, keyID, key)` keeps the public keys an
   identity is known by (`identity_key_pins`, at most 4096 bytes each): inserted the first time a key
   id is seen, then read back, in one transaction, so of two sign-ins racing each other both get the
@@ -471,7 +482,8 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   their pins in the same transaction. Disabling the person, the first step, keeps both, as it keeps
   their password: a person switched back on would sign in as before, and the pin must still hold
   then. No route or command switches a person back on yet (only `auth.Users.SetDisabled`, which
-  tests use).
+  tests use, and which refuses a suspended person: only `ResumePerson` lifts a suspension). A
+  suspension keeps both too, and a suspended person's sign-in is refused like a disabled one's.
   An extension pins a key before the sign-in that links its identity; when that sign-in is
   refused (an address not verified, an address somebody here has already), the pin signs nobody
   in, and the hourly retention sweep deletes it once it is ten minutes old

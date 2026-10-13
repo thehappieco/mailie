@@ -456,6 +456,7 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string)
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT a.id, a.email, a.provider, a.state, a.linked_by, w.kind,
 		       a.sync_enabled_at, a.sync_enabled_by, a.sync_consent_version, a.sync_enabled_via = 'migration',
 		       (SELECT count(*) FROM mailbox_access g WHERE g.account_id = a.id AND `+store.ReaderSQL("g")+`),
+		       EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = a.id AND `+store.SuspendedReaderSQL("g")+`),
 		       coalesce(`+store.CurrentEpochSQL("a.id")+`, 0)
 		  FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
 		 WHERE a.workspace_id = ?
@@ -468,16 +469,19 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string)
 	var out []MailboxAccess
 	for rows.Next() {
 		var (
-			mb   MailboxAccess
-			kind Kind
-			at   int64
+			mb        MailboxAccess
+			kind      Kind
+			at        int64
+			suspended bool
 		)
 		if err := rows.Scan(&mb.AccountID, &mb.Email, &mb.Provider, &mb.State, &mb.LinkedBy, &kind,
-			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers, &mb.Epoch); err != nil {
+			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers, &suspended, &mb.Epoch); err != nil {
 			return nil, fmt.Errorf("workspace: list the directory: %w", err)
 		}
 		mb.Sync.At = unix(at)
-		mb.NoReader = kind == KindTeam && mb.Readers == 0
+		// A mailbox a suspended person alone would read waits for them: it
+		// is read again once they are resumed.
+		mb.NoReader = kind == KindTeam && mb.Readers == 0 && !suspended
 		out = append(out, mb)
 	}
 	if err := rows.Err(); err != nil {
@@ -507,7 +511,9 @@ type MailboxAccess struct {
 	Readers int
 	// NoReader is a team mailbox nobody can read: it syncs nothing until
 	// someone can, and only an owner or an admin who removes it and links it
-	// again gets read on it again.
+	// again gets read on it again. A mailbox nobody reads while a suspended
+	// person would read it once resumed (store.SuspendedReaderSQL) is not:
+	// it waits for them.
 	NoReader bool
 	// Epoch is the mailbox key's current epoch; 0 for a mailbox without a
 	// key, which is read by the flag alone.

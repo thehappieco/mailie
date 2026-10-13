@@ -103,6 +103,11 @@ key other than `users.public_key`.
 
 A first sign-in, and a new product-key epoch, trust id.'s key registry (kit §11.15).
 
+Where the hosted service follows the platform's suspensions, an extension suspends and resumes
+people on the platform's word (spec §12.13), and a resume gives a suspended person back their
+reading with no act of any workspace's owner (section 5.13). A resume never lifts a disable made
+on Mailie's server, which deletes the person's grants and stands over the suspension.
+
 ### 4.3 A member of a workspace
 
 **Can:** read the mailboxes they read by spec §12.13 (the flag, and a grant once the mailbox has a
@@ -434,6 +439,18 @@ person's mailboxes are linked after it, keyed to the key they hold. The ticket i
 deleted with the person's enrolment, and no session exists for the person before it, so a session
 token copied from a browser cannot do the same.
 
+### 5.13 A suspended person's grants persist
+
+A suspension (spec §12.13) keeps the grants sealed to the person, where a disable deletes them. The
+server held them anyway (section 5.10), and phase 3 seals nothing under a mailbox key (section 5.7),
+so keeping them gives the server nothing it did not already have; while suspended, the person
+holds no session, no sign-in of theirs succeeds and nothing serves their grant. What keeping them
+changes is the resume: it gives the person back their reading, with no act of any owner or admin
+of the workspace, so whoever controls the extension that suspends and resumes decides who reads
+again. A disable made on this server is the local override: it deletes the grants and clears the
+suspension, and a resume never lifts it. As after any taking of "read", a browser that opened a
+grant before the suspension may keep the mailbox key (section 5.7).
+
 ## 6. Where each defence is tested
 
 | Defence | Vectors | Tests |
@@ -505,5 +522,13 @@ product key with the pin and never pins), `internal/service/external_test.go` (t
 the service, with the causes an extension tells apart, and the step-up's alert logged),
 `internal/store/migrate_fifteen_test.go` (the schema's own refusals) and
 `web/test/editionStepUp.spec.ts` (an edition's step-up in place of the password dialog, and a
-session adopted keyed only for the person whose key the browser holds). The specification's
-sections 11 and 12 are what those tests hold the server and the console to.
+session adopted keyed only for the person whose key the browser holds). A suspension (spec
+§12.13, section 5.13) is tested in `internal/service/suspension_test.go` (sessions, keys and invites
+ended and grants kept; a suspended person reading nothing, waiting for nothing, served no grant or
+wrap, supplied no key and sealed none by a first key, protecting nothing; a resume restoring
+reading only with the flag and a grant at the current epoch, and no session or key; their mailboxes
+paused, never emptied), `internal/auth/suspension_test.go` (a disable here standing over a
+suspension, a suspension marking nothing on someone disabled here, a key saying it stopped with
+the suspension) and `internal/store/migrate_eighteen_test.go` (the schema refusing a suspended
+person who is active). The specification's sections 11 and 12 are what those tests hold the server
+and the console to.
