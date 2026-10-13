@@ -29,7 +29,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only),
   and suspends and resumes a person (`SuspendPerson`/`ResumePerson`);
   `Options.ExternalSignInOnly` (never set by `serve`) has the service refuse every password and
-  invitation route.
+  invitation route, and `Options.TeamsWithheld` (never set by `serve`, an edition's choice, not a
+  workspace source) every use of a team, by a person or a key: teams listed `withheld`, their
+  mailboxes listed nowhere, nothing of them deleted.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.

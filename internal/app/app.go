@@ -7,9 +7,11 @@
 // `mailserver serve` is a thin caller of Run. Another binary that must run
 // exactly the same server calls Run too, and adds what is its own through
 // Options: routes beside the core's (Extension), which can never take a
-// request a core route answers, and, for a binary whose people sign in
-// through such a route (service.SignInExternal), the switch that turns the
-// core's passwords and invitations off (ExternalSignInOnly). Nothing else of
+// request a core route answers; for a binary whose people sign in through
+// such a route (service.SignInExternal), the switch that turns the core's
+// passwords and invitations off (ExternalSignInOnly); and, for an edition
+// that does not offer team workspaces yet, the one that withholds them
+// (TeamsWithheld). Nothing else of
 // the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
 // implementation of it.
@@ -70,6 +72,18 @@ type Options struct {
 	// Only a binary that embeds the daemon sets it: there is no environment
 	// variable, and `serve` never does.
 	ExternalSignInOnly bool
+	// TeamsWithheld says this edition does not offer team workspaces yet:
+	// the core refuses, not_authorized, every use of a team, by a person or
+	// a key — linking a mailbox into one, its mailboxes, its keys, who holds
+	// what on them, its members, invites and name, its consent to sync,
+	// writing or supplying a mailbox key there — lists no team's mailbox,
+	// and lists every team marked withheld. Nothing of a team is deleted or
+	// changed: whatever the database holds, a restored one included, is kept
+	// and unused. Personal workspaces and the operator's are as they were.
+	// The service decides it, for every transport. Only a binary that embeds
+	// the daemon sets it: there is no environment variable, and `serve`
+	// never does.
+	TeamsWithheld bool
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -267,13 +281,17 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Info("teams closed: their mailboxes reach nobody and sync nothing until reopened",
 			"count", len(closedTeams), "teams", closedTeams)
 	}
+	if opts.TeamsWithheld {
+		logger.Info("team workspaces are withheld in this edition: nothing of a team is used, and nothing of one " +
+			"is deleted")
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,
 		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
-		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent,
+		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
 	})
 
 	// One limiter for REST and MCP: a key has one budget whichever way it

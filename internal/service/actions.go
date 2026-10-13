@@ -363,7 +363,7 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 		if !p.MayAccess(accountID) {
 			return account.Account{}, errNoMessage
 		}
-		a, err := s.accounts.Repo().GetVisible(ctx, accountID, readable(p))
+		a, err := s.accounts.Repo().GetVisible(ctx, accountID, s.readable(p))
 		switch {
 		case errors.Is(err, account.ErrNotFound):
 			return account.Account{}, errNoMessage
@@ -793,7 +793,7 @@ func (s *Service) stillMayAct(ctx context.Context, p Principal, a account.Accoun
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return err
 	}
-	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, readable(p))
+	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, s.readable(p))
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return errNoMessage

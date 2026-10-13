@@ -82,6 +82,10 @@ type Service struct {
 	// extension (external.go): every password and invitation route is
 	// refused.
 	externalSignInOnly bool
+	// teamsWithheld is an edition that does not offer team workspaces
+	// (withheldteams.go): nothing of a team is used, while personal
+	// workspaces and the operator's are as they were.
+	teamsWithheld bool
 }
 
 // Deps is what the service needs.
@@ -150,6 +154,14 @@ type Deps struct {
 	// False, the default, changes nothing. Only internal/app sets it, from
 	// its Options.
 	ExternalSignInOnly bool
+	// TeamsWithheld is an edition that does not offer team workspaces yet:
+	// every use of a team is refused, not_authorized — linking a mailbox
+	// into one, its mailboxes, its keys, who holds what on them, its
+	// members and invites, its consent to sync, writing or supplying a
+	// mailbox key there — and a team is listed marked withheld. Personal
+	// workspaces and the operator's are as they were. False, the default,
+	// changes nothing. Only internal/app sets it, from its Options.
+	TeamsWithheld bool
 }
 
 // New builds the service.
@@ -201,6 +213,7 @@ func New(d Deps) *Service {
 		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP, externalSignInOnly: d.ExternalSignInOnly,
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
+		teamsWithheld:       d.TeamsWithheld,
 	}
 }
 
@@ -344,7 +357,9 @@ func (s *Service) authorize(p Principal, need auth.Scope) error {
 // exist by probing: a key restricted to other accounts, a mailbox of a
 // workspace the caller is not an active member of, or one they hold no grant
 // on. A mailbox the caller does see, without a flag the operation needs, is
-// not_authorized: they already know it exists. See visibility.
+// not_authorized: they already know it exists. See visibility. So is a team
+// mailbox they would see, where teams are withheld: nothing of a team is
+// used there, whatever the database holds.
 func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.Scope, accountID string, need workspace.Flags) (account.Account, error) {
 	if err := s.authorize(p, scope); err != nil {
 		return account.Account{}, err
@@ -352,12 +367,19 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 	if !p.MayAccess(accountID) {
 		return account.Account{}, E(CodeNotFound, "no such account", nil)
 	}
-	a, err := s.accounts.Repo().GetVisible(ctx, accountID, visibility(p))
+	v := s.visibility(p)
+	// Read without leaving teams out, so that a team mailbox the caller
+	// would see is refused as withheld rather than not found.
+	v.NoTeams = false
+	a, err := s.accounts.Repo().GetVisible(ctx, accountID, v)
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return account.Account{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
 		return account.Account{}, E(CodeInternal, "reading the account failed", err)
+	}
+	if err := s.mailboxWithheld(ctx, a); err != nil {
+		return account.Account{}, err
 	}
 	if err := s.requireFlags(ctx, p, a, need); err != nil {
 		return account.Account{}, err
@@ -374,22 +396,23 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 // on it or manage it by their role, owner or admin. A workspace key sees the
 // mailboxes it holds something on, read live, whoever holds the principal and
 // for however long. A role reaches no mailbox's index: an owner of a team or
-// of the instance reads nothing by being one.
-func visibility(p Principal) account.Visibility {
+// of the instance reads nothing by being one. Where teams are withheld, no
+// team's mailbox is seen, by a person or a key.
+func (s *Service) visibility(p Principal) account.Visibility {
 	switch {
 	case p.IsInstance():
 		return account.Visibility{Unowned: true}
 	case p.IsSession():
-		return account.Visibility{UserID: p.UserID}
+		return account.Visibility{UserID: p.UserID, NoTeams: s.teamsWithheld}
 	}
-	return account.Visibility{Key: p.KeyPrefix}
+	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld}
 }
 
 // readable is visibility narrowed to the mailboxes whose index the caller may
 // open: a person's or a key's read flag. An instance key reads every mailbox
 // it sees.
-func readable(p Principal) account.Visibility {
-	v := visibility(p)
+func (s *Service) readable(p Principal) account.Visibility {
+	v := s.visibility(p)
 	v.Need = workspace.Flags{Read: true}
 	return v
 }

@@ -203,8 +203,8 @@ func (s *Service) keyAdminOf(ctx context.Context, p Principal, workspaceID strin
 
 // keyAdminTx re-reads, inside a write's transaction, that the caller is still
 // an active owner or admin of the workspace.
-func keyAdminTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) error {
-	me, err := callerTx(ctx, tx, p, workspaceID)
+func (s *Service) keyAdminTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) error {
+	me, err := s.callerTx(ctx, tx, p, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -289,7 +289,7 @@ func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspace
 		grants = append(grants, workspace.KeyGrant{AccountID: id, Flags: flags})
 	}
 	check := func(tx *sql.Tx) error {
-		if err := keyAdminTx(ctx, tx, p, w.ID); err != nil {
+		if err := s.keyAdminTx(ctx, tx, p, w.ID); err != nil {
 			return err
 		}
 		for _, g := range grants {
@@ -367,7 +367,7 @@ func (s *Service) RevokeWorkspaceKey(ctx context.Context, p Principal, workspace
 		return err
 	}
 	err := s.keys.RevokeIn(ctx, workspaceID, prefix, func(tx *sql.Tx) error {
-		return keyAdminTx(ctx, tx, p, workspaceID)
+		return s.keyAdminTx(ctx, tx, p, workspaceID)
 	})
 	switch {
 	case errors.Is(err, auth.ErrNotFound):
@@ -451,7 +451,7 @@ func (s *Service) RevokeKeyAccess(ctx context.Context, p Principal, workspaceID,
 func (s *Service) keyTargetTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string, key workspace.KeyRef,
 	mailboxWorkspace string, before workspace.Flags,
 ) error {
-	if err := keyAdminTx(ctx, tx, p, workspaceID); err != nil {
+	if err := s.keyAdminTx(ctx, tx, p, workspaceID); err != nil {
 		return err
 	}
 	switch {

@@ -251,7 +251,7 @@ func (s *Service) SearchMessages(ctx context.Context, p Principal, req SearchReq
 		}
 		accountIDs = []string{a.ID}
 	} else {
-		v := readable(p)
+		v := s.readable(p)
 		v.Workspace = req.Workspace
 		all, err := s.accounts.Repo().ListVisible(ctx, v)
 		if err != nil {
@@ -775,7 +775,7 @@ func (s *Service) readableMessage(ctx context.Context, p Principal, id int64) (a
 	if !p.MayAccess(row.AccountID) {
 		return account.Account{}, store.MessageRow{}, errNoMessage
 	}
-	a, err := s.accounts.Repo().GetVisible(ctx, row.AccountID, readable(p))
+	a, err := s.accounts.Repo().GetVisible(ctx, row.AccountID, s.readable(p))
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return account.Account{}, store.MessageRow{}, errNoMessage

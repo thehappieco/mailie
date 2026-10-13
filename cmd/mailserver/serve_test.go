@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/obs"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func TestServeWithMCPStdioRefusesToStartWithoutAKeyThatWorks(t *testing.T) {
@@ -221,4 +223,75 @@ func logLine(t *testing.T, log, want string) string {
 	}
 	t.Fatalf("no log line with %q in:\n%s", want, log)
 	return ""
+}
+
+func TestServeNeverWithholdsTeams(t *testing.T) {
+	// Withholding teams is a choice of a binary that embeds the daemon
+	// (app.Options.TeamsWithheld), with no environment variable: the
+	// self-hosted server offers them, whatever its configuration.
+	cfg := localConfig(t)
+	db, release, err := openExclusively(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	session := authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	ana, err := auth.NewUsers(db).GetByEmail(t.Context(), "ana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := workspace.NewRepository(db, nil).CreateTeam(t.Context(), "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operator, _, err := auth.NewKeys(db).Issue(t.Context(), auth.NewKeyRequest{Name: "cli", Scope: auth.ScopeAdmin, TTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	base, _ := runDaemon(t, cfg)
+
+	get := func(path, token string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp.StatusCode, string(body)
+	}
+	for name, token := range map[string]string{"the operator": operator, "Ana, its owner": session} {
+		status, body := get("/v1/workspaces", token)
+		var listed []map[string]any
+		if err := json.Unmarshal([]byte(body), &listed); err != nil || status != http.StatusOK {
+			t.Fatalf("%s listing workspaces: %d %s (%v)", name, status, body, err)
+		}
+		found := false
+		for _, w := range listed {
+			if w["id"] == team.ID {
+				found = true
+			}
+			if _, withheld := w["withheld"]; withheld {
+				t.Errorf("%s lists %v withheld", name, w)
+			}
+		}
+		if !found {
+			t.Errorf("%s does not list the team: %s", name, body)
+		}
+	}
+	if status, body := get("/v1/workspaces/"+team.ID+"/members", session); status != http.StatusOK {
+		t.Errorf("Ana listing her team's members: %d %s", status, body)
+	}
+	if status, body := get("/v1/accounts?workspace="+team.ID, session); status != http.StatusOK {
+		t.Errorf("Ana listing her team's mailboxes: %d %s", status, body)
+	}
 }

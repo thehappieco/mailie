@@ -67,7 +67,7 @@ func (s *Service) closeLocal(ctx context.Context, p Principal, id string, closed
 	if err != nil {
 		return Workspace{}, E(CodeInternal, "reading the workspace failed", err)
 	}
-	return presentWorkspace(w, false), nil
+	return s.presentWorkspace(w, false), nil
 }
 
 // CloseTeam closes a team, for an extension of the daemon that follows a

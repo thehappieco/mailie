@@ -381,7 +381,7 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 			req.Version = ""
 		}
 		check = func(tx *sql.Tx) error {
-			me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+			me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 			switch {
 			case err != nil:
 				return errNoAccount

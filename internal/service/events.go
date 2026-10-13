@@ -391,7 +391,7 @@ type eventGate struct {
 }
 
 func (s *Service) newEventGate(ctx context.Context, p Principal, workspaceID string, following []string) (*eventGate, error) {
-	v := readable(p)
+	v := s.readable(p)
 	v.Workspace = workspaceID
 	g := &eventGate{ctx: ctx, s: s, p: p, visible: v, following: following, ever: map[string]bool{}}
 	g.mu.Lock()
@@ -425,7 +425,7 @@ func (g *eventGate) refreshLocked(ctx context.Context) error {
 	if g.visible.Workspace != "" {
 		err := g.s.inWorkspace(ctx, g.p, g.visible.Workspace)
 		switch {
-		case CodeOf(err) == CodeNotFound:
+		case CodeOf(err) == CodeNotFound, errors.Is(err, errTeamsWithheld):
 			g.outOfWorkspace = true
 		case err != nil:
 			return err

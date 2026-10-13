@@ -82,7 +82,7 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 	if err := s.inWorkspace(ctx, p, workspaceID); err != nil {
 		return Storage{}, err
 	}
-	v := readable(p)
+	v := s.readable(p)
 	v.Workspace = workspaceID
 	all, err := s.accounts.Repo().ListVisible(ctx, v)
 	if err != nil {

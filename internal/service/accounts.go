@@ -160,7 +160,7 @@ func (s *Service) ListAccounts(ctx context.Context, p Principal, workspaceID str
 	if err := s.inWorkspace(ctx, p, workspaceID); err != nil {
 		return nil, err
 	}
-	v := visibility(p)
+	v := s.visibility(p)
 	v.Workspace = workspaceID
 	all, err := s.accounts.Repo().ListVisible(ctx, v)
 	if err != nil {
@@ -592,7 +592,7 @@ func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req
 	if err != nil {
 		return err
 	}
-	check := func(tx *sql.Tx) error { return mayRemoveTx(ctx, tx, p, a) }
+	check := func(tx *sql.Tx) error { return s.mayRemoveTx(ctx, tx, p, a) }
 	if err := s.precheck(ctx, check); err != nil {
 		return err
 	}
@@ -616,7 +616,7 @@ func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req
 // the caller may: an instance key for an operator mailbox (visibility let
 // only that reach it), the person of a personal one, an active owner or
 // admin of a team's.
-func mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) error {
+func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) error {
 	switch {
 	case a.WorkspaceID == workspace.OperatorID:
 		if p.IsInstance() {
@@ -631,7 +631,7 @@ func mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account
 		}
 		return errNoAccount
 	}
-	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+	me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 	if err != nil {
 		return errNoAccount
 	}
@@ -659,7 +659,8 @@ type link struct {
 // current revision of the sync text, a link into a team also gives the
 // team's consent to sync it, on the team's behalf; any other revision is
 // refused, and none links it with sync off. Nothing is linked into a closed
-// team (conflict). An instance key links into the operator workspace only.
+// team (conflict), nor into any team where teams are withheld
+// (not_authorized). An instance key links into the operator workspace only.
 // The role is read again inside the transaction that creates the mailbox.
 func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVersion string) (link, error) {
 	syncVersion = strings.TrimSpace(syncVersion)
@@ -707,11 +708,16 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVe
 			return err
 		case !m.Active():
 			return errNoWorkspace
-		case w.Kind == workspace.KindTeam && !adminOf(m):
+		}
+		// Nothing is linked into a team where teams are withheld.
+		if err := s.teamWithheld(w); err != nil {
+			return err
+		}
+		if w.Kind == workspace.KindTeam && !adminOf(m) {
 			return errLinkTeam
 		}
-		// Nothing is linked into a closed team.
-		return openTx(ctx, tx, w.ID)
+		// Nor into a closed team.
+		return s.openTx(ctx, tx, w.ID)
 	}
 	if err := s.precheck(ctx, check); err != nil {
 		return link{}, fromWorkspace(err, "reading the workspace failed")

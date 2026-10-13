@@ -604,7 +604,7 @@ The seven codes do not change.
 | Situation | Code |
 |---|---|
 | a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of; a grant's recipient who is not an active member of the mailbox's workspace; a closed team's mailbox, for every person and key | `404 not_found`, never `403` |
-| a mailbox the caller sees, without the flag the operation needs (a member waiting for the key reads nothing); a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration, key or mailbox-key route; a key's send where keys may not send; a giver of `read` or of the key, or a first key's writer, who does not read the mailbox now; a step-up more than ten minutes old; a team mailbox's new key | `403 not_authorized` |
+| a mailbox the caller sees, without the flag the operation needs (a member waiting for the key reads nothing); a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration, key or mailbox-key route; a key's send where keys may not send; a giver of `read` or of the key, or a first key's writer, who does not read the mailbox now; a step-up more than ten minutes old; a team mailbox's new key; a team, or a team mailbox the caller would otherwise see, in an edition that withholds teams | `403 not_authorized` |
 | a protection; a platform-sourced workspace changed locally, or closed by the operator; a closed team used or changed (its members, invites, keys, grants, name, a mailbox linked into it); a missing actions or send consent; a grant at another epoch than the mailbox key's current one, or a new key at another than the next; a grant that already exists; a grant that names another account public key than its recipient's now (they were reset since the console read them); a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace another mailbox uses; a grant for a person without an account key, or the key for one who holds no `read`; a person without an account key linking a mailbox | `409 conflict` |
 | a personal or the operator workspace as the target of a member, grant or invite operation, or closed; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys`; a public key, namespace, grant or epoch outside its shape, or a grant at odds with the epoch its request names; a grant without the `public_key` it was sealed to, or a `public_key` without a grant; a person's link without its key, or an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400 bad_request` |
 
@@ -809,7 +809,7 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 
 | Route | Who | What |
 |---|---|---|
-| `GET /v1/workspaces` | read | `[Workspace]`: a person's active memberships; an instance key the operator workspace; the operator every workspace; a closed team with its `closed_at` |
+| `GET /v1/workspaces` | read | `[Workspace]`: a person's active memberships; an instance key the operator workspace; the operator every workspace; a closed team with its `closed_at`; a team marked `withheld` in an edition that withholds teams |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team, `local` source only |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
 | `POST /v1/workspaces/{id}/close` | operator, a local team only | `Workspace`, with `closed_at`: nothing in the team is used until it reopens; closing a closed team changes nothing |
@@ -865,7 +865,8 @@ Shapes:
 {"id": "wsp_0a1b2c3d4e5f6a7b", "kind": "team", "source": "local", "name": "Support",
  "role": "admin", "status": "active", "created_at": 1790000000}
 // the operator's listing has no role or status, and adds "members" and "mailboxes" counts;
-// a closed team adds "closed_at", when it closed
+// a closed team adds "closed_at", when it closed; in an edition that withholds teams, every team
+// adds "withheld": true
 
 // Member ("person_disabled": true only for a person switched off on the instance, disabled here or
 // suspended; "person_suspended": true only for a suspended one; last_reader_of
@@ -1037,6 +1038,29 @@ type Source interface {
   (`workspace.Repository.RepairPersonal`), under the local source only. Every person gets theirs in
   the transaction that creates them; only a binary from before 0008, run on a migrated database,
   creates one without (see [Going back](#going-back)).
+
+### Editions that withhold teams
+
+Whether team workspaces are offered at all is an edition's choice, not a source's:
+`app.Options.TeamsWithheld` (`service.Deps.TeamsWithheld`), set only by a binary that embeds
+`internal/app` for an edition that does not offer teams yet. There is no environment variable, and
+`serve` never sets it: the self-hosted server offers teams, whatever its source. It holds whatever
+the database holds, a restored one included, and whichever source the teams came from.
+
+- **Nothing of a team is used**, by anyone. No team is created, and no mailbox is linked into one.
+  Its mailboxes reach nobody, its keys included: no listing shows them (the visibility rule leaves
+  every team's mailbox out, for a person and for a key), and one asked for by a person or a key who
+  would otherwise see it is refused by name (`403`), as is a `?workspace=` naming the team; someone
+  who would not see it is still told it does not exist (`404`). Nobody changes its members, invites
+  or name, accepts an invite into it signed in, creates, lists, changes or revokes its keys, gives
+  or takes what anyone holds on its mailboxes, gives or withdraws its consent to sync, or writes,
+  reads or supplies a mailbox key there (`403`, "this server does not offer team workspaces yet").
+  The operator still reads its members, its invites and who holds what, and changes none of it.
+- **It is listed, marked so**: `withheld: true` on the team in `GET /v1/workspaces`, for its
+  members, its keys and the operator, so a client shows a notice instead of what the team holds.
+- **Nothing of it is lost**: withholding deletes and changes nothing, and stops no key; an edition
+  that offers teams finds every team as it was. Personal workspaces and the operator's are as they
+  were.
 
 ## Migration 0008
 
@@ -1504,6 +1528,11 @@ Test names state the guarantee. At least:
   `TestReopeningATeamRestoresAccessAndSync`, `TestTheCommandLineClosesOnlyALocalTeam`,
   `TestAClosedTeamIsListedAsClosed` and, over REST,
   `TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens`.
+
+- Withheld teams: `TestAnEditionThatWithholdsTeamsRefusesEveryUseOfATeam`,
+  `TestWithholdingTeamsLeavesPersonalWorkspacesAsTheyWere`, `TestAWithheldTeamIsListedWithItsNotice`,
+  `TestABinaryThatEmbedsTheDaemonWithholdsTeamsThroughItsOptions` (the daemon, over REST) and
+  `TestServeNeverWithholdsTeams`.
 
 ## Conflicts and resolutions
 

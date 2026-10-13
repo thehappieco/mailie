@@ -63,6 +63,11 @@ type Workspace struct {
 	// is changed. Absent while it is open, and for every workspace that is
 	// not a team.
 	ClosedAt int64 `json:"closed_at,omitempty"`
+	// Withheld is a team on a server whose edition does not offer team
+	// workspaces yet: nothing of it is used there, and nothing of it is
+	// lost. Absent everywhere else, and for every workspace that is not a
+	// team.
+	Withheld bool `json:"withheld,omitempty"`
 }
 
 // CreateWorkspaceRequest creates a team.
@@ -312,8 +317,9 @@ func adminOf(m workspace.Member) bool {
 // workspaceOf reads a workspace the caller asks about, and their active
 // membership of it: the operator reaches every workspace and has none; a
 // person who is not an active member is told it does not exist, and one who
-// is that a closed team is closed: nothing in it is shown to its members
-// until it reopens, while the operator still reads it.
+// is that a team is withheld, where teams are, or that a closed team is
+// closed: nothing in it is shown to its members, while the operator still
+// reads it.
 func (s *Service) workspaceOf(ctx context.Context, p Principal, id string) (workspace.Workspace, workspace.Member, error) {
 	if s.workspaces == nil {
 		return workspace.Workspace{}, workspace.Member{}, errNoWorkspace
@@ -336,7 +342,11 @@ func (s *Service) workspaceOf(ctx context.Context, p Principal, id string) (work
 		return workspace.Workspace{}, workspace.Member{}, E(CodeInternal, "reading the workspace failed", err)
 	case !m.Active():
 		return workspace.Workspace{}, workspace.Member{}, errNoWorkspace
-	case !w.ClosedAt.IsZero():
+	}
+	if err := s.teamWithheld(w); err != nil {
+		return workspace.Workspace{}, workspace.Member{}, err
+	}
+	if !w.ClosedAt.IsZero() {
 		return workspace.Workspace{}, workspace.Member{}, errTeamClosed
 	}
 	return w, m, nil
@@ -345,12 +355,12 @@ func (s *Service) workspaceOf(ctx context.Context, p Principal, id string) (work
 // callerTx re-reads, inside a write's transaction, the caller's place in a
 // workspace: the operator has none and needs none; a person must still be an
 // active member, or the workspace no longer exists for them. A closed team
-// is changed by nobody, the operator included, until it reopens: every write
-// about a team, its members, invites, keys, grants and consents, runs this
-// first.
-func callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) (workspace.Member, error) {
+// is changed by nobody, the operator included, until it reopens, and a team
+// where teams are withheld by nobody at all: every write about a team, its
+// members, invites, keys, grants and consents, runs this first.
+func (s *Service) callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) (workspace.Member, error) {
 	if isOperator(p) {
-		return workspace.Member{}, openTx(ctx, tx, workspaceID)
+		return workspace.Member{}, s.openTx(ctx, tx, workspaceID)
 	}
 	m, err := workspace.MemberTx(ctx, tx, workspaceID, p.UserID)
 	switch {
@@ -361,15 +371,19 @@ func callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) 
 	case !m.Active():
 		return workspace.Member{}, errNoWorkspace
 	}
-	if err := openTx(ctx, tx, workspaceID); err != nil {
+	if err := s.openTx(ctx, tx, workspaceID); err != nil {
 		return workspace.Member{}, err
 	}
 	return m, nil
 }
 
-// openTx refuses, inside a write's transaction, a closed team (conflict) and
-// a workspace nobody knows.
-func openTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
+// openTx refuses, inside a write's transaction, a team where teams are
+// withheld (not_authorized), a closed team (conflict) and a workspace nobody
+// knows.
+func (s *Service) openTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
+	if err := s.withheldTx(ctx, tx, workspaceID); err != nil {
+		return err
+	}
 	err := workspace.RequireOpenTx(ctx, tx, workspaceID)
 	switch {
 	case errors.Is(err, workspace.ErrClosed):
@@ -385,7 +399,8 @@ func openTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
 // workspace; for the operator every workspace, with how many members and
 // mailboxes each has. A workspace key lists its workspace, or, carried over
 // from a person's, the workspaces of the mailboxes it holds. A closed team is
-// listed with when it closed (closed_at), and nothing in it is used.
+// listed with when it closed (closed_at), and nothing in it is used; so is a
+// team where teams are withheld, which is listed marked so (withheld).
 func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace, error) {
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
@@ -401,14 +416,14 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 			return nil, E(CodeInternal, "listing workspaces failed", err)
 		}
 		for _, w := range all {
-			out = append(out, presentWorkspace(w, true))
+			out = append(out, s.presentWorkspace(w, true))
 		}
 	case p.IsInstance():
 		w, err := s.workspaces.Get(ctx, workspace.OperatorID)
 		if err != nil {
 			return nil, E(CodeInternal, "reading the operator workspace failed", err)
 		}
-		out = append(out, presentWorkspace(w, false))
+		out = append(out, s.presentWorkspace(w, false))
 	case p.IsWorkspaceKey():
 		ids, err := s.workspaces.KeyWorkspaces(ctx, p.KeyPrefix)
 		if err != nil {
@@ -422,7 +437,7 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 			case err != nil:
 				return nil, E(CodeInternal, "listing workspaces failed", err)
 			}
-			out = append(out, presentWorkspace(w, false))
+			out = append(out, s.presentWorkspace(w, false))
 		}
 	default:
 		mine, err := s.workspaces.ForPerson(ctx, p.UserID)
@@ -430,7 +445,7 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 			return nil, E(CodeInternal, "listing workspaces failed", err)
 		}
 		for _, w := range mine {
-			out = append(out, presentWorkspace(w, false))
+			out = append(out, s.presentWorkspace(w, false))
 		}
 	}
 	return out, nil
@@ -438,10 +453,14 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 
 // CreateWorkspace creates a team: a person's, who becomes its owner, or the
 // operator's for an existing person it names as the owner. The workspace
-// source decides whether teams are created here at all.
+// source decides whether teams are created here at all, and an edition that
+// withholds teams creates none.
 func (s *Service) CreateWorkspace(ctx context.Context, p Principal, req CreateWorkspaceRequest) (Workspace, error) {
 	if err := administers(p); err != nil {
 		return Workspace{}, err
+	}
+	if s.teamsWithheld {
+		return Workspace{}, errTeamsWithheld
 	}
 	if s.workspaces == nil {
 		return Workspace{}, E(CodeInternal, "workspaces are not available", nil)
@@ -475,11 +494,11 @@ func (s *Service) CreateWorkspace(ctx context.Context, p Principal, req CreateWo
 	}
 	if isOperator(p) {
 		members, mailboxes := 1, 0
-		out := presentWorkspace(w, false)
+		out := s.presentWorkspace(w, false)
 		out.Role, out.Status, out.Members, out.Mailboxes = "", "", &members, &mailboxes
 		return out, nil
 	}
-	return presentWorkspace(w, false), nil
+	return s.presentWorkspace(w, false), nil
 }
 
 // RenameWorkspace renames a team: its owners and admins, or the operator.
@@ -492,7 +511,7 @@ func (s *Service) RenameWorkspace(ctx context.Context, p Principal, id string, r
 		return Workspace{}, err
 	}
 	w, err := s.workspaces.Rename(ctx, id, req.Name, func(tx *sql.Tx) error {
-		m, err := callerTx(ctx, tx, p, id)
+		m, err := s.callerTx(ctx, tx, p, id)
 		if err != nil {
 			return err
 		}
@@ -508,7 +527,7 @@ func (s *Service) RenameWorkspace(ctx context.Context, p Principal, id string, r
 	if !isOperator(p) {
 		w.Role, w.Status = me.Role, me.Status
 	}
-	return presentWorkspace(w, false), nil
+	return s.presentWorkspace(w, false), nil
 }
 
 // ListMembers lists a workspace's memberships, active or not, for its
@@ -569,7 +588,7 @@ func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string,
 		return Member{}, err
 	}
 	m, err := s.workspaces.SetMember(ctx, id, userID, change, func(tx *sql.Tx) error {
-		me, err := callerTx(ctx, tx, p, id)
+		me, err := s.callerTx(ctx, tx, p, id)
 		if err != nil {
 			return err
 		}
@@ -610,7 +629,7 @@ func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID stri
 		return err
 	}
 	err := s.workspaces.RemoveMember(ctx, id, userID, func(tx *sql.Tx) error {
-		me, err := callerTx(ctx, tx, p, id)
+		me, err := s.callerTx(ctx, tx, p, id)
 		if err != nil {
 			return err
 		}
@@ -697,7 +716,7 @@ func (s *Service) CreateTeamInvite(ctx context.Context, p Principal, id string, 
 	code, inv, err := s.users.CreateInvite(ctx, auth.NewInvite{
 		Email: req.Email, WorkspaceID: id, WorkspaceRole: role, CreatedBy: p.Actor(),
 		Check: func(tx *sql.Tx) error {
-			me, err := callerTx(ctx, tx, p, id)
+			me, err := s.callerTx(ctx, tx, p, id)
 			if err != nil {
 				return err
 			}
@@ -729,7 +748,7 @@ func (s *Service) RevokeTeamInvite(ctx context.Context, p Principal, id, inviteI
 		return err
 	}
 	err := s.users.RevokeInvite(ctx, id, inviteID, func(tx *sql.Tx, inv auth.Invite) error {
-		me, err := callerTx(ctx, tx, p, id)
+		me, err := s.callerTx(ctx, tx, p, id)
 		if err != nil {
 			return err
 		}
@@ -752,10 +771,14 @@ func (s *Service) RevokeTeamInvite(ctx context.Context, p Principal, id, inviteI
 // AcceptInvite redeems a team invite for the person signed in, who joins the
 // team with the role it names. The invite must be for their address; a
 // refused one is not spent. Joining a team grants access to no mailbox.
-// Refused where people sign in only through an extension.
+// Refused where people sign in only through an extension, and where teams
+// are withheld, whose invites nobody creates and an older one is not spent.
 func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInviteRequest) (Workspace, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return Workspace{}, err
+	}
+	if s.teamsWithheld {
+		return Workspace{}, errTeamsWithheld
 	}
 	if err := requireSession(p); err != nil {
 		return Workspace{}, err
@@ -764,7 +787,7 @@ func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInvit
 	if err != nil {
 		return Workspace{}, fromTeamInvite(err, "accepting the invite failed")
 	}
-	return presentWorkspace(w, false), nil
+	return s.presentWorkspace(w, false), nil
 }
 
 // AccessDirectory lists a workspace's mailboxes and every grant on each, with
@@ -888,7 +911,7 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 		return Grant{}, err
 	}
 	g, err := s.workspaces.SetGrantSealed(ctx, a.ID, userID, flags, sealed, p.Actor(), func(tx *sql.Tx) error {
-		if err := mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
+		if err := s.mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
 			return err
 		}
 		if sealed != nil && userID != p.UserID {
@@ -917,7 +940,7 @@ func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, user
 		return err
 	}
 	_, err = s.workspaces.Revoke(ctx, a.ID, userID, drop, func(tx *sql.Tx) error {
-		_, err := administratorTx(ctx, tx, p, a)
+		_, err := s.administratorTx(ctx, tx, p, a)
 		return err
 	})
 	if err != nil {
@@ -996,11 +1019,11 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 // on it is not_authorized; anyone else is told it does not exist, and so is
 // every person for a closed team's mailbox, which the operator is refused
 // as closed.
-func administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) (workspace.Member, error) {
+func (s *Service) administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) (workspace.Member, error) {
 	if isOperator(p) {
-		return workspace.Member{}, openTx(ctx, tx, a.WorkspaceID)
+		return workspace.Member{}, s.openTx(ctx, tx, a.WorkspaceID)
 	}
-	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
+	me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 	if err != nil {
 		return workspace.Member{}, errNoAccount
 	}
@@ -1026,7 +1049,7 @@ func administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Acc
 // a grant at its current epoch). Act needing read, manage only for a member,
 // the target's place in the workspace and the grant that comes with read are
 // the repository's to check.
-func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account, userID string, flags workspace.Flags) error {
+func (s *Service) mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account, userID string, flags workspace.Flags) error {
 	before, err := workspace.GrantTx(ctx, tx, a.ID, userID)
 	if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
 		return err
@@ -1039,10 +1062,10 @@ func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account,
 		if added.Read || added.Act || added.Send {
 			return errOperatorGrantsManage
 		}
-		_, err := administratorTx(ctx, tx, p, a)
+		_, err := s.administratorTx(ctx, tx, p, a)
 		return err
 	}
-	if _, err := administratorTx(ctx, tx, p, a); err != nil {
+	if _, err := s.administratorTx(ctx, tx, p, a); err != nil {
 		return err
 	}
 	if !added.Read {
@@ -1080,10 +1103,11 @@ func fromTeamInvite(err error, what string) error {
 	}
 }
 
-func presentWorkspace(w workspace.Workspace, counts bool) Workspace {
+func (s *Service) presentWorkspace(w workspace.Workspace, counts bool) Workspace {
 	out := Workspace{
 		ID: w.ID, Kind: string(w.Kind), Source: w.Source, Name: w.Name,
 		Role: string(w.Role), Status: string(w.Status), CreatedAt: w.CreatedAt.Unix(),
+		Withheld: s.teamWithheld(w) != nil,
 	}
 	if !w.ClosedAt.IsZero() {
 		out.ClosedAt = w.ClosedAt.Unix()

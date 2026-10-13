@@ -820,7 +820,7 @@ func (s *Service) stillMaySend(ctx context.Context, p Principal, a account.Accou
 	if err := s.authorize(p, auth.ScopeSend); err != nil {
 		return err
 	}
-	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, visibility(p))
+	now, err := s.accounts.Repo().GetVisible(ctx, a.ID, s.visibility(p))
 	switch {
 	case errors.Is(err, account.ErrNotFound):
 		return E(CodeNotFound, "no such account", err)

@@ -30,6 +30,7 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // The console's TypeScript types are checked against these files by
@@ -61,7 +62,7 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	ana := authtest.NewUser(t, h.store, "ana@example.com", auth.RoleOwner)
 	n := newNormalizer()
 
-	capture := func(name string, want int, method, path, token, body string) map[string]any {
+	captureOn := func(h *harness, name string, want int, method, path, token, body string) map[string]any {
 		t.Helper()
 		resp := h.do(t, method, path, token, body)
 		raw, err := io.ReadAll(resp.Body)
@@ -78,6 +79,10 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		n.check(t, name, value)
 		obj, _ := value.(map[string]any)
 		return obj
+	}
+	capture := func(name string, want int, method, path, token, body string) map[string]any {
+		t.Helper()
+		return captureOn(h, name, want, method, path, token, body)
 	}
 
 	// Signing in (docs/key-scheme.md section 12): the challenge for an
@@ -457,6 +462,18 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// Ana's own mailbox, given its next key at will (section 12.12).
 	capture("new_key", http.StatusOK, http.MethodPut, "/v1/accounts/"+imapID+"/mailbox-key", token,
 		jsonOf(t, map[string]any{"epoch": 2, "public_key": contractMailboxKey(6), "grant": contractGrant(2, 0x66)}))
+
+	// An edition that does not offer teams lists one an edition that offers
+	// them made, marked withheld.
+	edition := newHarnessWith(t, func(h *api.Handler) { h.Limits = nil }, serviceOptions{
+		publicURL: "http://localhost:5174", now: func() time.Time { return epoch }, teamsWithheld: true,
+	})
+	eva := authtest.NewUser(t, edition.store, "eva@example.com", auth.RoleOwner)
+	if _, err := workspace.NewRepository(edition.store, nil).CreateTeam(t.Context(), "Support", eva.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	captureOn(edition, "workspaces_withheld", http.StatusOK, http.MethodGet, "/v1/workspaces",
+		authtest.SignIn(t, edition.users, "eva@example.com"), "")
 
 	// A plain session, as signing up, a reset and a password change answer
 	// it: here a password change, which ends every session ana had, so it

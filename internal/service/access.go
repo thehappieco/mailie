@@ -156,7 +156,9 @@ func (s *Service) accessChanged() { s.accessEpoch.Add(1) }
 // workspace they are an active member of; for a workspace key, its own, or,
 // for a key carried over from a person's, one it holds a mailbox of; for an
 // instance key, the operator workspace. Anything else does not exist for
-// them. Empty is every workspace, and is always fine.
+// them. Empty is every workspace, and is always fine. A team the caller
+// reaches is refused as withheld where teams are, to a person and a key
+// alike.
 func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID string) error {
 	switch {
 	case workspaceID == "":
@@ -170,7 +172,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 		return errNoWorkspace
 	case p.IsWorkspaceKey() && p.WorkspaceID != "":
 		if workspaceID == p.WorkspaceID {
-			return nil
+			return s.workspaceWithheld(ctx, workspaceID)
 		}
 		return errNoWorkspace
 	case p.IsWorkspaceKey():
@@ -179,7 +181,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 			return E(CodeInternal, "reading the workspace failed", err)
 		}
 		if slices.Contains(reached, workspaceID) {
-			return nil
+			return s.workspaceWithheld(ctx, workspaceID)
 		}
 		return errNoWorkspace
 	}
@@ -192,7 +194,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 	case !m.Active():
 		return errNoWorkspace
 	}
-	return nil
+	return s.workspaceWithheld(ctx, workspaceID)
 }
 
 var errNoWorkspace = E(CodeNotFound, "no such workspace", nil)

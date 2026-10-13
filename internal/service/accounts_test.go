@@ -80,6 +80,8 @@ type fixtureOptions struct {
 	keysMayNotSend bool
 	// keysActUnderCreator is MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true.
 	keysActUnderCreator bool
+	// teamsWithheld is an edition that does not offer team workspaces.
+	teamsWithheld bool
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -162,6 +164,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		ExternalSignInOnly:         f.opts.externalSignInOnly,
 		KeysMayNotSend:             f.opts.keysMayNotSend,
 		KeysActUnderCreatorConsent: f.opts.keysActUnderCreator,
+		TeamsWithheld:              f.opts.teamsWithheld,
 	}), registry
 }
 

@@ -303,6 +303,9 @@ type Visibility struct {
 	Need workspace.Flags
 	// Workspace narrows to one workspace's mailboxes; empty is every one.
 	Workspace string
+	// NoTeams leaves every team's mailboxes out, whatever else would show
+	// them: an edition that does not offer team workspaces.
+	NoTeams bool
 }
 
 // clause is the WHERE fragment for v, over the accounts table, with its
@@ -337,6 +340,10 @@ func (v Visibility) clause() (string, []any) {
 		if len(parts) > 0 {
 			where = "(" + strings.Join(parts, " OR ") + ")"
 		}
+	}
+	if v.NoTeams {
+		where += ` AND NOT EXISTS (SELECT 1 FROM workspaces tw
+		                           WHERE tw.id = accounts.workspace_id AND tw.kind = 'team')`
 	}
 	if v.Workspace != "" {
 		where += ` AND accounts.workspace_id = ?`
