@@ -68,7 +68,7 @@ onMounted(() => { if (!myKeys.loaded && !myKeys.loading) void loadMyKeys() })
       <span class="summary-icon"><AppIcon name="key" :size="22" /></span>
       <span class="summary-text">
         <strong>{{ t('API keys you created') }}</strong>
-        <small>{{ t('You answer for these keys, in every workspace: each one stops when it expires or is revoked, and when you leave its workspace or your account on this server is disabled or deleted. You can revoke any of them here.') }}</small>
+        <small>{{ t('You answer for these keys, in every workspace: each one stops when it expires or is revoked, when you leave its workspace or your account on this server is disabled, suspended or deleted, and when you recover your account or use a reset link. You can revoke any of them here.') }}</small>
       </span>
     </div>
     <div v-if="myKeys.failure" class="alert with-action" role="alert"><span>{{ describe(myKeys.failure) }}</span><button class="ghost small" type="button" @click="loadMyKeys">{{ t('Try again') }}</button></div>

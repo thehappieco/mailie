@@ -758,8 +758,9 @@ see it, assuming that never changes. With grants it does:
 
 - The service keeps an **access epoch**, a counter it advances after every commit that can give or
   take `read` from someone: a grant set or revoked, a membership disabled, enabled again or
-  removed, a mailbox linked or removed, a person disabled or deleted, a key created, given or taken
-  a mailbox, or revoked. A role never gives `read`, so a role change
+  removed, a mailbox linked or removed, a person disabled, deleted, suspended or resumed, a team
+  closed or reopened, a recovery or a reset (which stop the person's keys), a key created, given or
+  taken a mailbox, or revoked. A role never gives `read`, so a role change
   moves nothing a stream carries; an owner's or an admin's stream carries a team mailbox's events
   only while they hold `read` on it. Switching a team mailbox's sync off deletes its events with
   its index; nothing journals the switch itself. One daemon writes the database (the lock),
@@ -1436,6 +1437,14 @@ Test names state the guarantee. At least:
   `TestAHeldSessionSeesAMailboxTakenOutOfItsKeyAtOnce` (MCP) and
   `TestAKeysStreamStopsCarryingAMailboxTakenOutOfIt` (SSE);
   `TestACarriedOverKeyGainsNothingAndIsRevokedWithItsLastMailbox`.
+- Why a key stopped, and recoveries: `TestEveryWayAKeyStopsSaysWhy`,
+  `TestTheKeyListingsSayWhyAKeyStopped`, `TestOnlyAReasonAKeyStopsForStopsAPersonsKeys` and
+  `TestASessionARecoveryEndedCreatesNoKey` (the service); `TestRevokingKeysCreatedBeforeATimeLeavesTheLaterOnes`,
+  `TestARecoveryStopsTheKeysThePersonCreated`, `TestAResetStopsTheKeysThePersonCreated` and
+  `TestAPasswordChangeKeepsThePersonsKeys` (`internal/auth`); `TestTheKeyListSaysWhyAKeyStopped`
+  (`mailserver apikey list`); `TestMigrationSeventeenAddsTheStopReasonAndChangesNothingElse`,
+  `TestTheSchemaRefusesAKeyThatStopsWithoutSayingWhy` and `TestWhyAKeyStoppedNeverChanges`
+  (`internal/store`, migration 0017).
 - Events: `TestAStreamFollowsAccessAsItChanges`;
   `TestAStreamOfEverythingOutlivesTheLossOfEveryMailboxItRead`;
   `TestASendFinishedReachesOnlyItsSender`.
@@ -1465,7 +1474,8 @@ Test names state the guarantee. At least:
   `TestSigningUpSpendsTheOtherInvitesWaitingForTheAddress`.
 - Source: `TestThePlatformSourceRefusesLocalChanges`;
   `TestAPersonWithoutAPersonalWorkspaceGetsOneAtStart`;
-  `TestAWorkspacesKindSourceAndPersonNeverChange` (`internal/store`, migration 0016);
+  `TestAWorkspacesKindSourceAndPersonNeverChange` and
+  `TestMigrationSixteenAddsOneTriggerAndChangesNothingElse` (`internal/store`, migration 0016);
   `TestDeletingAPersonNeverDeletesATeamWhoseSourceIsNotLocal`;
   `TestATeamFromAnotherSourceKeepsItsMailboxesWhenItsLastLocalMemberGoes`;
   `TestNoCountOfLocalMembersMakesALastOwnerOfATeamFromAnotherSource`;
@@ -1477,7 +1487,10 @@ Test names state the guarantee. At least:
   `TestResumingBringsBackNoKeyAndNoSession`,
   `TestASuspendedPersonsPersonalMailboxesPauseAndCatchUpOnResume`,
   `TestATeamMailboxASuspendedPersonAloneReadsWaitsForThemRatherThanForNobody` and
-  `TestATeamMailboxSyncingUnderASuspendedPersonsOwnConsentPausesAndKeepsItsIndex` (the service);
+  `TestATeamMailboxSyncingUnderASuspendedPersonsOwnConsentPausesAndKeepsItsIndex`,
+  `TestClosingASuspendedPersonAsksForTheMailboxesTheyWouldReadOnceResumed`,
+  `TestDisablingASuspendedPersonStopsTheirBoundConsentAndAsksTheProtectionsAgain` and
+  `TestNeitherATeamsNorTheInstancesLastOwnerHoldsUpASuspension` (the service);
   `TestADisableHereStandsOverASuspension`, `TestSuspendingSomeoneDisabledHereChangesNothing` and
   `TestAKeyStoppedBySuspensionSaysSo` (`internal/auth`);
   `TestMigrationEighteenAddsTheSuspensionAndChangesNothingElse` and
@@ -1546,13 +1559,20 @@ Test names state the guarantee. At least:
   `TestAClosedTeamSyncsNothingAndKeepsItsIndexAndConsent`,
   `TestNothingIsLinkedKeyedGrantedOrConsentedInAClosedTeam`, `TestTheSchemaGivesNothingInAClosedTeam`,
   `TestOnlyATeamCloses`, `TestClosingATeamEndsItsWaitingInvitesAndConsentAttempts`,
-  `TestReopeningATeamRestoresAccessAndSync`, `TestTheCommandLineClosesOnlyALocalTeam`,
-  `TestAClosedTeamIsListedAsClosed` and, over REST,
-  `TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens`.
+  `TestReopeningATeamRestoresAccessAndSync`, `TestTheCommandLineClosesOnlyALocalTeam` (with what
+  `workspace list` says), `TestAClosedTeamIsListedAsClosed`, over REST
+  `TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens`, at start
+  `TestTheDaemonSaysAtStartWhichTeamsAreClosed` and `TestTheDaemonSaysNothingOfClosedTeamsWhereNoneIs`,
+  and `TestMigrationNineteenAddsTheClosedTeamsAndChangesNothingElse` (`internal/store`, migration
+  0019).
 
 - Withheld teams: `TestAnEditionThatWithholdsTeamsRefusesEveryUseOfATeam`,
   `TestWithholdingTeamsLeavesPersonalWorkspacesAsTheyWere`, `TestAWithheldTeamIsListedWithItsNotice`,
+  `TestAnEditionThatWithholdsTeamsSyncsNoTeamMailboxAndKeepsItsIndex`,
+  `TestAnEditionThatWithholdsTeamsKeepsTheirKeysOutOfAPersonsOwnKeys` and
+  `TestAnEditionThatWithholdsTeamsSignsNobodyUpIntoATeam` (the service);
   `TestABinaryThatEmbedsTheDaemonWithholdsTeamsThroughItsOptions` (the daemon, over REST) and
+  `TestAnEditionThatWithholdsTeamsNeverStartsATeamMailboxsSync` (the daemon's engine); and
   `TestServeNeverWithholdsTeams`.
 
 ## Conflicts and resolutions

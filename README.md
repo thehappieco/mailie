@@ -221,7 +221,7 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   `--force`, someone their teams depend on: a team's last owner, the last person who can read one
   of its mailboxes, or the linker whose own consent a team mailbox someone else reads still syncs
   under since the upgrade.
-- Teams from the command line, as the operator: `mailserver workspace list|create|rename`,
+- Teams from the command line, as the operator: `mailserver workspace list|create|rename|close|reopen`,
   `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
   `manage` to members only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
   for a team invite.

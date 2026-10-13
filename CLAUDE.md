@@ -27,11 +27,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   through a provider with `Service.SignInExternal`/`PinIdentityKey`, writes a first account key
   with the sign-in's ticket (`EnrolExternal`) and steps up through it
   (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only),
-  and suspends and resumes a person (`SuspendPerson`/`ResumePerson`);
-  `Options.ExternalSignInOnly` (never set by `serve`) has the service refuse every password and
-  invitation route, and `Options.TeamsWithheld` (never set by `serve`, an edition's choice, not a
-  workspace source) every use of a team, by a person or a key: teams listed `withheld`, their
-  mailboxes listed nowhere, nothing of them deleted.
+  suspends and resumes a person (`SuspendPerson`/`ResumePerson`), closes and reopens a team
+  (`CloseTeam`/`ReopenTeam`) and stops the keys a person created before a moment
+  (`RevokeKeysCreatedBefore`); `Options.ExternalSignInOnly` (never set by `serve`) has the service
+  refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
+  an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
+  listed `withheld`, their mailboxes listed nowhere and synced by none (the store's rule), nothing
+  of them deleted.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
@@ -71,7 +73,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   new version of `docs/key-scheme.md` and of the kit's vectors, never an edit. See
   `docs/key-scheme.md` and `docs/key-scheme-threat-model.md`.
 - `internal/auth` — API keys `prefix.secret`, Argon2id PHC, scopes `read < write < send < admin`,
-  expiry, revocation. Every key belongs to a workspace and acts as no person: an operator key
+  expiry, revocation (a stopped key says why, `stop_reason`, migration 0017). Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
   (`read`/`write`/`send`, holding its mailboxes in `key_access`, `internal/workspace/keys.go`);
   `Principal.IsInstance` means the operator workspace's. Also the console's people: users (instance
@@ -277,8 +279,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   invitation, which `signup` must name) and `reset/open`; a reset's new password is
   derived under what `reset/open` answers (the target the reset stores), never the challenge's
   answer; without `--force` a reset refuses the last reader of any team mailbox that has a key (it
-  deletes the person's grants; on a keyless mailbox they keep reading by the flag), a team they are
-  alone in included (closing a person leaves that team out: it goes with them). The upgrade's
+  deletes the person's grants; on a keyless mailbox they keep reading by the flag), a local team
+  they are alone in included (closing a person leaves that team out: it goes with them). The upgrade's
   password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) existed in the release that
   brought the scheme only and is gone: a person who never enrolled signs in again only through a
   reset invitation. New passwords have at least twelve code points. The console's half
@@ -311,8 +313,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   leaves the workspace or is disabled, suspended or deleted (not on a demotion), and in every
   workspace when they recover their account or complete a reset (`account_recovered`, in that
   transaction; a password change and signing out everywhere keep it). A suspended person
-  reads nothing, waits for no key, is supplied none and counts in no protection; their grants
-  persist for a resume, which restores no session and no key. A closed team (migration 0019) is a
+  reads nothing, waits for no key, is supplied none and counts in no protection for anyone else
+  (closing them asks it as for anyone active, counting what they would read once resumed); their
+  grants persist for a resume, which restores no session and no key. A closed team (migration 0019) is a
   gate on use, never the reading rule (`store.OpenWorkspaceSQL` beside `ReaderSQL` in visibility,
   access, what a key holds and sync): its mailboxes reach nobody, its owners and keys included
   (`not_found`), and nothing in it changes, by anyone, until it reopens (`conflict`; the schema
@@ -339,8 +342,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   pauses it, as it pauses their personal mailboxes, index kept. A closed team's mailboxes sync
   nothing, their index and consent kept, until it reopens. A team mailbox
   nobody can read is never switched on. Closing a person without force is refused for the last
-  reader of a team that outlives them (any other member, whatever their status), the same test as
-  whether the team goes with them. Actions and sending have their own consents, the actor's own,
+  reader of a team that outlives them (one another member remains in, whatever their status, or
+  one whose source is not local), the same test as whether the team goes with them. Actions and sending have their own consents, the actor's own,
   checked again right before the mail server is touched; a workspace key's are the key terms its
   creator agreed to (recorded on the key), with the key, its flag and its scope checked again
   instead, so no text says a person's own switch stops a key created since 0012. The revisions come

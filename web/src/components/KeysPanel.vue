@@ -179,7 +179,7 @@ watch(unusable, (now, before) => {
       </div>
     </section>
 
-    <p v-if="inTeam && !unusable" class="hint keys-rule">{{ t('Every owner and admin of {team} sees these keys and can revoke them. What a key holds stays when whoever gave it, or created it, loses their own access; a key stops when the person who created it leaves the team or is disabled on this server. Keys never count as readers of a mailbox.', { team: teamName }) }}</p>
+    <p v-if="inTeam && !unusable" class="hint keys-rule">{{ t('Every owner and admin of {team} sees these keys and can revoke them. What a key holds stays when whoever gave it, or created it, loses their own access; a key stops when the person who created it leaves the team, is disabled, suspended or deleted on this server, or recovers their account or uses a reset link. Keys never count as readers of a mailbox.', { team: teamName }) }}</p>
 
     <McpConnect v-if="showMcp && !unusable" />
 

@@ -528,9 +528,11 @@ the service, with the causes an extension tells apart, and the step-up's alert l
 session adopted keyed only for the person whose key the browser holds). A suspension (spec
 §12.13, section 5.13) is tested in `internal/service/suspension_test.go` (sessions, keys and invites
 ended and grants kept; a suspended person reading nothing, waiting for nothing, served no grant or
-wrap, supplied no key and sealed none by a first key, protecting nothing; a resume restoring
-reading only with the flag and a grant at the current epoch, and no session or key; their mailboxes
-paused, never emptied), `internal/auth/suspension_test.go` (a disable here standing over a
+wrap, supplied no key and sealed none by a first key, protecting nothing for anyone else; closing
+them refused without force where they alone would read a team mailbox once resumed, and a disable
+of a suspended person running whole; a resume restoring reading only with the flag and a grant at
+the current epoch, and no session or key; their mailboxes paused, never emptied),
+`internal/auth/suspension_test.go` (a disable here standing over a
 suspension, a suspension marking nothing on someone disabled here, a key saying it stopped with
 the suspension) and `internal/store/migrate_eighteen_test.go` (the schema refusing a suspended
 person who is active). That a recovery and a reset stop every key the person created, and a
