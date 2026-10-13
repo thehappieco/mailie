@@ -17,8 +17,9 @@ import (
 // API key they created, in any workspace, so nothing they set up still gets
 // in, and expires the invites they made; the identities they sign in with
 // through a provider stay, and sign nobody in while they are off. Then they
-// are deleted: the mailboxes of their personal workspace and of every team
-// they were alone in, those mailboxes' credentials and keys, their sessions,
+// are deleted: the mailboxes of their personal workspace and of every local
+// team they were alone in (workspace.GoesWithPersonSQL; a team from another
+// source stays, with its mailboxes), those mailboxes' credentials and keys, their sessions,
 // their invite, and their identities with the keys pinned for them. A key
 // they created in a team that stays is the team's record, revoked and
 // without their name. The mailboxes belong to
@@ -228,11 +229,11 @@ type Removed struct {
 // used or not — the identities they signed in with through a provider and the
 // keys pinned for those identities, the team mailboxes whose consent to sync
 // was still bound to theirs (stopped, their index deleted), their personal
-// workspace and every team whose only member they are, their memberships and
-// grants elsewhere, and then the person.
+// workspace and every local team whose only member they are, their
+// memberships and grants elsewhere, and then the person.
 //
 // The mailboxes that go with them — their personal workspace's, and those of
-// the teams they were alone in — must already be gone from the same
+// the local teams they were alone in — must already be gone from the same
 // transaction: the row cannot be deleted while an account names it, which is
 // ErrOwnsAccounts, and it is deliberately not a cascade (see migration 0002);
 // nor can a workspace that still holds one. Invites they sent to other

@@ -689,3 +689,119 @@ func TestATeamMailboxNobodyCanReadCannotBeTurnedOnAndStaysBound(t *testing.T) {
 		t.Errorf("%d messages only Eve could read outlived her", n)
 	}
 }
+
+// elsewhereTeam inserts a team whose source is not local, as a source that
+// sends its workspaces would write it, with owners as its active owners, and
+// returns its id. Nothing here creates such a team or changes its members.
+func elsewhereTeam(t *testing.T, f *fixture, id string, owners ...string) string {
+	t.Helper()
+	f.exec(t, `INSERT INTO workspaces(id, kind, source, name, created_at, updated_at)
+		VALUES (?, 'team', 'platform', 'Elsewhere', 100, 100)`, id)
+	for _, userID := range owners {
+		f.exec(t, `INSERT INTO workspace_members(workspace_id, user_id, role, status, created_at, updated_at)
+			VALUES (?, ?, 'owner', 'active', 100, 100)`, id, userID)
+	}
+	return id
+}
+
+func TestATeamFromAnotherSourceKeepsItsMailboxesWhenItsLastLocalMemberGoes(t *testing.T) {
+	// Ana is the only member here of a team whose source is not local, and
+	// links its mailbox, which syncs under the team's consent. Deleting her
+	// takes her personal mailbox with her, and her membership; the team, its
+	// mailbox, its consent and its index stay: it outlives every person here
+	// until its own source removes it. She is the mailbox's last reader, so
+	// it takes force (TestTheLastReaderOfATeamFromAnotherSourceIsNotClosedWithoutForce).
+	f, _ := newSyncFixture(t)
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	f.person(t, "keeper@example.com", auth.RoleOwner)
+	ctx := t.Context()
+	team := elsewhereTeam(t, f, "0b4a3c5e-0000-4000-8000-0000000000e1", ana.UserID)
+	req := f.passwordAccount(t, "elsewhere@mail.example")
+	req.WorkspaceID = team
+	req.SyncConsentVersion = f.consent().Sync
+	added, err := f.svc.AddAccount(ctx, ana, keyed(ana, req))
+	if err != nil {
+		t.Fatalf("linking into the team from another source: %v", err)
+	}
+	box := added.Account.ID
+	f.seedIndex(t, box, "Walrus")
+	mine, err := f.svc.AddAccount(ctx, ana, keyed(ana, f.passwordAccount(t, "ana@mail.example")))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := f.svc.DeleteUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted.TeamsDeleted != 0 || deleted.AccountsRemoved != 1 {
+		t.Errorf("deleted = %+v, want her personal mailbox alone", deleted)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, mine.Account.ID); n != 0 {
+		t.Error("her personal mailbox outlived her")
+	}
+	for what, n := range map[string]int{
+		"the team":        f.count(t, `SELECT count(*) FROM workspaces WHERE id = ? AND source <> 'local'`, team),
+		"its mailbox":     f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?`, box, team),
+		"its consent":     f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_at <> 0`, box),
+		"its credentials": f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, box),
+		"its mailbox key": f.count(t, `SELECT count(*) FROM mailbox_keys WHERE account_id = ?`, box),
+	} {
+		if n != 1 {
+			t.Errorf("%s did not stay: %d rows", what, n)
+		}
+	}
+	if n := indexed(t, f, box); n == 0 {
+		t.Error("its index went with Ana")
+	}
+	if n := f.count(t, `SELECT count(*) FROM workspace_members WHERE workspace_id = ?`, team); n != 0 {
+		t.Errorf("%d memberships left; Ana's goes with her", n)
+	}
+}
+
+func TestTheLastReaderOfATeamFromAnotherSourceIsNotClosedWithoutForce(t *testing.T) {
+	// Ana is the only member here of a team whose source is not local, and
+	// the only one who reads its mailbox. Unlike a local team she is alone
+	// in, it does not go with her: it outlives her, and nobody could ever
+	// read its mailbox again, since read passes only from a reader. Closing
+	// her needs force; being its only owner here blocks nothing, since its
+	// owners are decided where it comes from.
+	f := newFixture(t)
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	f.person(t, "keeper@example.com", auth.RoleOwner)
+	ctx := t.Context()
+	team := elsewhereTeam(t, f, "0b4a3c5e-0000-4000-8000-0000000000e2", ana.UserID)
+	req := f.passwordAccount(t, "elsewhere@mail.example")
+	req.WorkspaceID = team
+	added, err := f.svc.AddAccount(ctx, ana, keyed(ana, req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	box := added.Account.ID
+
+	closing := service.CloseUserRequest{Email: "ana@example.com"}
+	for name, call := range map[string]func() error{
+		"disable": func() error { _, err := f.svc.DisableUser(ctx, admin(), closing); return err },
+		"delete":  func() error { _, err := f.svc.DeleteUser(ctx, admin(), closing); return err },
+	} {
+		err := call()
+		wantCode(t, name+" the last reader", err, service.CodeConflict)
+		msg := service.MessageOf(err)
+		if !strings.Contains(msg, box) {
+			t.Errorf("%s: the refusal says %q, want the mailbox named", name, msg)
+		}
+		if strings.Contains(msg, team) {
+			t.Errorf("%s: the refusal says %q, which names the team as one she is the last owner of", name, msg)
+		}
+	}
+	if n := f.count(t, `SELECT count(*) FROM users WHERE email = 'ana@example.com' AND status = 'active'`); n != 1 {
+		t.Fatal("a refused closure changed Ana")
+	}
+	if _, err := f.svc.DeleteUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com", Force: true}); err != nil {
+		t.Fatalf("deleting Ana with force: %v", err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
+		WHERE a.id = ? AND w.id = ?`, box, team); n != 1 {
+		t.Error("the team from another source, or its mailbox, went with Ana")
+	}
+}

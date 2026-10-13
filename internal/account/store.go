@@ -668,9 +668,10 @@ type attempt struct {
 }
 
 // deleteOwner removes, in one transaction, the mailboxes that go with a
-// person — their personal workspace's, and those of every team whose only
-// member they are — as Delete removes one, and every consent attempt they
-// started anywhere, and then runs also, where the caller deletes the person.
+// person — their personal workspace's, and those of every local team whose
+// only member they are (ownedTx) — as Delete removes one, and every consent
+// attempt they started anywhere, and then runs also, where the caller deletes
+// the person.
 // It returns the accounts removed and the attempts dropped, which the
 // registry then stops waiting on.
 func (r *Repository) deleteOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) ([]string, []attempt, error) {
@@ -717,15 +718,16 @@ func (r *Repository) deleteFlowsBy(ctx context.Context, userID string) ([]attemp
 }
 
 // ownedTx lists the mailboxes that go with a person: the ones of their
-// personal workspace, and those of every team whose only member they are,
-// which goes with them.
+// personal workspace, and those of every team that goes with them, by the
+// rule the deletion of its workspace follows (workspace.GoesWithPersonSQL: a
+// local team whose only member they are). A team from another source keeps
+// its mailboxes whoever leaves it.
 func ownedTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
+	//nolint:gosec // G202: built from constants alone (GoesWithPersonSQL's fragment); nothing is interpolated
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM accounts WHERE owner_user_id = ?1
 		UNION
 		SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		 WHERE w.kind = 'team'
-		   AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?1)
-		   AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
+		 WHERE `+workspace.GoesWithPersonSQL("w", "?1")+`
 		ORDER BY 1`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("account: list owned: %w", err)

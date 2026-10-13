@@ -206,9 +206,9 @@ func printInvite(link, email, role string, expires time.Time) {
 // once; and then `user delete --email ADDRESS`, which removes the mailboxes
 // of their personal workspace with those mailboxes' credentials and
 // everything indexed for them, their sessions, their name on the keys they
-// created, their invites, their personal workspace and every team they were
-// alone in, in one transaction. A team
-// mailbox of a team others are in is the team's, and stays. Disabling or
+// created, their invites, their personal workspace and every local team they
+// were alone in, in one transaction. A team mailbox of a team others are in,
+// or of a team from another source, is the team's, and stays. Disabling or
 // deleting the last active owner needs --force: nobody would be left to
 // invite people from the console. So does someone their teams depend on — a
 // team's last active owner, the last person who can read a team mailbox, or

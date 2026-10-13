@@ -86,9 +86,14 @@ workspaces(id, kind, source, name, person_id, created_at, updated_at)
   `CHECK` ties it to the kind). It has no `ON DELETE` action: deleting a person deletes their
   personal workspace explicitly, in the deletion's transaction, as their mailboxes are today.
 - A unique partial index on `kind` where `kind = 'operator'` keeps the operator workspace single.
+- `kind`, `source` and `person_id` never change once the row is written: a trigger refuses any
+  update that changes one of them (`workspaces_fixed`, migration 0016). Only a team's `name` and
+  `updated_at` ever change.
 
-A team is deleted only with its last member (`user delete`), with its mailboxes; moving a mailbox
-from one workspace to another is not part of this phase.
+A local team is deleted only with its last member (`user delete`), with its mailboxes; a team whose
+source is not local outlives every person here, its last one included (see
+[The workspace source](#the-workspace-source)). Moving a mailbox from one workspace to another is
+not part of this phase.
 
 ### Members
 
@@ -327,7 +332,7 @@ the invites whose creator could no longer make them.
   nor remove it: it is the team's — but for a migrated consent still bound to them, below, and a
   mailbox only they read, which no reader is left for. Disabling a person stops their personal
   mailboxes (the eligibility rule requires the person active); deleting them removes those, and
-  every team whose only member they were, with its mailboxes. The open sync text says both.
+  every local team whose only member they were, with its mailboxes. The open sync text says both.
 - A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
   admins see it marked (`no_reader`). Read passes only from someone who reads it, so its sync is
   never turned on again (`409`), and the way out is removing it, or removing it and linking it
@@ -454,7 +459,7 @@ tries, as Wappie's directory does; the mutation enforces them regardless.
 
 | | Refused | The way out |
 |---|---|---|
-| **Last owner** | demoting, disabling or removing the last active owner of a team, or that owner leaving | promote another member first |
+| **Last owner** | demoting, disabling or removing the last active owner of a local team, or that owner leaving | promote another member first |
 | **Last reader** | taking `read` from the last person who can read a team mailbox — revoking it, disabling or removing their membership, leaving, closing their account without `force` | give another member `read` first (an owner or an admin who reads it can), or remove the mailbox |
 | **Personal** | any change to a personal workspace's membership; an invite into one; a grant change on one of its mailboxes | |
 | **Operator** | a membership, grant or invite in the operator workspace | |
@@ -473,16 +478,23 @@ The refusal says: "that is the last person who can read a mailbox of the workspa
 member read on it first, or remove the mailbox".
 
 On the instance, `user disable` and `user delete` also refuse, unless `force`, a person who is the
-last active owner of a team with other active members; the last reader of a team mailbox of a team
-that outlives them — any other member remains, whatever their status, since a team goes only with
-its last member and nobody could read the mailbox again; or the linker a migrated team consent is
-still bound to while someone else reads that mailbox. The instance's own last-owner rule stays as
+last active owner of a local team with other active members; the last reader of a team mailbox of a
+team that outlives them — every team but a local one whose only member they are: a team another
+member remains in, whatever their status, or a team whose source is not local, which never goes
+with anyone here — since nobody could read the mailbox again; or the linker a migrated team consent
+is still bound to while someone else reads that mailbox. A team whose source is not local has no
+last owner here: its owners are decided where it comes from, so no count of its members here marks
+one (`last_owner`) or holds back closing one. The instance's own last-owner rule stays as
 it is. With `force`, a team can be left without an owner (the operator assigns one with `mailserver
 member role`), a team mailbox without a reader, which then syncs nothing and is marked
 `no_reader`, and a bound mailbox stopped with its index deleted.
-Deleting a person removes the mailboxes of their personal workspace and every team whose only member
-they were, with its mailboxes, through the account registry's usual clean-up (workers, cached
-credentials, consent attempts, compaction); a team mailbox of a team others are in stays.
+Deleting a person removes the mailboxes of their personal workspace and every local team whose only
+member they were, with its mailboxes, through the account registry's usual clean-up (workers,
+cached credentials, consent attempts, compaction); a team mailbox of a team others are in stays,
+and so does every mailbox of a team whose source is not local, with the team, even when the person
+was its last member here. One rule decides which teams go with a person, for the deletion of the
+workspaces and of their mailboxes and for the last-reader test alike
+(`workspace.GoesWithPersonSQL`).
 
 ### Taking over a link
 
@@ -893,6 +905,16 @@ type Source interface {
   the core.
 - Unchanged in both: the operator workspace, linking mailboxes, grants, keys and consents, which
   are Mailie's whatever the source.
+- **A team whose source is not local outlives its people.** Its workspace and memberships are sent
+  from elsewhere, so nothing here deletes it: deleting a person removes their membership and
+  grants, never the team nor its mailboxes, even when they were its last member here; the team
+  stays, with its mailboxes, their consent and their index, until its own source removes it. Its
+  owners are not decided here either, so no count of its members makes anyone its last owner
+  (`last_owner` is never set there, and closing a person never waits on it). What stays protected
+  is its mailboxes' last reader: closing the last person who reads one needs `force`, since that
+  team outlives them as one with other members does ([Protections](#protections)).
+- A row's `kind`, `source` and `person_id` never change (migration 0016's trigger): a team never
+  moves between sources, and so never from one side of these rules to the other.
 - At start the daemon gives a personal workspace to any person without one, as old as the person
   (`workspace.Repository.RepairPersonal`), under the local source only. Every person gets theirs in
   the transaction that creates them; only a binary from before 0008, run on a migrated database,
@@ -1083,6 +1105,16 @@ a reader supplies it once they enrol. Operator mailboxes stay without a key. The
 `internal/store/migrate_fourteen_test.go` hold every table's rows and columns as they were, both
 new tables empty, and each refusal of the schema.
 
+## Migration 0016
+
+`0016_fixed_workspaces.sql`, an ordinary migration: one trigger, `workspaces_fixed`, which refuses
+any update that changes a workspace's `kind`, `source` or `person_id`, and nothing else. No row of
+a schema-15 database changes; nothing ever changed those columns, and a team's name still changes.
+What deleting a person takes with them depends on a team's source (see
+[The workspace source](#the-workspace-source)), so a source that could change would move a team
+from one side of that rule to the other. The tests in `internal/store/migrate_sixteen_test.go`
+hold every table's rows as they were and each refusal.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -1247,7 +1279,12 @@ Test names state the guarantee. At least:
   `TestLeavingATeamDeletesItsInvitesStillWaitingForThePerson`;
   `TestSigningUpSpendsTheOtherInvitesWaitingForTheAddress`.
 - Source: `TestThePlatformSourceRefusesLocalChanges`;
-  `TestAPersonWithoutAPersonalWorkspaceGetsOneAtStart`.
+  `TestAPersonWithoutAPersonalWorkspaceGetsOneAtStart`;
+  `TestAWorkspacesKindSourceAndPersonNeverChange` (`internal/store`, migration 0016);
+  `TestDeletingAPersonNeverDeletesATeamWhoseSourceIsNotLocal`;
+  `TestATeamFromAnotherSourceKeepsItsMailboxesWhenItsLastLocalMemberGoes`;
+  `TestNoCountOfLocalMembersMakesALastOwnerOfATeamFromAnotherSource`;
+  `TestTheLastReaderOfATeamFromAnotherSourceIsNotClosedWithoutForce`.
 - Migration, in `internal/store`: `TestMigrationEightKeepsEveryRowAndGivesEachPersonTheirMailboxes`
   runs every migration on a database with rows in **every** table, in the smallest shape (one
   owner with two mailboxes, no keys) and in a larger self-hosted shape (several people, one

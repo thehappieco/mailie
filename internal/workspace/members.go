@@ -22,8 +22,10 @@ type Member struct {
 	// PersonDisabled is the person switched off on the instance: a
 	// membership of theirs counts for nothing until they are back.
 	PersonDisabled bool
-	// LastOwner is the only active owner of a team, who cannot be demoted,
-	// disabled or removed (ErrLastOwner).
+	// LastOwner is the only active owner of a local team, who cannot be
+	// demoted, disabled or removed (ErrLastOwner); and the person of a
+	// personal workspace. Never anyone in a team from another source, whose
+	// owners are decided where it comes from.
 	LastOwner bool
 	// LastReaderOf are the team mailboxes this member is the only reader of:
 	// their read cannot be revoked, nor their membership disabled or removed,
@@ -45,13 +47,16 @@ func (m Member) Active() bool { return m.Status == StatusActive && !m.PersonDisa
 const memberColumns = `m.workspace_id, m.user_id, u.email, u.name, m.role, m.status, u.status <> 'active',
 	u.seal_id, u.public_key, m.created_at, m.updated_at`
 
-func scanMember(row rowScanner) (Member, error) {
+// scanMember reads memberColumns, then extra, the columns a query adds after
+// them.
+func scanMember(row rowScanner, extra ...any) (Member, error) {
 	var (
 		m                Member
 		created, updated int64
 	)
-	err := row.Scan(&m.WorkspaceID, &m.UserID, &m.Email, &m.Name, &m.Role, &m.Status, &m.PersonDisabled,
-		&m.SealID, &m.PublicKey, &created, &updated)
+	dest := append([]any{&m.WorkspaceID, &m.UserID, &m.Email, &m.Name, &m.Role, &m.Status, &m.PersonDisabled,
+		&m.SealID, &m.PublicKey, &created, &updated}, extra...)
+	err := row.Scan(dest...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Member{}, ErrNotMember
@@ -75,13 +80,14 @@ func MemberTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) (Memb
 }
 
 func memberOn(ctx context.Context, q querier, workspaceID, userID string) (Member, error) {
-	m, err := scanMember(q.QueryRowContext(ctx, `SELECT `+memberColumns+`
-		  FROM workspace_members m JOIN users u ON u.id = m.user_id
-		 WHERE m.workspace_id = ? AND m.user_id = ?`, workspaceID, userID))
+	var local bool
+	m, err := scanMember(q.QueryRowContext(ctx, `SELECT `+memberColumns+`, w.source = 'local'
+		  FROM workspace_members m JOIN users u ON u.id = m.user_id JOIN workspaces w ON w.id = m.workspace_id
+		 WHERE m.workspace_id = ? AND m.user_id = ?`, workspaceID, userID), &local)
 	if err != nil {
 		return Member{}, err
 	}
-	if m.Role == RoleOwner && m.Active() {
+	if local && m.Role == RoleOwner && m.Active() {
 		others, err := otherActiveOwners(ctx, q, workspaceID, userID)
 		if err != nil {
 			return Member{}, err
@@ -100,8 +106,8 @@ func (r *Repository) Members(ctx context.Context, workspaceID string) ([]Member,
 	if _, err := r.Get(ctx, workspaceID); err != nil {
 		return nil, err
 	}
-	rows, err := r.store.Reader().QueryContext(ctx, `SELECT `+memberColumns+`
-		  FROM workspace_members m JOIN users u ON u.id = m.user_id
+	rows, err := r.store.Reader().QueryContext(ctx, `SELECT `+memberColumns+`, w.source = 'local'
+		  FROM workspace_members m JOIN users u ON u.id = m.user_id JOIN workspaces w ON w.id = m.workspace_id
 		 WHERE m.workspace_id = ?
 		 ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, m.created_at, u.email, m.user_id`, workspaceID)
 	if err != nil {
@@ -112,9 +118,10 @@ func (r *Repository) Members(ctx context.Context, workspaceID string) ([]Member,
 	var (
 		out    []Member
 		owners int
+		local  bool
 	)
 	for rows.Next() {
-		m, err := scanMember(rows)
+		m, err := scanMember(rows, &local)
 		if err != nil {
 			return nil, err
 		}
@@ -131,7 +138,9 @@ func (r *Repository) Members(ctx context.Context, workspaceID string) ([]Member,
 		return nil, err
 	}
 	for i := range out {
-		out[i].LastOwner = owners == 1 && out[i].Role == RoleOwner && out[i].Active()
+		// No count of the members here makes anyone the last owner of a
+		// team from another source.
+		out[i].LastOwner = local && owners == 1 && out[i].Role == RoleOwner && out[i].Active()
 		out[i].LastReaderOf = last[out[i].UserID]
 	}
 	return out, nil

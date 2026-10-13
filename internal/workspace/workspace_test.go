@@ -889,3 +889,123 @@ func TestAPersonWithoutAPersonalWorkspaceGetsOneAtStart(t *testing.T) {
 		t.Errorf("a second start made %d (%v)", made, err)
 	}
 }
+
+// elsewhere inserts a team whose source is not local, as a source that sends
+// its workspaces would write it, with members of the roles given, active.
+// Nothing here creates such a team or changes its memberships.
+func (f *fixture) elsewhere(id, name string, members map[string]workspace.Role) workspace.Workspace {
+	f.t.Helper()
+	ctx := f.t.Context()
+	if _, err := f.db.Writer().ExecContext(ctx, `INSERT INTO workspaces(id, kind, source, name, created_at, updated_at)
+		VALUES (?, 'team', 'platform', ?, 100, 100)`, id, name); err != nil {
+		f.t.Fatal(err)
+	}
+	for userID, r := range members {
+		if _, err := f.db.Writer().ExecContext(ctx, `INSERT INTO workspace_members(workspace_id, user_id, role, status,
+			created_at, updated_at) VALUES (?, ?, ?, 'active', 100, 100)`, id, userID, string(r)); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	w, err := f.ws.Get(ctx, id)
+	if err != nil || w.Source == workspace.SourceLocal {
+		f.t.Fatalf("the team from another source: %+v, %v", w, err)
+	}
+	return w
+}
+
+func TestDeletingAPersonNeverDeletesATeamWhoseSourceIsNotLocal(t *testing.T) {
+	// Ana is the only member here of a team from another source, with a
+	// mailbox, and of a local team. The local team goes with her; the other
+	// outlives her, mailbox and all: its source, not this server, removes it.
+	f := newFixture(t)
+	ana := f.person("ana@example.org")
+	alone := f.team("Alone", ana, nil)
+	elsewhere := f.elsewhere("0b4a3c5e-0000-4000-8000-000000000001", "Elsewhere",
+		map[string]workspace.Role{ana.ID: workspace.RoleOwner})
+	box := f.link(elsewhere.ID, ana.ID, "elsewhere@example.org")
+	ctx := t.Context()
+
+	var goes []string
+	if err := f.db.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		goes, err = workspace.SoleMemberTeamsTx(ctx, tx, ana.ID)
+		return err
+	}); err != nil || len(goes) != 1 || goes[0] != alone.ID {
+		t.Fatalf("the teams that go with Ana: %v (%v), want only her local one", goes, err)
+	}
+	// The mailbox left in the team from another source stops nothing: that
+	// workspace is not deleted, so nothing has to be gone from it first.
+	var teams []string
+	err := f.db.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		if teams, err = workspace.DeletePersonTx(ctx, tx, ana.ID); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM users WHERE id = ?`, ana.ID)
+		return err
+	})
+	if err != nil || len(teams) != 1 || teams[0] != alone.ID {
+		t.Fatalf("DeletePersonTx = %v, %v; want her local team alone", teams, err)
+	}
+	if w, err := f.ws.Get(ctx, elsewhere.ID); err != nil || w.Name != "Elsewhere" || w.Source == workspace.SourceLocal {
+		t.Errorf("the team from another source after Ana: %+v, %v; want it kept as it was", w, err)
+	}
+	if a, err := f.accounts.Get(ctx, box.ID); err != nil || a.WorkspaceID != elsewhere.ID {
+		t.Errorf("its mailbox after Ana: %+v, %v; want it kept, the team's", a, err)
+	}
+	if n := f.count(`SELECT count(*) FROM workspace_members WHERE workspace_id = ?`, elsewhere.ID); n != 0 {
+		t.Errorf("%d memberships left in the team from another source; Ana's goes with her", n)
+	}
+	if n := f.count(`SELECT count(*) FROM workspaces WHERE id = ?`, alone.ID); n != 0 {
+		t.Error("her local team outlived her")
+	}
+}
+
+func TestNoCountOfLocalMembersMakesALastOwnerOfATeamFromAnotherSource(t *testing.T) {
+	// Ana is the only owner here of two teams that are alike but for their
+	// source, with Bea, an active member, in both. The local team has her as
+	// its last owner; the other has no last owner here, whose owners are
+	// decided where it comes from: no listing marks her, and closing her
+	// waits on nothing there.
+	f := newFixture(t)
+	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
+	local := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
+	elsewhere := f.elsewhere("0b4a3c5e-0000-4000-8000-000000000002", "Elsewhere",
+		map[string]workspace.Role{ana.ID: workspace.RoleOwner, bea.ID: workspace.RoleMember})
+	alone := f.elsewhere("0b4a3c5e-0000-4000-8000-000000000003", "Alone elsewhere",
+		map[string]workspace.Role{ana.ID: workspace.RoleOwner})
+	ctx := t.Context()
+
+	if m, err := f.ws.Member(ctx, local.ID, ana.ID); err != nil || !m.LastOwner {
+		t.Fatalf("Ana in the local team: %+v, %v; want its last owner", m, err)
+	}
+	for _, w := range []workspace.Workspace{elsewhere, alone} {
+		if m, err := f.ws.Member(ctx, w.ID, ana.ID); err != nil || m.LastOwner || m.Role != workspace.RoleOwner {
+			t.Errorf("Ana in %s: %+v, %v; want an owner who is no last owner", w.Name, m, err)
+		}
+		var inTx workspace.Member
+		if err := f.db.Write(ctx, func(tx *sql.Tx) error {
+			var err error
+			inTx, err = workspace.MemberTx(ctx, tx, w.ID, ana.ID)
+			return err
+		}); err != nil || inTx.LastOwner {
+			t.Errorf("Ana in %s, read in a transaction: %+v, %v", w.Name, inTx, err)
+		}
+		members, err := f.ws.Members(ctx, w.ID)
+		if err != nil || len(members) == 0 {
+			t.Fatalf("members of %s: %+v, %v", w.Name, members, err)
+		}
+		for _, m := range members {
+			if m.LastOwner {
+				t.Errorf("the listing of %s marks %s as its last owner", w.Name, m.Email)
+			}
+		}
+	}
+	if members, err := f.ws.Members(ctx, local.ID); err != nil || len(members) != 2 || !members[0].LastOwner {
+		t.Errorf("the local team's listing: %+v, %v; want Ana marked", members, err)
+	}
+	b, err := f.ws.Blocks(ctx, ana.ID)
+	if err != nil || len(b.LastOwnerOf) != 1 || b.LastOwnerOf[0] != local.ID {
+		t.Errorf("Ana's blocks: %+v, %v; want only the local team's last owner", b, err)
+	}
+}

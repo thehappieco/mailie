@@ -14,11 +14,12 @@ import (
 // policy promises. Disabling ends every session, revokes every API key the
 // person created, in whichever workspace, and expires the invites they made;
 // deleting removes the mailboxes of their personal workspace and of every
-// team they were alone in, with those mailboxes' credentials, index and keys,
-// their sessions, their name on the keys they created in other teams, their
+// local team they were alone in, with those mailboxes' credentials, index and
+// keys, their sessions, their name on the keys they created in other teams, their
 // invite, the identities they sign in with through a provider with the keys
 // pinned for them, and their personal workspace, in one transaction. A team
-// mailbox of a team others are in is the team's: closing a person never stops
+// mailbox of a team others are in, or of a team from another source, which
+// outlives every person here, is the team's: closing a person never stops
 // or removes it, but for one whose consent to sync migration 0011 copied from
 // theirs and nobody has confirmed since, which stops with its index deleted,
 // as the text they agreed to promised — and, while someone else reads it,
@@ -27,8 +28,8 @@ import (
 // Both are for an unrestricted instance admin key — the operator, answering a
 // request that arrived by email and was verified — and for an owner of the
 // instance signed in to the console, who administers its people, never on
-// themselves. A person their teams depend on — a team's last active owner,
-// the last person who can read a mailbox of a team that outlives them, or the
+// themselves. A person their teams depend on — a local team's last active
+// owner, the last person who can read a mailbox of a team that outlives them, or the
 // person whose consent a team mailbox someone else reads still syncs under —
 // is refused unless the caller insists (force), as the last owner of the
 // instance is.
@@ -72,8 +73,8 @@ type DeletedUser struct {
 	// kept, without their name, by a team that stays.
 	KeysDeleted    int `json:"keys_deleted"`
 	InvitesDeleted int `json:"invites_deleted"`
-	// TeamsDeleted counts the teams whose only member they were, deleted
-	// with them.
+	// TeamsDeleted counts the local teams whose only member they were,
+	// deleted with them.
 	TeamsDeleted int `json:"teams_deleted"`
 	// TeamSyncsStopped are the team mailboxes whose consent to sync was
 	// still the person's own (migration 0011): stopped, their index deleted.

@@ -954,8 +954,8 @@ func (u *Users) CreateReset(ctx context.Context, userID string, force bool, crea
 // mailbox that has a key (BlockedError, with only the mailboxes): the reset
 // deletes their grants, which takes "read" from them there, and on such a
 // mailbox only (they keep reading one without a key by the flag). Not the
-// test closing a person uses (workspace.BlocksTx), which leaves out a team
-// whose only member is the person, since that team goes with them: a reset
+// test closing a person uses (workspace.BlocksTx), which leaves out a local
+// team whose only member is the person, since that team goes with them: a reset
 // leaves the person and every team of theirs standing, and a team mailbox it
 // took "read" from could then never be read again.
 func resetBlocksTx(ctx context.Context, tx *sql.Tx, userID string) error {

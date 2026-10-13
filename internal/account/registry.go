@@ -1385,11 +1385,12 @@ func (r *Registry) RemoveChecked(ctx context.Context, accountID string, check fu
 }
 
 // RemoveOwner deletes the mailboxes that go with a person — those of their
-// personal workspace, and those of every team whose only member they are,
-// with everything Remove deletes for one — and drops every consent attempt
-// they started anywhere, in one transaction that also then completes: the
-// caller deletes the person there, so either all of it happens or none does.
-// A team mailbox of a team others are in stays: it is the team's. before runs
+// personal workspace, and those of every local team whose only member they
+// are (workspace.GoesWithPersonSQL), with everything Remove deletes for one —
+// and drops every consent attempt they started anywhere, in one transaction
+// that also then completes: the caller deletes the person there, so either
+// all of it happens or none does. A team mailbox of a team others are in, or
+// of a team from another source, stays: it is the team's. before runs
 // first in that transaction; nil checks nothing. Once it has committed, the
 // registry lets go of those accounts as Remove does: their token sources and
 // cached mailboxes, and any listener or device poll still waiting on their

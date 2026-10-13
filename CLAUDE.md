@@ -109,7 +109,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
-  and the workspace `Source` (local; the platform's is a stub). See `docs/workspaces.md`.
+  and the workspace `Source` (local; the platform's is a stub). A workspace's kind, source and
+  person never change (migration 0016's trigger). Only a local team goes with its only member
+  (`GoesWithPersonSQL`, the one rule for deleting it, its mailboxes and the last-reader test); a
+  team whose source is not local outlives its people, its last one here included, and has no last
+  owner here. See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a

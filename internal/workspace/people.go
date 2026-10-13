@@ -14,12 +14,16 @@ import (
 
 // Blocks are what a person cannot leave behind without force.
 type Blocks struct {
-	// LastOwnerOf are the teams where they are the last active owner and
-	// other active members remain, who would be left without one.
+	// LastOwnerOf are the local teams where they are the last active owner
+	// and other active members remain, who would be left without one. A
+	// team from another source is never listed: its owners are not decided
+	// here.
 	LastOwnerOf []string
 	// LastReaderOf are the team mailboxes they are the only reader of, in
-	// teams that outlive them (another member remains, whatever their
-	// status), which nobody could ever read again.
+	// teams that outlive them (every team but a local one they are the only
+	// member of, GoesWithPersonSQL: another member remains, whatever their
+	// status, or the team comes from another source), which nobody could
+	// ever read again.
 	LastReaderOf []string
 	// BoundTo are the team mailboxes whose consent to sync migration 0011
 	// copied from theirs, and nobody has confirmed for the team since, that
@@ -51,9 +55,12 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 		b   Blocks
 		err error
 	)
+	// Only a local team: who owns a team from another source is decided
+	// where it comes from, and no count of the members here makes anyone
+	// its last owner.
 	b.LastOwnerOf, err = listIDs(ctx, tx, `SELECT w.id FROM workspaces w
 		  JOIN workspace_members me ON me.workspace_id = w.id AND me.user_id = ?1
-		 WHERE w.kind = 'team' AND me.role = 'owner' AND me.status = 'active'
+		 WHERE w.kind = 'team' AND w.source = 'local' AND me.role = 'owner' AND me.status = 'active'
 		   AND NOT EXISTS (SELECT 1 FROM workspace_members o JOIN users u ON u.id = o.user_id
 		                    WHERE o.workspace_id = w.id AND o.user_id <> ?1 AND o.role = 'owner'
 		                      AND o.status = 'active' AND u.status = 'active')
@@ -78,29 +85,48 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 	return b, nil
 }
 
-// SoleMemberTeamsTx lists the teams whose only member, active or not, is
-// userID: the teams that go with them when they are deleted, mailboxes and
-// all.
+// GoesWithPersonSQL is the one rule for which workspaces go with a person
+// when they are deleted, as an SQL condition on the row of workspaces
+// aliased w, for the person the SQL expression user names (a column or a
+// parameter): a team whose source is local and whose only member, active or
+// not, is that person. What they leave behind them, and so what could block
+// closing them, is every other team they are in (BlocksTx).
+//
+// A team from another source never goes with anyone here: its workspace and
+// memberships are sent from elsewhere, and it outlives every person on this
+// server, its last one included, with its mailboxes and their index, until
+// its own source removes it. A person's personal workspace goes with them
+// too, by its person_id (DeletePersonTx), which never changes (migration
+// 0016).
+func GoesWithPersonSQL(w, user string) string {
+	return `(` + w + `.kind = 'team' AND ` + w + `.source = 'local'
+		AND EXISTS (SELECT 1 FROM workspace_members gwp WHERE gwp.workspace_id = ` + w + `.id AND gwp.user_id = ` + user + `)
+		AND NOT EXISTS (SELECT 1 FROM workspace_members gwp WHERE gwp.workspace_id = ` + w + `.id AND gwp.user_id <> ` + user + `))`
+}
+
+// SoleMemberTeamsTx lists the teams that go with userID when they are
+// deleted, mailboxes and all (GoesWithPersonSQL): the local teams whose only
+// member, active or not, is them.
 func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
 	return listIDs(ctx, tx, `SELECT w.id FROM workspaces w
-		 WHERE w.kind = 'team'
-		   AND EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id = ?1)
-		   AND NOT EXISTS (SELECT 1 FROM workspace_members m WHERE m.workspace_id = w.id AND m.user_id <> ?1)
+		 WHERE `+GoesWithPersonSQL("w", "?1")+`
 		 ORDER BY w.id`, userID)
 }
 
 // DeletePersonTx removes what workspaces keep of a person, inside the
 // transaction that deletes them, once the mailboxes that go with them are
-// gone from it — their personal workspace's, and those of every team whose
-// only member they are (account.Registry.RemoveOwner): those teams and their
-// personal workspace, with their memberships, their keys and the invites
-// still waiting to join them; and their name wherever it is kept as
-// attribution: on the grants they gave others, flags and sealed grants, and
+// gone from it — their personal workspace's, and those of every local team
+// whose only member they are (GoesWithPersonSQL,
+// account.Registry.RemoveOwner): those teams and their personal workspace,
+// with their memberships, their keys and the invites still waiting to join
+// them; and their name wherever it is kept as attribution: on the grants they gave others, flags and sealed grants, and
 // what they gave keys, on the mailbox keys their browser wrote, on the
 // mailboxes they linked and on the team consents to sync they gave, which
 // stay, with their date and revision, the workspace's. Their memberships of
 // other teams, and their grants there, flags and sealed grants, go with the
-// person (ON DELETE CASCADE). It returns the teams it deleted.
+// person (ON DELETE CASCADE), and so does their membership of a team from
+// another source, which stays, with its mailboxes, even when they were its
+// last member here. It returns the teams it deleted.
 //
 // A used invite to a deleted team is not theirs to take: it is the record of
 // how another person arrived, and stays, without its team (ON DELETE SET

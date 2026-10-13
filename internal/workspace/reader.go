@@ -24,13 +24,13 @@ import (
 //
 // Guarded: revoking the last reader's read, disabling or removing their
 // membership (leaving included), disabling or deleting them on the instance
-// without force, unless they are the team's only member and it goes with
-// them, and resetting their account key without force (the reset deletes
-// their grants, so it takes read only on a mailbox that has a key). Not
-// guarded: removing the mailbox itself, and role changes, which change no
-// read. Each check runs inside the transaction that would break the rule; the
-// database has one writer, so two changes that would each leave one reader
-// are ordered, and the second is refused.
+// without force, unless the team goes with them (a local team they are the
+// only member of, GoesWithPersonSQL), and resetting their account key without
+// force (the reset deletes their grants, so it takes read only on a mailbox
+// that has a key). Not guarded: removing the mailbox itself, and role
+// changes, which change no read. Each check runs inside the transaction that
+// would break the rule; the database has one writer, so two changes that
+// would each leave one reader are ordered, and the second is refused.
 
 // lastReaders narrows lastReaderOf.
 type lastReaders struct {
@@ -39,12 +39,15 @@ type lastReaders struct {
 	// accountIDs, when not nil, keeps those mailboxes.
 	accountIDs []string
 	// outlived keeps only the mailboxes of teams that outlive the person's
-	// account: teams with another member, whatever that member's status,
-	// which deleting the person leaves standing (SoleMemberTeamsTx is the
-	// other half of the same test). A team whose remaining members are all
-	// disabled still outlives them, and its mailbox could never be read
-	// again, since read passes only from a reader; closing the account of
-	// someone alone in a team takes the team with them instead.
+	// account: every team that does not go with them (GoesWithPersonSQL,
+	// the same rule SoleMemberTeamsTx and the deletion follow), which
+	// deleting the person leaves standing: a team with another member,
+	// whatever that member's status, and a team from another source, even
+	// when they are its last member here. A team whose remaining members
+	// are all disabled, or that has none left here, still outlives them,
+	// and its mailbox could never be read again, since read passes only
+	// from a reader; closing the account of someone alone in a local team
+	// takes the team with them instead.
 	outlived bool
 	// keyed keeps only the mailboxes that have a key: what deleting the
 	// person's grants, and nothing else, takes read from.
@@ -62,8 +65,7 @@ func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders)
 		                    WHERE o.account_id = a.id AND o.user_id <> ?1 AND ` + store.ReaderSQL("o") + `)
 		   AND (?2 = '' OR a.workspace_id = ?2)`
 	if in.outlived {
-		query += ` AND EXISTS (SELECT 1 FROM workspace_members om
-		                        WHERE om.workspace_id = a.workspace_id AND om.user_id <> ?1)`
+		query += ` AND NOT ` + GoesWithPersonSQL("w", "?1")
 	}
 	if in.keyed {
 		query += ` AND ` + store.HasKeySQL("a.id")
@@ -86,8 +88,8 @@ func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders)
 // with them, must not leave behind (the reset of their account key,
 // docs/key-scheme.md section 12.6). A mailbox without a key is left out: they
 // keep reading it by the flag, which the reset does not take. Unlike
-// BlocksTx's LastReaderOf, a team whose only member is the person counts,
-// since nothing takes it away with them.
+// BlocksTx's LastReaderOf, a local team whose only member is the person
+// counts, since nothing takes it away with them.
 func LastReaderOfKeyedTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
 	return lastReaderOf(ctx, tx, userID, lastReaders{keyed: true})
 }
