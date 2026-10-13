@@ -60,7 +60,12 @@ func LiveSQL(account string) string {
 // (ReaderSQL); on one with a key it is who may be given the key, or waits
 // for it (WaitingSQL).
 func FlagHolderSQL(alias string) string {
-	return `(` + alias + `.read = 1 AND ` + LiveSQL(alias+`.account_id`) + `
+	return `(` + LiveSQL(alias+`.account_id`) + ` AND ` + flagHolderSQL(alias) + `)`
+}
+
+// flagHolderSQL is FlagHolderSQL whether or not the mailbox is live.
+func flagHolderSQL(alias string) string {
+	return `(` + alias + `.read = 1
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.status = 'active'))`
@@ -69,8 +74,17 @@ func FlagHolderSQL(alias string) string {
 // ReaderSQL is the condition, over mailbox_access aliased alias, that its
 // holder reads the mailbox now: the rule above.
 func ReaderSQL(alias string) string {
+	return `(` + LiveSQL(alias+`.account_id`) + ` AND ` + KeptReaderSQL(alias) + `)`
+}
+
+// KeptReaderSQL is the condition, over mailbox_access aliased alias, that its
+// holder would read a removed mailbox once it is recovered: the rule above,
+// on the mailbox as if it were live, from the flags and the grants it keeps.
+// Nobody reads a removed mailbox, so this decides nothing: it only says, to
+// whoever may recover one, who would read it again.
+func KeptReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
-	return `(` + FlagHolderSQL(alias) + `
+	return `(` + flagHolderSQL(alias) + `
 	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
 }
 

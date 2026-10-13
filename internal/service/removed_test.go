@@ -75,7 +75,7 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 		}
 		_, err = f.svc.StartOAuth(ctx, u.p, u.id, "")
 		wantCode(t, u.who+" authorizing it again", err, service.CodeNotFound)
-		err = f.svc.RemoveAccount(ctx, u.p, u.id, service.RemoveAccountRequest{Confirm: u.id})
+		_, err = f.svc.RemoveAccount(ctx, u.p, u.id, service.RemoveAccountRequest{Confirm: u.id})
 		wantCode(t, u.who+" removing it again", err, service.CodeNotFound)
 	}
 	// Nothing of it is found by a search of everything either.
@@ -126,4 +126,11 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 	if a := accessOf(t, f, tm.bea, tm.shared); !a.Access.Read {
 		t.Errorf("recovered, Bea holds %+v on it", a.Access)
 	}
+}
+
+// removeErr is what removing a mailbox, its id repeated, answers p.
+func (f *fixture) removeErr(t *testing.T, p service.Principal, id string) error {
+	t.Helper()
+	_, err := f.svc.RemoveAccount(t.Context(), p, id, service.RemoveAccountRequest{Confirm: id})
+	return err
 }

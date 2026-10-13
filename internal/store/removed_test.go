@@ -116,6 +116,11 @@ func TestARemovedMailboxHasNoReader(t *testing.T) {
 	if got := readers(); len(got) != 0 {
 		t.Errorf("the removed mailbox's readers are %v", got)
 	}
+	// Who would read it once recovered is still known: Bea, and not Fay,
+	// who is suspended.
+	if n := count(KeptReaderSQL("g")); n != 1 {
+		t.Errorf("%d people would read the removed mailbox once recovered, want Bea", n)
+	}
 	// Its grants are kept for a recovery, which gives them back.
 	if n := queryInt(t, f.s, `SELECT count(*) FROM mailbox_access WHERE account_id = 'acc_t1' AND read = 1`); n != 2 {
 		t.Errorf("the removed mailbox keeps %d read flags, want the 2 it had", n)
@@ -228,15 +233,17 @@ func TestTheMailboxJournalNeverHoldsAnAddress(t *testing.T) {
 		t.Errorf("readers and notices: %v", got)
 	}
 
-	// Deleted for good: its earlier entries forget its names, and the entry
-	// that says so holds none.
+	// Deleted for good: its earlier entries forget its names, but for the
+	// hint a notice still needs, and the entry that says so holds none.
 	err := f.s.Write(ctx, func(tx *sql.Tx) error { return ForgetMailboxNamesTx(ctx, tx, []string{"acc_t3"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
 	journal(MailboxPurged, "acc_t3", ActorSweep, false)
+	// The entry Bea is still to read keeps the hint alone, to name it in her
+	// notice.
 	if got := rows(); !slices.Equal(got[1:], []string{
-		"sync_paused|wsp_t2|acc_t3|||usr_0000000000000004", "purged|wsp_t2|acc_t3|||sweep",
+		"sync_paused|wsp_t2|acc_t3||o…@team.example.org|usr_0000000000000004", "purged|wsp_t2|acc_t3|||sweep",
 	}) {
 		t.Errorf("after the deletion for good the journal holds %v", got)
 	}

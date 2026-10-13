@@ -74,13 +74,13 @@ func TestASessionOpensOnlyItsOwnersAccounts(t *testing.T) {
 	if _, err := f.svc.StartOAuth(t.Context(), ana, bobs, ""); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("StartOAuth of someone else's account: %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), ana, bobs, service.RemoveAccountRequest{Confirm: bobs}); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.RemoveAccount(t.Context(), ana, bobs, service.RemoveAccountRequest{Confirm: bobs}); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("RemoveAccount of someone else's account: %v", err)
 	}
 	if _, err := f.repo.Get(t.Context(), bobs); err != nil {
 		t.Fatalf("bob's account did not survive ana's attempt: %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), bob, bobs, service.RemoveAccountRequest{Confirm: bobs}); err != nil {
+	if _, err := f.svc.RemoveAccount(t.Context(), bob, bobs, service.RemoveAccountRequest{Confirm: bobs}); err != nil {
 		t.Fatalf("bob could not remove his own account: %v", err)
 	}
 }

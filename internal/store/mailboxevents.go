@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -21,7 +22,8 @@ import (
 // person who did it, with a notice they see in the console until they
 // dismiss it. The journal never holds an address: a mailbox is named by its
 // label (its display name, unless that holds an address) and a masked hint
-// of its address, both forgotten once it is deleted for good. It has no
+// of its address. Deleted for good, it loses its label, and its hint once no
+// notice still to be read needs it to name the mailbox. It has no
 // foreign keys, so a row outlives its mailbox and its team, and goes after
 // its retention (SweepMailboxEvents), or with the mailbox when a person is
 // closed or a link that never connected is abandoned (DeleteMailboxEventsTx).
@@ -58,7 +60,8 @@ type MailboxEvent struct {
 	WorkspaceID string
 	AccountID   string
 	// Label is the mailbox's display name, and Hint its address masked
-	// (MailboxHint); both empty once it is deleted for good.
+	// (MailboxHint); the label empty once it is deleted for good, and the
+	// hint once no notice still to be read needs it.
 	Label string
 	Hint  string
 	// Actor is who did it: "usr_…", "key:<prefix>", "cli" or "sweep"; empty
@@ -67,6 +70,11 @@ type MailboxEvent struct {
 	// At is when, in unix seconds.
 	At int64
 }
+
+// MailboxJournalRetention is how long the journal keeps an event, with who
+// read the mailbox then and the notices it gave: 90 days, then the hourly
+// sweep deletes it (SweepMailboxEvents).
+const MailboxJournalRetention = 90 * 24 * time.Hour
 
 // ActorSweep is the actor of what the daemon does by itself: a removed
 // mailbox deleted for good once its 30 days are over.
@@ -171,8 +179,11 @@ func JournalMailboxTx(ctx context.Context, tx *sql.Tx, ev MailboxEvent, readers 
 }
 
 // ForgetMailboxNamesTx forgets, inside the caller's transaction, the label
-// and the hint of every event of these mailboxes: what a deletion for good
-// does to the journal it keeps.
+// of every event of these mailboxes, and the hint of each no reader holds a
+// notice of: what a deletion for good does to the journal it keeps. A
+// notice still to be read names the mailbox deleted for good by that masked
+// hint alone, which is forgotten in its turn once no notice needs it
+// (DismissNotice, SweepMailboxEvents).
 func ForgetMailboxNamesTx(ctx context.Context, tx *sql.Tx, accountIDs []string) error {
 	if len(accountIDs) == 0 {
 		return nil
@@ -181,9 +192,33 @@ func ForgetMailboxNamesTx(ctx context.Context, tx *sql.Tx, accountIDs []string) 
 	if err != nil {
 		return fmt.Errorf("store: encode ids: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_events SET label = '', hint = ''
+	if _, err := tx.ExecContext(ctx, `UPDATE mailbox_events
+		SET label = '',
+		    hint = CASE WHEN EXISTS (SELECT 1 FROM notices n WHERE n.event_seq = mailbox_events.seq) THEN hint ELSE '' END
 		WHERE account_id IN (SELECT value FROM json_each(?)) AND (label <> '' OR hint <> '')`, string(list)); err != nil {
 		return fmt.Errorf("store: forget the mailboxes' names: %w", err)
+	}
+	return nil
+}
+
+// forgetUnneededHintsTx forgets, inside the caller's transaction, the hint
+// of every event of a mailbox deleted for good that no reader holds a notice
+// of any longer, among those whose seq is in seqs, or every one for nil.
+func forgetUnneededHintsTx(ctx context.Context, tx *sql.Tx, seqs []int64) error {
+	query := `UPDATE mailbox_events SET hint = ''
+		WHERE hint <> '' AND NOT EXISTS (SELECT 1 FROM notices n WHERE n.event_seq = mailbox_events.seq)
+		  AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = mailbox_events.account_id)`
+	var args []any
+	if seqs != nil {
+		list, err := json.Marshal(seqs)
+		if err != nil {
+			return fmt.Errorf("store: encode seqs: %w", err)
+		}
+		query += ` AND seq IN (SELECT value FROM json_each(?))`
+		args = append(args, string(list))
+	}
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("store: forget the hints no notice needs: %w", err)
 	}
 	return nil
 }
@@ -261,29 +296,43 @@ func (s *Store) Notices(ctx context.Context, userID string) ([]Notice, error) {
 	return out, nil
 }
 
+// LatestNotice is the seq of the newest event a person holds a notice of, 0
+// when they hold none: a live stream compares it with the last it saw to
+// tell them of a new one. A notice is given only with the event it tells of,
+// so a new one is always newer than every other.
+func (s *Store) LatestNotice(ctx context.Context, userID string) (int64, error) {
+	var seq int64
+	if err := s.r.QueryRowContext(ctx, `SELECT coalesce(max(event_seq), 0) FROM notices WHERE user_id = ?`, userID).
+		Scan(&seq); err != nil {
+		return 0, fmt.Errorf("store: read the newest notice: %w", err)
+	}
+	return seq, nil
+}
+
 // DismissNotice deletes a person's notice of the event eventID ("mbe_…");
-// ErrNoNotice when they have none.
+// ErrNoNotice when they have none. The last notice of a mailbox deleted for
+// good takes the masked hint the journal kept for it.
 func (s *Store) DismissNotice(ctx context.Context, userID, eventID string) error {
 	return s.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `DELETE FROM notices
-			WHERE user_id = ? AND event_seq = (SELECT seq FROM mailbox_events WHERE id = ?)`, userID, eventID)
-		if err != nil {
-			return fmt.Errorf("store: dismiss the notice: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("store: dismiss the notice: %w", err)
-		}
-		if n == 0 {
+		var seq int64
+		err := tx.QueryRowContext(ctx, `DELETE FROM notices
+			WHERE user_id = ? AND event_seq = (SELECT seq FROM mailbox_events WHERE id = ?) RETURNING event_seq`,
+			userID, eventID).Scan(&seq)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoNotice
+		case err != nil:
+			return fmt.Errorf("store: dismiss the notice: %w", err)
 		}
-		return nil
+		return forgetUnneededHintsTx(ctx, tx, []int64{seq})
 	})
 }
 
 // SweepMailboxEvents deletes the events written before before (unix
 // seconds), with who read the mailboxes then and the notices they gave, and
-// reports how many it deleted: the journal's retention.
+// reports how many it deleted: the journal's retention. It also forgets the
+// hints of mailboxes deleted for good that no notice needs any longer, a
+// person deleted with theirs included.
 func (s *Store) SweepMailboxEvents(ctx context.Context, before int64) (int, error) {
 	var n int64
 	err := s.Write(ctx, func(tx *sql.Tx) error {
@@ -295,7 +344,7 @@ func (s *Store) SweepMailboxEvents(ctx context.Context, before int64) (int, erro
 		if err != nil {
 			return fmt.Errorf("store: sweep the mailbox journal: %w", err)
 		}
-		return nil
+		return forgetUnneededHintsTx(ctx, tx, nil)
 	})
 	return int(n), err
 }

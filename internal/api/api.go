@@ -300,7 +300,7 @@ func (h *Handler) removeAccount(q *request) {
 		q.fail(err)
 		return
 	}
-	if err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id"),
+	if _, err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id"),
 		service.RemoveAccountRequest{Confirm: params["confirm"]}); err != nil {
 		q.fail(err)
 		return

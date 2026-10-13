@@ -290,7 +290,7 @@ func TestOnlyOwnersAndAdminsSeeMembersAndTheDirectory(t *testing.T) {
 	}
 	// Her manage is the card and re-authorizing: not removing it, nor
 	// changing who holds what.
-	wantCode(t, "Bea removing it", f.svc.RemoveAccount(ctx, tm.bea, shared, service.RemoveAccountRequest{Confirm: shared}),
+	wantCode(t, "Bea removing it", f.removeErr(t, tm.bea, shared),
 		service.CodeNotAuthorized)
 	_, err = f.svc.SetAccess(ctx, tm.bea, shared, carol.UserID, grantRequest(false, false, true, false))
 	wantCode(t, "Bea granting", err, service.CodeNotAuthorized)
@@ -336,7 +336,8 @@ func TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden(t *testing.T) {
 			"TriggerSync": func() error { return f.svc.TriggerSync(ctx, p, shared) },
 			"StartOAuth":  func() error { _, err := f.svc.StartOAuth(ctx, p, shared, ""); return err },
 			"RemoveAccount": func() error {
-				return f.svc.RemoveAccount(ctx, p, shared, service.RemoveAccountRequest{Confirm: shared})
+				_, err := f.svc.RemoveAccount(ctx, p, shared, service.RemoveAccountRequest{Confirm: shared})
+				return err
 			},
 			"SetAccess": func() error {
 				_, err := f.svc.SetAccess(ctx, p, shared, p.UserID, grantRequest(false, false, false, true))
@@ -397,7 +398,7 @@ func TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden(t *testing.T) {
 	wantCode(t, "Bea listing folders with send alone", err, service.CodeNotAuthorized)
 	_, err = f.svc.StartOAuth(ctx, tm.bea, shared, "")
 	wantCode(t, "Bea re-authorising without manage", err, service.CodeNotAuthorized)
-	wantCode(t, "Bea removing it, a member", f.svc.RemoveAccount(ctx, tm.bea, shared, service.RemoveAccountRequest{Confirm: shared}),
+	wantCode(t, "Bea removing it, a member", f.removeErr(t, tm.bea, shared),
 		service.CodeNotAuthorized)
 }
 

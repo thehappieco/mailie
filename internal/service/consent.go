@@ -128,6 +128,11 @@ func (s *Service) WithdrawSyncConsent(ctx context.Context, p Principal) (SyncCon
 	}
 	s.log.Info("sync consent withdrawn; index deleted", "user", p.UserID, "accounts", len(owned))
 	s.reconcile(owned...)
+	if len(owned) > 0 {
+		// A team mailbox whose consent was bound to theirs tells its
+		// other readers.
+		s.noticesChanged()
+	}
 	s.compact(ctx)
 	return s.presentConsent(store.SyncConsent{}), nil
 }
@@ -324,7 +329,8 @@ func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
 // switching off deletes the index, which no request should do by leaving a
 // field out. Version, to switch a team mailbox's on, must be the current
 // revision of the sync text, which the owner or admin was shown; an operator
-// mailbox takes none.
+// mailbox takes none. For a personal mailbox, only its person switches it on,
+// with no version, and only to lift a recovery's hold.
 type MailboxSyncRequest struct {
 	Enabled *bool  `json:"enabled"`
 	Version string `json:"version,omitempty"`
@@ -332,17 +338,22 @@ type MailboxSyncRequest struct {
 
 // SetMailboxSync switches sync on or off for a mailbox on its own consent,
 // recording who switched it on, when and to which revision. Switching it off
-// deletes what was indexed for it, for everyone who read it.
+// deletes what was indexed for it, for everyone who read it, and tells each
+// of them but whoever switched it off with a notice. Switching on lifts the
+// hold a recovery put on a mailbox's sync, and so does switching off.
 //
 //   - A team mailbox: an owner or an admin of the team signed in, giving or
 //     withdrawing the team's consent; on, to the current sync text, and only
 //     while someone can read it. Turning on a mailbox whose consent the
 //     upgrade copied from its linker confirms it, which detaches it from that
-//     person.
+//     person. A removed team mailbox is turned off by an owner of the team,
+//     which deletes the index it keeps, and never on.
 //   - An operator mailbox: an unrestricted instance admin key, the
 //     operator's decision, like closing someone's account.
 //   - A personal mailbox has none: its person decides, by consenting in the
-//     console, and nobody may decide for them.
+//     console, and nobody may decide for them. Its person turns it on only
+//     to lift a recovery's hold, after which it syncs under their consent as
+//     it stands.
 //
 // Whoever does not see the mailbox is told it does not exist.
 func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID string, req MailboxSyncRequest) (AccountSync, error) {
@@ -355,6 +366,11 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	on := *req.Enabled
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
 	if err != nil {
+		if !on && CodeOf(err) == CodeNotFound {
+			if removed, ok := s.removedTeamMailbox(ctx, p, accountID); ok {
+				return s.syncOffRemoved(ctx, p, removed)
+			}
+		}
 		return AccountSync{}, err
 	}
 	var check func(*sql.Tx) error
@@ -368,8 +384,7 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 			return AccountSync{}, E(CodeBadRequest, "an operator mailbox is switched on by the operator, with no text to agree to; leave version out", nil)
 		}
 	case a.OwnerUserID != "":
-		return AccountSync{}, E(CodeBadRequest,
-			"a personal mailbox syncs under its person's own consent, which they turn on or off themselves", nil)
+		return s.liftPersonalHold(ctx, p, a, on, req.Version)
 	default:
 		if err := requireSession(p); err != nil {
 			return AccountSync{}, err
@@ -408,7 +423,7 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 			return AccountSync{}, err
 		}
 	}
-	changed, err := s.store.SetMailboxSync(ctx, a.ID, on, p.Actor(), req.Version, check)
+	switched, err := s.store.SetMailboxSync(ctx, a.ID, on, p.Actor(), req.Version, check)
 	var se *Error
 	switch {
 	case errors.As(err, &se):
@@ -418,19 +433,107 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	case err != nil:
 		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
 	}
-	if changed {
+	if switched.Changed {
 		s.log.Info("mailbox sync switched", "account", a.ID, "workspace", a.WorkspaceID, "on", on,
-			"by", p.Actor(), "version", req.Version)
+			"by", p.Actor(), "version", req.Version, "readers_told", len(switched.Told))
 		s.reconcile(a.ID)
 		if !on {
 			s.compact(ctx)
 		}
 	}
+	if len(switched.Told) > 0 {
+		s.noticesChanged()
+	}
+	return s.currentSync(ctx, a.ID)
+}
+
+// liftPersonalHold is SetMailboxSync for a personal mailbox: its person turns
+// it on to lift a recovery's hold, and nothing else is theirs to switch here.
+func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.Account, on bool, version string) (AccountSync, error) {
+	if !on || !p.IsSession() || p.UserID != a.OwnerUserID {
+		return AccountSync{}, E(CodeBadRequest,
+			"a personal mailbox syncs under its person's own consent, which they turn on or off themselves", nil)
+	}
+	if version != "" {
+		return AccountSync{}, E(CodeBadRequest,
+			"a personal mailbox syncs under its person's own consent, with no text to agree to here; leave version out", nil)
+	}
+	lifted, err := s.store.LiftSyncHold(ctx, a.ID, nil)
+	switch {
+	case errors.Is(err, store.ErrNoSuchMailbox):
+		return AccountSync{}, E(CodeNotFound, "no such account", err)
+	case err != nil:
+		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
+	}
+	if lifted {
+		s.log.Info("a recovered mailbox's sync turned on again", "account", a.ID, "by", p.Actor())
+		s.reconcile(a.ID)
+	}
+	return s.currentSync(ctx, a.ID)
+}
+
+// removedTeamMailbox reads a removed team mailbox an active owner of its
+// team asks about: the one thing they still do to it is turn its sync off,
+// deleting the index it keeps.
+func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string) (account.Account, bool) {
+	if !p.IsSession() || s.workspaces == nil || s.store == nil {
+		return account.Account{}, false
+	}
+	a, err := s.accounts.Repo().GetRemoved(ctx, id)
+	if err != nil || a.OwnerUserID != "" || a.WorkspaceID == workspace.OperatorID {
+		return account.Account{}, false
+	}
+	m, err := s.workspaces.Member(ctx, a.WorkspaceID, p.UserID)
+	if err != nil || !m.Active() || m.Role != workspace.RoleOwner {
+		return account.Account{}, false
+	}
+	return a, true
+}
+
+// syncOffRemoved turns a removed team mailbox's sync off for an owner of its
+// team: what it kept indexed is deleted, and a recovery finds none.
+func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Account) (AccountSync, error) {
+	check := func(tx *sql.Tx) error {
+		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
+		var se *Error
+		switch {
+		case errors.As(err, &se) && se.Code != CodeNotFound:
+			return err
+		case err != nil, me.Role != workspace.RoleOwner:
+			return errNoAccount
+		}
+		return nil
+	}
+	switched, err := s.store.SetMailboxSync(ctx, a.ID, false, p.Actor(), "", check)
+	var se *Error
+	switch {
+	case errors.As(err, &se):
+		return AccountSync{}, err
+	case errors.Is(err, store.ErrNoMailboxConsent):
+		return AccountSync{}, E(CodeNotFound, "no such account", err)
+	case err != nil:
+		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
+	}
+	s.log.Info("a removed team mailbox's sync turned off; its kept index deleted", "account", a.ID,
+		"workspace", a.WorkspaceID, "by", p.Actor(), "changed", switched.Changed)
+	s.compact(ctx)
+	return AccountSync{State: syncOff}, nil
+}
+
+// currentSync reads an account's sync again, after a change to it.
+func (s *Service) currentSync(ctx context.Context, id string) (AccountSync, error) {
+	a, err := s.accounts.Repo().Get(ctx, id)
+	switch {
+	case errors.Is(err, account.ErrNotFound):
+		return AccountSync{}, E(CodeNotFound, "no such account", err)
+	case err != nil:
+		return AccountSync{}, E(CodeInternal, "reading the account failed", err)
+	}
 	enabled, err := s.syncEnabled(ctx, a)
 	if err != nil {
 		return AccountSync{}, err
 	}
-	return s.syncOf(ctx, a.ID, enabled)
+	return s.syncOf(ctx, a, enabled)
 }
 
 var (

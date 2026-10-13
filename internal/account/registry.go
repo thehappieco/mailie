@@ -469,7 +469,12 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 	if err != nil {
 		return Account{}, nil, err
 	}
-	if _, err := r.repo.GetByEmail(ctx, ws, a.Email); err == nil {
+	if existing, err := r.repo.GetByEmail(ctx, ws, a.Email); err == nil {
+		// A removed mailbox keeps its address taken until it is recovered
+		// or deleted for good: linking it again is neither.
+		if existing.Removed() {
+			return Account{}, nil, &RemovedDuplicateError{AccountID: existing.ID, PurgeAfter: existing.PurgeAfter}
+		}
 		return Account{}, nil, ErrDuplicate
 	}
 
@@ -1369,28 +1374,11 @@ func (r *Registry) credentials(ctx context.Context, a Account) (provider.Credent
 	return provider.Credentials{User: a.LoginUser, Tokens: source}, nil
 }
 
-// Remove deletes an account and everything cached for it, including a
-// consent attempt still waiting: a listener left open after its account is
-// gone would still take a redirect and say something about it.
-func (r *Registry) Remove(ctx context.Context, accountID string) error {
-	return r.RemoveChecked(ctx, accountID, nil)
-}
-
-// RemoveChecked is Remove with a check run first in the transaction that
-// deletes the account: where the service re-reads that the caller may still
-// remove it. nil checks nothing.
-func (r *Registry) RemoveChecked(ctx context.Context, accountID string, check func(*sql.Tx) error) error {
-	if err := r.repo.deleteChecked(ctx, accountID, check); err != nil {
-		return err
-	}
-	r.stopWaiting(accountID)
-	r.forget(accountID)
-	return nil
-}
-
-// RemoveOwner deletes the mailboxes that go with a person — those of their
-// personal workspace, and those of every local team whose only member they
-// are (workspace.GoesWithPersonSQL), with everything Remove deletes for one —
+// RemoveOwner deletes for good the mailboxes that go with a person — those
+// of their personal workspace, and those of every local team whose only
+// member they are (workspace.GoesWithPersonSQL), removed ones included, with
+// everything a deletion for good takes and their entries in the mailbox
+// journal —
 // and drops every consent attempt they started anywhere, in one transaction
 // that also then completes: the caller deletes the person there, so either
 // all of it happens or none does. A team mailbox of a team others are in, or
@@ -1398,7 +1386,7 @@ func (r *Registry) RemoveChecked(ctx context.Context, accountID string, check fu
 // first in that transaction; nil checks nothing. Once it has committed, the
 // registry lets go of those accounts as Remove does: their token sources and
 // cached mailboxes, and any listener or device poll still waiting on their
-// behalf. It reports how many accounts it removed.
+// behalf. It reports how many accounts it deleted.
 func (r *Registry) RemoveOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) (int, error) {
 	removed, attempts, err := r.repo.deleteOwner(ctx, userID, before, also)
 	if err != nil {

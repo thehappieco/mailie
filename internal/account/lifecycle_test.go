@@ -169,11 +169,18 @@ func TestTheSyncEngineHearsAboutEveryAccountLifecycleChange(t *testing.T) {
 	if err := repo.SetFolderOverrides(ctx, a.ID, map[string]string{"sent": "Enviadas"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.Remove(ctx, a.ID); err != nil {
+	if _, err := registry.Remove(ctx, a.ID, "cli", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := heard.take(); !slices.Equal(got, []string{a.ID, a.ID, a.ID}) {
 		t.Fatalf("disable, overrides, remove: heard %v", got)
+	}
+	// Removed, it is kept; deleted for good, it goes.
+	if err := registry.Purge(ctx, a.ID, "cli", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := heard.take(); !slices.Equal(got, []string{a.ID}) {
+		t.Fatalf("deleting it for good: heard %v", got)
 	}
 
 	// A person's mailboxes, deleted with them.
@@ -200,8 +207,8 @@ func TestTheSyncEngineHearsAboutEveryAccountLifecycleChange(t *testing.T) {
 	if got := heard.take(); !slices.Equal(got, []string{b.ID}) {
 		t.Fatalf("deleting the owner: heard %v", got)
 	}
-	// Removal journals nothing, and what was journaled for the account goes
-	// with it.
+	// A deletion for good journals nothing in the event journal, and what
+	// was journaled for the account goes with it.
 	var left int
 	if err := db.Reader().QueryRowContext(ctx, `SELECT count(*) FROM events WHERE account_id IN (?, ?)`, a.ID, b.ID).Scan(&left); err != nil {
 		t.Fatal(err)

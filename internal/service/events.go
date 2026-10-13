@@ -101,9 +101,11 @@ type EventFilter struct {
 type Stream struct {
 	sub  *events.Subscription
 	gate *eventGate
-	ch   chan Event
-	stop chan struct{}
-	once sync.Once
+	// notices watches the person's notices; nil for a key, which has none.
+	notices *noticeWatch
+	ch      chan Event
+	stop    chan struct{}
+	once    sync.Once
 }
 
 // AccessChange is a mailbox the stream's caller gained or lost read access
@@ -135,6 +137,20 @@ func (st *Stream) Allowed(ev Event) bool {
 	return st.gate.allowEvent(ev.Type, ev.AccountID, ev.Payload)
 }
 
+// NewNotices reports whether the stream's person was given a notice since
+// the stream opened or this last said so: a mailbox they read removed, or a
+// team mailbox's sync turned off. It reads the notices again only when
+// something may have given one, and is always false for a key. The
+// transport calls it where it re-checks access, and tells its client to
+// read the person's notices again (Notices).
+func (st *Stream) NewNotices(ctx context.Context) (bool, error) {
+	ok, err := st.notices.check(ctx)
+	if err != nil {
+		return false, E(CodeInternal, "reading the notices failed", err)
+	}
+	return ok, nil
+}
+
 // Events yields the stream's events in sequence order. It is closed when the
 // stream is.
 func (st *Stream) Events() <-chan Event { return st.ch }
@@ -156,8 +172,8 @@ func (st *Stream) Close() {
 	})
 }
 
-func newStream(sub *events.Subscription, gate *eventGate) *Stream {
-	st := &Stream{sub: sub, gate: gate, ch: make(chan Event), stop: make(chan struct{})}
+func newStream(sub *events.Subscription, gate *eventGate, notices *noticeWatch) *Stream {
+	st := &Stream{sub: sub, gate: gate, notices: notices, ch: make(chan Event), stop: make(chan struct{})}
 	go func() {
 		defer close(st.ch)
 		for ev := range sub.Events() {
@@ -184,11 +200,15 @@ func (s *Service) Subscribe(ctx context.Context, p Principal, since int64, filte
 	if err != nil {
 		return nil, err
 	}
+	notices, err := s.newNoticeWatch(ctx, p)
+	if err != nil {
+		return nil, E(CodeInternal, "opening the event stream failed", err)
+	}
 	sub, err := s.bus.Subscribe(ctx, since, f)
 	if err != nil {
 		return nil, E(CodeInternal, "opening the event stream failed", err)
 	}
-	return newStream(sub, gate), nil
+	return newStream(sub, gate, notices), nil
 }
 
 // DefaultWait is how long a long poll waits when the caller does not say.

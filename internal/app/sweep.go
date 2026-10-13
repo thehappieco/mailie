@@ -63,11 +63,17 @@ const housekeepingInterval = time.Hour
 // Today that is the unused invites, deleted within auth.InviteRetention of
 // expiring; the keys pinned for an identity that never signed anyone in,
 // deleted once they are auth.UnlinkedPinGrace old; the tickets of the key
-// scheme's ceremonies and the reset invitations, deleted once expired; and
-// the send records and their send.finished notices, deleted
-// store.SendRetention after their last change. scrub then takes the deleted
-// rows out of the write-ahead log too.
+// scheme's ceremonies and the reset invitations, deleted once expired; the
+// send records and their send.finished notices, deleted
+// store.SendRetention after their last change; and the removed mailboxes,
+// deleted for good once their 30 days are over, never before, with the
+// mailbox journal's entries older than store.MailboxJournalRetention
+// (sweepMailboxes, service.SweepRemovedMailboxes). The sweep at start is
+// what deletes at once a removed mailbox a restored backup brought back past
+// its 30 days. scrub then takes the deleted rows out of the write-ahead log
+// too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
+	sweepMailboxes func(context.Context, time.Duration) (int, int, error),
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
 	sweep := func() {
@@ -109,6 +115,15 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 			logger.Info("deleted old send records", "count", records, "notices", notices)
 			deleted += records + notices
 		}
+		mailboxes, entries, err := sweepMailboxes(ctx, every)
+		switch {
+		case err != nil && ctx.Err() == nil:
+			logger.Warn("sweeping removed mailboxes and the mailbox journal failed", "err", err)
+		case mailboxes+entries > 0:
+			logger.Info("deleted removed mailboxes past their 30 days and old mailbox journal entries",
+				"mailboxes", mailboxes, "entries", entries)
+		}
+		deleted += mailboxes + entries
 		if deleted > 0 {
 			if err := scrub(ctx); err != nil && ctx.Err() == nil {
 				logger.Warn("emptying the write-ahead log after the sweep failed; a later checkpoint will", "err", err)

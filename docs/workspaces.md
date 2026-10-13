@@ -30,8 +30,8 @@ conflicts with the code or with another rule, it says so in
   person's **sealed grant** at its current epoch, the mailbox's private key sealed to them by the
   browser of someone who reads it; a member who holds the flag without one **waits for the key**,
   sees the card and reads nothing ([Mailbox keys](#mailbox-keys-and-sealed-grants)). **Owners and admins manage every mailbox of their workspace
-  by their role** — its card, re-authorizing it, removing it, who holds what — and **read none of
-  them by being one**. `read` passes only from an owner or an admin who reads the mailbox now;
+  by their role** — its card, re-authorizing it, who holds what; only owners remove one — and
+  **read none of them by being one**. `read` passes only from an owner or an admin who reads the mailbox now;
   `act` (to someone who reads) and `send` from any owner or admin. `manage` is stored only for
   members, where it means the card and re-authorizing.
 - **Consents.** A personal mailbox syncs under its person's consent; a team mailbox under its
@@ -53,6 +53,10 @@ conflicts with the code or with another rule, it says so in
   (`MAIL_KEYS_MAY_SEND=false`). It stops when its creator leaves the workspace, is disabled,
   suspended or deleted on the instance, or recovers their account (with their recovery code or a
   reset invitation). See [API keys](#api-keys).
+- **Removing a mailbox keeps it 30 days**, used by nothing and found by nobody, recoverable by its
+  workspace's owners, and then deletes it for good; everyone who read it, but whoever removed it,
+  is told with a notice. A link that never connected is deleted at once. See
+  [Removed mailboxes](#removed-mailboxes).
 - A **closed team** is used by nobody until it reopens: its mailboxes reach nobody, its keys
   included, and sync nothing, keeping their index, consent and grants, and nothing in it changes.
   The operator closes a local team; a team from another source closes where it is managed. See
@@ -166,8 +170,9 @@ to sync it, on the team's behalf, in the same transaction; left out, the mailbox
 off, until an owner or an admin turns it on. A personal or operator link refuses it.
 
 Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`), or nothing is removed
-(`400`). A team's mailbox is its owners' and admins' to remove, a personal one its person's, an
-operator one the operator's.
+(`400`). A team's mailbox is its owners' to remove, a personal one its person's, an operator one the
+operator's; an admin abandons only their own link that never connected. A removed mailbox is kept 30
+days, recoverable, and then deleted for good ([Removed mailboxes](#removed-mailboxes)).
 
 ### Grants
 
@@ -190,7 +195,7 @@ a trigger refuses a stored `manage` for an owner or an admin of the grant's work
 | `read` | search and read messages, fetch originals and attachments, list folders, receive the mailbox's events, see its storage, ask for a sync pass (with the `write` scope) | |
 | `act` | mark read or unread, star, archive, move, trash, undo a move | `read` (an action names messages the caller can read), and the actor's actions consent |
 | `send` | send from the mailbox, read the records of their own sends | the sender's send consent; a reply or forward also needs `read` on the original |
-| `manage` | see the mailbox's card and re-authorize it | held by owners and admins through their role, on every mailbox of their workspace, who also remove it and change who holds what on it; stored only for members |
+| `manage` | see the mailbox's card and re-authorize it | held by owners and admins through their role, on every mailbox of their workspace, who also change who holds what on it (owners also remove it); stored only for members |
 
 **Effective manage** is one SQL expression, as Wappie's `role IN ('owner','admin') OR can_manage`:
 the role, or a stored `manage` of a member. It never opens the index.
@@ -391,6 +396,73 @@ team alike, when they are disabled or deleted on the instance. The record stays,
 sweep deletes it 30 days on; deleting the person then blanks `created_by`. Migration 0011 expired
 the invites whose creator could no longer make them.
 
+### Removed mailboxes
+
+Removing a mailbox (migration 0020) keeps it **30 days**, recoverable, and then deletes it for good:
+the hourly sweep does, never early, and at the daemon's start too, so that a database restored from
+a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
+
+- **Kept, and used by nothing.** A removed mailbox stays with its credentials, folders, messages,
+  drafts, sends, key, grants and consent, and reaches nobody, its owners and the operator included:
+  it is not listed, and every route about it answers `404`, but for what its owners do to a removed
+  mailbox below. It is never dialled nor refreshed
+  (`Registry.Mailbox` builds a mailbox only through `Repository.Get`, which leaves it out), syncs
+  nothing, and has no reader (`store.LiveSQL` in the one rule), so it protects none: its readers may
+  leave the team, be disabled or be deleted meanwhile. Nothing is granted, keyed or given on it (the
+  schema's triggers). Its address stays taken in its workspace: linking it again is `409`, which
+  says until when it is kept; an owner recovers it, or deletes it for good to link it again.
+- **What goes at once**, and never comes back: what keys held on it — an instance key's
+  restriction to it (one restricted to it alone is revoked, `restriction_emptied`, since a key
+  restricted to nothing would reach every operator mailbox) and what a workspace key held — and the
+  consent attempts under way on it, whose redirects then find nothing.
+- **A link that never connected** — nothing was ever stored to authenticate with — is deleted for
+  good at once instead, with nothing kept and nothing journaled; besides its owners, the person who
+  linked it abandons it, an admin included.
+- **Who removes:** a team mailbox's active owners, an admin no longer; a personal mailbox's person;
+  for an operator mailbox, an instance key with the `admin` scope.
+- **Its readers are told.** Everyone who read it then, but whoever removed it, gets a notice in the
+  console (`notices`), which names the mailbox by its address while it is
+  kept and by a masked hint of it (`a…@example.com`) once it is deleted for good, says until when
+  its owners may recover it, and stays until they dismiss it. A team mailbox's sync turned off tells
+  its readers the same way — by an owner or an admin, or by the person a migrated consent was still
+  bound to ([Consents](#consents)) — but whoever turned it off. A recovery withdraws the notices of
+  the removal it undoes. A person's event stream says when they are given one
+  (`Stream.NewNotices`), and a key has none.
+- **Recovering it**, within its 30 days, is for its workspace's owners — a team's active owners, a
+  personal mailbox's person, the operator for an operator mailbox (`RecoverAccount`). It comes back
+  with its credentials, index, key, consent, and the readers who still qualify — an active member
+  holding `read` and, on a mailbox that has a key, a grant at its current epoch — and without what
+  keys held. Its sync is **held** (`accounts.sync_held_at`, `sync.held` on its card) until someone
+  who may turns it on: its person for a personal mailbox (`PUT /v1/accounts/{id}/sync`
+  `{"enabled": true}`, which takes no version and only lifts the hold), an owner or an admin for a
+  team's, to the current sync text, the operator for an operator mailbox. It then catches up from
+  the index it kept. A team mailbox nobody who could read it is left to read is not recovered
+  (`409`): it is deleted for good and linked again, which gives the linker `read`. Nothing is
+  recovered in a closed team (`409`), nor once its 30 days are over (`409`).
+- **Deleting it for good** before its 30 days are over is for the same owners, repeating its id
+  (`confirm`), and for the operator, any workspace's removed mailbox, to erase one when its person
+  asks them to: the operator lists every workspace's removed mailboxes and never recovers a
+  person's or a team's. A live mailbox is removed first (`409`). A closed team's removed mailboxes
+  are deleted on time all the same, and its owners delete none meanwhile.
+- **Its sync, removed:** a removed team mailbox's owners turn its sync off, which deletes the index
+  it kept; nobody turns it on. Withdrawing a person's own sync consent deletes the index of their
+  removed mailboxes too.
+- **Closing a person** deletes at once, for good, the removed mailboxes that go with them — of
+  their personal workspace and of the local teams they were alone in — with their journal.
+- **The journal** (`mailbox_events`, with who read the mailbox then, `mailbox_event_readers`):
+  removals, syncs turned off, recoveries and deletions for good, each written in the transaction
+  that makes it, never with the address, and kept 90 days. A deletion for good forgets the
+  mailbox's name there, and its masked hint once no notice needs it; closing a person and
+  abandoning a link that never connected delete its entries; deleting a person forgets that they
+  acted, and that they removed a mailbox still kept.
+
+| | Remove | See the removed ones, recover | Delete for good | Turn a recovered one's sync on |
+|---|---|---|---|---|
+| Personal mailbox | its person | its person | its person; the operator | its person |
+| Team mailbox | an active owner | its active owners | its active owners; the operator | its owners and admins, to the current sync text |
+| Operator mailbox | an instance key, `admin` scope | an unrestricted instance admin key | the same | the same |
+| A link that never connected | its owners, or whoever linked it: deleted at once | — | — | — |
+
 ### Consents
 
 | Use | Whose consent | And |
@@ -410,8 +482,9 @@ the invites whose creator could no longer make them.
   per mailbox, even when the person also agreed for themselves. A consent to an earlier revision
   keeps syncing, as a person's does; agreeing again takes the current one.
 - Any owner or admin turns it off (`{"enabled": false}`): the same transaction deletes the
-  mailbox's index for every reader — its messages, folders and events — and the service compacts
-  and scrubs.
+  mailbox's index for every reader — its messages, folders and events — and tells each of them but
+  whoever turned it off, with a notice ([Removed mailboxes](#removed-mailboxes)); the service
+  compacts and scrubs. Either way, on or off, it lifts the hold a recovery put on its sync.
 - A person's withdrawal of their own sync consent deletes the index of **their personal
   mailboxes only**; it never reaches a team's (but for a migrated consent still bound to them,
   below).
@@ -440,7 +513,7 @@ the invites whose creator could no longer make them.
   they linked; until an owner or an admin confirms the team's consent at the current revision —
   which replaces the mark — that promise holds: the linker withdrawing their consent, or being
   disabled or deleted on the instance, stops the mailbox and deletes its index in the same
-  transaction (`store.StopBoundTx`). While someone else reads such a mailbox, disabling or
+  transaction (`store.StopBoundTx`), and tells its other readers. While someone else reads such a mailbox, disabling or
   deleting its linker on the instance is refused without `force`, naming it (`Blocks.BoundTo`),
   since it deletes that reader's index; with `force`, the answer lists what stopped
   (`team_syncs_stopped`). A team mailbox whose linker was disabled at the migration kept its index
@@ -466,11 +539,13 @@ the invites whose creator could no longer make them.
 | list it, read its card | any grant; or owner or admin of its workspace, by the role | it holds anything on it | operator mailbox |
 | folders, search, read, originals, attachments, events, storage | `read` | `read` | operator mailbox, `read` scope |
 | ask for a sync pass | `read`, `write` scope | `read`, `write` scope | operator mailbox, `write` scope |
-| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent); a personal one: never (its person's own consent decides) | never | operator mailbox, unrestricted admin key |
+| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent), and off for a removed one, its owners; a personal one: never (its person's own consent decides), but its person lifts a recovery's hold | never | operator mailbox, unrestricted admin key |
 | act | `act`, actions consent, the mailbox syncing | `act`, `write` scope (under its key terms; its creator's actions consent only as the Consents table says), the mailbox syncing | operator mailbox, `write` scope, the mailbox syncing |
 | send, read own send records | `send`, send consent | `send`, `send` scope, `MAIL_KEYS_MAY_SEND` (under its key terms; no person's consent) | operator mailbox, `send` scope |
 | re-authorize | manage (owner or admin, or a member holding `manage`) | never | operator mailbox, `admin` scope |
-| remove (repeating its id) | a team's: its owners and admins; a personal one: its person | never | operator mailbox, `admin` scope |
+| remove (repeating its id) | a team's: its owners (an admin, their own link that never connected); a personal one: its person | never | operator mailbox, `admin` scope |
+| see the removed ones, recover one | a team's: its owners; a personal one: its person | never | operator mailbox, unrestricted admin key |
+| delete a removed one for good (repeating its id) | a team's: its owners; a personal one: its person | never | any removed mailbox, unrestricted admin key |
 | restrict a new instance key to it | | | operator mailbox |
 
 ### Administering a workspace
@@ -487,7 +562,9 @@ the invites whose creator could no longer make them.
 | change a role or status | anyone's | members' only, never to `admin` or `owner` | no | anyone's |
 | remove a member | anyone, themselves included while another active owner remains | members only, never themselves | no one, not themselves | anyone |
 | link a mailbox; give or withdraw the team's consent to sync it | yes | yes | no | no (operator mailboxes only) |
-| remove a mailbox | yes | yes | no | operator mailboxes only |
+| remove a mailbox | yes | only their own link that never connected | no | operator mailboxes only |
+| see the removed mailboxes, recover one | yes | no | no | sees every workspace's; recovers operator mailboxes only |
+| delete a removed mailbox for good | yes | no | no | any |
 | re-authorize a mailbox | yes | yes | with a stored `manage` on it | operator mailboxes only |
 | grant `read` | on a mailbox they read themselves, now | likewise | no | no |
 | grant `act` | to someone who reads after the change, themselves included | likewise | no | no |
@@ -568,7 +645,8 @@ its own never count ("ownership is not a recovery path"), and taking a waiting m
 person's account key (`mailserver user password --bootstrap`) deletes their grants and keeps their
 flags, so it refuses, without `--force`, only where they are the last reader of a team mailbox
 **that has a key**; on one without, they keep reading by the flag. After a forced reset, a team
-mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role change. The database has one
+mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role change; a removed
+mailbox has no reader while it is kept, and protects none. The database has one
 writer, so two changes that would each leave one reader are ordered, and the second is refused.
 The refusal says: "that is the last person who can read a mailbox of the workspace; give another
 member read on it first, or remove the mailbox".
@@ -591,7 +669,7 @@ anyone active, but for the instance's last owner: a team mailbox they would be t
 once resumed counts as one they read, since it waits for them and closing them would leave it to
 nobody for good.
 Deleting a person removes the mailboxes of their personal workspace and every local team whose only
-member they were, with its mailboxes, through the account registry's usual clean-up (workers,
+member they were, with its mailboxes, removed ones included, for good and at once, through the account registry's usual clean-up (workers,
 cached credentials, consent attempts, compaction); a team mailbox of a team others are in stays,
 and so does every mailbox of a team whose source is not local, with the team, even when the person
 was its last member here. One rule decides which teams go with a person, for the deletion of the
@@ -863,7 +941,7 @@ Changed routes:
 | `PUT /v1/accounts/{id}/access/{user_id}` | optional `grant` and `public_key`: required together with `read` given on a mailbox that has a key to a person with an account key, refused otherwise; `public_key` is the key the grant was sealed to, `conflict` unless it is the person's now (phase 3) |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
-| `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners and admins, a personal mailbox's person, the operator for its own |
+| `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected |
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's) |
 | `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; `400` for a personal mailbox; `409` to turn on a team mailbox nobody can read. Answers `AccountSync` |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
@@ -1301,6 +1379,20 @@ changes: every team is open. See [Closed teams](#closed-teams). The tests in
 `internal/store/migrate_nineteen_test.go` hold every table's rows and every trigger as they were,
 and each refusal and what stays allowed.
 
+## Migration 0020
+
+`0020_removed_mailboxes.sql`, an ordinary migration: four columns on `accounts` (`removed_at`,
+`removed_by`, `purge_after`, `sync_held_at`, all 0 or empty while a mailbox is live and not held),
+the journal `mailbox_events` with `mailbox_event_readers`, and `notices`. Its triggers link every
+mailbox live, keep a removal whole, 30 days at least, and fixed until a recovery, give nothing on a
+removed mailbox (`mailbox_access`, `key_access`, `api_key_accounts`, `mailbox_keys` and
+`mailbox_grants` inserts, and flags going from 0 to 1), write each journal entry once, and send a
+notice only to a recorded reader, never to whoever acted. The credentials are not held: a token
+refresh already under way records the refresh token the provider rotated, which a recovery needs.
+No row of a schema-19 database changes: every mailbox is live. See
+[Removed mailboxes](#removed-mailboxes). The tests in `internal/store/migrate_twenty_test.go` hold
+every table's rows and every trigger as they were, and each refusal.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -1383,6 +1475,22 @@ Test names state the guarantee. At least:
   `TestATeamMailboxNamesNoPersonAndItsLinkerHoldsReadActAndSend`;
   `TestAnOwnerLinksAnOAuthTeamMailboxCompletesItAndOnlyTheyCanComplete`;
   `TestRemovingAMailboxNeedsItsIdRepeated`.
+- Removed mailboxes: `TestOnlyAnOwnerRemovesATeamMailbox`;
+  `TestAnAdminMayAbandonOnlyTheirOwnLinkThatNeverConnected`;
+  `TestAMailboxThatNeverConnectedIsDeletedAtOnce`; `TestARemovedMailboxIsGoneForEveryUse`;
+  `TestARemovedMailboxIsNeverDialledNorRefreshed`; `TestAGrantFinishingAfterRemovalStoresNothing`;
+  `TestRemovingStopsAConsentAttemptAndItsRedirectFindsNothing`;
+  `TestRemovingDeletesWhatKeysHeldAndNeverWidensAnInstanceKey`;
+  `TestRelinkingARemovedAddressIsAConflict`; `TestReadersAreToldOnceAndTheActorIsNot`;
+  `TestTurningOffATeamMailboxsSyncTellsItsOtherReaders`;
+  `TestRecoveringIsAnOwnersWithinThirtyDays`;
+  `TestARecoveredMailboxStaysOffUntilSomeoneWhoMayTurnsItOn`;
+  `TestRecoveryRestoresQualifyingReadersButNoKeyAccess`;
+  `TestDeletingForGoodIsForAnOwnerOrTheOperatorAndOnlyOfARemovedMailbox`;
+  `TestTheSweepPurgesOnlyPastThirtyDays`, `TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays`;
+  `TestClosingAPersonPurgesTheirRemovedMailboxesAtOnce`; `TestAPurgedMailboxLeavesNothingOnDisk`;
+  `TestARemovedMailboxNeverProtectsItsLastReader`;
+  `TestADeletedMailboxIsNamedByItsHintOnlyWhileANoticeNeedsIt`.
 - Consents: `TestATeamMailboxSyncsUnderItsWorkspacesConsent`;
   `TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange`;
   `TestSwitchingATeamMailboxsSyncOffDeletesItsIndexForEveryone`;

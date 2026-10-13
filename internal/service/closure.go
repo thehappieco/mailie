@@ -131,6 +131,7 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 	if len(ended.Stopped) > 0 {
 		s.log.Info("team mailboxes whose consent to sync was bound to a disabled person stopped; index deleted",
 			"user", user.ID, "accounts", ended.Stopped)
+		s.noticesChanged()
 		s.forgetMoves(ended.Stopped)
 		s.compact(ctx)
 	}
@@ -183,6 +184,9 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 		return DeletedUser{}, fromClosure(err, "deleting the user failed")
 	}
 	s.accessChanged()
+	if len(removed.Stopped) > 0 {
+		s.noticesChanged()
+	}
 	s.reconcile(removed.Stopped...)
 	s.reconcile(read...)
 	s.forgetMoves(removed.Stopped)

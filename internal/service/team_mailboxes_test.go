@@ -48,7 +48,8 @@ func TestRemovingAMailboxNeedsItsIdRepeated(t *testing.T) {
 	tm.link(t, f, other, "billing@mail.example")
 	ctx := t.Context()
 	remove := func(p service.Principal, id, confirm string) error {
-		return f.svc.RemoveAccount(ctx, p, id, service.RemoveAccountRequest{Confirm: confirm})
+		_, err := f.svc.RemoveAccount(ctx, p, id, service.RemoveAccountRequest{Confirm: confirm})
+		return err
 	}
 
 	for _, confirm := range []string{"", other, strings.ToUpper(shared), " " + shared} {
@@ -57,18 +58,20 @@ func TestRemovingAMailboxNeedsItsIdRepeated(t *testing.T) {
 	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared); n != 1 {
 		t.Fatal("a removal without its id repeated removed the mailbox")
 	}
-	// An admin removes a team's mailbox; a member, whatever they hold on
-	// it, does not.
+	// An owner removes a team's mailbox; an admin, or a member, whatever
+	// they hold on it, does not.
 	tm.grant(t, shared, workspace.Flags{Read: true, Act: true, Send: true, Manage: true})
 	wantCode(t, "Bea, a member, removing it", remove(tm.bea, shared, shared), service.CodeNotAuthorized)
-	if err := remove(carol, shared, shared); err != nil {
-		t.Fatalf("Carol, an admin, removing it: %v", err)
+	wantCode(t, "Carol, an admin, removing it", remove(carol, shared, shared), service.CodeNotAuthorized)
+	if err := remove(tm.ana, shared, shared); err != nil {
+		t.Fatalf("Ana, its owner, removing it: %v", err)
 	}
+	// It never connected: nothing of it was kept.
 	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, shared); n != 0 {
-		t.Error("the mailbox is still there")
+		t.Error("the mailbox that never connected is still there")
 	}
 	// A personal mailbox is its person's to remove, and an operator
-	// mailbox the operator's.
+	// mailbox the operator's; both connected, and both are kept removed.
 	own := f.mailbox(t, tm.bea, "bea@mail.example")
 	wantCode(t, "Ana removing Bea's own mailbox", remove(tm.ana, own, own), service.CodeNotFound)
 	if err := remove(tm.bea, own, own); err != nil {
@@ -78,6 +81,9 @@ func TestRemovingAMailboxNeedsItsIdRepeated(t *testing.T) {
 	wantCode(t, "the operator without confirm", remove(admin(), ops, ""), service.CodeBadRequest)
 	if err := remove(admin(), ops, ops); err != nil {
 		t.Errorf("the operator removing its mailbox: %v", err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id IN (?, ?) AND removed_at <> 0`, own, ops); n != 2 {
+		t.Errorf("%d of the two removed mailboxes are kept", n)
 	}
 }
 
@@ -166,7 +172,7 @@ func TestAForcedClosureLeavesAMailboxNobodyCanReadMarked(t *testing.T) {
 	_, err = m.svc.SetAccess(ctx, carol, shared, carol.UserID, grantRequest(true, false, false, false))
 	wantCode(t, "Carol granting herself read on it", err, service.CodeNotAuthorized)
 	// Its owners remove it; linking it again gives them read.
-	if err := m.svc.RemoveAccount(ctx, carol, shared, service.RemoveAccountRequest{Confirm: shared}); err != nil {
+	if _, err := m.svc.RemoveAccount(ctx, carol, shared, service.RemoveAccountRequest{Confirm: shared}); err != nil {
 		t.Errorf("Carol removing it: %v", err)
 	}
 }

@@ -232,7 +232,7 @@ func TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes(t *testing.T) {
 			t.Errorf("%s's password: %q, %v", a.ID, pw, err)
 		}
 	}
-	if err := registry.Remove(t.Context(), inTeam.ID); err != nil {
+	if _, err := registry.Remove(t.Context(), inTeam.ID, ana.ID, nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, a := range []account.Account{personal, operator} {

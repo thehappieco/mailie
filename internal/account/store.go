@@ -114,7 +114,25 @@ type Account struct {
 
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// RemovedAt is when the mailbox was removed, zero while it is live
+	// (migration 0020): a removed mailbox is kept, used by nothing, until it
+	// is recovered or deleted for good, at PurgeAfter at the latest by the
+	// hourly sweep. RemovedBy is who removed it, "usr_…", "key:<prefix>" or
+	// "cli"; empty once that person is deleted. Only what asks for a removed
+	// mailbox by name reads one (GetRemoved, ListRemoved).
+	RemovedAt  time.Time
+	RemovedBy  string
+	PurgeAfter time.Time
+	// SyncHeldAt is when a recovery held the mailbox's sync, zero when
+	// nothing holds it: a held mailbox syncs nothing until someone who may
+	// turns it on again.
+	SyncHeldAt time.Time
 }
+
+// Removed reports whether the mailbox is removed: kept, for a recovery, and
+// used by nothing.
+func (a Account) Removed() bool { return !a.RemovedAt.IsZero() }
 
 // IMAPAddr is the address to dial.
 func (a Account) IMAPAddr() string { return fmt.Sprintf("%s:%d", a.IMAPHost, a.IMAPPort) }
@@ -144,7 +162,37 @@ var (
 	// operator mailbox has no key (docs/key-scheme.md section 12.15), since
 	// there is no person to hold one.
 	ErrOperatorKey = errors.New("account: an operator mailbox has no key")
+	// ErrRemovedDuplicate is an address linked again in a workspace that
+	// keeps it removed: its address stays taken until it is recovered or
+	// deleted for good. Its error is a *RemovedDuplicateError, which says
+	// until when.
+	ErrRemovedDuplicate = errors.New("account: that address was removed from this workspace and is kept")
+	// ErrNotRemoved is recovering, or deleting for good as a removed one, a
+	// mailbox that is live.
+	ErrNotRemoved = errors.New("account: the mailbox is not removed")
+	// ErrRemovalOver is recovering a removed mailbox whose 30 days are
+	// over: it is deleted for good at the next sweep, and is no longer
+	// recovered.
+	ErrRemovalOver = errors.New("account: the removed mailbox's 30 days are over")
+	// ErrNoReaderLeft is recovering a team mailbox nobody who could read it
+	// is left to read: it would sync for nobody, and read passes only from
+	// someone who reads it, so it is deleted for good and linked again.
+	ErrNoReaderLeft = errors.New("account: nobody who could read the removed mailbox is left")
 )
+
+// RemovedDuplicateError is ErrRemovedDuplicate for one mailbox: the address
+// is linked in the workspace as a removed mailbox, kept until PurgeAfter.
+type RemovedDuplicateError struct {
+	AccountID  string
+	PurgeAfter time.Time
+}
+
+func (e *RemovedDuplicateError) Error() string {
+	return ErrRemovedDuplicate.Error() + " until " + e.PurgeAfter.UTC().Format(time.DateOnly)
+}
+
+// Is makes errors.Is(err, ErrRemovedDuplicate) hold.
+func (e *RemovedDuplicateError) Is(target error) bool { return target == ErrRemovedDuplicate }
 
 // Repository reads and writes accounts and their sealed credentials.
 //
@@ -273,7 +321,8 @@ const accountColumns = `id, workspace_id, email, display_name, provider, auth_ki
 	smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, coalesce(owner_user_id, ''), oauth_client,
 	sync_tier, sync_tier_resolved, save_sent_copy, initial_days, folder_overrides, state, state_reason,
 	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at,
-	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration'`
+	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration',
+	removed_at, removed_by, purge_after, sync_held_at`
 
 // OAuth clients an account's grant can come from.
 const (
@@ -486,7 +535,7 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, key *
 			orDefault(a.SyncTier, "auto"), boolToInt(a.SaveSentCopy), a.InitialDays, string(overrides),
 			string(a.State), now.Unix(), now.Unix(), now.Unix(), a.LinkedBy, consent.At, consent.By, consent.Version)
 		if store.IsUnique(err) {
-			return ErrDuplicate
+			return duplicateTx(ctx, tx, a.WorkspaceID, a.Email)
 		}
 		if store.IsForeignKey(err) {
 			return ErrUnknownOwner
@@ -668,21 +717,13 @@ func (r *Repository) ListVisible(ctx context.Context, v Visibility) ([]Account, 
 	return out, nil
 }
 
-// Delete removes an account and everything that hangs off it.
+// Delete deletes an account for good, at once, live or removed, with
+// everything that hangs off it and its entries in the mailbox journal, as an
+// abandoned link that never connected goes. Removing a mailbox that did
+// connect keeps it instead (Registry.Remove).
 func (r *Repository) Delete(ctx context.Context, id string) error {
-	return r.deleteChecked(ctx, id, nil)
-}
-
-// deleteChecked is Delete with a check run first in its transaction; nil
-// checks nothing.
-func (r *Repository) deleteChecked(ctx context.Context, id string, check func(*sql.Tx) error) error {
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
-		if check != nil {
-			if err := check(tx); err != nil {
-				return err
-			}
-		}
-		n, err := purgeTx(ctx, tx, []string{id}, r.now().Unix())
+		n, err := purgeTx(ctx, tx, []string{id}, purge{forget: true, at: r.now()})
 		if err != nil {
 			return err
 		}
@@ -704,9 +745,10 @@ type attempt struct {
 	state     string
 }
 
-// deleteOwner removes, in one transaction, the mailboxes that go with a
-// person — their personal workspace's, and those of every local team whose
-// only member they are (ownedTx) — as Delete removes one, and every consent
+// deleteOwner deletes for good, in one transaction, the mailboxes that go
+// with a person — their personal workspace's, and those of every local team
+// whose only member they are (ownedTx), removed ones included, with their
+// entries in the mailbox journal — as Delete deletes one, and every consent
 // attempt they started anywhere, and then runs also, where the caller deletes
 // the person.
 // It returns the accounts removed and the attempts dropped, which the
@@ -731,7 +773,7 @@ func (r *Repository) deleteOwner(ctx context.Context, userID string, before, als
 		if attempts, err = deleteFlowsByTx(ctx, tx, userID); err != nil {
 			return err
 		}
-		if _, err := purgeTx(ctx, tx, owned, r.now().Unix()); err != nil {
+		if _, err := purgeTx(ctx, tx, owned, purge{forget: true, at: r.now()}); err != nil {
 			return err
 		}
 		return also(tx)
@@ -807,14 +849,30 @@ func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt,
 	return out, nil
 }
 
-// purgeTx deletes accounts, and everything that refers to them, inside the
-// caller's transaction, and reports how many accounts it deleted.
+// purge says what a deletion for good does to the mailbox journal
+// (store.JournalMailboxTx).
+type purge struct {
+	// forget deletes the mailboxes' entries in the journal with them: a
+	// person closed, a link that never connected abandoned. Otherwise the
+	// entries stay, their names forgotten, and the deletion is journaled.
+	forget bool
+	// actor is who deleted them for good, journaled: "usr_…",
+	// "key:<prefix>", "cli" or store.ActorSweep.
+	actor string
+	// at is when.
+	at time.Time
+}
+
+// purgeTx deletes accounts for good, and everything that refers to them,
+// inside the caller's transaction, and reports how many accounts it deleted.
+// It reads no removal and no team's state: a removed mailbox, one of a
+// closed team included, goes as a live one does.
 //
 // Most of it is the schema's ON DELETE CASCADE: credentials, pending consent,
 // folders, messages with their parts, bodies and full-text rows, drafts, sends,
 // key restrictions and what keys hold on them (a workspace key left with no
 // mailbox reaches nothing; a carried-over one is revoked by the schema's
-// trigger). Three things are not, and go here first:
+// trigger). Four things are not, and go here first:
 //
 //   - A live instance key restricted to nothing but these accounts is
 //     revoked, saying its last mailbox went (restriction_emptied). Its
@@ -826,27 +884,47 @@ func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt,
 //     events, and any delivery of them, are deleted explicitly.
 //   - A webhook's accounts are a JSON list. These ids come out of it, and a
 //     hook left with none — which would read as every account — is deleted.
-func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, now int64) (int, error) {
+//   - The mailbox journal names them without a foreign key too, so that it
+//     outlives them: their entries forget the mailboxes' names, and the
+//     deletion is journaled; or, as p says, the entries go with them.
+func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, p purge) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	if p.forget {
+		if err := store.DeleteMailboxEventsTx(ctx, tx, ids); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := store.ForgetMailboxNamesTx(ctx, tx, ids); err != nil {
+			return 0, err
+		}
+		for _, id := range ids {
+			_, _, err := store.JournalMailboxTx(ctx, tx, store.MailboxEvent{
+				Kind: store.MailboxPurged, AccountID: id, Actor: p.actor, At: p.at.Unix(),
+			}, nil, false)
+			switch {
+			case errors.Is(err, store.ErrNoSuchMailbox):
+				// Not there: nothing to journal, and nothing below deletes it.
+			case err != nil:
+				return 0, err
+			}
+		}
+	}
+	if err := revokeKeysLimitedToTx(ctx, tx, ids, p.at.Unix()); err != nil {
+		return 0, err
 	}
 	list, err := json.Marshal(ids)
 	if err != nil {
 		return 0, fmt.Errorf("account: encode ids: %w", err)
 	}
+	now := p.at.Unix()
 	const in = `(SELECT value FROM json_each(?))`
 	steps := []struct {
 		what  string
 		query string
 		args  []any
 	}{
-		{"revoke the keys limited to them", `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
-		   WHERE revoked_at = 0
-		     AND EXISTS (SELECT 1 FROM api_key_accounts r
-		                  WHERE r.key_prefix = api_keys.prefix AND r.account_id IN ` + in + `)
-		     AND NOT EXISTS (SELECT 1 FROM api_key_accounts r
-		                      WHERE r.key_prefix = api_keys.prefix AND r.account_id NOT IN ` + in + `)`,
-			[]any{now, string(workspace.KeyStopRestrictionEmptied), list, list}},
 		{"delete deliveries of their events", `DELETE FROM webhook_deliveries
 		   WHERE event_seq IN (SELECT seq FROM events WHERE account_id IN ` + in + `)`,
 			[]any{list}},
@@ -876,6 +954,49 @@ func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, now int64) (int, err
 		return 0, fmt.Errorf("account: delete: %w", err)
 	}
 	return int(n), nil
+}
+
+// revokeKeysLimitedToTx revokes, inside the caller's transaction, every live
+// instance key restricted to nothing but these accounts, saying its last
+// mailbox went (restriction_emptied): what goes before their restriction
+// rows do, whether the accounts are deleted for good or removed. An instance
+// key with no restriction rows reaches every operator mailbox, so a key left
+// with none must already be revoked.
+func revokeKeysLimitedToTx(ctx context.Context, tx *sql.Tx, ids []string, now int64) error {
+	list, err := json.Marshal(ids)
+	if err != nil {
+		return fmt.Errorf("account: encode ids: %w", err)
+	}
+	const in = `(SELECT value FROM json_each(?))`
+	if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
+		   WHERE revoked_at = 0
+		     AND EXISTS (SELECT 1 FROM api_key_accounts r
+		                  WHERE r.key_prefix = api_keys.prefix AND r.account_id IN `+in+`)
+		     AND NOT EXISTS (SELECT 1 FROM api_key_accounts r
+		                      WHERE r.key_prefix = api_keys.prefix AND r.account_id NOT IN `+in+`)`,
+		now, string(workspace.KeyStopRestrictionEmptied), string(list), string(list)); err != nil {
+		return fmt.Errorf("account: revoke the keys limited to them: %w", err)
+	}
+	return nil
+}
+
+// duplicateTx is the error of an address already linked in a workspace,
+// inside the caller's transaction: ErrDuplicate, or, for a removed mailbox
+// that keeps it taken, a *RemovedDuplicateError.
+func duplicateTx(ctx context.Context, tx *sql.Tx, workspaceID, email string) error {
+	var (
+		id         string
+		purgeAfter int64
+	)
+	err := tx.QueryRowContext(ctx, `SELECT id, purge_after FROM accounts
+		WHERE workspace_id = ? AND email = ? COLLATE NOCASE AND removed_at <> 0`, workspaceID, email).Scan(&id, &purgeAfter)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrDuplicate
+	case err != nil:
+		return fmt.Errorf("account: read the address's mailbox: %w", err)
+	}
+	return &RemovedDuplicateError{AccountID: id, PurgeAfter: unixOrZero(purgeAfter)}
 }
 
 // SetState records where an account stands and why.
@@ -1331,6 +1452,7 @@ func scanAccount(row scanner) (Account, error) {
 		a                                   Account
 		kind, overrides                     string
 		lastOK, nextRetry, created, updated int64
+		removed, purgeAfter, held           int64
 		saveSent                            int
 	)
 	err := row.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DisplayName, &kind, &a.AuthKind, &a.IMAPHost, &a.IMAPPort,
@@ -1338,7 +1460,8 @@ func scanAccount(row scanner) (Account, error) {
 		&a.SyncTier, &a.SyncTierResolved,
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
 		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated,
-		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated)
+		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated,
+		&removed, &a.RemovedBy, &purgeAfter, &held)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, err
@@ -1351,6 +1474,9 @@ func scanAccount(row scanner) (Account, error) {
 	a.NextRetryAt = unixOrZero(nextRetry)
 	a.CreatedAt = unixOrZero(created)
 	a.UpdatedAt = unixOrZero(updated)
+	a.RemovedAt = unixOrZero(removed)
+	a.PurgeAfter = unixOrZero(purgeAfter)
+	a.SyncHeldAt = unixOrZero(held)
 	a.FolderOverrides = map[string]string{}
 	if strings.TrimSpace(overrides) != "" {
 		if err := json.Unmarshal([]byte(overrides), &a.FolderOverrides); err != nil {

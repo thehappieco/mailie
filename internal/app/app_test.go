@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -12,11 +13,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/api"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/secrets"
+	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store/storetest"
 	"github.com/thehappieco/mailie/internal/webui"
 )
+
+// noMailboxes is a sweep of removed mailboxes that finds none.
+func noMailboxes(context.Context, time.Duration) (int, int, error) { return 0, 0, nil }
 
 // apiNotFound is the API's own 404 body.
 const apiNotFound = `{"code":"not_found","message":"no such endpoint"}`
@@ -193,7 +201,7 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			housekeep(ctx, users, db.SweepSends, db.Scrub, slog.New(slog.DiscardHandler), every)
+			housekeep(ctx, users, db.SweepSends, noMailboxes, db.Scrub, slog.New(slog.DiscardHandler), every)
 		}()
 		return func() {
 			t.Helper()
@@ -251,4 +259,101 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 	expire("second@example.com")
 	waitFor("the next scheduled sweep", func() bool { return pending() == 0 && !onDisk("second@example.com") })
 	stop()
+}
+
+func TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays(t *testing.T) {
+	var mu sync.Mutex
+	removedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	now := removedAt
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	at := func(when time.Time) { mu.Lock(); now = when; mu.Unlock() }
+	db := storetest.NewAt(t, filepath.Join(t.TempDir(), "mail.db"), clock)
+	keyring, err := secrets.NewKeyring(1, map[uint8][]byte{1: bytes.Repeat([]byte{0xA1}, secrets.KeyLen)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := account.NewRepository(db, keyring).WithClock(clock)
+	registry := account.NewRegistry(t.Context(), repo, account.RegistryOptions{})
+	t.Cleanup(func() { _ = registry.Close() })
+	logger := slog.New(slog.DiscardHandler)
+	svc := service.New(service.Deps{Accounts: registry, Store: db, Now: clock, Log: logger})
+	users := auth.NewUsersWithClock(db, clock)
+	ctx := t.Context()
+	link := func(id, email string) {
+		t.Helper()
+		if _, err := repo.Create(ctx, account.Account{ID: id, Email: email, Provider: provider.KindIMAP,
+			AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example",
+			SMTPPort: 465, SMTPTLS: "implicit", LoginUser: email}, ""); err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.SavePassword(ctx, id, "correct horse battery staple"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := registry.Remove(ctx, id, "cli", nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const expired, recent = "acc_00000000000000a1", "acc_00000000000000a2"
+	link(expired, "expired@mail.example")
+	at(removedAt.Add(48 * time.Hour))
+	link(recent, "recent@mail.example")
+	// An entry of the mailbox journal older than its retention.
+	if _, err := db.Writer().ExecContext(ctx, `INSERT INTO mailbox_events(id, kind, workspace_id, account_id, actor,
+		created_at) VALUES ('mbe_00000000000000e1', 'recovered', 'wsp_operator', 'acc_gone', 'cli', ?)`,
+		removedAt.Add(-91*24*time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	// The first one's 30 days are over, the second one's are not: with an
+	// hour to the first tick, only the sweep at start can do this.
+	at(removedAt.Add(account.RemovedKeptFor))
+	swept := make(chan struct{}, 1)
+	sweepMailboxes := func(ctx context.Context, every time.Duration) (int, int, error) {
+		mailboxes, entries, err := svc.SweepRemovedMailboxes(ctx, every)
+		select {
+		case swept <- struct{}{}:
+		default:
+		}
+		return mailboxes, entries, err
+	}
+	sweepCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, db.Scrub, logger, time.Hour)
+	}()
+	select {
+	case <-swept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the sweep at start")
+	}
+	cancel()
+	<-done
+
+	count := func(query string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := db.Reader().QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := count(`SELECT count(*) FROM accounts WHERE id = ?`, expired); n != 0 {
+		t.Error("the mailbox past its 30 days is still there")
+	}
+	if n := count(`SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, recent); n != 1 {
+		t.Error("the mailbox within its 30 days was deleted")
+	}
+	if n := count(`SELECT count(*) FROM mailbox_events WHERE id = 'mbe_00000000000000e1'`); n != 0 {
+		t.Error("the journal keeps an entry past its retention")
+	}
+	for _, file := range []string{db.Path(), db.Path() + "-wal"} {
+		raw, err := os.ReadFile(file)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "expired@mail.example") {
+			t.Errorf("%s still holds the address of the mailbox deleted for good", filepath.Base(file))
+		}
+	}
 }

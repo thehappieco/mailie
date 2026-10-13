@@ -96,8 +96,15 @@ type AccountSync struct {
 	// mailbox, its person consented in the console; for a team mailbox, an
 	// owner or an admin gave the team's consent and someone can read it; for
 	// an operator mailbox, the operator switched it on. Sync runs only for an
-	// enabled account that is also active.
+	// enabled account that is also active. Never while it is held.
 	Enabled bool `json:"enabled"`
+	// Held is a mailbox recovered after it was removed, whose sync waits for
+	// someone who may to turn it on (PUT /v1/accounts/{id}/sync), whatever
+	// its consent says: its person for a personal mailbox, an owner or an
+	// admin for a team's, the operator for an operator mailbox. HeldSince is
+	// when it was recovered. It then catches up from the index it kept.
+	Held      bool  `json:"held,omitempty"`
+	HeldSince int64 `json:"held_since,omitempty"`
 	// Running is whether a worker holds the account now.
 	Running bool `json:"running"`
 	// State is "off" (not enabled, not active, or no sync engine on this
@@ -141,19 +148,27 @@ func presentSync(enabled bool, st SyncStatus) AccountSync {
 // syncOf asks the engine where an account's sync stands. An account the
 // engine is not running, or a daemon without an engine, is off — which is an
 // answer, not a failure: listing accounts must not break because one of them
-// is not syncing.
-func (s *Service) syncOf(ctx context.Context, id string, enabled bool) (AccountSync, error) {
+// is not syncing. A recovery's hold is the account's own to say.
+func (s *Service) syncOf(ctx context.Context, a account.Account, enabled bool) (AccountSync, error) {
 	if s.sync == nil {
-		return AccountSync{Enabled: enabled, State: syncOff}, nil
+		return withHold(AccountSync{Enabled: enabled, State: syncOff}, a), nil
 	}
-	st, err := s.sync.Status(ctx, id)
+	st, err := s.sync.Status(ctx, a.ID)
 	switch {
 	case errors.Is(err, ErrSyncNotRunning):
-		return AccountSync{Enabled: enabled, State: syncOff}, nil
+		return withHold(AccountSync{Enabled: enabled, State: syncOff}, a), nil
 	case err != nil:
 		return AccountSync{}, E(CodeInternal, "reading the account's sync status failed", err)
 	}
-	return presentSync(enabled, st), nil
+	return withHold(presentSync(enabled, st), a), nil
+}
+
+// withHold says on an account's sync that a recovery holds it.
+func withHold(st AccountSync, a account.Account) AccountSync {
+	if !a.SyncHeldAt.IsZero() {
+		st.Held, st.HeldSince = true, a.SyncHeldAt.Unix()
+	}
+	return st
 }
 
 // SyncStatus reports where an account's sync stands.
@@ -166,7 +181,7 @@ func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string)
 	if err != nil {
 		return AccountSync{}, err
 	}
-	return s.syncOf(ctx, a.ID, enabled)
+	return s.syncOf(ctx, a, enabled)
 }
 
 // TriggerSync asks for a pass over every synced folder of the account soon,
@@ -209,9 +224,12 @@ var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server",
 // errSyncOff is an account that may not sync: for a personal mailbox, one
 // whose person has not consented; for a team mailbox, one its owners and
 // admins have not turned on; for an operator mailbox, one the operator has
-// not switched on.
+// not switched on; and any of them recovered, whose sync is held until it is
+// turned on again.
 func errSyncOff(a account.Account) error {
 	switch {
+	case !a.SyncHeldAt.IsZero():
+		return E(CodeConflict, "sync is paused since this mailbox was recovered; turn it on to catch up", nil)
 	case a.WorkspaceID == workspace.OperatorID:
 		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", nil)
 	case a.OwnerUserID == "":

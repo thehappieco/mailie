@@ -791,7 +791,7 @@ func TestRemovingTheOnlyMailboxAKeyWasLimitedToRevokesTheKey(t *testing.T) {
 	_, onlyA := f.issue(t, "", a)
 	_, both := f.issue(t, "", a, b)
 
-	if err := f.svc.RemoveAccount(t.Context(), admin(), a, service.RemoveAccountRequest{Confirm: a}); err != nil {
+	if _, err := f.svc.RemoveAccount(t.Context(), admin(), a, service.RemoveAccountRequest{Confirm: a}); err != nil {
 		t.Fatal(err)
 	}
 	if p, err := f.svc.Authenticate(t.Context(), onlyA, nil); service.CodeOf(err) != service.CodeUnauthorized {
@@ -806,25 +806,43 @@ func TestRemovingTheOnlyMailboxAKeyWasLimitedToRevokesTheKey(t *testing.T) {
 	}
 }
 
-func TestARemovedMailboxLeavesNeitherItsSettingsNorItsCredentialsOnDisk(t *testing.T) {
-	// The policy: removing a mailbox deletes its settings and credentials
-	// from the database, which has to include the file's free pages and
-	// the write-ahead log.
+func TestAPurgedMailboxLeavesNothingOnDisk(t *testing.T) {
+	// The policy: deleting a mailbox for good deletes its settings,
+	// credentials and index from the database, which has to include the
+	// file's free pages and the write-ahead log. Removing it first keeps
+	// them, for a recovery; the journal of what was done to it keeps its id
+	// and never its address.
 	f := newFixture(t)
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	gone := f.mailbox(t, ana, "leaving.soon@mail.example")
 	kept := f.mailbox(t, ana, "staying@mail.example")
+	f.seedMailbox(t, gone, "Quarterly pelican census")
 	var sealed []byte
 	if err := f.db.Reader().QueryRowContext(t.Context(),
 		`SELECT ciphertext FROM credentials WHERE account_id = ?`, gone).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
+	needles := []string{"leaving.soon@mail.example", string(sealed), "pelican"}
 
-	if err := f.svc.RemoveAccount(t.Context(), ana, gone, service.RemoveAccountRequest{Confirm: gone}); err != nil {
+	if _, err := f.svc.RemoveAccount(t.Context(), ana, gone, service.RemoveAccountRequest{Confirm: gone}); err != nil {
 		t.Fatal(err)
 	}
-	if found := f.onDisk(t, gone, "leaving.soon@mail.example", string(sealed)); len(found) > 0 {
-		t.Errorf("removed, but still on disk:\n  %s", strings.Join(found, "\n  "))
+	if n := f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, gone) +
+		f.count(t, `SELECT count(*) FROM messages WHERE account_id = ?`, gone); n != 2 {
+		t.Fatalf("removed, it keeps %d of its credential and its message, want both", n)
+	}
+	wantCode(t, "deleting it for good without its id", f.svc.PurgeAccount(t.Context(), ana, gone,
+		service.PurgeAccountRequest{}), service.CodeBadRequest)
+	if err := f.svc.PurgeAccount(t.Context(), ana, gone, service.PurgeAccountRequest{Confirm: gone}); err != nil {
+		t.Fatal(err)
+	}
+	if found := f.onDisk(t, needles...); len(found) > 0 {
+		t.Errorf("deleted for good, but still on disk:\n  %s", strings.Join(found, "\n  "))
+	}
+	for _, row := range f.mentions(t, []string{gone}) {
+		if !strings.HasPrefix(row, "mailbox_events") {
+			t.Errorf("deleted for good, but %s still names it", row)
+		}
 	}
 	if _, err := f.repo.Get(t.Context(), kept); err != nil {
 		t.Errorf("the other mailbox went too: %v", err)

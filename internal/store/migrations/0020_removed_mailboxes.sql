@@ -29,11 +29,11 @@
 --     (sync turned off, or a consent bound to a person stopped by them),
 --     recovered, purged — when, in which workspace and by whom ("usr_…",
 --     "key:<prefix>", "cli" or "sweep"; '' once that person is deleted),
---     with the mailbox's name (label) and a masked hint of its address
---     ("a…@example.com"), both '' once it is deleted for good, and never
---     its address: no foreign keys, so a row outlives the mailbox and its
---     team. Written once: only the label, the hint and the actor change,
---     and only to ''.
+--     with the mailbox's name (label), '' once it is deleted for good, and a
+--     masked hint of its address ("a…@example.com"), '' then too once no
+--     notice still to be read needs it, and never its address: no foreign
+--     keys, so a row outlives the mailbox and its team. Written once: only
+--     the label, the hint and the actor change, and only to ''.
 --   - mailbox_event_readers: who read the mailbox when it happened.
 --   - notices: what a person is told in the console, a row per reader of a
 --     removal or a sync turned off, never for the person who did it, until
@@ -132,7 +132,7 @@ CREATE TABLE mailbox_events (
   account_id   TEXT NOT NULL,
   label        TEXT NOT NULL DEFAULT ''            -- the mailbox's name; '' once deleted for good, or when it
                CHECK (instr(label, '@') = 0),      -- held an address, which the journal never does
-  hint         TEXT NOT NULL DEFAULT ''            -- 'a…@example.com'; '' once deleted for good
+  hint         TEXT NOT NULL DEFAULT ''            -- 'a…@example.com'; '' once deleted for good and no notice needs it
                CHECK (hint = '' OR (substr(hint, 2, 2) = '…@' AND length(hint) > 3 AND instr(substr(hint, 4), '@') = 0)),
   actor        TEXT NOT NULL DEFAULT '',           -- 'usr_…', 'key:<prefix>', 'cli' or 'sweep'; '' once that person is deleted
   created_at   INTEGER NOT NULL

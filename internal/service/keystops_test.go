@@ -153,7 +153,8 @@ func TestEveryWayAKeyStopsSaysWhy(t *testing.T) {
 			func(t *testing.T, f *fixture, _ keysTeam, _ service.Principal) string {
 				a := f.mailbox(t, admin(), "a@mail.example")
 				k, _ := f.issue(t, "", a)
-				must(t, f.svc.RemoveAccount(t.Context(), admin(), a, service.RemoveAccountRequest{Confirm: a}))
+				_, err := f.svc.RemoveAccount(t.Context(), admin(), a, service.RemoveAccountRequest{Confirm: a})
+				must(t, err)
 				return k
 			}},
 		{"a carried-over key lost its last mailbox", workspace.KeyStopRestrictionEmptied,

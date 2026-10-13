@@ -127,13 +127,20 @@ included (section 5.7).
 ### 4.4 An owner or an admin of a workspace
 
 **Can:** everything a member can; give "read" on a mailbox they read, to any active member, after
-a step-up; take it; remove a mailbox.
+a step-up; take it. An owner removes a mailbox, recovers a removed one within its 30 days, and
+deletes it for good; an admin removes only a link of their own that never connected.
 
 **Cannot:** read a mailbox by their role (unchanged); give "read" on a mailbox they do not read: the
 service refuses, and they could not seal the key anyway, since they hold none; take a team mailbox
 by giving it a key of their own: a team mailbox is never re-keyed, and only a person who reads a
 mailbox that has no key may write its first key, with a step-up (spec §12.12, §12.14). A team
-mailbox nobody can open is removed and linked again, which takes the provider's consent.
+mailbox nobody can open is deleted for good and linked again, which takes the provider's consent.
+Removing a mailbox gives nobody anything: a removed mailbox keeps its key, its sealed grants and
+the flags of its readers for its 30 days, unserved — no session or key reaches it, nobody reads it,
+nobody is given anything on it, the schema included — and a recovery brings back exactly the
+readers who still qualify (the flag and a grant at the key's current epoch), never what keys held.
+An owner who recovers a mailbox gains no reading of it by doing so. Its readers are told of the
+removal, so a mailbox taken from them by an owner does not go unnoticed.
 
 ### 4.5 A stolen session
 

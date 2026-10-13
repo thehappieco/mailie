@@ -525,7 +525,9 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodPost, "/v1/accounts/"+tm.shared+"/take-over", tm.ana, "", http.StatusNotFound)
 	status(http.MethodDelete, "/v1/workspaces/"+tm.id+"/members/"+tm.anaID, tm.ana, "", http.StatusConflict)  // the last owner
 	status(http.MethodDelete, "/v1/workspaces/"+tm.id+"/members/"+tm.beaID, tm.bea, "", http.StatusForbidden) // an admin leaving
-	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.shared, tm.bea, "", http.StatusNoContent)
+	// Only an owner removes a team's mailbox, an admin no longer.
+	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.shared, tm.bea, "", http.StatusForbidden)
+	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.shared, tm.ana, "", http.StatusNoContent)
 	status(http.MethodGet, "/v1/accounts/"+tm.shared, tm.ana, "", http.StatusNotFound)
 }
 

@@ -550,7 +550,8 @@ adds with an instance key.
 - **Using a mailbox** takes active membership in its workspace and a **grant** on it: `read` (its
   index: folders, messages, events, storage), `act` (needs `read`) and `send`. **Owners and admins
   manage every mailbox of their workspace by their role**: they see its card (address, state, sync
-  counters, never what it holds), re-authorize it, remove it, and decide who holds what. A member
+  counters, never what it holds), re-authorize it, and decide who holds what; owners remove it,
+  and it is kept 30 days, recoverable ([`workspaces.md`](workspaces.md#removed-mailboxes)). A member
   sees only the mailboxes they hold a grant on; a stored `manage` gives a member the card and
   re-authorizing. Whoever links a mailbox gets `read`, `act` and `send` on it.
 - **No role reads.** `read` passes only from an owner or an admin who reads the mailbox now; `act`
@@ -799,7 +800,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `PUT /v1/accounts/{id}/grants/{user}` | session reading it; fresh step-up | `{epoch, grant, public_key}` → `SealedGrant`: the key, to a member who holds `read` without it |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller holds a grant on, and every mailbox of a team they own or administer (its card); `?workspace=` narrows the list |
 | `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link; a person sends the mailbox's first key, `public_key`, `namespace` and `grant`, with a fresh step-up |
-| `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner or admin, a personal mailbox's person, the operator for its own | remove it, with its index; without the id repeated, `400` and nothing removed |
+| `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner (an admin, their own link that never connected), a personal mailbox's person, the operator for its own | remove it: kept 30 days with its index, recoverable, then deleted for good; one that never connected is deleted at once; without the id repeated, `400` and nothing removed |
 | `POST /v1/accounts/{id}/oauth/start` | admin, manage | start (or restart) its authorization; the flow is the caller's |
 | `POST /v1/accounts/oauth/callback` | admin, manage | `{redirect_url}` → `Account` (45 s); only the flow's starter |
 | `GET /v1/accounts/{id}/folders` | read, `read` | folders, from the index or from the server |

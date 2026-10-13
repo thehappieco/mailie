@@ -219,10 +219,10 @@ func (s *Service) present(ctx context.Context, p Principal, accounts ...account.
 	fromName := s.fromName(ctx, p)
 	for _, a := range accounts {
 		shown := presentAccount(a)
-		st, err := s.syncOf(ctx, a.ID, permitted[a.ID])
+		st, err := s.syncOf(ctx, a, permitted[a.ID])
 		if err != nil {
 			s.log.Warn("reading an account's sync status failed; showing it off", "account", a.ID, "err", err)
-			st = AccountSync{Enabled: permitted[a.ID], State: syncOff}
+			st = withHold(AccountSync{Enabled: permitted[a.ID], State: syncOff}, a)
 		}
 		held := intersect(grants[a.ID], scopeFlags(p.Scope))
 		shown.Sync = st
@@ -580,43 +580,74 @@ type RemoveAccountRequest struct {
 	Confirm string
 }
 
-// RemoveAccount forgets an account and everything indexed for it. The
-// request repeats its id in Confirm, or nothing is removed. Who: an owner or
-// an admin of its team, for a team mailbox; its person, for a personal one;
-// an instance key with the admin scope, for an operator mailbox.
-func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req RemoveAccountRequest) error {
+// Removal is what removing a mailbox did.
+type Removal struct {
+	AccountID string `json:"account_id"`
+	// Purged is a mailbox that never connected: deleted for good at once,
+	// since nothing was ever stored for it to keep.
+	Purged bool `json:"purged"`
+	// PurgeAfter is when a kept mailbox is deleted for good, in unix
+	// seconds: until then its owners may recover it. Absent when purged.
+	PurgeAfter int64 `json:"purge_after,omitempty"`
+}
+
+// RemoveAccount removes a mailbox. The request repeats its id in Confirm, or
+// nothing is removed.
+//
+// A removed mailbox is kept for 30 days, with everything it holds, used by
+// nothing and found by nobody, and recoverable meanwhile by its workspace's
+// owners (RecoverAccount); then it is deleted for good. What keys held on it
+// goes at once, and its consent attempts end; every person who read it, but
+// whoever removes it, is told with a notice. A mailbox that never connected
+// is deleted for good at once instead, with nothing kept.
+//
+// Who: an owner of its team, for a team mailbox — an admin no longer, but for
+// a link of their own that never connected, which they abandon; its person,
+// for a personal one; an instance key with the admin scope, for an operator
+// mailbox.
+func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req RemoveAccountRequest) (Removal, error) {
 	if req.Confirm != id {
-		return E(CodeBadRequest, "deleting a mailbox needs its id repeated in confirm; nothing was removed", nil)
+		return Removal{}, E(CodeBadRequest, "removing a mailbox needs its id repeated in confirm; nothing was removed", nil)
 	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needCard)
 	if err != nil {
-		return err
+		return Removal{}, err
 	}
-	check := func(tx *sql.Tx) error { return s.mayRemoveTx(ctx, tx, p, a) }
-	if err := s.precheck(ctx, check); err != nil {
-		return err
-	}
-	err = s.accounts.RemoveChecked(ctx, id, check)
+	removal, err := s.accounts.Remove(ctx, id, p.Actor(), func(tx *sql.Tx, neverConnected bool) error {
+		return s.mayRemoveTx(ctx, tx, p, a, neverConnected)
+	})
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return err
+		return Removal{}, err
 	case errors.Is(err, account.ErrNotFound):
-		return E(CodeNotFound, "no such account", err)
+		return Removal{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
-		return E(CodeInternal, "removing the account failed", err)
+		return Removal{}, E(CodeInternal, "removing the account failed", err)
 	}
-	s.log.Info("mailbox removed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
 	s.accessChanged()
-	s.compact(ctx)
-	return nil
+	out := Removal{AccountID: a.ID, Purged: removal.Purged}
+	if removal.Purged {
+		s.log.Info("mailbox that never connected deleted", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
+		s.forgetMoves([]string{a.ID})
+		s.compact(ctx)
+		return out, nil
+	}
+	out.PurgeAfter = removal.PurgeAfter.Unix()
+	if len(removal.Told) > 0 {
+		s.noticesChanged()
+	}
+	s.log.Info("mailbox removed; kept until it is recovered or deleted for good", "account", a.ID,
+		"workspace", a.WorkspaceID, "by", p.Actor(), "purge_after", out.PurgeAfter, "readers_told", len(removal.Told))
+	return out, nil
 }
 
 // mayRemoveTx re-reads, inside the transaction that removes a mailbox, that
 // the caller may: an instance key for an operator mailbox (visibility let
-// only that reach it), the person of a personal one, an active owner or
-// admin of a team's.
-func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) error {
+// only that reach it), the person of a personal one, an active owner of a
+// team's, or, for a link that never connected, the active member who linked
+// it.
+func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account, neverConnected bool) error {
 	switch {
 	case a.WorkspaceID == workspace.OperatorID:
 		if p.IsInstance() {
@@ -632,16 +663,24 @@ func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a ac
 		return errNoAccount
 	}
 	me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
-	if err != nil {
+	var se *Error
+	switch {
+	case errors.As(err, &se) && se.Code != CodeNotFound:
+		// A closed team, or teams withheld: said as such.
+		return err
+	case err != nil:
 		return errNoAccount
+	case me.Role == workspace.RoleOwner:
+		return nil
+	case neverConnected && a.LinkedBy == p.UserID:
+		// Nothing was stored for it: abandoning a link of their own that
+		// never connected takes nobody anything.
+		return nil
 	}
-	if !adminOf(me) {
-		return errRemoveTeamMailbox
-	}
-	return nil
+	return errRemoveTeamMailbox
 }
 
-var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner or an admin of the team removes its mailboxes", nil)
+var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner of the team removes its mailboxes", nil)
 
 // link is where a new mailbox goes, the check its transaction runs, and the
 // workspace's consent to sync it, when the link gives one.
@@ -947,6 +986,8 @@ func fromAccount(err error, what string) error {
 		return E(CodeNotFound, "no such workspace", err)
 	case errors.Is(err, account.ErrNotFound):
 		return E(CodeNotFound, "no such account", err)
+	case errors.Is(err, account.ErrRemovedDuplicate):
+		return errRemovedDuplicate(err)
 	case errors.Is(err, account.ErrDuplicate):
 		// Generic on purpose: the address may be connected by someone else,
 		// and whose it is is not this caller's business.

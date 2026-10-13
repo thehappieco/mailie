@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	goimap "github.com/emersion/go-imap/v2"
 
@@ -293,7 +294,7 @@ func TestOnlyAnAdminKeyCanAddOrRemoveAnAccount(t *testing.T) {
 	if service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Fatalf("want not_authorized, got %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), reader(), "acc_1", service.RemoveAccountRequest{Confirm: "acc_1"}); service.CodeOf(err) != service.CodeNotAuthorized {
+	if _, err := f.svc.RemoveAccount(t.Context(), reader(), "acc_1", service.RemoveAccountRequest{Confirm: "acc_1"}); service.CodeOf(err) != service.CodeNotAuthorized {
 		t.Fatalf("want not_authorized, got %v", err)
 	}
 }
@@ -458,22 +459,42 @@ func TestAnUnknownAccountIsNotFound(t *testing.T) {
 	if _, err := f.svc.GetAccount(t.Context(), admin(), "acc_nope"); service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), admin(), "acc_nope", service.RemoveAccountRequest{Confirm: "acc_nope"}); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.RemoveAccount(t.Context(), admin(), "acc_nope", service.RemoveAccountRequest{Confirm: "acc_nope"}); service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}
 }
 
-func TestRemovingAnAccountForgetsIt(t *testing.T) {
+func TestRemovingAnAccountHidesItAndKeepsItThirtyDays(t *testing.T) {
 	f := newFixture(t)
 	created, err := f.svc.AddAccount(t.Context(), admin(), f.passwordAccount(t, "person@example.com"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.svc.RemoveAccount(t.Context(), admin(), created.Account.ID, service.RemoveAccountRequest{Confirm: created.Account.ID}); err != nil {
+	id := created.Account.ID
+	removal, err := f.svc.RemoveAccount(t.Context(), admin(), id, service.RemoveAccountRequest{Confirm: id})
+	if err != nil {
 		t.Fatalf("RemoveAccount: %v", err)
 	}
-	if _, err := f.svc.GetAccount(t.Context(), admin(), created.Account.ID); service.CodeOf(err) != service.CodeNotFound {
-		t.Fatalf("the account survived removal: %v", err)
+	if removal.AccountID != id || removal.Purged || removal.PurgeAfter < time.Now().Add(30*24*time.Hour-time.Minute).Unix() {
+		t.Errorf("the removal: %+v, want it kept 30 days", removal)
+	}
+	if _, err := f.svc.GetAccount(t.Context(), admin(), id); service.CodeOf(err) != service.CodeNotFound {
+		t.Fatalf("the account is still found after its removal: %v", err)
+	}
+	// Kept, with its credentials, for a recovery.
+	if n := f.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, id); n != 1 {
+		t.Errorf("the removed account keeps %d credentials", n)
+	}
+	listed, err := f.svc.ListRemovedMailboxes(t.Context(), admin(), workspace.OperatorID)
+	if err != nil || len(listed) != 1 || listed[0].ID != id || listed[0].PurgeAfter != removal.PurgeAfter {
+		t.Errorf("the operator's removed mailboxes: %+v (%v)", listed, err)
+	}
+	// Its address stays taken while it is kept, and the refusal says until
+	// when.
+	_, err = f.svc.AddAccount(t.Context(), admin(), f.passwordAccount(t, "person@example.com"))
+	until := time.Unix(removal.PurgeAfter, 0).UTC().Format(time.DateOnly)
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), "kept until "+until) {
+		t.Errorf("linking the removed address again: %v, want a conflict saying until %s", err, until)
 	}
 }
 
