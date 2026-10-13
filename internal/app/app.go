@@ -75,12 +75,12 @@ type Options struct {
 	// TeamsWithheld says this edition does not offer team workspaces yet:
 	// the core refuses, not_authorized, every use of a team, by a person or
 	// a key — linking a mailbox into one, its mailboxes, its keys, who holds
-	// what on them, its members, invites and name, its consent to sync,
-	// writing or supplying a mailbox key there — lists no team's mailbox,
-	// syncs none (store.Options.TeamsWithheld), and lists every team
-	// marked withheld. Nothing of a team is deleted or changed: whatever the
-	// database holds, a restored one included, its index too, is kept and
-	// unused. Personal workspaces and the operator's are as they were. The
+	// what on them, its members, invites and name, signing up or accepting
+	// an invite into one, its consent to sync, writing or supplying a
+	// mailbox key there — lists no team's mailbox, syncs none
+	// (store.Options.TeamsWithheld), and lists every team marked withheld.
+	// Nothing of a team is deleted or changed: whatever the database holds,
+	// a restored one included, its index too, is kept and unused. Personal workspaces and the operator's are as they were. The
 	// service decides it, for every transport, and the store for the sync
 	// engine. Only a binary that embeds the daemon sets it: there is no
 	// environment variable, and `serve` never does.

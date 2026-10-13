@@ -46,6 +46,11 @@ var ErrInviteNotFound = errors.New("auth: no such pending invite")
 // addresses do.
 var ErrInviteJoinsOnly = errors.New("auth: this invite adds an existing account to a team and creates none")
 
+// ErrTeamWithheld is a sign-up with a team invite where the edition of the
+// daemon withholds teams (SignUpRequest.TeamsWithheld): it would add the new
+// person to a team nothing may use there. The invite stays unspent.
+var ErrTeamWithheld = errors.New("auth: this invite joins a team, which this server does not offer")
+
 // ErrSealIDNotOpened is a sign-up whose wraps are bound to a seal id other
 // than the one opening its invitation answered (OpenSignUp), or that never
 // opened it: the person would get a seal id their wraps do not open under.
@@ -312,13 +317,20 @@ type SignUpRequest struct {
 	SealID    string
 	Enrolment Enrolment
 	UserAgent string
+	// TeamsWithheld refuses a team invite (ErrTeamWithheld), for an edition
+	// of the daemon that withholds teams: the sign-up would join one.
+	TeamsWithheld bool
 }
 
 // SignUpOpening is what opening an invitation answers: the target the new
 // password is derived under, and the seal id of the person it signs up.
+// Team is the team the invitation joins, empty for an invitation to the
+// instance alone: what an edition that withholds teams refuses before the
+// person chooses a password.
 type SignUpOpening struct {
 	Target
 	SealID string
+	Team   string
 }
 
 // OpenSignUp checks an invitation for the address its link names before its
@@ -338,14 +350,15 @@ func (u *Users) OpenSignUp(ctx context.Context, code, email string) (SignUpOpeni
 	if !ok {
 		return SignUpOpening{}, ErrInviteInvalid
 	}
-	if err := u.checkSignUp(ctx, codeHash, email); err != nil {
+	team, err := u.checkSignUp(ctx, codeHash, email, false)
+	if err != nil {
 		return SignUpOpening{}, err
 	}
 	target, err := u.target(email)
 	if err != nil {
 		return SignUpOpening{}, err
 	}
-	out := SignUpOpening{Target: target}
+	out := SignUpOpening{Target: target, Team: team}
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
 		now := u.now().Unix()
 		if _, err := tx.ExecContext(ctx, `UPDATE invites SET seal_id = ?
@@ -413,7 +426,7 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 
 	// Checked before the hashes as well as inside the transaction: a bad
 	// code or a taken address should cost no Argon2id to refuse.
-	if err := u.checkSignUp(ctx, codeHash, email); err != nil {
+	if _, err := u.checkSignUp(ctx, codeHash, email, req.TeamsWithheld); err != nil {
 		return "", Session{}, User{}, err
 	}
 	// After the invitation's own refusals, which say more: a browser that
@@ -470,6 +483,11 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 		}
 		// Read again here, in the transaction that counts: an owner demoted
 		// or disabled since the pre-check no longer vouches for anyone.
+		// Returning rolls the UPDATE back, so a refused team invite stays
+		// unspent.
+		if team != "" && req.TeamsWithheld {
+			return ErrTeamWithheld
+		}
 		if team != "" {
 			if err := signsUpTx(ctx, tx, createdBy); err != nil {
 				return err
@@ -513,11 +531,13 @@ func (u *Users) SignUp(ctx context.Context, req SignUpRequest) (string, Session,
 }
 
 // checkSignUp is the read-only half of SignUp's checks, run before the hash.
+// It returns the team the invite joins, empty for none.
 //
 // Whether a team invite may sign anyone up is asked before whether the
 // address has an account, so that the answer to a team invite its creator
-// may not use this way never depends on the address.
-func (u *Users) checkSignUp(ctx context.Context, codeHash []byte, email string) error {
+// may not use this way, or that joins a team the edition withholds
+// (teamsWithheld), never depends on the address.
+func (u *Users) checkSignUp(ctx context.Context, codeHash []byte, email string, teamsWithheld bool) (string, error) {
 	var invited, team, createdBy string
 	err := u.store.Reader().QueryRowContext(ctx,
 		`SELECT email, coalesce(workspace_id, ''), created_by FROM invites
@@ -525,27 +545,30 @@ func (u *Users) checkSignUp(ctx context.Context, codeHash []byte, email string) 
 		codeHash, u.now().Unix()).Scan(&invited, &team, &createdBy)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return ErrInviteInvalid
+		return "", ErrInviteInvalid
 	case err != nil:
-		return fmt.Errorf("auth: check invite: %w", err)
+		return "", fmt.Errorf("auth: check invite: %w", err)
 	}
 	if invited != email {
-		return ErrInviteInvalid
+		return "", ErrInviteInvalid
+	}
+	if team != "" && teamsWithheld {
+		return "", ErrTeamWithheld
 	}
 	if team != "" {
 		if err := signsUpTx(ctx, u.store.Reader(), createdBy); err != nil {
-			return err
+			return "", err
 		}
 	}
 	var taken int
 	if err := u.store.Reader().QueryRowContext(ctx,
 		`SELECT count(*) FROM users WHERE email = ?`, email).Scan(&taken); err != nil {
-		return fmt.Errorf("auth: check address: %w", err)
+		return "", fmt.Errorf("auth: check address: %w", err)
 	}
 	if taken > 0 {
-		return ErrEmailTaken
+		return "", ErrEmailTaken
 	}
-	return nil
+	return team, nil
 }
 
 // AcceptInvite redeems a team invite for a person who already has an account

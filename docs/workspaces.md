@@ -1066,9 +1066,10 @@ the database holds, a restored one included, and whichever source the teams came
   every team's mailbox out, for a person and for a key), and one asked for by a person or a key who
   would otherwise see it is refused by name (`403`), as is a `?workspace=` naming the team; someone
   who would not see it is still told it does not exist (`404`). Nobody changes its members, invites
-  or name, accepts an invite into it signed in, creates, lists, changes or revokes its keys, gives
-  or takes what anyone holds on its mailboxes, gives or withdraws its consent to sync, or writes,
-  reads or supplies a mailbox key there (`403`, "this server does not offer team workspaces yet").
+  or name, signs up through an invite into it or accepts one signed in (the invite stays unspent),
+  creates, lists, changes or revokes its keys, gives or takes what anyone holds on its mailboxes,
+  gives or withdraws its consent to sync, or writes, reads or supplies a mailbox key there (`403`,
+  "this server does not offer team workspaces yet").
   A person's own keys (`GET /v1/me/apikeys`) leave a team's keys out, and the team mailboxes a
   carried-over key holds; revoking a team's key there is refused as through the team's routes.
   The operator still reads its members, its invites and who holds what, and changes none of it.

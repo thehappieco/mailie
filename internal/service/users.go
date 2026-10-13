@@ -306,7 +306,8 @@ func (s *Service) Challenge(ctx context.Context, req ChallengeRequest) (Challeng
 
 // OpenSignUp checks an invitation as signing up will, before its person
 // chooses a password, and answers what their browser binds and derives
-// under. Refused where people sign in only through an extension.
+// under. Refused where people sign in only through an extension, and, for an
+// invitation into a team, where teams are withheld (errTeamsWithheld).
 func (s *Service) OpenSignUp(ctx context.Context, req SignUpOpenRequest) (SignUpOpen, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return SignUpOpen{}, err
@@ -315,12 +316,16 @@ func (s *Service) OpenSignUp(ctx context.Context, req SignUpOpenRequest) (SignUp
 	if err != nil {
 		return SignUpOpen{}, fromUsers(err, "opening the invitation failed")
 	}
+	if s.teamsWithheld && opened.Team != "" {
+		return SignUpOpen{}, errTeamsWithheld
+	}
 	return SignUpOpen{Salt: b64(opened.Salt), KDF: presentKDF(opened.KDF), SealID: opened.SealID}, nil
 }
 
 // SignUp redeems an invite: it creates the account, enrolled in the key
 // scheme, and signs it in. Refused where people sign in only through an
-// extension.
+// extension, and, for an invite into a team, where teams are withheld
+// (errTeamsWithheld): the invite then stays unspent.
 func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent string) (Session, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return Session{}, err
@@ -331,6 +336,7 @@ func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent strin
 	}
 	token, session, user, err := s.users.SignUp(ctx, auth.SignUpRequest{
 		Invite: req.Invite, Email: req.Email, Name: req.Name, SealID: req.SealID, Enrolment: in, UserAgent: userAgent,
+		TeamsWithheld: s.teamsWithheld,
 	})
 	if err != nil {
 		return Session{}, fromUsers(err, "creating the account failed")
@@ -665,6 +671,8 @@ func fromUsers(err error, what string) error {
 	case errors.Is(err, auth.ErrInviteInvalid):
 		return E(CodeNotAuthorized,
 			"that invite is not valid: it may have expired, been used, or be meant for another address", err)
+	case errors.Is(err, auth.ErrTeamWithheld):
+		return errTeamsWithheld
 	case errors.Is(err, auth.ErrInviteJoinsOnly):
 		return E(CodeNotAuthorized, "that invite adds someone who already has an account here to a team: "+
 			"sign in with that address and accept it. A new account needs an invitation from the server's owner", err)

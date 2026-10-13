@@ -18,13 +18,13 @@ import (
 // Where teams are withheld nothing of a team is used, by anyone: no mailbox
 // is linked into one, none of its mailboxes syncs (the store's rule,
 // store.Options.TeamsWithheld, which the daemon sets beside this), and its
-// mailboxes reach nobody, its keys included —
-// they are listed nowhere, and one asked for by a person or a key who would
-// otherwise see it is refused by name; nobody creates a team, changes its
-// members, invites or name, accepts an invite into one, creates, lists or
-// revokes its keys, gives or takes what anyone holds on its mailboxes,
-// gives or withdraws its consent to sync, or writes or supplies a mailbox
-// key there. A person and a key are refused it as not_authorized, once they
+// mailboxes reach nobody, its keys included — they are listed nowhere, and
+// one asked for by a person or a key who would otherwise see it is refused
+// by name; nobody creates a team, changes its members, invites or name,
+// signs up through or accepts an invite into one (which stays unspent),
+// creates, lists or revokes its keys, gives or takes what anyone holds on
+// its mailboxes, gives or withdraws its consent to sync, or writes or
+// supplies a mailbox key there. A person and a key are refused it as not_authorized, once they
 // would otherwise reach it; the operator still reads a team's members, its
 // invites and who holds what, and changes none of it. Teams are listed, to
 // whoever would list them, marked withheld, so a client says why they are

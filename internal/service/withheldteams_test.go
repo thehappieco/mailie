@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -397,5 +398,71 @@ func TestAnEditionThatWithholdsTeamsKeepsTheirKeysOutOfAPersonsOwnKeys(t *testin
 	wantCode(t, "Bob revoking Ana's team key", f.svc.RevokeMyAPIKey(ctx, bob, teamKey.Prefix), service.CodeNotFound)
 	if err := f.svc.RevokeMyAPIKey(ctx, tm.ana, carried.Prefix); err != nil {
 		t.Errorf("Ana revoking her carried-over key: %v", err)
+	}
+}
+
+func TestAnEditionThatWithholdsTeamsSignsNobodyUpIntoATeam(t *testing.T) {
+	f := newFixtureWith(t, fixtureOptions{publicURL: "http://localhost:5174"})
+	tm := newSupportTeam(t, f)
+	ctx := t.Context()
+	// An invite the operator made into the team where teams were offered,
+	// for an address with no account yet, which its browser opened then.
+	code, _, err := f.users.CreateInvite(ctx, auth.NewInvite{Email: "dan@example.com", WorkspaceID: tm.id,
+		WorkspaceRole: workspace.RoleMember, CreatedBy: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := f.svc.OpenSignUp(ctx, service.SignUpOpenRequest{Invite: code, Email: "dan@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signUp := func() error {
+		_, err := f.svc.SignUp(ctx, service.SignUpRequest{Invite: code, Email: "dan@example.com", Name: "Dan",
+			SealID: opened.SealID, Enrolment: wireEnrolment(t)}, "test")
+		return err
+	}
+	members := f.count(t, `SELECT count(*) FROM workspace_members WHERE workspace_id = ?`, tm.id)
+
+	f.withholdTeams(t)
+
+	_, err = f.svc.OpenSignUp(ctx, service.SignUpOpenRequest{Invite: code, Email: "dan@example.com"})
+	wantWithheld(t, "opening an invitation into the team", err)
+	wantWithheld(t, "signing up with an invitation into the team", signUp())
+	if n := f.count(t, `SELECT count(*) FROM users WHERE email = 'dan@example.com'`); n != 0 {
+		t.Error("signing up into a withheld team created an account")
+	}
+	if n := f.count(t, `SELECT count(*) FROM workspace_members WHERE workspace_id = ?`, tm.id); n != members {
+		t.Errorf("the withheld team has %d members, want the %d it had", n, members)
+	}
+	if n := f.count(t, `SELECT count(*) FROM invites WHERE email = 'dan@example.com' AND used_at = 0`); n != 1 {
+		t.Error("the refused sign-up spent the invite")
+	}
+	// An instance invite still signs people up.
+	instance, err := f.svc.CreateInvite(ctx, admin(), service.InviteRequest{Email: "eve@example.com", Role: "member"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, fragment, _ := strings.Cut(instance.URL, "#")
+	values, err := url.ParseQuery(fragment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	eve, err := f.svc.OpenSignUp(ctx, service.SignUpOpenRequest{Invite: values.Get("invite"), Email: "eve@example.com"})
+	if err != nil {
+		t.Fatalf("opening an instance invitation: %v", err)
+	}
+	if _, err := f.svc.SignUp(ctx, service.SignUpRequest{Invite: values.Get("invite"), Email: "eve@example.com", Name: "Eve",
+		SealID: eve.SealID, Enrolment: wireEnrolment(t)}, "test"); err != nil {
+		t.Errorf("signing up with an instance invitation: %v", err)
+	}
+
+	// An edition that offers teams finds the invite as it was.
+	f.opts.teamsWithheld = false
+	f.svc, f.registry = f.build(t, f.opts.registry)
+	if err := signUp(); err != nil {
+		t.Fatalf("signing up with the invite where teams are offered again: %v", err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM workspace_members WHERE workspace_id = ?`, tm.id); n != members+1 {
+		t.Errorf("the team has %d members, want Dan beside the %d it had", n, members)
 	}
 }
