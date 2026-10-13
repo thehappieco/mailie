@@ -78,8 +78,14 @@ func newSyncFixture(t *testing.T) (*fixture, *fakeSync) {
 // account now? Asked the way its write transactions ask it.
 func (f *fixture) eligible(t *testing.T, accountID string) bool {
 	t.Helper()
-	err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
-		return store.RequireSyncEligibleTx(t.Context(), tx, accountID)
+	return eligibleIn(t, f.db, accountID)
+}
+
+// eligibleIn is eligible, asked of a given store.
+func eligibleIn(t *testing.T, db *store.Store, accountID string) bool {
+	t.Helper()
+	err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		return db.RequireSyncEligibleTx(t.Context(), tx, accountID)
 	})
 	switch {
 	case err == nil:

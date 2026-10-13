@@ -43,7 +43,25 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
 // on for somebody else's personal mailbox, and a withdrawal stops it whatever
 // that column says.
+//
+// Where the edition withholds teams (Options.TeamsWithheld), no team's
+// mailbox is eligible either (notATeams): Store.eligibleRule adds it.
 var syncEligible = `a.state = 'active' AND ` + OpenWorkspaceSQL("a.workspace_id") + ` AND ` + syncPermitted
+
+// notATeams is that the mailbox, aliased a, is not a team's: what an
+// edition that withholds teams adds to the rule, so that nothing of a team
+// is used there, its mail included, and the index it has keeps until an
+// edition that offers teams syncs it again.
+var notATeams = `NOT EXISTS (SELECT 1 FROM workspaces tw WHERE tw.id = a.workspace_id AND tw.kind = 'team')`
+
+// eligibleRule is the rule this store holds accounts to: the one above, and,
+// where the edition withholds teams, not a team's mailbox.
+func (s *Store) eligibleRule() string {
+	if s.teamsWithheld {
+		return syncEligible + ` AND ` + notATeams
+	}
+	return syncEligible
+}
 
 // syncPermitted is the consent half of the rule, as a boolean expression over
 // accounts aliased a. SyncPermitted reports it on its own; syncEligible adds
@@ -73,7 +91,7 @@ var hasSuspendedReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account
 // oldest first.
 func (s *Store) SyncEligibleAccounts(ctx context.Context) ([]string, error) {
 	//nolint:gosec // G202: syncEligible is built from constants alone (ReaderSQL's fragments); nothing is interpolated
-	rows, err := s.r.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+syncEligible+` ORDER BY a.created_at, a.id`)
+	rows, err := s.r.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+s.eligibleRule()+` ORDER BY a.created_at, a.id`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list accounts eligible to sync: %w", err)
 	}
@@ -96,7 +114,7 @@ func (s *Store) SyncEligibleAccounts(ctx context.Context) ([]string, error) {
 // SyncEligible reports whether one account should be syncing. An account
 // that does not exist is not.
 func (s *Store) SyncEligible(ctx context.Context, accountID string) (bool, error) {
-	return syncEligibleOn(ctx, s.r, accountID)
+	return syncEligibleOn(ctx, s.r, s.eligibleRule(), accountID)
 }
 
 // RequireSyncEligibleTx fails with ErrNotEligible unless the account may be
@@ -107,8 +125,8 @@ func (s *Store) SyncEligible(ctx context.Context, accountID string) (bool, error
 // or removed — and a sync batch are ordered: once the withdrawal commits, no
 // batch that was already on its way can store another row, however late its
 // worker notices it has been stopped.
-func RequireSyncEligibleTx(ctx context.Context, tx *sql.Tx, accountID string) error {
-	ok, err := syncEligibleOn(ctx, tx, accountID)
+func (s *Store) RequireSyncEligibleTx(ctx context.Context, tx *sql.Tx, accountID string) error {
+	ok, err := syncEligibleOn(ctx, tx, s.eligibleRule(), accountID)
 	if err != nil {
 		return err
 	}
@@ -122,9 +140,9 @@ type queryRower interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func syncEligibleOn(ctx context.Context, q queryRower, accountID string) (bool, error) {
+func syncEligibleOn(ctx context.Context, q queryRower, rule, accountID string) (bool, error) {
 	var one int
-	err := q.QueryRowContext(ctx, `SELECT 1 FROM accounts a WHERE a.id = ? AND `+syncEligible, accountID).Scan(&one)
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM accounts a WHERE a.id = ? AND `+rule, accountID).Scan(&one)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, nil

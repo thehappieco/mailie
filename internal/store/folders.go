@@ -231,7 +231,7 @@ type resolvedFolder struct {
 // way at once, and keeps its row. Call this only with a LIST that completed
 // without error.
 func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) (DiscoveryResult, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, d.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, d.AccountID); err != nil {
 		return DiscoveryResult{}, err
 	}
 	now := d.Now
@@ -578,7 +578,7 @@ func UpdateFolderSync(ctx context.Context, tx *sql.Tx, folderID int64, u FolderS
 // zero, the folder goes live, and one folder.changed{initial_done} carries
 // how many messages it holds — the only announcement an initial sync makes.
 func (s *Store) FinishInitial(ctx context.Context, tx *sql.Tx, accountID string, folderID int64, now time.Time) ([]events.Event, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
 		return nil, err
 	}
 	if now.IsZero() {

@@ -77,12 +77,13 @@ type Options struct {
 	// a key — linking a mailbox into one, its mailboxes, its keys, who holds
 	// what on them, its members, invites and name, its consent to sync,
 	// writing or supplying a mailbox key there — lists no team's mailbox,
-	// and lists every team marked withheld. Nothing of a team is deleted or
-	// changed: whatever the database holds, a restored one included, is kept
-	// and unused. Personal workspaces and the operator's are as they were.
-	// The service decides it, for every transport. Only a binary that embeds
-	// the daemon sets it: there is no environment variable, and `serve`
-	// never does.
+	// syncs none (store.Options.TeamsWithheld), and lists every team
+	// marked withheld. Nothing of a team is deleted or changed: whatever the
+	// database holds, a restored one included, its index too, is kept and
+	// unused. Personal workspaces and the operator's are as they were. The
+	// service decides it, for every transport, and the store for the sync
+	// engine. Only a binary that embeds the daemon sets it: there is no
+	// environment variable, and `serve` never does.
 	TeamsWithheld bool
 }
 
@@ -136,7 +137,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		return err
 	}
 
-	db, err := store.Open(ctx, cfg.DatabasePath(), store.Options{})
+	// An edition that withholds teams indexes none of their mailboxes: the
+	// store's rule for what may sync says so, for the engine and for every
+	// batch it writes.
+	db, err := store.Open(ctx, cfg.DatabasePath(), store.Options{TeamsWithheld: opts.TeamsWithheld})
 	if err != nil {
 		return err
 	}

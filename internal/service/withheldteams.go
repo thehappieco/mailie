@@ -16,7 +16,9 @@ import (
 // holds whatever the database holds, a restored one included.
 //
 // Where teams are withheld nothing of a team is used, by anyone: no mailbox
-// is linked into one, and its mailboxes reach nobody, its keys included —
+// is linked into one, none of its mailboxes syncs (the store's rule,
+// store.Options.TeamsWithheld, which the daemon sets beside this), and its
+// mailboxes reach nobody, its keys included —
 // they are listed nowhere, and one asked for by a person or a key who would
 // otherwise see it is refused by name; nobody creates a team, changes its
 // members, invites or name, accepts an invite into one, creates, lists or
@@ -30,8 +32,8 @@ import (
 // were.
 //
 // What is withheld is the use, never the data: nothing of a team is deleted
-// or changed by withholding it, and an edition that offers teams again finds
-// them as they were.
+// or changed by withholding it, its mailboxes' index included, and an edition
+// that offers teams again finds them as they were.
 
 // errTeamsWithheld is a team asked to be used where teams are withheld.
 var errTeamsWithheld = E(CodeNotAuthorized, "this server does not offer team workspaces yet", nil)

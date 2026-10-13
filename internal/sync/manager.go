@@ -333,7 +333,7 @@ func (m *Manager) prune(ctx context.Context) {
 func (m *Manager) commit(ctx context.Context, accountID string, fn func(*sql.Tx) ([]events.Event, error)) error {
 	var evs []events.Event
 	err := m.store.Write(ctx, func(tx *sql.Tx) error {
-		if err := store.RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
+		if err := m.store.RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
 			return err
 		}
 		var err error

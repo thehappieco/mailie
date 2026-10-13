@@ -1070,6 +1070,10 @@ the database holds, a restored one included, and whichever source the teams came
   or takes what anyone holds on its mailboxes, gives or withdraws its consent to sync, or writes,
   reads or supplies a mailbox key there (`403`, "this server does not offer team workspaces yet").
   The operator still reads its members, its invites and who holds what, and changes none of it.
+- **Its mailboxes sync nothing**: the store's rule for what may be indexed leaves every team's
+  mailbox out in such an edition (`store.Options.TeamsWithheld`), so the engine never starts one,
+  refreshes none of its tokens, and refuses any batch for one; each keeps its index, its consent and
+  its readers, and catches up in an edition that offers teams.
 - **It is listed, marked so**: `withheld: true` on the team in `GET /v1/workspaces`, for its
   members, its keys and the operator, so a client shows a notice instead of what the team holds.
 - **Nothing of it is lost**: withholding deletes and changes nothing, and stops no key; an edition

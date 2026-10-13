@@ -37,7 +37,7 @@ type SyncController interface {
 	// The service calls it on a request's goroutine once the change has
 	// committed, so it must not block, and it need not wait for a worker to
 	// stop: the engine re-checks eligibility inside every transaction that
-	// writes to the index (store.RequireSyncEligibleTx), so a withdrawal
+	// writes to the index (store.Store.RequireSyncEligibleTx), so a withdrawal
 	// that committed leaves nothing for a late batch to store.
 	Reconcile(accountID string)
 }

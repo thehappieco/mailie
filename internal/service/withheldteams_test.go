@@ -8,6 +8,8 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/store/storetest"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -283,5 +285,51 @@ func TestAWithheldTeamIsListedWithItsNotice(t *testing.T) {
 				t.Errorf("%s lists a %s workspace withheld", name, w.Kind)
 			}
 		}
+	}
+}
+
+func TestAnEditionThatWithholdsTeamsSyncsNoTeamMailboxAndKeepsItsIndex(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	// What an edition that offers teams made: a team mailbox Ana reads, with
+	// the team's consent and an index, and her own mailbox, which she agreed
+	// to sync.
+	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	tm.syncOn(t, f, shared)
+	f.seedMailbox(t, shared, "indexed where teams are offered")
+	own := f.mailbox(t, tm.ana, "ana@mail.example")
+	f.exec(t, `UPDATE users SET sync_consent_at = 1700000000 WHERE id = ?`, tm.ana.UserID)
+	if !f.eligible(t, shared) || !f.eligible(t, own) {
+		t.Fatal("the mailboxes do not sync where teams are offered")
+	}
+
+	// The same database, under an edition that withholds teams.
+	f.withholdTeams(t)
+	withheld := storetest.NewAtWith(t, f.db.Path(), store.Options{TeamsWithheld: true})
+	if eligibleIn(t, withheld, shared) {
+		t.Error("a team mailbox syncs where teams are withheld")
+	}
+	listed, err := withheld.SyncEligibleAccounts(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(listed, []string{own}) {
+		t.Errorf("the engine would sync %v where teams are withheld, want Ana's own mailbox alone", listed)
+	}
+	if ok, err := withheld.SyncEligible(t.Context(), shared); err != nil || ok {
+		t.Errorf("the engine would start the team mailbox: %v, %v", ok, err)
+	}
+	if !eligibleIn(t, withheld, own) {
+		t.Error("Ana's own mailbox stopped syncing where teams are withheld")
+	}
+	// Nothing of it is lost: its index, its consent and its readers stay.
+	if n := indexed(t, f, shared); n != 1 {
+		t.Errorf("withheld, the team mailbox's index holds %d messages, want it kept", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_at <> 0`, shared); n != 1 {
+		t.Error("withholding teams took the team's consent to sync")
+	}
+	if !f.eligible(t, shared) {
+		t.Error("an edition that offers teams would not sync the team mailbox again")
 	}
 }

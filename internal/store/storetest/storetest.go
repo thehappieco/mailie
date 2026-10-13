@@ -41,12 +41,19 @@ func New(t *testing.T) *store.Store {
 // it is, and migrated as store.Open migrates any.
 func NewAt(t *testing.T, path string, now func() time.Time) *store.Store {
 	t.Helper()
+	return NewAtWith(t, path, store.Options{Now: now})
+}
+
+// NewAtWith is NewAt with the store's options: a test that opens, beside a
+// store it already has, the same file as a daemon configured otherwise would.
+func NewAtWith(t *testing.T, path string, opts store.Options) *store.Store {
+	t.Helper()
 	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
 		if err := copyTemplate(path); err != nil {
 			t.Fatalf("storetest: %v", err)
 		}
 	}
-	s, err := store.Open(context.Background(), path, store.Options{Now: now})
+	s, err := store.Open(context.Background(), path, opts)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}

@@ -41,6 +41,9 @@ type Store struct {
 	// moves is what the index remembers, for a few minutes and in memory
 	// only, about moves a person asked for (moves.go).
 	moves *moveMemory
+	// teamsWithheld leaves every team's mailbox out of what may be indexed
+	// (Options.TeamsWithheld).
+	teamsWithheld bool
 }
 
 // Options configure Open. The zero value is usable.
@@ -52,6 +55,12 @@ type Options struct {
 	// SkipMigrate leaves the schema alone, for the `migrate` subcommand which
 	// wants to report what it is about to do.
 	SkipMigrate bool
+	// TeamsWithheld is an edition of the daemon that does not offer team
+	// workspaces yet (the app's Options.TeamsWithheld): no team's mailbox
+	// may be indexed, whatever its consent and readers, so the engine never
+	// syncs one and a batch for one is refused. Nothing it indexed before
+	// is deleted.
+	TeamsWithheld bool
 }
 
 const defaultReadConns = 4
@@ -100,7 +109,7 @@ func Open(ctx context.Context, path string, opts Options) (*Store, error) {
 		return nil, err
 	}
 
-	s := &Store{w: w, path: path, now: now, moves: newMoveMemory()}
+	s := &Store{w: w, path: path, now: now, moves: newMoveMemory(), teamsWithheld: opts.TeamsWithheld}
 	if !opts.SkipMigrate {
 		if err := s.Migrate(ctx); err != nil {
 			//nolint:errcheck // unwinding a failed open; the open error is the one to report

@@ -50,7 +50,7 @@ type ActionFlags struct {
 // every row whose flags changed: the ones the store named and, with Shared,
 // their copies in other folders.
 func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags) ([]events.Event, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
 		return nil, err
 	}
 	folder, err := indexFolder(ctx, tx, b.AccountID, b.FolderID, b.UIDValidity)
@@ -255,7 +255,7 @@ type ActionMoveResult struct {
 // Every source UID is remembered as moved (moves.go), whatever became of its
 // row.
 func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (ActionMoveResult, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
 		return ActionMoveResult{}, err
 	}
 	from, err := folderOn(ctx, tx, b.AccountID, b.FromFolderID)
@@ -430,7 +430,7 @@ type ActionReturn struct {
 // A message the destination already holds under that UID keeps the row it
 // has. It returns the row's id.
 func (s *Store) ApplyActionReturn(ctx context.Context, tx *sql.Tx, b ActionReturn) (int64, []events.Event, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
 		return 0, nil, err
 	}
 	to, err := indexFolder(ctx, tx, b.AccountID, b.ToFolderID, b.UIDValidity)

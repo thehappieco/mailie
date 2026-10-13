@@ -389,7 +389,7 @@ func indexFolder(ctx context.Context, tx *sql.Tx, accountID string, folderID int
 // highest UID, never lowered: deleting the newest message must not make the
 // next pass fetch old mail as new.
 func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) (ApplyResult, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
 		return ApplyResult{}, err
 	}
 	folder, err := indexFolder(ctx, tx, b.AccountID, b.FolderID, b.UIDValidity)
@@ -931,7 +931,7 @@ type FlagResult struct {
 // A UID the server reports is a UID that exists, so a tombstone on it is
 // lifted.
 func (s *Store) ApplyFlags(ctx context.Context, tx *sql.Tx, b FlagBatch) (FlagResult, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
 		return FlagResult{}, err
 	}
 	folder, err := indexFolder(ctx, tx, b.AccountID, b.FolderID, b.UIDValidity)
@@ -1062,7 +1062,7 @@ type DiffResult struct {
 // message.deleted, or a copy removed when another folder still holds the
 // message; nothing is announced for a tombstone.
 func (s *Store) ApplyUIDDiff(ctx context.Context, tx *sql.Tx, d UIDDiff) (DiffResult, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, d.AccountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, d.AccountID); err != nil {
 		return DiffResult{}, err
 	}
 	folder, err := indexFolder(ctx, tx, d.AccountID, d.FolderID, d.UIDValidity)
@@ -1178,7 +1178,7 @@ type ResyncStart struct {
 // "error", not what it was — keeps what the first attempt recorded, so it
 // ends the same way.
 func (s *Store) BeginResync(ctx context.Context, tx *sql.Tx, accountID string, folderID int64, st provider.FolderStatus, from string) (ResyncStart, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
 		return ResyncStart{}, err
 	}
 	folder, err := folderOn(ctx, tx, accountID, folderID)
@@ -1268,7 +1268,7 @@ func stalePrimaryGroups(ctx context.Context, tx *sql.Tx, folderID int64) ([]stri
 // it), because this resync is what finished it. A consumer waiting for a
 // folder's initial_done must get one.
 func (s *Store) FinishResync(ctx context.Context, tx *sql.Tx, accountID string, folderID int64, now time.Time) ([]events.Event, error) {
-	if err := RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
+	if err := s.RequireSyncEligibleTx(ctx, tx, accountID); err != nil {
 		return nil, err
 	}
 	folder, err := folderOn(ctx, tx, accountID, folderID)

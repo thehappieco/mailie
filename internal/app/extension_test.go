@@ -76,6 +76,14 @@ func (b *lockedBuffer) String() string {
 // base URL.
 func runDaemon(t *testing.T, cfg config.Config, opts Options) string {
 	t.Helper()
+	base, _ := runDaemonLogged(t, cfg, opts)
+	return base
+}
+
+// runDaemonLogged is runDaemon, also returning what the daemon logs at info
+// and above.
+func runDaemonLogged(t *testing.T, cfg config.Config, opts Options) (string, *lockedBuffer) {
+	t.Helper()
 	logs := &lockedBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -96,7 +104,7 @@ func runDaemon(t *testing.T, cfg config.Config, opts Options) string {
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base
+				return base, logs
 			}
 		}
 		select {

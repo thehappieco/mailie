@@ -430,7 +430,7 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 // written: one that is not eligible to sync (store.SyncEligible). Some keep
 // their index all the same — a team mailbox migration 0011 kept stopped for
 // its readers, or one nobody reads any more that a key still holds — but no
-// row of it can change (store.RequireSyncEligibleTx). An action there would
+// row of it can change (store.Store.RequireSyncEligibleTx). An action there would
 // change the server, fail to record what it did, and leave the index
 // contradicting the server with no pass to set it right, so the server is not
 // touched.
