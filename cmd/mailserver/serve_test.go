@@ -295,3 +295,48 @@ func TestServeNeverWithholdsTeams(t *testing.T) {
 		t.Errorf("Ana listing her team's mailboxes: %d %s", status, body)
 	}
 }
+
+func TestTheDaemonSaysAtStartWhichTeamsAreClosed(t *testing.T) {
+	cfg := localConfig(t)
+	db, release, err := openExclusively(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	ws := workspace.NewRepository(db, nil)
+	var teams []string
+	for i, name := range []string{"Support", "Sales", "Billing"} {
+		team, err := ws.CreateTeam(t.Context(), name, ana.ID, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		teams = append(teams, team.ID)
+		// Created in this order, whatever the clock's second.
+		if _, err := db.Writer().ExecContext(t.Context(), `UPDATE workspaces SET created_at = ? WHERE id = ?`,
+			1700000000+i, team.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Support and Billing closed, Sales open.
+	for _, id := range []string{teams[0], teams[2]} {
+		if _, _, err := ws.SetClosed(t.Context(), id, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	release()
+
+	_, logs := runDaemon(t, cfg)
+	line := logLine(t, logs.String(), `msg="teams closed`)
+	if !strings.Contains(line, "count=2") || !strings.Contains(line, "["+teams[0]+" "+teams[2]+"]") ||
+		strings.Contains(line, teams[1]) {
+		t.Errorf("the start says %s, want the two closed teams, oldest first, and not the open one", line)
+	}
+}
+
+func TestTheDaemonSaysNothingOfClosedTeamsWhereNoneIs(t *testing.T) {
+	cfg := localConfig(t)
+	_, logs := runDaemon(t, cfg)
+	if strings.Contains(logs.String(), "teams closed") {
+		t.Errorf("the start speaks of closed teams where none is:\n%s", logs)
+	}
+}

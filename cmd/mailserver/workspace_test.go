@@ -202,14 +202,32 @@ func TestTheCommandLineClosesOnlyALocalTeam(t *testing.T) {
 	if err := workspaceCommand(ctx, cfg, []string{"close", "--workspace", team.ID}); err != nil {
 		t.Errorf("closing a closed team: %v", err)
 	}
-	if err := workspaceCommand(ctx, cfg, []string{"list"}); err != nil {
-		t.Errorf("workspace list: %v", err)
+	// The list says since when it is closed.
+	row := func() string {
+		t.Helper()
+		out, err := captureStdout(t, func() error { return workspaceCommand(ctx, cfg, []string{"list"}) })
+		if err != nil {
+			t.Fatalf("workspace list: %v", err)
+		}
+		for line := range strings.Lines(out) {
+			if strings.HasPrefix(line, team.ID+" ") {
+				return strings.TrimSpace(line)
+			}
+		}
+		t.Fatalf("workspace list leaves the team out:\n%s", out)
+		return ""
+	}
+	if got, want := row(), "closed since "+closedAt(team.ID).UTC().Format(time.RFC3339); !strings.HasSuffix(got, want) {
+		t.Errorf("workspace list shows the closed team as %q, want it to end %q", got, want)
 	}
 	if err := workspaceCommand(ctx, cfg, []string{"reopen", "--workspace", team.ID}); err != nil {
 		t.Fatalf("workspace reopen: %v", err)
 	}
 	if !closedAt(team.ID).IsZero() {
 		t.Error("the command line did not reopen the team")
+	}
+	if fields := strings.Fields(row()); fields[len(fields)-1] != "-" || fields[len(fields)-2] != "local" {
+		t.Errorf("workspace list shows the reopened team as %q, with a note", fields)
 	}
 
 	refused("closing a team from another source",
