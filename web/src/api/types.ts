@@ -511,6 +511,12 @@ export interface Workspace {
   members?: number
   mailboxes?: number
   created_at: number
+  /**
+   * When a team closed: nothing in it is used until it reopens, its
+   * mailboxes reach nobody and nothing of it changes. Absent while it is
+   * open, and for every workspace that is not a team.
+   */
+  closed_at?: number
 }
 /**
  * A membership of a workspace. last_owner and last_reader_of mark the
@@ -990,12 +996,13 @@ const pathID = (v: unknown): v is string => filled(v, 64) && !/[\s/\\?#]/.test(v
 const word = <T extends string>(options: readonly T[], strict: boolean) => (v: unknown): boolean => strict ? oneOf(options)(v) : filled(v, 32)
 
 export function isWorkspace(v: unknown, strict = false): v is Workspace {
-  return record(v) && known(v, ['id', 'kind', 'source', 'name', 'role', 'status', 'members', 'mailboxes', 'created_at'], strict)
+  return record(v) && known(v, ['id', 'kind', 'source', 'name', 'role', 'status', 'members', 'mailboxes', 'created_at', 'closed_at'], strict)
     && pathID(v.id) && word(workspaceKinds, strict)(v.kind) && word(workspaceSources, strict)(v.source) && text(v.name, 1024)
     && optional(v.role, word(workspaceRoles, strict)) && optional(v.status, word(memberStatuses, strict))
     && optional(v.members, counter) && optional(v.mailboxes, counter) && seconds(v.created_at)
-    // A team has a name; the others are named by the console.
-    && (!strict || (v.kind === 'team') === (v.name !== ''))
+    && optional(v.closed_at, seconds)
+    // A team has a name; the others are named by the console. Only a team closes.
+    && (!strict || ((v.kind === 'team') === (v.name !== '') && (v.closed_at === undefined || v.kind === 'team')))
 }
 
 export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {

@@ -626,7 +626,8 @@ func sealedWithReadTx(ctx context.Context, tx *sql.Tx, accountID, userID string,
 // after the linker's flags (GrantLinkTx): the request that links a mailbox
 // carries both (docs/key-scheme.md sections 8 and 12.11). The mailbox has a
 // linker (an operator mailbox has no key: ErrOperator) who holds read on it
-// and has an account key (ErrNotEnrolled), and no key yet (ErrKeyed); the
+// and has an account key (ErrNotEnrolled), no key yet (ErrKeyed), and its
+// workspace is open (ErrClosed); the
 // namespace is one no other mailbox uses (ErrNamespaceTaken); and the key
 // pair and the grant pass CheckLinkKey.
 func WriteLinkKeyTx(ctx context.Context, tx *sql.Tx, accountID, linker string, key LinkKey, now time.Time) error {
@@ -642,6 +643,9 @@ func WriteLinkKeyTx(ctx context.Context, tx *sql.Tx, accountID, linker string, k
 	}
 	if mb.kind == KindOperator {
 		return ErrOperator
+	}
+	if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
+		return err
 	}
 	if err := requireKeylessTx(ctx, tx, accountID); err != nil {
 		return err
@@ -674,7 +678,7 @@ func WriteLinkKeyTx(ctx context.Context, tx *sql.Tx, accountID, linker string, k
 // team mailbox cannot take it by keying it.
 //
 // Refused: a mailbox that has a key (ErrKeyed); an operator mailbox
-// (ErrOperator); a writer who does not read it (ErrNotReader) or has no
+// (ErrOperator); a closed team's (ErrClosed); a writer who does not read it (ErrNotReader) or has no
 // account key (ErrNotEnrolled); a namespace another mailbox uses
 // (ErrNamespaceTaken); grants that are not exactly one for each of those
 // people (ErrGrantsIncomplete), or one sealed, by what the browser says, to
@@ -708,6 +712,9 @@ func (r *Repository) WriteFirstKey(ctx context.Context, accountID, writerID stri
 		}
 		if mb.kind == KindOperator {
 			return ErrOperator
+		}
+		if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
+			return err
 		}
 		if err := requireKeylessTx(ctx, tx, accountID); err != nil {
 			return err
@@ -845,8 +852,8 @@ func (r *Repository) WriteNextKey(ctx context.Context, accountID, personID strin
 // otherwise), owner, admin or member: it gives nobody read who was not given
 // it.
 //
-// The recipient is an active member of the mailbox's workspace
-// (ErrNotMember) who holds the read flag (ErrNoReadFlag), has an account key
+// The mailbox's team is open (ErrClosed). The recipient is an active member
+// of the mailbox's workspace (ErrNotMember) who holds the read flag (ErrNoReadFlag), has an account key
 // (ErrNotEnrolled) and no grant at the current epoch
 // (ErrSealedGrantExists); the mailbox has a key (ErrKeyless); the grant has
 // a grant's shape (keyscheme.ErrShape) at the current epoch, which epoch
@@ -870,6 +877,9 @@ func (r *Repository) SupplyGrant(ctx context.Context, accountID, recipientID, gi
 			return err
 		}
 		if err := runCheck(tx, check); err != nil {
+			return err
+		}
+		if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
 			return err
 		}
 		current, err := currentKeyOn(ctx, tx, accountID)

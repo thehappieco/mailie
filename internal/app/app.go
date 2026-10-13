@@ -259,6 +259,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 			"their owners and admins remove them (and link them again), or turn their sync off to delete "+
 			"what is still indexed", "accounts", unread)
 	}
+	closedTeams, err := db.ClosedTeams(ctx)
+	if err != nil {
+		return err
+	}
+	if len(closedTeams) > 0 {
+		logger.Info("teams closed: their mailboxes reach nobody and sync nothing until reopened",
+			"count", len(closedTeams), "teams", closedTeams)
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,

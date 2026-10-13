@@ -658,9 +658,9 @@ type link struct {
 // team shares, so a member asks one of them. With syncVersion naming the
 // current revision of the sync text, a link into a team also gives the
 // team's consent to sync it, on the team's behalf; any other revision is
-// refused, and none links it with sync off. An instance key links into the
-// operator workspace only. The role is read again inside the transaction
-// that creates the mailbox.
+// refused, and none links it with sync off. Nothing is linked into a closed
+// team (conflict). An instance key links into the operator workspace only.
+// The role is read again inside the transaction that creates the mailbox.
 func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVersion string) (link, error) {
 	syncVersion = strings.TrimSpace(syncVersion)
 	if p.IsInstance() {
@@ -710,7 +710,8 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVe
 		case w.Kind == workspace.KindTeam && !adminOf(m):
 			return errLinkTeam
 		}
-		return nil
+		// Nothing is linked into a closed team.
+		return openTx(ctx, tx, w.ID)
 	}
 	if err := s.precheck(ctx, check); err != nil {
 		return link{}, fromWorkspace(err, "reading the workspace failed")

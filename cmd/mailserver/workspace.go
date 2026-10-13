@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/service"
@@ -20,17 +21,17 @@ import (
 // operator (docs/workspaces.md, "Command line"). Every command is a client of
 // the daemon with MAIL_ADMIN_KEY, an unrestricted instance admin key, and the
 // daemon decides what the operator may do: it administers every team's
-// people, and holds no flag on anyone's mailbox, so it grants manage to
-// members and nothing else, and revokes — read passes from an owner or an
-// admin who reads the mailbox, and act and send from an owner or an admin, in
-// the console.
+// people, closes and reopens a local team (which no person does), and holds
+// no flag on anyone's mailbox, so it grants manage to members and nothing
+// else, and revokes — read passes from an owner or an admin who reads the
+// mailbox, and act and send from an owner or an admin, in the console.
 //
 // People are named by address, as everywhere on the command line; the routes
 // take ids, which these look up in the workspace's member list.
 
 func workspaceCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: workspace needs a subcommand: list, create or rename", errUsage)
+		return fmt.Errorf("%w: workspace needs a subcommand: list, create, rename, close or reopen", errUsage)
 	}
 	switch args[0] {
 	case "list":
@@ -39,6 +40,10 @@ func workspaceCommand(ctx context.Context, cfg config.Config, args []string) err
 		return workspaceCreate(ctx, cfg, args[1:])
 	case "rename":
 		return workspaceRename(ctx, cfg, args[1:])
+	case "close":
+		return workspaceClose(ctx, cfg, args[1:], true)
+	case "reopen":
+		return workspaceClose(ctx, cfg, args[1:], false)
 	default:
 		return fmt.Errorf("%w: unknown workspace subcommand %q", errUsage, args[0])
 	}
@@ -90,11 +95,15 @@ func workspaceList(ctx context.Context, cfg config.Config, args []string) error 
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	//nolint:errcheck // checked by Flush
-	fmt.Fprintln(w, "ID\tKIND\tNAME\tMEMBERS\tMAILBOXES\tSOURCE")
+	fmt.Fprintln(w, "ID\tKIND\tNAME\tMEMBERS\tMAILBOXES\tSOURCE\tNOTE")
 	for _, ws := range workspaces {
+		note := ""
+		if ws.ClosedAt != 0 {
+			note = "closed since " + time.Unix(ws.ClosedAt, 0).UTC().Format(time.RFC3339)
+		}
 		//nolint:errcheck // checked by Flush
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", ws.ID, ws.Kind, orDash(ws.Name),
-			count(ws.Members), count(ws.Mailboxes), ws.Source)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ws.ID, ws.Kind, orDash(ws.Name),
+			count(ws.Members), count(ws.Mailboxes), ws.Source, orDash(note))
 	}
 	return w.Flush()
 }
@@ -145,6 +154,40 @@ func workspaceRename(ctx context.Context, cfg config.Config, args []string) erro
 		return err
 	}
 	fmt.Printf("renamed %s to %s\n", renamed.ID, renamed.Name)
+	return nil
+}
+
+// workspaceClose closes a local team, or reopens it. While it is closed
+// nothing in it is used: its mailboxes reach nobody, its owners and keys
+// included, and sync nothing, keeping their index, consent and grants; and
+// nothing of it changes. A team whose source is not local closes where it is
+// managed, never here.
+func workspaceClose(ctx context.Context, cfg config.Config, args []string, closed bool) error {
+	command, route := "workspace close", "/close"
+	if !closed {
+		command, route = "workspace reopen", "/reopen"
+	}
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	id := fs.String("workspace", "", "the team's id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("%s: unexpected argument %q", command, fs.Arg(0))
+	}
+	if *id == "" {
+		return fmt.Errorf("%s: --workspace is required", command)
+	}
+	var team service.Workspace
+	if err := adminJSON(ctx, cfg, http.MethodPost, "/v1/workspaces/"+url.PathEscape(*id)+route, nil, &team); err != nil {
+		return err
+	}
+	if team.ClosedAt != 0 {
+		fmt.Printf("the team %s (%s) is closed since %s: its mailboxes reach nobody and sync nothing until it reopens\n",
+			team.ID, team.Name, time.Unix(team.ClosedAt, 0).UTC().Format(time.RFC3339))
+		return nil
+	}
+	fmt.Printf("the team %s (%s) is open\n", team.ID, team.Name)
 	return nil
 }
 

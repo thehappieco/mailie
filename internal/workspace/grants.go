@@ -136,6 +136,8 @@ func grantOn(ctx context.Context, q querier, accountID, userID string) (Grant, e
 //
 // It is what a consent attempt is held to when it stores its grant: whoever
 // started it must still be someone who may (account.Registry.CheckFlowsWith).
+// Nobody manages a closed team's mailbox (Access), so an attempt finishing
+// after its team closed stores nothing.
 func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error {
 	mb, err := mailboxTx(ctx, tx, accountID)
 	if err != nil {
@@ -166,7 +168,10 @@ func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error 
 // grant on nor manage by their role is absent: the caller's own "access" on
 // each mailbox they see. One they hold a grant on is present even when every
 // flag it reports is off: a member waiting for the key holds read and act and
-// reads nothing yet, and still sees the mailbox's card.
+// reads nothing yet, and still sees the mailbox's card. A closed team's
+// mailboxes are absent, whatever the person holds there or their role
+// (store.OpenWorkspaceSQL): nothing in a closed team is used until it
+// reopens.
 func (r *Repository) Access(ctx context.Context, userID string, accountIDs []string) (map[string]Flags, error) {
 	return accessOn(ctx, r.store.Reader(), userID, accountIDs)
 }
@@ -187,7 +192,7 @@ func accessOn(ctx context.Context, q querier, userID string, accountIDs []string
 		  JOIN workspace_members m ON m.workspace_id = a.workspace_id AND m.user_id = ?1 AND m.status = 'active'
 		  JOIN users u ON u.id = m.user_id AND u.status = 'active'
 		  LEFT JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = m.user_id
-		 WHERE a.id IN (SELECT value FROM json_each(?2))
+		 WHERE a.id IN (SELECT value FROM json_each(?2)) AND `+store.OpenWorkspaceSQL("a.workspace_id")+`
 		   AND (g.account_id IS NOT NULL OR m.role IN ('owner', 'admin')))`,
 		userID, string(list))
 	if err != nil {
@@ -251,8 +256,9 @@ func (mb mailbox) grantable() error {
 // mailbox's workspace (ErrNotMember); flags must hold something (ErrNoFlags),
 // act only with read (ErrActWithoutRead), and manage only for a member: an
 // owner or an admin manages by their role (ErrManageByRole). Refused on a
-// personal or the operator workspace's mailbox, and when it would take read
-// from the last person who can read it (ErrLastReader).
+// personal or the operator workspace's mailbox, in a closed team (ErrClosed:
+// a grant is set there by no write, Revoke is how flags go), and when it
+// would take read from the last person who can read it (ErrLastReader).
 //
 // Who may grant what is the Check's to decide. Losing manage ends the
 // consent attempts the person started on the mailbox, in the same
@@ -305,6 +311,9 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 			return err
 		}
 		if err := runCheck(tx, check); err != nil {
+			return err
+		}
+		if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
 			return err
 		}
 		m, err := MemberTx(ctx, tx, mb.workspaceID, userID)
@@ -433,9 +442,12 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 
 // GrantLinkTx gives the person who links a mailbox read, act and send on it,
 // inside the transaction that creates it (LinkFlags): they manage it by their
-// role. They must be an active member of its workspace; who may link where is
-// the caller's to have decided.
+// role. They must be an active member of its workspace, which must be open
+// (ErrClosed); who may link where is the caller's to have decided.
 func GrantLinkTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID string, now time.Time) error {
+	if err := RequireOpenTx(ctx, tx, workspaceID); err != nil {
+		return err
+	}
 	m, err := MemberTx(ctx, tx, workspaceID, userID)
 	if err != nil {
 		return err

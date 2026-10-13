@@ -767,9 +767,10 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/users/disable` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}`: sessions ended, keys revoked, and `team_syncs_stopped` |
 | `POST /v1/users/delete` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}` → what was deleted, and `team_syncs_stopped` |
 | `GET /v1/providers` | read | which providers and flows **this** caller can use, the default first |
-| `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts |
+| `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts; a closed team with `closed_at`, when it closed |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
+| `POST /v1/workspaces/{id}/close`, `…/reopen` | operator, a local team only (a person: `403`) | `Workspace`; the console never calls them. While a team is closed its mailboxes are `404` for everyone, its keys included, and its members, invites, keys and directory `409` for its members ([`workspaces.md`](workspaces.md), "Closed teams") |
 | `GET /v1/workspaces/{id}/members` | owner or admin; operator (a member: `403`) | `[Member]`, with `last_owner`, `last_reader_of`, and each person's `seal_id` and `public_key` (absent until they enrol), which a grant to them is bound by and sealed to |
 | `PATCH /v1/workspaces/{id}/members/{user}` | owner: anyone's; admin: members', never to admin or owner; operator | `{role?, status?}` → `Member`; any change expires the invites the person made there |
 | `DELETE /v1/workspaces/{id}/members/{user}` | owner: anyone, themselves while another owner remains; admin: members; operator | 204; their grants there go, their invites there expire |

@@ -164,7 +164,7 @@ func (u *Users) CreateInvite(ctx context.Context, in NewInvite) (string, Invite,
 	return base64.RawURLEncoding.EncodeToString(raw), out, nil
 }
 
-// teamInvitableTx refuses a team invite into anything but a team whose
+// teamInvitableTx refuses a team invite into anything but an open team whose
 // memberships may change here, or for an address already a member of it.
 func (u *Users) teamInvitableTx(ctx context.Context, tx *sql.Tx, workspaceID, email string) error {
 	w, err := workspace.GetTx(ctx, tx, workspaceID)
@@ -178,6 +178,9 @@ func (u *Users) teamInvitableTx(ctx context.Context, tx *sql.Tx, workspaceID, em
 		return workspace.ErrOperator
 	case w.Source != workspace.SourceLocal:
 		return workspace.ErrManagedElsewhere
+	case !w.ClosedAt.IsZero():
+		// Nobody is invited into a closed team (the schema refuses it too).
+		return workspace.ErrClosed
 	}
 	if err := u.source.Changeable(); err != nil {
 		return err

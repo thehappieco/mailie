@@ -316,13 +316,17 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("storage", http.StatusOK, http.MethodGet, "/v1/me/storage", token, "")
 
 	// Workspaces, after everything else for the same reason: a team ana
-	// creates, which she lists beside her personal workspace; a person she
-	// invites who signs up with the link, one who already has an account
-	// and accepts, and one still on the way; a mailbox she links into the
-	// team, what she grants on it, and who holds what.
+	// creates, which she lists beside her personal workspace and another
+	// team of hers the operator closed; a person she invites who signs up
+	// with the link, one who already has an account and accepts, and one
+	// still on the way; a mailbox she links into the team, what she grants
+	// on it, and who holds what.
 	team := capture("workspace_created", http.StatusCreated, http.MethodPost, "/v1/workspaces", token,
 		`{"name":"Support"}`)
 	teamID, _ := team["id"].(string)
+	archive := capture("", http.StatusCreated, http.MethodPost, "/v1/workspaces", token, `{"name":"Archive"}`)
+	archiveID, _ := archive["id"].(string)
+	capture("", http.StatusOK, http.MethodPost, "/v1/workspaces/"+archiveID+"/close", h.key(t, auth.ScopeAdmin), "")
 	capture("workspaces", http.StatusOK, http.MethodGet, "/v1/workspaces", token, "")
 	invited := capture("team_invite", http.StatusCreated, http.MethodPost, "/v1/workspaces/"+teamID+"/invites", token,
 		`{"email":"bea@example.com","role":"member"}`)

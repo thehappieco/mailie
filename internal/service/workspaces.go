@@ -57,6 +57,12 @@ type Workspace struct {
 	Members   *int  `json:"members,omitempty"`
 	Mailboxes *int  `json:"mailboxes,omitempty"`
 	CreatedAt int64 `json:"created_at"`
+	// ClosedAt is when a team closed: nothing in it is used until it
+	// reopens — its mailboxes reach nobody, its keys included, and sync
+	// nothing, keeping their index, consent and grants — and nothing of it
+	// is changed. Absent while it is open, and for every workspace that is
+	// not a team.
+	ClosedAt int64 `json:"closed_at,omitempty"`
 }
 
 // CreateWorkspaceRequest creates a team.
@@ -278,6 +284,14 @@ var (
 		"members and admins do not leave a team by themselves: an owner removes an admin, and an owner or an admin a member", nil)
 	errGrantReadNotHeld = E(CodeNotAuthorized,
 		"you can grant read on a mailbox only while you read it yourself", nil)
+	// errTeamClosed is a closed team asked to be used or changed. Its
+	// mailboxes are not found instead: they reach nobody.
+	errTeamClosed = E(CodeConflict,
+		"this team is closed: nothing in it is used or changed until it reopens", nil)
+	errCloseOperator = E(CodeNotAuthorized,
+		"closing and reopening a team needs an unrestricted instance admin key", nil)
+	errOnlyTeamCloses = E(CodeBadRequest,
+		"only a team closes and reopens; a personal workspace and the operator workspace never do", nil)
 )
 
 // administers admits who may administer workspaces: a person signed in, or
@@ -297,7 +311,9 @@ func adminOf(m workspace.Member) bool {
 
 // workspaceOf reads a workspace the caller asks about, and their active
 // membership of it: the operator reaches every workspace and has none; a
-// person who is not an active member is told it does not exist.
+// person who is not an active member is told it does not exist, and one who
+// is that a closed team is closed: nothing in it is shown to its members
+// until it reopens, while the operator still reads it.
 func (s *Service) workspaceOf(ctx context.Context, p Principal, id string) (workspace.Workspace, workspace.Member, error) {
 	if s.workspaces == nil {
 		return workspace.Workspace{}, workspace.Member{}, errNoWorkspace
@@ -320,16 +336,21 @@ func (s *Service) workspaceOf(ctx context.Context, p Principal, id string) (work
 		return workspace.Workspace{}, workspace.Member{}, E(CodeInternal, "reading the workspace failed", err)
 	case !m.Active():
 		return workspace.Workspace{}, workspace.Member{}, errNoWorkspace
+	case !w.ClosedAt.IsZero():
+		return workspace.Workspace{}, workspace.Member{}, errTeamClosed
 	}
 	return w, m, nil
 }
 
 // callerTx re-reads, inside a write's transaction, the caller's place in a
 // workspace: the operator has none and needs none; a person must still be an
-// active member, or the workspace no longer exists for them.
+// active member, or the workspace no longer exists for them. A closed team
+// is changed by nobody, the operator included, until it reopens: every write
+// about a team, its members, invites, keys, grants and consents, runs this
+// first.
 func callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) (workspace.Member, error) {
 	if isOperator(p) {
-		return workspace.Member{}, nil
+		return workspace.Member{}, openTx(ctx, tx, workspaceID)
 	}
 	m, err := workspace.MemberTx(ctx, tx, workspaceID, p.UserID)
 	switch {
@@ -340,14 +361,31 @@ func callerTx(ctx context.Context, tx *sql.Tx, p Principal, workspaceID string) 
 	case !m.Active():
 		return workspace.Member{}, errNoWorkspace
 	}
+	if err := openTx(ctx, tx, workspaceID); err != nil {
+		return workspace.Member{}, err
+	}
 	return m, nil
+}
+
+// openTx refuses, inside a write's transaction, a closed team (conflict) and
+// a workspace nobody knows.
+func openTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
+	err := workspace.RequireOpenTx(ctx, tx, workspaceID)
+	switch {
+	case errors.Is(err, workspace.ErrClosed):
+		return errTeamClosed
+	case errors.Is(err, workspace.ErrNotFound):
+		return errNoWorkspace
+	}
+	return err
 }
 
 // ListWorkspaces lists the workspaces the caller reaches: a person's active
 // memberships, with their role in each; for an instance key the operator
 // workspace; for the operator every workspace, with how many members and
 // mailboxes each has. A workspace key lists its workspace, or, carried over
-// from a person's, the workspaces of the mailboxes it holds.
+// from a person's, the workspaces of the mailboxes it holds. A closed team is
+// listed with when it closed (closed_at), and nothing in it is used.
 func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace, error) {
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
@@ -913,9 +951,10 @@ func ParseFlags(list string) (workspace.Flags, error) {
 }
 
 // accessTarget reads a mailbox whose access the caller asks about. The
-// operator reaches any. A person must be an owner or an admin of its
-// workspace; a member who holds a grant on it sees it and is not_authorized;
-// anyone else is told it does not exist.
+// operator reaches any, and is refused a closed team's in the write. A
+// person must be an owner or an admin of its workspace; a member who holds a
+// grant on it sees it and is not_authorized; anyone else, and anyone at all
+// for a closed team's mailbox, is told it does not exist.
 func (s *Service) accessTarget(ctx context.Context, p Principal, accountID string) (account.Account, error) {
 	a, err := s.accounts.Repo().Get(ctx, accountID)
 	switch {
@@ -929,7 +968,9 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 	}
 	_, me, err := s.workspaceOf(ctx, p, a.WorkspaceID)
 	switch {
-	case CodeOf(err) == CodeNotFound:
+	case CodeOf(err) == CodeNotFound, errors.Is(err, errTeamClosed):
+		// A closed team's mailbox reaches nobody, its administrators
+		// included.
 		return account.Account{}, errNoAccount
 	case err != nil:
 		return account.Account{}, err
@@ -952,10 +993,12 @@ func (s *Service) accessTarget(ctx context.Context, p Principal, accountID strin
 // administratorTx re-reads, inside a write's transaction, that the caller
 // administers a mailbox's grants: the operator, or an active owner or admin
 // of its workspace, whose membership it returns. A member who holds a grant
-// on it is not_authorized; anyone else is told it does not exist.
+// on it is not_authorized; anyone else is told it does not exist, and so is
+// every person for a closed team's mailbox, which the operator is refused
+// as closed.
 func administratorTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) (workspace.Member, error) {
 	if isOperator(p) {
-		return workspace.Member{}, nil
+		return workspace.Member{}, openTx(ctx, tx, a.WorkspaceID)
 	}
 	me, err := callerTx(ctx, tx, p, a.WorkspaceID)
 	if err != nil {
@@ -996,7 +1039,8 @@ func mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account,
 		if added.Read || added.Act || added.Send {
 			return errOperatorGrantsManage
 		}
-		return nil
+		_, err := administratorTx(ctx, tx, p, a)
+		return err
 	}
 	if _, err := administratorTx(ctx, tx, p, a); err != nil {
 		return err
@@ -1040,6 +1084,9 @@ func presentWorkspace(w workspace.Workspace, counts bool) Workspace {
 	out := Workspace{
 		ID: w.ID, Kind: string(w.Kind), Source: w.Source, Name: w.Name,
 		Role: string(w.Role), Status: string(w.Status), CreatedAt: w.CreatedAt.Unix(),
+	}
+	if !w.ClosedAt.IsZero() {
+		out.ClosedAt = w.ClosedAt.Unix()
 	}
 	if counts {
 		members, mailboxes := w.Members, w.Mailboxes

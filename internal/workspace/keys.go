@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"slices"
 	"time"
+
+	"github.com/thehappieco/mailie/internal/store"
 )
 
 // What a workspace's API keys hold on its mailboxes (docs/workspaces.md, "API
@@ -191,8 +193,9 @@ func keyRefOn(ctx context.Context, q querier, prefix string) (KeyRef, error) {
 
 // PutKeyAccessTx gives a key what grant names on one mailbox of its
 // workspace, inside the transaction that issues the key: the flags must be
-// valid for its scope, and the mailbox in its workspace (ErrNoMailbox). Who
-// may give what is the caller's to have decided.
+// valid for its scope, the mailbox in its workspace (ErrNoMailbox), and the
+// workspace open (ErrClosed). Who may give what is the caller's to have
+// decided.
 func PutKeyAccessTx(ctx context.Context, tx *sql.Tx, prefix, workspaceID string, grant KeyGrant, grantedBy string, now time.Time) error {
 	if err := checkKeyFlags(grant.Flags); err != nil {
 		return err
@@ -203,6 +206,9 @@ func PutKeyAccessTx(ctx context.Context, tx *sql.Tx, prefix, workspaceID string,
 	}
 	if mb.workspaceID != workspaceID {
 		return ErrNoMailbox
+	}
+	if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
+		return err
 	}
 	return writeKeyAccessTx(ctx, tx, prefix, mb.workspaceID, grant, grantedBy, now, false)
 }
@@ -257,8 +263,9 @@ func keyAccessTx(ctx context.Context, q querier, prefix, accountID string) (KeyA
 // workspace (ErrNoMailbox); the flags must hold read, act or send
 // (ErrNoFlags), act only with read (ErrActWithoutRead), never manage
 // (ErrManageByRole), and only what the key's scope allows (ErrKeyScope). A
-// carried-over key may only lose flags (ErrCarriedOver). Who may give what
-// is check's to decide; it runs first.
+// carried-over key may only lose flags (ErrCarriedOver). Refused in a closed
+// team (ErrClosed): DropKeyAccess is how a mailbox goes from a key there.
+// Who may give what is check's to decide; it runs first.
 func (r *Repository) SetKeyAccess(ctx context.Context, prefix, accountID string, flags Flags, grantedBy string, check KeyCheck) (KeyAccess, error) {
 	if err := checkKeyFlags(flags); err != nil {
 		return KeyAccess{}, err
@@ -274,6 +281,9 @@ func (r *Repository) SetKeyAccess(ctx context.Context, prefix, accountID string,
 			if err := check(tx, k, mb.workspaceID, before.Flags); err != nil {
 				return err
 			}
+		}
+		if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
+			return err
 		}
 		if !k.Live(now) {
 			return ErrKeyNotLive
@@ -346,8 +356,9 @@ func keyTargetTx(ctx context.Context, tx *sql.Tx, prefix, accountID string) (Key
 }
 
 // KeyAccessOf reads what a key holds on each mailbox named: a mailbox it holds
-// nothing on is absent. Whether the key still works is its authentication's
-// and its re-check's, as for a session.
+// nothing on is absent, and so is a closed team's, whatever the key holds
+// there (store.OpenWorkspaceSQL). Whether the key still works is its
+// authentication's and its re-check's, as for a session.
 func (r *Repository) KeyAccessOf(ctx context.Context, prefix string, accountIDs []string) (map[string]Flags, error) {
 	out := make(map[string]Flags, len(accountIDs))
 	if len(accountIDs) == 0 || prefix == "" {
@@ -359,7 +370,8 @@ func (r *Repository) KeyAccessOf(ctx context.Context, prefix string, accountIDs 
 	}
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT x.account_id, x.read, x.act, x.send
 		  FROM key_access x
-		 WHERE x.key_prefix = ? AND x.account_id IN (SELECT value FROM json_each(?))`, prefix, string(list))
+		 WHERE x.key_prefix = ? AND x.account_id IN (SELECT value FROM json_each(?))
+		   AND `+store.OpenWorkspaceSQL("x.workspace_id"), prefix, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("workspace: read what the key holds: %w", err)
 	}

@@ -52,6 +52,10 @@ conflicts with the code or with another rule, it says so in
   may send, with the `send` scope and flag and `confirm: true`, unless the server says keys may not
   (`MAIL_KEYS_MAY_SEND=false`). It stops when its creator leaves the workspace or is disabled or
   deleted on the instance. See [API keys](#api-keys).
+- A **closed team** is used by nobody until it reopens: its mailboxes reach nobody, its keys
+  included, and sync nothing, keeping their index, consent and grants, and nothing in it changes.
+  The operator closes a local team; a team from another source closes where it is managed. See
+  [Closed teams](#closed-teams).
 - The same address may be linked in several workspaces; each link is an independent mailbox with
   its own credentials, worker and index. Within one workspace an address is linked at most once.
 - `users.role` (`owner`, `member`) is purely the **instance role** of a self-hosted server. It
@@ -71,7 +75,7 @@ conflicts with the code or with another rule, it says so in
 | `operator` | exactly one | none | migration 0008 |
 
 ```sql
-workspaces(id, kind, source, name, person_id, created_at, updated_at)
+workspaces(id, kind, source, name, person_id, created_at, updated_at, closed_at)
 ```
 
 - `id` is `wsp_` and 16 hex characters for a workspace created here, the platform's own id for
@@ -87,8 +91,10 @@ workspaces(id, kind, source, name, person_id, created_at, updated_at)
   personal workspace explicitly, in the deletion's transaction, as their mailboxes are today.
 - A unique partial index on `kind` where `kind = 'operator'` keeps the operator workspace single.
 - `kind`, `source` and `person_id` never change once the row is written: a trigger refuses any
-  update that changes one of them (`workspaces_fixed`, migration 0016). Only a team's `name` and
-  `updated_at` ever change.
+  update that changes one of them (`workspaces_fixed`, migration 0016). Only a team's `name`, its
+  `closed_at` and `updated_at` ever change.
+- `closed_at` is when a team closed, 0 while it is open (migration 0019); only a team closes (a
+  CHECK). See [Closed teams](#closed-teams).
 
 A local team is deleted only with its last member (`user delete`), with its mailboxes; a team whose
 source is not local outlives every person here, its last one included (see
@@ -302,6 +308,48 @@ gives a consent or counts in a protection. What tells them apart is what they ke
   nothing; suspending someone disabled here marks nothing; and switching a suspended person back on
   here is refused (`auth.ErrUserSuspended`): only a resume lifts a suspension.
 
+### Closed teams
+
+A team may be **closed** (migration 0019, `workspaces.closed_at`): nothing in it is used until it
+reopens, and nothing it holds is lost meanwhile.
+
+- **Its mailboxes reach nobody**, its owners, its admins and its keys included: they are not
+  listed, and every route about one answers `404`, as for a mailbox the caller holds nothing on.
+  They **sync nothing** — the engine is told at once, and the eligibility rule refuses any batch
+  still on its way — and **keep** their index, their consent to sync, every grant and sealed grant,
+  and what the team's keys hold on them. Closing is a gate on using a mailbox
+  (`store.OpenWorkspaceSQL`, beside the reading rule wherever a mailbox is reached and wherever it
+  syncs), never part of who reads it: the reader rule, the last-reader protection and `no_reader`
+  are what they were.
+- **Its keys stay**, live and holding what they held, and reach nothing: a closed team's key still
+  authenticates and lists its workspace, and nothing else. None is revoked for the closure.
+- **Nothing in it changes**, by anyone, the operator included: nothing is linked, granted, keyed,
+  invited or consented, and no member, invite, name, key or grant changes through the team, until
+  it reopens (`409`). A key may still stop from outside it — its creator revoking it among their
+  own keys, the operator revoking any key, its creator closed on the instance — since stopping one
+  takes something away. The schema holds the part that gives something (triggers on `accounts`,
+  `mailbox_access`, `mailbox_keys`, `mailbox_grants`, `api_keys`, `key_access` and `invites`);
+  what takes something away, and every change to the memberships, stays allowed there, so that
+  whatever keeps a team from another source in step with it applies them while it is closed.
+- **Its members still list it**, with when it closed (`closed_at` in `GET /v1/workspaces`), and are
+  told it is closed (`409`) for its members, invites, keys and who holds what; someone outside it
+  is still told it does not exist (`404`). The operator still reads its members and who holds
+  what.
+- **Closing it ends** the invites into it still waiting (they expire) and the consent attempts on
+  its mailboxes (their rows go; one already past its row stores nothing, since nobody manages a
+  closed team's mailbox). Neither comes back when it reopens.
+- **Reopened, it is as it was**: its mailboxes reach whoever holds them, catch up, and its keys
+  reach what they hold.
+
+**Who closes a team.** A local team is closed and reopened by the operator alone, with an
+unrestricted instance admin key (`mailserver workspace close|reopen`,
+`POST /v1/workspaces/{id}/close|reopen`): no person closes one, its owner included, and the console
+has no such action. A team whose source is not local closes and reopens where it is managed; an
+extension of the daemon follows it (`Service.CloseTeam`, `Service.ReopenTeam`, and
+`workspace.SetClosedTx` for whatever applies the rest of such a change in one transaction), and the
+operator is refused it (`409`, managed elsewhere). A personal workspace and the operator's never
+close (`400`). The daemon lists the closed teams at start.
+
 Invitations stay single use, bound to one address, valid for 7 days, and their code travels in the
 link's fragment. There are two kinds, in the same `invites` table:
 
@@ -372,6 +420,9 @@ the invites whose creator could no longer make them.
   eligibility rule requires the person, and the person a bound consent is bound to, active; each
   keeps its index and its consent, and catches up once they are resumed. A team mailbox only they
   would read waits for them the same way.
+- A **closed team**'s mailboxes sync nothing, whatever their consent and readers, and nobody turns
+  their sync on or off meanwhile: each keeps its index and its consent, and catches up once the
+  team reopens ([Closed teams](#closed-teams)).
 - A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
   admins see it marked (`no_reader`). One a suspended member would read once resumed is not marked:
   it waits for them. Read passes only from someone who reads it, so its sync is
@@ -552,10 +603,10 @@ The seven codes do not change.
 
 | Situation | Code |
 |---|---|
-| a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of; a grant's recipient who is not an active member of the mailbox's workspace | `404 not_found`, never `403` |
+| a mailbox the caller neither holds a grant on nor manages by their role, another workspace's mailbox, a workspace the caller is not an active member of; a grant's recipient who is not an active member of the mailbox's workspace; a closed team's mailbox, for every person and key | `404 not_found`, never `403` |
 | a mailbox the caller sees, without the flag the operation needs (a member waiting for the key reads nothing); a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration, key or mailbox-key route; a key's send where keys may not send; a giver of `read` or of the key, or a first key's writer, who does not read the mailbox now; a step-up more than ten minutes old; a team mailbox's new key | `403 not_authorized` |
-| a protection; a platform-sourced workspace changed locally; a missing actions or send consent; a grant at another epoch than the mailbox key's current one, or a new key at another than the next; a grant that already exists; a grant that names another account public key than its recipient's now (they were reset since the console read them); a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace another mailbox uses; a grant for a person without an account key, or the key for one who holds no `read`; a person without an account key linking a mailbox | `409 conflict` |
-| a personal or the operator workspace as the target of a member, grant or invite operation; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys`; a public key, namespace, grant or epoch outside its shape, or a grant at odds with the epoch its request names; a grant without the `public_key` it was sealed to, or a `public_key` without a grant; a person's link without its key, or an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400 bad_request` |
+| a protection; a platform-sourced workspace changed locally, or closed by the operator; a closed team used or changed (its members, invites, keys, grants, name, a mailbox linked into it); a missing actions or send consent; a grant at another epoch than the mailbox key's current one, or a new key at another than the next; a grant that already exists; a grant that names another account public key than its recipient's now (they were reset since the console read them); a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace another mailbox uses; a grant for a person without an account key, or the key for one who holds no `read`; a person without an account key linking a mailbox | `409 conflict` |
+| a personal or the operator workspace as the target of a member, grant or invite operation, or closed; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys`; a public key, namespace, grant or epoch outside its shape, or a grant at odds with the epoch its request names; a grant without the `public_key` it was sealed to, or a `public_key` without a grant; a person's link without its key, or an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400 bad_request` |
 
 ## API keys
 
@@ -758,9 +809,11 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 
 | Route | Who | What |
 |---|---|---|
-| `GET /v1/workspaces` | read | `[Workspace]`: a person's active memberships; an instance key the operator workspace; the operator every workspace |
+| `GET /v1/workspaces` | read | `[Workspace]`: a person's active memberships; an instance key the operator workspace; the operator every workspace; a closed team with its `closed_at` |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team, `local` source only |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
+| `POST /v1/workspaces/{id}/close` | operator, a local team only | `Workspace`, with `closed_at`: nothing in the team is used until it reopens; closing a closed team changes nothing |
+| `POST /v1/workspaces/{id}/reopen` | operator, a local team only | `Workspace`, as it was before it closed |
 | `GET /v1/workspaces/{id}/members` | owner or admin; operator (a member: `403`) | `[Member]` |
 | `PATCH /v1/workspaces/{id}/members/{user_id}` | see the table; operator | `{role?, status?}` → `Member` |
 | `DELETE /v1/workspaces/{id}/members/{user_id}` | see the table (an owner themselves while another owner remains); operator | `204` |
@@ -811,7 +864,8 @@ Shapes:
 // Workspace
 {"id": "wsp_0a1b2c3d4e5f6a7b", "kind": "team", "source": "local", "name": "Support",
  "role": "admin", "status": "active", "created_at": 1790000000}
-// the operator's listing has no role or status, and adds "members" and "mailboxes" counts
+// the operator's listing has no role or status, and adds "members" and "mailboxes" counts;
+// a closed team adds "closed_at", when it closed
 
 // Member ("person_disabled": true only for a person switched off on the instance, disabled here or
 // suspended; "person_suspended": true only for a suspended one; last_reader_of
@@ -904,6 +958,8 @@ The command line stays a client of the daemon with `MAIL_ADMIN_KEY`, the operato
 mailserver workspace list
 mailserver workspace create --name NAME --owner EMAIL
 mailserver workspace rename --workspace ID --name NAME
+mailserver workspace close  --workspace ID     # a local team: nothing in it is used until it reopens
+mailserver workspace reopen --workspace ID
 mailserver member list   --workspace ID
 mailserver member role   --workspace ID --email EMAIL --role owner|admin|member
 mailserver member remove --workspace ID --email EMAIL
@@ -914,6 +970,8 @@ mailserver user invite --email EMAIL [--role owner|member]                      
 mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
 ```
 
+- `workspace close` and `reopen` take a local team only; `workspace list` notes a closed one
+  (`closed since …`). See [Closed teams](#closed-teams).
 - `access grant` grants `manage` only, to a member: `read` passes from an owner or an admin who
   reads the mailbox, and `act` and `send` from an owner or an admin, in the console
   ([conflict 7](#conflicts-and-resolutions)). `access list` shows each mailbox's own consent to sync
@@ -1187,6 +1245,16 @@ refuses a suspended person with nothing changed in it (see
 `internal/store/migrate_eighteen_test.go` hold every table's rows as they were and the CHECK's
 refusals.
 
+## Migration 0019
+
+`0019_closed_teams.sql`, an ordinary migration: one column, `workspaces.closed_at`, 0 while a team
+is open, with a CHECK that only a team closes, and the triggers that give nothing in a closed team
+(`accounts`, `mailbox_access` and `key_access` inserts and flags going from 0 to 1,
+`mailbox_keys`, `mailbox_grants`, `api_keys` and team `invites`). No row of a schema-18 database
+changes: every team is open. See [Closed teams](#closed-teams). The tests in
+`internal/store/migrate_nineteen_test.go` hold every table's rows and every trigger as they were,
+and each refusal and what stays allowed.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -1428,6 +1496,15 @@ Test names state the guarantee. At least:
   `TestAKeysListAccountsCarriesNoMailboxKey` (MCP), `TestTheMailboxKeyRoutesAreThinOverTheService` and
   `TestNoRouteTakesAMailboxPrivateKey` (REST, no route taking a private key).
 
+- Closed teams: `TestAClosedTeamsMailboxesReachNobodyOwnersIncluded`,
+  `TestAClosedTeamsKeysReachNothingAndWorkAgainOnReopening`,
+  `TestAClosedTeamSyncsNothingAndKeepsItsIndexAndConsent`,
+  `TestNothingIsLinkedKeyedGrantedOrConsentedInAClosedTeam`, `TestTheSchemaGivesNothingInAClosedTeam`,
+  `TestOnlyATeamCloses`, `TestClosingATeamEndsItsWaitingInvitesAndConsentAttempts`,
+  `TestReopeningATeamRestoresAccessAndSync`, `TestTheCommandLineClosesOnlyALocalTeam`,
+  `TestAClosedTeamIsListedAsClosed` and, over REST,
+  `TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens`.
+
 ## Conflicts and resolutions
 
 1. **The linker's consent outlived the linker's membership.** Phase 2 kept a team mailbox syncing
@@ -1631,6 +1708,8 @@ Test names state the guarantee. At least:
 - A send tool over MCP (the planned draft and confirmed send); keys send over REST.
 - Deleting a team workspace but with its last member; moving a mailbox between workspaces (link it
   again instead).
+- Closing a team from the console, or by its owners: the operator closes a local team, and a
+  team from another source closes where it is managed.
 - The platform source beyond its stub, a later step; with it, an edition's own screens for teams
   (the open edition's Members section is for the local source only).
 - Selecting a workspace per MCP session; an MCP tool for workspaces.

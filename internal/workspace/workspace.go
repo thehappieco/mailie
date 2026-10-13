@@ -113,6 +113,10 @@ type Workspace struct {
 	PersonID  string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// ClosedAt is when a team closed (SetClosed): nothing in it is used until
+	// it reopens. Zero while it is open, and for every workspace that is not
+	// a team, which never closes.
+	ClosedAt time.Time
 
 	// Role and Status are the caller's own membership, in ForPerson.
 	Role   Role
@@ -175,6 +179,11 @@ var (
 	// ErrHoldsMailboxes is a workspace deleted while a mailbox is still in
 	// it: the mailboxes go first, in the same transaction.
 	ErrHoldsMailboxes = errors.New("workspace: the workspace still holds mailboxes")
+	// ErrClosed is a change that would give a closed team something:
+	// linking a mailbox into it, a grant, a mailbox key or a sealed grant on
+	// one of its mailboxes, a key of it or a mailbox of it given to a key,
+	// an invite into it. Nothing in a closed team is used until it reopens.
+	ErrClosed = errors.New("workspace: the team is closed")
 )
 
 // Check is run first inside a write's transaction: the service's re-check of
@@ -225,7 +234,8 @@ func newID() (string, error) {
 	return "wsp_" + hex.EncodeToString(raw), nil
 }
 
-const workspaceColumns = `w.id, w.kind, w.source, w.name, coalesce(w.person_id, ''), w.created_at, w.updated_at`
+const workspaceColumns = `w.id, w.kind, w.source, w.name, coalesce(w.person_id, ''), w.created_at, w.updated_at,
+	w.closed_at`
 
 type rowScanner interface {
 	Scan(dest ...any) error
@@ -233,17 +243,17 @@ type rowScanner interface {
 
 func scanWorkspace(row rowScanner, extra ...any) (Workspace, error) {
 	var (
-		w                Workspace
-		created, updated int64
+		w                        Workspace
+		created, updated, closed int64
 	)
-	dest := append([]any{&w.ID, &w.Kind, &w.Source, &w.Name, &w.PersonID, &created, &updated}, extra...)
+	dest := append([]any{&w.ID, &w.Kind, &w.Source, &w.Name, &w.PersonID, &created, &updated, &closed}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Workspace{}, ErrNotFound
 		}
 		return Workspace{}, fmt.Errorf("workspace: scan: %w", err)
 	}
-	w.CreatedAt, w.UpdatedAt = unix(created), unix(updated)
+	w.CreatedAt, w.UpdatedAt, w.ClosedAt = unix(created), unix(updated), unix(closed)
 	return w, nil
 }
 
@@ -433,6 +443,99 @@ func (r *Repository) Rename(ctx context.Context, id, name string, check Check) (
 		return Workspace{}, err
 	}
 	return out, nil
+}
+
+// RequireOpenTx is nil when a workspace is open, inside the caller's
+// transaction: ErrClosed for a closed team, ErrNotFound for a workspace
+// nobody knows. Every write that would give a team something runs it — a
+// mailbox linked, a grant, a mailbox key or a sealed grant written, a key
+// given a mailbox — and none that takes something away: the schema holds
+// the same line (migration 0019).
+func RequireOpenTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
+	var closed int64
+	err := tx.QueryRowContext(ctx, `SELECT closed_at FROM workspaces WHERE id = ?`, workspaceID).Scan(&closed)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return fmt.Errorf("workspace: read whether the team is closed: %w", err)
+	case closed != 0:
+		return ErrClosed
+	}
+	return nil
+}
+
+// SetClosed closes a team, or reopens it, and reports whether that changed
+// anything and the team's mailboxes, oldest first, whose use and sync it
+// just stopped or gave back. Only a team closes (ErrPersonal, ErrOperator);
+// whoever asks, the team's source is not this method's to judge: the
+// operator closes only a local team, and an extension of the daemon any
+// (internal/service). Closing or reopening a team as it already is changes
+// nothing, and lists no mailbox.
+//
+// While a team is closed nothing in it is used: its mailboxes reach nobody,
+// its owners and its keys included, and sync nothing, keeping their index,
+// their consent to sync, their grants and the keys that hold them; nothing
+// is linked, granted, keyed or invited there (RequireOpenTx, and the
+// schema). Closing it also expires the invites into it still waiting, and
+// ends the consent attempts on its mailboxes: a redirect that comes back
+// later is refused, and a listener or a device poll the daemon runs finds
+// nothing to store (ManagesTx refuses it too). Reopening it gives back
+// exactly what it had: an expired invite or an ended attempt does not come
+// back.
+func (r *Repository) SetClosed(ctx context.Context, id string, closed bool) (changed bool, accounts []string, err error) {
+	now := r.now()
+	err = r.store.Write(ctx, func(tx *sql.Tx) error {
+		changed, accounts, err = SetClosedTx(ctx, tx, id, closed, now)
+		return err
+	})
+	if err != nil {
+		return false, nil, err
+	}
+	return changed, accounts, nil
+}
+
+// SetClosedTx is SetClosed inside the caller's transaction, for whatever
+// keeps a team from another source in step with it, which closes or reopens
+// it in the transaction that applies the rest.
+func SetClosedTx(ctx context.Context, tx *sql.Tx, id string, closed bool, now time.Time) (bool, []string, error) {
+	w, err := GetTx(ctx, tx, id)
+	if err != nil {
+		return false, nil, err
+	}
+	switch w.Kind {
+	case KindPersonal:
+		return false, nil, ErrPersonal
+	case KindOperator:
+		return false, nil, ErrOperator
+	}
+	if closed == !w.ClosedAt.IsZero() {
+		return false, nil, nil
+	}
+	at := now.UTC().Unix()
+	closedAt := int64(0)
+	if closed {
+		closedAt = at
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workspaces SET closed_at = ?, updated_at = ? WHERE id = ?`,
+		closedAt, at, id); err != nil {
+		return false, nil, fmt.Errorf("workspace: close or reopen the team: %w", err)
+	}
+	if closed {
+		if _, err := tx.ExecContext(ctx, `UPDATE invites SET expires_at = ?1
+			WHERE workspace_id = ?2 AND used_at = 0 AND expires_at > ?1`, at, id); err != nil {
+			return false, nil, fmt.Errorf("workspace: expire the invites into the closed team: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
+			WHERE account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`, id); err != nil {
+			return false, nil, fmt.Errorf("workspace: end the consent attempts of the closed team: %w", err)
+		}
+	}
+	accounts, err := listIDs(ctx, tx, `SELECT id FROM accounts WHERE workspace_id = ? ORDER BY created_at, rowid`, id)
+	if err != nil {
+		return false, nil, err
+	}
+	return true, accounts, nil
 }
 
 func runCheck(tx *sql.Tx, check Check) error {

@@ -51,6 +51,34 @@ func (h *Handler) renameWorkspace(q *request) {
 	q.finish(http.StatusOK, out)
 }
 
+// closeWorkspace and reopenWorkspace are the operator's: a local team, with
+// an unrestricted instance admin key.
+func (h *Handler) closeWorkspace(q *request) {
+	if err := q.decodeOptional(&struct{}{}); err != nil {
+		q.fail(err)
+		return
+	}
+	out, err := h.Service.CloseWorkspace(q.ctx(), q.principal, q.r.PathValue("id"))
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusOK, out)
+}
+
+func (h *Handler) reopenWorkspace(q *request) {
+	if err := q.decodeOptional(&struct{}{}); err != nil {
+		q.fail(err)
+		return
+	}
+	out, err := h.Service.ReopenWorkspace(q.ctx(), q.principal, q.r.PathValue("id"))
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusOK, out)
+}
+
 func (h *Handler) listMembers(q *request) {
 	if _, err := q.query(); err != nil {
 		q.fail(err)

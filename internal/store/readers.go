@@ -13,8 +13,10 @@ package store
 //
 // The packages that decide access build their queries from these fragments
 // and from nothing else: this package's sync eligibility, workspace's last
-// reader, access and directory, and account's visibility. It lives here
-// because store imports neither of them; a copy elsewhere is a second rule.
+// reader, access and directory, and account's visibility. Whether a team is
+// closed is a gate beside the rule, never part of it (OpenWorkspaceSQL). It
+// lives here because store imports neither of them; a copy elsewhere is a
+// second rule.
 //
 // Each fragment takes the SQL expressions it is about (an alias's column,
 // a bound parameter) and names its own tables reader_*, so it nests inside a
@@ -75,6 +77,19 @@ func SuspendedReaderSQL(alias string) string {
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.suspended_at <> 0)
 	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
+}
+
+// OpenWorkspaceSQL is the condition that the workspace whose id is the
+// expression workspace is not a closed team (migration 0019): closing a team
+// is a gate on using its mailboxes, never part of who reads them. It is
+// added beside the reading rule wherever a mailbox is reached — a person's
+// and a key's visibility, a person's access, what a key holds — and where it
+// syncs, so a closed team's mailboxes reach nobody and index nothing, while
+// ReaderSQL and the protections it decides go on as they were: reopened, the
+// team is as it was. A workspace nobody knows is open: what it is about is
+// for the query to have found.
+func OpenWorkspaceSQL(workspace string) string {
+	return `NOT EXISTS (SELECT 1 FROM workspaces reader_w WHERE reader_w.id = ` + workspace + ` AND reader_w.closed_at <> 0)`
 }
 
 // WaitingSQL is the condition, over mailbox_access aliased alias, that its

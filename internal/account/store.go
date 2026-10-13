@@ -281,7 +281,10 @@ const (
 // too, since an action names messages its actor reads. A workspace key sees
 // a mailbox it holds something on, and Need narrows to what it holds; a key
 // never manages. Whether the key still works is its authentication's, and
-// the re-check's before every answer, as a session's is.
+// the re-check's before every answer, as a session's is. A closed team's
+// mailboxes reach neither a person nor a key (store.OpenWorkspaceSQL),
+// whatever they hold there; the operator's own views (All, Unowned) are not
+// narrowed by it.
 type Visibility struct {
 	// All is every account, for the daemon's own reads.
 	All bool
@@ -312,7 +315,7 @@ func (v Visibility) clause() (string, []any) {
 			byRole := !v.Need.Read && !v.Need.Act && !v.Need.Send
 			parts = append(parts, `EXISTS (SELECT 1 FROM workspace_members m JOIN users u ON u.id = m.user_id
 		           WHERE m.workspace_id = accounts.workspace_id AND m.user_id = ? AND m.status = 'active'
-		             AND u.status = 'active'
+		             AND u.status = 'active' AND `+store.OpenWorkspaceSQL("accounts.workspace_id")+`
 		             AND (EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = accounts.id AND g.user_id = m.user_id
 		                            AND g.read >= ? AND g.act >= ? AND g.send >= ?
 		                            AND (NOT ? OR `+store.ReaderSQL("g")+`)
@@ -321,9 +324,10 @@ func (v Visibility) clause() (string, []any) {
 			args = append(args, v.UserID, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Read || v.Need.Act, v.Need.Manage, byRole)
 		}
 		if v.Key != "" {
-			parts = append(parts, `EXISTS (SELECT 1 FROM key_access x
+			parts = append(parts, `(EXISTS (SELECT 1 FROM key_access x
 		           WHERE x.key_prefix = ? AND x.account_id = accounts.id
-		             AND x.read >= ? AND x.act >= ? AND x.send >= ? AND NOT ?)`)
+		             AND x.read >= ? AND x.act >= ? AND x.send >= ? AND NOT ?)
+		         AND `+store.OpenWorkspaceSQL("accounts.workspace_id")+`)`)
 			args = append(args, v.Key, v.Need.Read, v.Need.Act, v.Need.Send, v.Need.Manage)
 		}
 		if v.Unowned {

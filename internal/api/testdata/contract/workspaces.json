@@ -9,6 +9,16 @@
     "status": "active"
   },
   {
+    "closed_at": 1790000000,
+    "created_at": 1790000000,
+    "id": "wsp_0000000000000003",
+    "kind": "team",
+    "name": "Archive",
+    "role": "owner",
+    "source": "local",
+    "status": "active"
+  },
+  {
     "created_at": 1790000000,
     "id": "wsp_0000000000000002",
     "kind": "team",

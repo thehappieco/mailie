@@ -159,6 +159,11 @@ Usage:
                                           Create a team owned by an existing person
   mailserver workspace rename --workspace ID --name NAME
                                           Rename a team
+  mailserver workspace close --workspace ID
+                                          Close a team: its mailboxes reach nobody and sync nothing, kept,
+                                          until it reopens
+  mailserver workspace reopen --workspace ID
+                                          Reopen a closed team as it was
   mailserver member list --workspace ID   List a workspace's members
   mailserver member role --workspace ID --email ADDR --role owner|admin|member
                                           Change a member's role in a team

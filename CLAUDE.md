@@ -113,7 +113,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
   and the workspace `Source` (local; the platform's is a stub). A workspace's kind, source and
-  person never change (migration 0016's trigger). Only a local team goes with its only member
+  person never change (migration 0016's trigger); a team closes and reopens (`SetClosed`,
+  `closed_at`, migration 0019), and nothing in it is used meanwhile. Only a local team goes with its only member
   (`GoesWithPersonSQL`, the one rule for deleting it, its mailboxes and the last-reader test); a
   team whose source is not local outlives its people, its last one here included, and has no last
   owner here. See `docs/workspaces.md`.
@@ -307,7 +308,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
   leaves the workspace or is disabled, suspended or deleted (not on a demotion). A suspended person
   reads nothing, waits for no key, is supplied none and counts in no protection; their grants
-  persist for a resume, which restores no session and no key.
+  persist for a resume, which restores no session and no key. A closed team (migration 0019) is a
+  gate on use, never the reading rule (`store.OpenWorkspaceSQL` beside `ReaderSQL` in visibility,
+  access, what a key holds and sync): its mailboxes reach nobody, its owners and keys included
+  (`not_found`), and nothing in it changes, by anyone, until it reopens (`conflict`; the schema
+  refuses what would give it something); its grants and keys are kept. Only the operator closes a
+  local team; a team from another source closes where it is managed, through an extension.
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -326,7 +332,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   reader. A team consent migration 0011 copied from its linker (`sync_enabled_via = 'migration'`)
   stays bound to them until confirmed: their withdrawal, disable or deletion stops it and deletes
   its index (closing them is refused without force while someone else reads it); their suspension
-  pauses it, as it pauses their personal mailboxes, index kept. A team mailbox
+  pauses it, as it pauses their personal mailboxes, index kept. A closed team's mailboxes sync
+  nothing, their index and consent kept, until it reopens. A team mailbox
   nobody can read is never switched on. Closing a person without force is refused for the last
   reader of a team that outlives them (any other member, whatever their status), the same test as
   whether the team goes with them. Actions and sending have their own consents, the actor's own,

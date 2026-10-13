@@ -528,3 +528,75 @@ func TestTheWorkspaceRoutesAreThinOverTheService(t *testing.T) {
 	status(http.MethodDelete, "/v1/accounts/"+tm.shared+"?confirm="+tm.shared, tm.bea, "", http.StatusNoContent)
 	status(http.MethodGet, "/v1/accounts/"+tm.shared, tm.ana, "", http.StatusNotFound)
 }
+
+func TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens(t *testing.T) {
+	h := newHarness(t, false)
+	tm := newSupportTeam(t, h)
+	operator := h.key(t, auth.ScopeAdmin)
+	status := func(method, path, token string, want int) *http.Response {
+		t.Helper()
+		resp := h.do(t, method, path, token, "")
+		if resp.StatusCode != want {
+			code, msg := decodeError(t, resp)
+			t.Fatalf("%s %s: %d %s %s, want %d", method, path, resp.StatusCode, code, msg, want)
+		}
+		return resp
+	}
+	closedAt := func(token string) int64 {
+		t.Helper()
+		var listed []struct {
+			ID       string `json:"id"`
+			ClosedAt int64  `json:"closed_at"`
+		}
+		decodeInto(t, status(http.MethodGet, "/v1/workspaces", token, http.StatusOK), &listed)
+		for _, w := range listed {
+			if w.ID == tm.id {
+				return w.ClosedAt
+			}
+		}
+		t.Fatalf("the listing has no %s", tm.id)
+		return 0
+	}
+	routes := []string{
+		"/v1/accounts/" + tm.shared,
+		"/v1/accounts/" + tm.shared + "/folders",
+		"/v1/messages?account=" + tm.shared,
+	}
+	for _, path := range routes {
+		status(http.MethodGet, path, tm.ana, http.StatusOK)
+	}
+
+	// No person closes a team, its owner included.
+	status(http.MethodPost, "/v1/workspaces/"+tm.id+"/close", tm.ana, http.StatusForbidden)
+	var closed struct {
+		ID       string `json:"id"`
+		ClosedAt int64  `json:"closed_at"`
+	}
+	decodeInto(t, status(http.MethodPost, "/v1/workspaces/"+tm.id+"/close", operator, http.StatusOK), &closed)
+	if closed.ID != tm.id || closed.ClosedAt == 0 {
+		t.Fatalf("closing answered %+v", closed)
+	}
+	for _, path := range append(routes, fmt.Sprintf("/v1/messages/%d", tm.message)) {
+		status(http.MethodGet, path, tm.ana, http.StatusNotFound)
+	}
+	var page struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	decodeInto(t, status(http.MethodGet, "/v1/messages?q=refund", tm.ana, http.StatusOK), &page)
+	if len(page.Messages) != 0 {
+		t.Errorf("a search finds %d messages of the closed team's mailbox", len(page.Messages))
+	}
+	if at := closedAt(tm.ana); at != closed.ClosedAt {
+		t.Errorf("Ana lists the team closed at %d, want %d", at, closed.ClosedAt)
+	}
+	status(http.MethodGet, "/v1/workspaces/"+tm.id+"/members", tm.ana, http.StatusConflict)
+
+	status(http.MethodPost, "/v1/workspaces/"+tm.id+"/reopen", tm.ana, http.StatusForbidden)
+	status(http.MethodPost, "/v1/workspaces/"+tm.id+"/reopen", operator, http.StatusOK)
+	for _, path := range routes {
+		status(http.MethodGet, path, tm.ana, http.StatusOK)
+	}
+	if at := closedAt(tm.ana); at != 0 {
+		t.Errorf("reopened, Ana lists the team closed at %d", at)
+	}
+}

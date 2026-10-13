@@ -296,6 +296,15 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 				return err
 			}
 		}
+		// Nothing is keyed in a closed team (the schema refuses it too).
+		if !instance {
+			switch err := workspace.RequireOpenTx(ctx, tx, ws); {
+			case errors.Is(err, workspace.ErrNotFound):
+				return ErrNoWorkspace
+			case err != nil:
+				return err
+			}
+		}
 		if req.MaxLive > 0 {
 			var live int
 			if err := tx.QueryRowContext(ctx,

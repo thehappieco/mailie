@@ -427,6 +427,11 @@ describe('the HTTP contract the Go handlers answer with', () => {
       // Counts are the operator's listing only.
       expect(item, item.id).not.toHaveProperty('members')
     }
+    // A closed team is listed, with when it closed; nothing else says it,
+    // and only a team closes.
+    expect(list.filter(item => item.closed_at !== undefined).map(item => item.kind)).toEqual(['team'])
+    const personal = list.find(item => item.kind === 'personal')!
+    expect(isWorkspace({ ...personal, closed_at: personal.created_at }, true)).toBe(false)
     // Every list the console narrows names the workspace a row belongs to.
     const ids = new Set(list.map(item => item.id))
     expect(ids.has((fixture('account') as Account).workspace_id!)).toBe(true)

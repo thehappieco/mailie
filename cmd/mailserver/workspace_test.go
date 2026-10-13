@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -157,5 +158,72 @@ func TestTheOperatorAdministersTeamsFromTheCommandLineAndGrantsOnlyManage(t *tes
 		"member remove")
 	if _, err := ws.Grant(ctx, shared, bea.ID); err == nil {
 		t.Error("Bea's grant survived her removal")
+	}
+}
+
+func TestTheCommandLineClosesOnlyALocalTeam(t *testing.T) {
+	cfg, db := realDaemon(t)
+	ctx := t.Context()
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	ws := workspace.NewRepository(db, nil)
+	team, err := ws.CreateTeam(ctx, "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A team whose source is not local, which closes where it is managed.
+	const elsewhere = "0b4a3c5e-0000-4000-8000-000000000001"
+	if _, err := db.Writer().ExecContext(ctx, `INSERT INTO workspaces(id, kind, source, name, created_at, updated_at)
+		VALUES (?, 'team', 'platform', 'Elsewhere', 500, 500)`, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	closedAt := func(id string) time.Time {
+		t.Helper()
+		w, err := ws.Get(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return w.ClosedAt
+	}
+	refused := func(what string, err error, code string) {
+		t.Helper()
+		var failure *apiError
+		if !errors.As(err, &failure) || failure.Code != code {
+			t.Errorf("%s: %v, want %s", what, err, code)
+		}
+	}
+
+	if err := workspaceCommand(ctx, cfg, []string{"close", "--workspace", team.ID}); err != nil {
+		t.Fatalf("workspace close: %v", err)
+	}
+	if closedAt(team.ID).IsZero() {
+		t.Error("the command line did not close the local team")
+	}
+	// Closing it again changes nothing, and says it is closed.
+	if err := workspaceCommand(ctx, cfg, []string{"close", "--workspace", team.ID}); err != nil {
+		t.Errorf("closing a closed team: %v", err)
+	}
+	if err := workspaceCommand(ctx, cfg, []string{"list"}); err != nil {
+		t.Errorf("workspace list: %v", err)
+	}
+	if err := workspaceCommand(ctx, cfg, []string{"reopen", "--workspace", team.ID}); err != nil {
+		t.Fatalf("workspace reopen: %v", err)
+	}
+	if !closedAt(team.ID).IsZero() {
+		t.Error("the command line did not reopen the team")
+	}
+
+	refused("closing a team from another source",
+		workspaceCommand(ctx, cfg, []string{"close", "--workspace", elsewhere}), "conflict")
+	if !closedAt(elsewhere).IsZero() {
+		t.Error("the command line closed a team from another source")
+	}
+	refused("closing a personal workspace",
+		workspaceCommand(ctx, cfg, []string{"close", "--workspace", authtest.Personal(t, db, ana.ID)}), "bad_request")
+	refused("closing the operator workspace",
+		workspaceCommand(ctx, cfg, []string{"close", "--workspace", workspace.OperatorID}), "bad_request")
+	refused("closing a workspace nobody knows",
+		workspaceCommand(ctx, cfg, []string{"close", "--workspace", "wsp_0000000000000000"}), "not_found")
+	if err := workspaceCommand(ctx, cfg, []string{"close"}); err == nil || !strings.Contains(err.Error(), "--workspace") {
+		t.Errorf("close without --workspace: %v", err)
 	}
 }

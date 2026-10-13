@@ -36,10 +36,14 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 // reset) and write it a new key (docs/key-scheme.md section 12.12), and
 // nothing it stores is sealed yet, so it keeps syncing meanwhile.
 //
+// A closed team's mailbox syncs nothing, whatever its consent and readers
+// (OpenWorkspaceSQL): it keeps its index, its consent and its readers, and
+// catches up once the team reopens.
+//
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
 // on for somebody else's personal mailbox, and a withdrawal stops it whatever
 // that column says.
-var syncEligible = `a.state = 'active' AND ` + syncPermitted
+var syncEligible = `a.state = 'active' AND ` + OpenWorkspaceSQL("a.workspace_id") + ` AND ` + syncPermitted
 
 // syncPermitted is the consent half of the rule, as a boolean expression over
 // accounts aliased a. SyncPermitted reports it on its own; syncEligible adds
@@ -170,10 +174,17 @@ func (s *Store) BoundTo(ctx context.Context, userID string) ([]string, error) {
 		ORDER BY a.created_at, a.id`, userID)
 }
 
+// ClosedTeams lists the teams that are closed (migration 0019), oldest first:
+// what the daemon says at start, since none of their mailboxes syncs until
+// they reopen.
+func (s *Store) ClosedTeams(ctx context.Context) ([]string, error) {
+	return s.teamIDs(ctx, `SELECT id FROM workspaces WHERE closed_at <> 0 ORDER BY created_at, id`)
+}
+
 func (s *Store) teamIDs(ctx context.Context, query string, args ...any) ([]string, error) {
 	rows, err := s.r.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("store: list team mailboxes: %w", err)
+		return nil, fmt.Errorf("store: list teams or team mailboxes: %w", err)
 	}
 	//nolint:errcheck // read-only query
 	defer func() { _ = rows.Close() }()
@@ -181,12 +192,12 @@ func (s *Store) teamIDs(ctx context.Context, query string, args ...any) ([]strin
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: list team mailboxes: %w", err)
+			return nil, fmt.Errorf("store: list teams or team mailboxes: %w", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list team mailboxes: %w", err)
+		return nil, fmt.Errorf("store: list teams or team mailboxes: %w", err)
 	}
 	return ids, nil
 }

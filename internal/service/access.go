@@ -239,6 +239,8 @@ func fromWorkspace(err error, what string) error {
 			"give another member read on it first, or remove the mailbox", err)
 	case errors.Is(err, workspace.ErrHoldsMailboxes):
 		return E(CodeConflict, "the workspace still holds mailboxes", err)
+	case errors.Is(err, workspace.ErrClosed):
+		return E(CodeConflict, errTeamClosed.Message, err)
 	case errors.Is(err, workspace.ErrManageByRole):
 		return E(CodeBadRequest, "owners and admins manage every team mailbox by their role; manage is granted to members only", err)
 	case errors.Is(err, workspace.ErrManagedElsewhere):

@@ -98,6 +98,10 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("GET /v1/workspaces", h.authenticated(auth.ScopeRead, opts(), h.listWorkspaces))
 	mux.Handle("POST /v1/workspaces", h.authenticated(auth.ScopeAdmin, opts(), h.createWorkspace))
 	mux.Handle("PATCH /v1/workspaces/{id}", h.authenticated(auth.ScopeAdmin, opts(), h.renameWorkspace))
+	// Closing a local team, and reopening it, for the operator alone: no
+	// person closes one. Nothing in a closed team is used until it reopens.
+	mux.Handle("POST /v1/workspaces/{id}/close", h.authenticated(auth.ScopeAdmin, opts(), h.closeWorkspace))
+	mux.Handle("POST /v1/workspaces/{id}/reopen", h.authenticated(auth.ScopeAdmin, opts(), h.reopenWorkspace))
 	mux.Handle("GET /v1/workspaces/{id}/members", h.authenticated(auth.ScopeRead, opts(), h.listMembers))
 	mux.Handle("PATCH /v1/workspaces/{id}/members/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.setMember))
 	mux.Handle("DELETE /v1/workspaces/{id}/members/{user}", h.authenticated(auth.ScopeAdmin, opts(), h.removeMember))
