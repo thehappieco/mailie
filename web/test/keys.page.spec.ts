@@ -355,6 +355,30 @@ describe('the list', () => {
     expect(words(find('.key-card', 'Old script')!)).toContain('it also holds mailboxes in 2 other workspaces, gains no mailbox')
     expect(words()).toContain('Every owner and admin of Support sees these keys and can revoke them.')
   })
+
+  it('says why a revoked key stopped, in the person’s own words for a key of theirs, and nothing for one someone revoked', async () => {
+    const stopped = { live: false, revoked_at: now() - 60, workspace_id: TEAM }
+    keys = [
+      listed(PREFIX, { name: 'Working', workspace_id: TEAM }),
+      listed('0a0b0c0d0e0f0a01', { ...stopped, name: 'Left', created_by: BEA, stop_reason: 'creator_left' }),
+      listed('0a0b0c0d0e0f0a02', { ...stopped, name: 'Revoked', created_by: BEA, stop_reason: 'manual' }),
+      listed('0a0b0c0d0e0f0a03', { ...stopped, name: 'Recovered', stop_reason: 'account_recovered' }),
+      listed('0a0b0c0d0e0f0a04', { ...stopped, name: 'Before', created_by: BEA }),
+    ]
+    await signedIn(() => failure('not_found', 404), team)
+    const card = (prefix: string, part = '') => find(`.key-card[data-key=${prefix}]${part}`)
+    await vi.waitFor(() => expect(card('0a0b0c0d0e0f0a01')).not.toBeNull())
+    expect(words(card('0a0b0c0d0e0f0a01', ' .why-stopped dt')!)).toBe('Why it stopped')
+    expect(words(card('0a0b0c0d0e0f0a01', ' .why-stopped dd')!)).toBe('Its creator left the workspace.')
+    expect(words(card('0a0b0c0d0e0f0a03', ' .why-stopped dd')!)).toBe('Your account was recovered.')
+    for (const prefix of [PREFIX, '0a0b0c0d0e0f0a02', '0a0b0c0d0e0f0a04']) {
+      expect(card(prefix), prefix).not.toBeNull()
+      expect(card(prefix, ' .why-stopped'), prefix).toBeNull()
+    }
+    // The key's details say it too.
+    await click(card('0a0b0c0d0e0f0a01', ' .row-actions button'))
+    expect(words(find('dialog .why-stopped dd')!)).toBe('Its creator left the workspace.')
+  })
 })
 
 describe('a key’s mailboxes and sends', () => {
@@ -485,6 +509,20 @@ describe('the keys a person created, in their account', () => {
     expect(deletes(fetch)).toEqual([`/v1/me/apikeys/${PREFIX}`])
     await flush()
     expect(words(find('.my-key', 'Helpdesk')!)).toContain('Revoked')
+  })
+
+  it('say why one stopped, as what happened to the person', async () => {
+    mine = [
+      listed(PREFIX, { name: 'Helpdesk', workspace_id: TEAM, live: false, revoked_at: now() - 60, stop_reason: 'creator_left' }),
+      listed('0a0b0c0d0e0f0a0b', { name: 'Old', live: false, revoked_at: now() - 60, stop_reason: 'manual' }),
+    ]
+    await signedIn(() => failure('not_found', 404), team)
+    mounted?.unmount()
+    mounted = mount(MyKeys)
+    await vi.waitFor(() => expect(myKeys.loaded).toBe(true))
+    await flush()
+    expect(words(find('.my-key', 'Helpdesk')!)).toMatch(/Revoked on [^·]+: You left its workspace\./)
+    expect(words(find('.my-key', 'Old')!)).toMatch(/Revoked on [^·:]+$/)
   })
 
   it('shows nothing to a person who never created a key', async () => {

@@ -31,7 +31,7 @@ import {
 import { invitationLink } from '../src/api/workspaces'
 import { grantChange } from '../src/ui/access'
 import { heldOn, listed } from '../src/api/apikeys'
-import { keyStanding, scopeActs } from '../src/ui/apikeys'
+import { keyStanding, scopeActs, stopReasonLabel } from '../src/ui/apikeys'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
 import { signupLink } from '../src/ui/signupLink'
 
@@ -322,6 +322,7 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(stopped.length).toBeGreaterThan(0)
     for (const key of stopped) expect(key.stop_reason, key.prefix).toBe('manual')
     for (const key of keys.filter(key => key.revoked_at === undefined)) expect(key, key.prefix).not.toHaveProperty('stop_reason')
+    expect(stopReasonLabel(stopped[0]!.stop_reason)).toBe('')
   })
 
   it('makes every key its workspace’s, holding only that workspace’s mailboxes, each flag within its scope', () => {

@@ -124,7 +124,8 @@ up, which stops them without a word, or with any other error to stop them with t
 settled meanwhile (a sign-out, another person) is not settled again by its late answer. It may be
 called after awaits, outside the click that started the flow, so a window it opens needs a click of
 its own. `copy.stepUpHint` words the sentence beside a guarded write, which the core's names the
-password; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
+password; `copy.accountRecovered` says why a key stopped when its creator's account was recovered
+(`account_recovered`), which the core's says without naming where; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
 failures (the core's say to sign in again here, and, for `not_enrolled`, to ask the administrator
 for a reset link). The open edition sets none of these.
 
@@ -613,7 +614,11 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   holding something on it (`keys`), never as readers, and takes the mailbox out of one after
   asking. **Account** lists the keys the person created, in every workspace (`GET /v1/me/apikeys`),
   once there is one, and revokes any of them (`DELETE /v1/me/apikeys/{prefix}`), a carried-over one
-  in every workspace, which its note there says.
+  in every workspace, which its note there says. A revoked key says why it stopped (`stop_reason`,
+  `ui/apikeys.ts` `stopReasonLabel`) on its card, in its sheet and after its date among the
+  person's own, as what happened to them when they created it ("You left its workspace."); a key
+  someone revoked, or one revoked before the server recorded why, says nothing more, and a reason
+  a newer server records shows as its identifier.
 - **The person's own settings are not a workspace's.** The dialog
   that turns the person's own sync off says it deletes the index of
   their personal mailboxes, and, to someone in a team, that a team's mailboxes sync under the

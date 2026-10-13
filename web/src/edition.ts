@@ -80,6 +80,14 @@ export interface Edition {
      * step-up asks for. An edition that sets stepUp words it its own way.
      */
     stepUpHint?(): string
+    /**
+     * Beside a key that stopped because its creator's account was recovered
+     * (stop_reason account_recovered): why, in a sentence. mine: the person
+     * reading created it. Unset: the core's sentence, which says only that
+     * the account was recovered. An edition whose people recover their
+     * account elsewhere names where.
+     */
+    accountRecovered?(mine: boolean): string
   }
   /**
    * Whether the API keys section shows how to reach the MCP server at this

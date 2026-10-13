@@ -8,6 +8,7 @@
 // is a test.
 
 import type { KeyFlags, KeyLifetime, KeySend, WorkspaceKey } from '../api/types'
+import { edition } from '../edition'
 import { count } from './format'
 import { t } from './i18n'
 
@@ -80,6 +81,32 @@ export function standingLabel(standing: KeyStanding): string {
     case 'live': return t('Active|key')
     case 'expired': return t('Expired')
     case 'revoked': return t('Revoked')
+  }
+}
+
+/**
+ * Why a key stopped, in a sentence, as the server recorded it when it revoked
+ * the key; '' where there is nothing to add: a key someone revoked, which its
+ * state already says, and one revoked before the server recorded why. mine:
+ * the person reading created the key, which turns what happened to its
+ * creator into what happened to them. A reason a newer server records is
+ * shown as its identifier, which says more than a guess would.
+ */
+export function stopReasonLabel(reason: string | undefined, mine = false): string {
+  switch (reason) {
+    case undefined: case '': case 'manual': return ''
+    case 'creator_left': return mine ? t('You left its workspace.') : t('Its creator left the workspace.')
+    case 'creator_disabled': return mine ? t('Your account was disabled on this server.') : t('Its creator was disabled on this server.')
+    case 'creator_suspended': return mine ? t('Your account was suspended.') : t('Its creator was suspended.')
+    case 'creator_deleted': return t('Its creator was deleted.')
+    case 'account_recovered': {
+      const words = edition().copy.accountRecovered
+      if (words) return words(mine)
+      return mine ? t('Your account was recovered.') : t('Its creator’s account was recovered.')
+    }
+    case 'restriction_emptied': return t('The last mailbox it could reach was removed.')
+    case 'migration': return t('Stopped when this server was upgraded.')
+    default: return reason
   }
 }
 

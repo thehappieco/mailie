@@ -7,7 +7,7 @@
 // can act, Send where it can send, nothing to a key carried over from before
 // keys belonged to workspaces; anything may be taken away, and taking every
 // flag takes the mailbox out of the key. A key that no longer works is shown
-// as it was, and changes no more. Its sends are the record the server keeps
+// as it was, and changes no more, with why it stopped. Its sends are the record the server keeps
 // of each, for 30 days: never who a message went to, its subject or its text.
 // The server decides every change.
 import { computed, onMounted, ref } from 'vue'
@@ -22,7 +22,7 @@ import { accessOf } from '../ui/access'
 import { announce } from '../ui/announce'
 import {
   keyAccessRules, keyFlagEditable, keyFlagHint, keyFlagLabel, keyFlagNames, keyFlagsOf, keyFlagsSummary, keyOriginNote, keyPerson, keyStanding,
-  holdsAnyKeyFlag, sameKeyFlags, scopeActs, scopeLabel, sendStateLabel, standingLabel, toggleKeyFlag, type KeyFlag,
+  holdsAnyKeyFlag, sameKeyFlags, scopeActs, scopeLabel, sendStateLabel, standingLabel, stopReasonLabel, toggleKeyFlag, type KeyFlag,
 } from '../ui/apikeys'
 import { describe } from '../ui/errors'
 import { count, dayStamp, since, stamp } from '../ui/format'
@@ -38,6 +38,8 @@ const key = computed(() => apiKeys.list.find(item => item.prefix === props.keyPr
 const standing = computed(() => key.value ? keyStanding(key.value) : 'revoked')
 const live = computed(() => standing.value === 'live')
 const me = computed(() => session.user?.id ?? '')
+/** Why the key stopped, in a sentence, once revoked; '' when someone revoked it, or nothing was recorded. */
+const whyStopped = computed(() => key.value?.revoked_at ? stopReasonLabel(key.value.stop_reason, !!me.value && key.value.created_by === me.value) : '')
 const sendOffered = computed(keysMaySend)
 // Where keys never send, the legend says nothing of sending.
 const legendFlags = computed(() => keyFlagNames.filter(flag => flag !== 'send' || sendOffered.value))
@@ -149,6 +151,7 @@ onMounted(() => { if (sendsShown.value) void readSends() })
         <div v-if="standing === 'revoked'"><dt>{{ t('Revoked on') }}</dt><dd>{{ dayStamp(key.revoked_at) }}</dd></div>
         <div v-else><dt>{{ standing === 'expired' ? t('Expired on') : t('Expires') }}</dt><dd>{{ dayStamp(key.expires_at) }}</dd></div>
         <div><dt>{{ t('Last used') }}</dt><dd>{{ key.last_used_at ? since(key.last_used_at) : t('Never') }}</dd></div>
+        <div v-if="whyStopped" class="wide why-stopped"><dt>{{ t('Why it stopped') }}</dt><dd>{{ whyStopped }}</dd></div>
       </dl>
       <p v-if="keyOriginNote(key)" class="note">{{ keyOriginNote(key) }}</p>
       <p v-else-if="key.scope === 'send' && !key.sends" class="note">{{ t('This server’s API keys do not send email: this key sends nothing while that is so.') }}</p>
@@ -213,6 +216,7 @@ onMounted(() => { if (sendsShown.value) void readSends() })
 .key-sheet p { margin: 0; }
 .key-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
 .key-facts div { min-width: 0; }
+.key-facts .wide { grid-column: 1 / -1; }
 .key-facts dt { font-size: 11px; color: var(--text-dim); }
 .key-facts dd { margin: 4px 0 0; font-size: 13px; overflow-wrap: anywhere; }
 .sheet-section { display: grid; gap: 10px; padding-top: 14px; border-top: 1px solid var(--line); }

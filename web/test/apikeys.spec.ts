@@ -8,11 +8,13 @@
 // a key offered Read on a mailbox its giver does not read.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CreatedKey, KeyMailbox, Workspace, WorkspaceKey } from '../src/api/types'
-import { isCreatedKey, isWorkspaceKey } from '../src/api/types'
+import { isCreatedKey, isWorkspaceKey, keyStopReasons } from '../src/api/types'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
 import { KEY_TERMS_VERSION } from '../src/open/versions'
 import {
-  MAX_LIVE_KEYS, claudeCommand, keyAccessRules, keyFlagEditable, keyOriginNote, keyPerson, keyStanding, mcpEndpoint, scopeLabel, toggleKeyFlag,
-  type KeyFacts,
+  MAX_LIVE_KEYS, claudeCommand, keyAccessRules, keyFlagEditable, keyOriginNote, keyPerson, keyStanding, mcpEndpoint, scopeLabel, stopReasonLabel,
+  toggleKeyFlag, type KeyFacts,
 } from '../src/ui/apikeys'
 import { describe as say } from '../src/ui/errors'
 import { account, failure, freshModules, json, now, reply, type Route, serve, settle, stubPage } from './support'
@@ -492,6 +494,39 @@ describe('what the console says about keys', () => {
     expect(keyOriginNote({ origin: 'person' })).toContain('never sends')
   })
 
+  it('says why a key stopped, in the person’s own words for a key of theirs, and nothing for one someone revoked', () => {
+    for (const reason of [undefined, '', 'manual']) {
+      expect(stopReasonLabel(reason), String(reason)).toBe('')
+      expect(stopReasonLabel(reason, true), String(reason)).toBe('')
+    }
+    expect(stopReasonLabel('creator_left')).toBe('Its creator left the workspace.')
+    expect(stopReasonLabel('creator_left', true)).toBe('You left its workspace.')
+    expect(stopReasonLabel('creator_disabled')).toBe('Its creator was disabled on this server.')
+    expect(stopReasonLabel('creator_disabled', true)).toBe('Your account was disabled on this server.')
+    expect(stopReasonLabel('creator_suspended')).toBe('Its creator was suspended.')
+    expect(stopReasonLabel('creator_suspended', true)).toBe('Your account was suspended.')
+    expect(stopReasonLabel('creator_deleted')).toBe('Its creator was deleted.')
+    expect(stopReasonLabel('account_recovered')).toBe('Its creator’s account was recovered.')
+    expect(stopReasonLabel('account_recovered', true)).toBe('Your account was recovered.')
+    expect(stopReasonLabel('restriction_emptied')).toBe('The last mailbox it could reach was removed.')
+    expect(stopReasonLabel('migration')).toBe('Stopped when this server was upgraded.')
+    // Every reason the server records has words of its own, but a revocation, which the key's state says.
+    for (const reason of keyStopReasons) expect(stopReasonLabel(reason) === '', reason).toBe(reason === 'manual')
+    // A reason a newer server records, by its identifier.
+    expect(stopReasonLabel('creator_moved')).toBe('creator_moved')
+  })
+
+  it('lets an edition say in its own words that an account was recovered', () => {
+    configureEdition({ ...openEdition, copy: { ...openEdition.copy, accountRecovered: mine => mine ? 'You recovered it elsewhere.' : 'Recovered elsewhere.' } })
+    try {
+      expect(stopReasonLabel('account_recovered', true)).toBe('You recovered it elsewhere.')
+      expect(stopReasonLabel('account_recovered')).toBe('Recovered elsewhere.')
+      expect(stopReasonLabel('creator_left')).toBe('Its creator left the workspace.')
+    } finally {
+      configureEdition(openEdition)
+    }
+  })
+
   it('reads a key the running console can draw, and holds the contract to its scopes and shape', () => {
     expect(isWorkspaceKey({ ...listed(PREFIX), scope: 'admin' })).toBe(true)
     expect(isWorkspaceKey({ ...listed(PREFIX), scope: 'admin' }, true)).toBe(false)
@@ -506,5 +541,14 @@ describe('what the console says about keys', () => {
     expect(isCreatedKey({ ...made(), key: `${PREFIX}.a b` })).toBe(false)
     // A key's mailboxes are its workspace's.
     expect(isWorkspaceKey(listed(PREFIX, { mailboxes: [held(ONE, { workspace_id: TEAM })] }), true)).toBe(false)
+    // Only a key that stopped says why, for one of the reasons the server records; the running console
+    // reads one a newer server records as its identifier.
+    const stopped = listed(PREFIX, { live: false, revoked_at: now() - 60, stop_reason: 'creator_left' })
+    expect(isWorkspaceKey(stopped, true)).toBe(true)
+    expect(isWorkspaceKey({ ...stopped, stop_reason: 'creator_moved' }, true)).toBe(false)
+    expect(isWorkspaceKey({ ...stopped, stop_reason: 'creator_moved' })).toBe(true)
+    expect(isWorkspaceKey({ ...stopped, stop_reason: '' })).toBe(false)
+    expect(isWorkspaceKey({ ...stopped, stop_reason: 7 })).toBe(false)
+    expect(isWorkspaceKey(listed(PREFIX, { stop_reason: 'manual' }), true)).toBe(false)
   })
 })

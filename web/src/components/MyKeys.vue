@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // The API keys the person created, in every workspace (GET /v1/me/apikeys),
 // in their account section: they answer for each one, which stops when they
-// leave its workspace or their account here is disabled or deleted, and they
-// may revoke any of them from here, a key carried over from before keys
+// leave its workspace or their account here is disabled or deleted (a revoked
+// one says why it stopped), and they may revoke any of them from here, a key carried over from before keys
 // belonged to workspaces too, whole. Shown once they have created one; the
 // workspace's own keys, and changing what one holds, are in its keys
 // section, for its owners and admins.
@@ -13,7 +13,7 @@ import type { Failure } from '../state/failure'
 import { workspaces } from '../state/workspaces'
 import { workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
-import { keyOriginNote, keyStanding, scopeLabel, standingLabel, type KeyStanding } from '../ui/apikeys'
+import { keyOriginNote, keyStanding, scopeLabel, standingLabel, stopReasonLabel, type KeyStanding } from '../ui/apikeys'
 import { describe } from '../ui/errors'
 import { count, dayStamp } from '../ui/format'
 import { t } from '../ui/i18n'
@@ -27,6 +27,13 @@ const rank: Record<KeyStanding, number> = { live: 0, expired: 1, revoked: 2 }
 const ordered = computed(() => myKeys.list
   .map(key => ({ key, standing: keyStanding(key) }))
   .sort((a, b) => rank[a.standing] - rank[b.standing] || b.key.created_at - a.key.created_at))
+
+/** When a key stopped, and why when the server recorded it: these are the person's own keys. */
+function stoppedOn(key: WorkspaceKey): string {
+  const date = dayStamp(key.revoked_at)
+  const reason = stopReasonLabel(key.stop_reason, true)
+  return reason ? t('Revoked on {date}: {reason}', { date, reason }) : t('Revoked on {date}', { date })
+}
 
 /** Where a key is: its workspace, by name; a key carried over from before, in several. */
 function whereIs(key: WorkspaceKey): string {
@@ -69,7 +76,7 @@ onMounted(() => { if (!myKeys.loaded && !myKeys.loading) void loadMyKeys() })
       <li v-for="{ key, standing } in ordered" :key="key.prefix" class="my-key" :data-key="key.prefix">
         <div class="who">
           <strong>{{ key.name }} <span class="mono" translate="no">{{ key.prefix }}…</span></strong>
-          <small>{{ whereIs(key) }} · {{ scopeLabel(key.scope) }} · {{ t('Mailboxes: {count}', { count: count(key.mailboxes.length) }) }} · {{ standing === 'revoked' ? t('Revoked on {date}', { date: dayStamp(key.revoked_at) }) : standing === 'expired' ? t('Expired on {date}', { date: dayStamp(key.expires_at) }) : t('Expires on {date}', { date: dayStamp(key.expires_at) }) }}</small>
+          <small>{{ whereIs(key) }} · {{ scopeLabel(key.scope) }} · {{ t('Mailboxes: {count}', { count: count(key.mailboxes.length) }) }} · {{ standing === 'revoked' ? stoppedOn(key) : standing === 'expired' ? t('Expired on {date}', { date: dayStamp(key.expires_at) }) : t('Expires on {date}', { date: dayStamp(key.expires_at) }) }}</small>
           <small v-if="keyOriginNote(key, 'mine')" class="origin">{{ keyOriginNote(key, 'mine') }}</small>
         </div>
         <span class="status-chip" :class="tone[standing]"><i aria-hidden="true" />{{ standingLabel(standing) }}</span>

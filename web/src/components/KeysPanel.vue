@@ -3,8 +3,8 @@
 // its owners and admins (in a personal workspace, its person): every key, the
 // ones revoked or expired too (they answer "what could have reached this
 // mailbox"), live ones first; who created each, what it holds on each
-// mailbox, and the notes a key carried over from before keys belonged to
-// workspaces needs; creating one, opening one to change what it holds and see
+// mailbox, why one that was revoked stopped, and the notes a key carried over
+// from before keys belonged to workspaces needs; creating one, opening one to change what it holds and see
 // its sends (KeySheet), and revoking one after saying what that does. And,
 // where the edition offers the MCP server at this origin and the server says
 // it answers there (state/mcp.ts), how to connect an AI assistant with a key.
@@ -20,7 +20,9 @@ import { loadMembers, personName, team } from '../state/team'
 import { currentWorkspace, workspaces } from '../state/workspaces'
 import { workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
-import { MAX_LIVE_KEYS, keyFlagsSummary, keyOriginNote, keyPerson, keyStanding, scopeLabel, standingLabel, type KeyStanding } from '../ui/apikeys'
+import {
+  MAX_LIVE_KEYS, keyFlagsSummary, keyOriginNote, keyPerson, keyStanding, scopeLabel, standingLabel, stopReasonLabel, type KeyStanding,
+} from '../ui/apikeys'
 import { describe } from '../ui/errors'
 import { count, dayStamp, since } from '../ui/format'
 import { t } from '../ui/i18n'
@@ -54,6 +56,8 @@ const ordered = computed(() => apiKeys.list
   .map(key => ({ key, standing: keyStanding(key) }))
   .sort((a, b) => rank[a.standing] - rank[b.standing] || b.key.created_at - a.key.created_at))
 const limited = computed(() => atKeyLimit())
+/** Why a revoked key stopped, in a sentence; '' for one someone revoked, or one the server recorded no reason for. */
+const whyStopped = (key: WorkspaceKey) => key.revoked_at ? stopReasonLabel(key.stop_reason, !!me.value && key.created_by === me.value) : ''
 
 /** A mailbox of the workspace, by address; one this page does not list any more, as removed. */
 const emailOf = (accountID: string) => accounts.list.find(item => item.id === accountID)?.email ?? t('A removed mailbox')
@@ -146,6 +150,7 @@ watch(() => workspaces.currentID, () => {
           <div v-if="standing === 'revoked'"><dt>{{ t('Revoked on') }}</dt><dd>{{ dayStamp(key.revoked_at) }}</dd></div>
           <div v-else><dt>{{ standing === 'expired' ? t('Expired on') : t('Expires') }}</dt><dd>{{ dayStamp(key.expires_at) }}</dd></div>
           <div><dt>{{ t('Last used') }}</dt><dd>{{ key.last_used_at ? since(key.last_used_at) : t('Never') }}</dd></div>
+          <div v-if="whyStopped(key)" class="wide why-stopped"><dt>{{ t('Why it stopped') }}</dt><dd>{{ whyStopped(key) }}</dd></div>
         </dl>
         <p v-if="keyOriginNote(key)" class="hint origin-note">{{ keyOriginNote(key) }}</p>
         <div class="row-actions">
