@@ -125,7 +125,10 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 // them; and their name wherever it is kept as attribution: on the grants they gave others, flags and sealed grants, and
 // what they gave keys, on the mailbox keys their browser wrote, on the
 // mailboxes they linked and on the team consents to sync they gave, which
-// stay, with their date and revision, the workspace's. Their memberships of
+// stay, with their date and revision, the workspace's, on the mailboxes they
+// removed, which stay removed until recovered or deleted for good, and in
+// the journal of what was done to mailboxes, which keeps what they did
+// without saying who. Their memberships of
 // other teams, and their grants there, flags and sealed grants, go with the
 // person (ON DELETE CASCADE), and so does their membership of a team from
 // another source, which stays, with its mailboxes, even when they were its
@@ -146,6 +149,8 @@ func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, e
 		{"forget who linked", `UPDATE accounts SET linked_by = '' WHERE linked_by = ?`},
 		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''
 		   WHERE sync_enabled_by = ?`},
+		{"forget who removed mailboxes", `UPDATE accounts SET removed_by = '' WHERE removed_by = ?`},
+		{"forget who acted on mailboxes", `UPDATE mailbox_events SET actor = '' WHERE actor = ?`},
 	} {
 		if _, err := tx.ExecContext(ctx, step.query, userID); err != nil {
 			return nil, fmt.Errorf("workspace: %s: %w", step.what, err)

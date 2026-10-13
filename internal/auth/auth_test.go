@@ -308,6 +308,55 @@ func TestAKeyWhoseLastMailboxIsRemovedStopsRatherThanReachingEveryMailbox(t *tes
 	}
 }
 
+func TestAnInstanceKeyIsNeverRestrictedToARemovedMailbox(t *testing.T) {
+	// A removed mailbox (migration 0020) is kept for a recovery and reaches
+	// nobody: a key made for it would reach nothing, and one that held it
+	// before is narrowed, never widened.
+	k, s, _ := newKeys(t)
+	ctx := context.Background()
+	for _, id := range []string{"acc_1", "acc_2", "acc_3"} {
+		seedAccount(t, s, id)
+	}
+	two, _ := issue(t, k, auth.NewKeyRequest{Scope: auth.ScopeRead, AccountIDs: []string{"acc_2", "acc_3"}})
+	held, err := k.Authenticate(ctx, two, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Removed as the repository removes it: kept, and taken out of what keys
+	// were restricted to.
+	if err := s.Write(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 900, removed_by = 'cli', purge_after = 900 + 2592000
+			WHERE id IN ('acc_1', 'acc_2')`); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `DELETE FROM api_key_accounts WHERE account_id IN ('acc_1', 'acc_2')`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = k.Issue(ctx, auth.NewKeyRequest{Name: "for it", Scope: auth.ScopeRead, AccountIDs: []string{"acc_1"}})
+	if !errors.Is(err, auth.ErrUnknownAccount) {
+		t.Errorf("a key restricted to a removed mailbox: %v, want ErrUnknownAccount", err)
+	}
+	_, _, err = k.Issue(ctx, auth.NewKeyRequest{Name: "with it", Scope: auth.ScopeRead, AccountIDs: []string{"acc_3", "acc_1"}})
+	if !errors.Is(err, auth.ErrUnknownAccount) {
+		t.Errorf("a key restricted to a live and a removed mailbox: %v, want ErrUnknownAccount", err)
+	}
+	// What authenticated before the removal names it still, and is refused;
+	// what authenticates now reaches only the live one.
+	if err := k.Recheck(ctx, held); !errors.Is(err, auth.ErrKeyNarrowed) {
+		t.Errorf("a principal still naming the removed mailbox rechecks as %v, want ErrKeyNarrowed", err)
+	}
+	p, err := k.Authenticate(ctx, two, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.MayAccess("acc_3") || p.MayAccess("acc_2") || p.MayAccess("acc_1") {
+		t.Errorf("the key reaches %v, want only acc_3", p.AccountIDs)
+	}
+}
+
 func TestAnUnrestrictedKeyReachesEveryAccount(t *testing.T) {
 	k, _, _ := newKeys(t)
 	secret, _ := issue(t, k, auth.NewKeyRequest{Scope: auth.ScopeRead})

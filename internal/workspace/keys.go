@@ -357,8 +357,9 @@ func keyTargetTx(ctx context.Context, tx *sql.Tx, prefix, accountID string) (Key
 
 // KeyAccessOf reads what a key holds on each mailbox named: a mailbox it holds
 // nothing on is absent, and so is a closed team's, whatever the key holds
-// there (store.OpenWorkspaceSQL). Whether the key still works is its
-// authentication's and its re-check's, as for a session.
+// there (store.OpenWorkspaceSQL), and a removed one (store.LiveSQL). Whether
+// the key still works is its authentication's and its re-check's, as for a
+// session.
 func (r *Repository) KeyAccessOf(ctx context.Context, prefix string, accountIDs []string) (map[string]Flags, error) {
 	out := make(map[string]Flags, len(accountIDs))
 	if len(accountIDs) == 0 || prefix == "" {
@@ -371,7 +372,7 @@ func (r *Repository) KeyAccessOf(ctx context.Context, prefix string, accountIDs 
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT x.account_id, x.read, x.act, x.send
 		  FROM key_access x
 		 WHERE x.key_prefix = ? AND x.account_id IN (SELECT value FROM json_each(?))
-		   AND `+store.OpenWorkspaceSQL("x.workspace_id"), prefix, string(list))
+		   AND `+store.OpenWorkspaceSQL("x.workspace_id")+` AND `+store.LiveSQL("x.account_id"), prefix, string(list))
 	if err != nil {
 		return nil, fmt.Errorf("workspace: read what the key holds: %w", err)
 	}

@@ -30,7 +30,9 @@ import (
 // good — and resetting their account key without
 // force (the reset deletes their grants, so it takes read only on a mailbox
 // that has a key). Not guarded: removing the mailbox itself, and role
-// changes, which change no read. Each check runs inside the transaction that
+// changes, which change no read. A removed mailbox has no reader while it is
+// kept (store.LiveSQL), so it protects nobody: its readers may leave while
+// it is kept. Each check runs inside the transaction that
 // would break the rule; the database has one writer, so two changes that
 // would each leave one reader are ordered, and the second is refused.
 

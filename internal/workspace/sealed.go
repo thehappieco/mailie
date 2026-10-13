@@ -359,7 +359,7 @@ type KeyState struct {
 }
 
 // KeyState reads a mailbox's key as userID's console needs it; ErrNoMailbox
-// for a mailbox nobody knows.
+// for a mailbox nobody knows, and for a removed one.
 func (r *Repository) KeyState(ctx context.Context, accountID, userID string) (KeyState, error) {
 	tx, err := r.store.Reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -368,7 +368,7 @@ func (r *Repository) KeyState(ctx context.Context, accountID, userID string) (Ke
 	//nolint:errcheck // a read-only transaction: nothing to keep or undo
 	defer func() { _ = tx.Rollback() }()
 	var exists int
-	switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM accounts WHERE id = ?`, accountID).Scan(&exists); {
+	switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM accounts WHERE id = ? AND removed_at = 0`, accountID).Scan(&exists); {
 	case errors.Is(err, sql.ErrNoRows):
 		return KeyState{}, ErrNoMailbox
 	case err != nil:

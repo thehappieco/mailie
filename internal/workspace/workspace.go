@@ -332,13 +332,13 @@ func (r *Repository) ForPerson(ctx context.Context, userID string) ([]Workspace,
 	return out, nil
 }
 
-// All lists every workspace, with how many members and mailboxes each has:
-// the operator's view. The operator workspace first, then the others oldest
-// first.
+// All lists every workspace, with how many members and live mailboxes each
+// has, a removed mailbox not counted: the operator's view. The operator
+// workspace first, then the others oldest first.
 func (r *Repository) All(ctx context.Context) ([]Workspace, error) {
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT `+workspaceColumns+`,
 		  (SELECT count(*) FROM workspace_members m WHERE m.workspace_id = w.id),
-		  (SELECT count(*) FROM accounts a WHERE a.workspace_id = w.id)
+		  (SELECT count(*) FROM accounts a WHERE a.workspace_id = w.id AND a.removed_at = 0)
 		  FROM workspaces w ORDER BY w.kind <> 'operator', w.created_at, w.name, w.id`)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: list: %w", err)

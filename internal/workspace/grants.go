@@ -137,7 +137,9 @@ func grantOn(ctx context.Context, q querier, accountID, userID string) (Grant, e
 // It is what a consent attempt is held to when it stores its grant: whoever
 // started it must still be someone who may (account.Registry.CheckFlowsWith).
 // Nobody manages a closed team's mailbox (Access), so an attempt finishing
-// after its team closed stores nothing.
+// after its team closed stores nothing; nor a removed mailbox, which is
+// ErrNoMailbox, so an attempt finishing after the removal never makes it
+// active again.
 func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error {
 	mb, err := mailboxTx(ctx, tx, accountID)
 	if err != nil {
@@ -171,7 +173,8 @@ func ManagesTx(ctx context.Context, tx *sql.Tx, accountID, userID string) error 
 // reads nothing yet, and still sees the mailbox's card. A closed team's
 // mailboxes are absent, whatever the person holds there or their role
 // (store.OpenWorkspaceSQL): nothing in a closed team is used until it
-// reopens.
+// reopens. So is a removed mailbox (migration 0020), which nobody uses while
+// it is kept.
 func (r *Repository) Access(ctx context.Context, userID string, accountIDs []string) (map[string]Flags, error) {
 	return accessOn(ctx, r.store.Reader(), userID, accountIDs)
 }
@@ -192,7 +195,8 @@ func accessOn(ctx context.Context, q querier, userID string, accountIDs []string
 		  JOIN workspace_members m ON m.workspace_id = a.workspace_id AND m.user_id = ?1 AND m.status = 'active'
 		  JOIN users u ON u.id = m.user_id AND u.status = 'active'
 		  LEFT JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = m.user_id
-		 WHERE a.id IN (SELECT value FROM json_each(?2)) AND `+store.OpenWorkspaceSQL("a.workspace_id")+`
+		 WHERE a.id IN (SELECT value FROM json_each(?2)) AND a.removed_at = 0
+		   AND `+store.OpenWorkspaceSQL("a.workspace_id")+`
 		   AND (g.account_id IS NOT NULL OR m.role IN ('owner', 'admin')))`,
 		userID, string(list))
 	if err != nil {
@@ -224,10 +228,13 @@ type mailbox struct {
 	personID string
 }
 
+// mailboxTx reads a live mailbox: a removed one (migration 0020) is
+// ErrNoMailbox, so nothing is granted, revoked, keyed, given to a key or
+// managed on it while it is kept, whoever asks.
 func mailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, error) {
 	var mb mailbox
 	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind, coalesce(w.person_id, '')
-		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ?`, accountID).
+		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ? AND a.removed_at = 0`, accountID).
 		Scan(&mb.id, &mb.workspaceID, &mb.kind, &mb.personID)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -471,7 +478,7 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string)
 		       EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = a.id AND `+store.SuspendedReaderSQL("g")+`),
 		       coalesce(`+store.CurrentEpochSQL("a.id")+`, 0)
 		  FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		 WHERE a.workspace_id = ?
+		 WHERE a.workspace_id = ? AND a.removed_at = 0
 		 ORDER BY a.created_at, a.rowid`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: list the directory: %w", err)
@@ -555,10 +562,11 @@ type Consent struct {
 	Migrated bool
 }
 
-// Directory lists a workspace's mailboxes and the grants on each, oldest
+// Directory lists a workspace's live mailboxes and the grants on each, oldest
 // first (as linked, within a second), each mailbox's grants by when they were
 // made and then by address, and the live keys holding something on each, by
 // when they were given it: what its owners and admins and the operator see.
+// A removed mailbox is not in it, nor what it keeps for a recovery.
 func (r *Repository) Directory(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
 	if _, err := r.Get(ctx, workspaceID); err != nil {
 		return nil, err

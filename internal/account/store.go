@@ -249,6 +249,20 @@ func currentStateTx(ctx context.Context, tx *sql.Tx, id string) (State, error) {
 	return State(state), nil
 }
 
+// liveStateTx is currentStateTx for a live account: a removed one is
+// ErrNotFound.
+func liveStateTx(ctx context.Context, tx *sql.Tx, id string) (State, error) {
+	var state string
+	err := tx.QueryRowContext(ctx, `SELECT state FROM accounts WHERE id = ? AND removed_at = 0`, id).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("account: read state: %w", err)
+	}
+	return State(state), nil
+}
+
 // WithClock overrides the clock, for tests.
 func (r *Repository) WithClock(now func() time.Time) *Repository {
 	r.now = now
@@ -285,6 +299,11 @@ const (
 // mailboxes reach neither a person nor a key (store.OpenWorkspaceSQL),
 // whatever they hold there; the operator's own views (All, Unowned) are not
 // narrowed by it.
+//
+// A removed mailbox (migration 0020) is seen by nobody, the daemon's own
+// reads (All) included: it is kept for a recovery and used by nothing
+// meanwhile. Only what asks for a removed mailbox by name — listing,
+// recovering and deleting the removed ones — reads it.
 type Visibility struct {
 	// All is every account, for the daemon's own reads.
 	All bool
@@ -309,9 +328,10 @@ type Visibility struct {
 }
 
 // clause is the WHERE fragment for v, over the accounts table, with its
-// arguments. A Visibility naming nobody sees nothing.
+// arguments. A Visibility naming nobody sees nothing, and none sees a
+// removed mailbox.
 func (v Visibility) clause() (string, []any) {
-	where, args := "1", []any(nil)
+	where, args := "accounts.removed_at = 0", []any(nil)
 	if !v.All {
 		var parts []string
 		if v.UserID != "" {
@@ -336,10 +356,11 @@ func (v Visibility) clause() (string, []any) {
 		if v.Unowned {
 			parts = append(parts, `accounts.workspace_id = '`+workspace.OperatorID+`'`)
 		}
-		where = "0"
+		who := "0"
 		if len(parts) > 0 {
-			where = "(" + strings.Join(parts, " OR ") + ")"
+			who = "(" + strings.Join(parts, " OR ") + ")"
 		}
+		where += " AND " + who
 	}
 	if v.NoTeams {
 		where += ` AND NOT EXISTS (SELECT 1 FROM workspaces tw
@@ -528,10 +549,14 @@ func workspaceForTx(ctx context.Context, tx *sql.Tx, workspaceID, linker string)
 	return w, nil
 }
 
-// Get reads one account.
+// Get reads one live account: a removed one is ErrNotFound. It is what
+// every use of a mailbox reads it through — the sync engine, the registry's
+// mailbox (every IMAP and SMTP connection and every token refresh), a
+// consent attempt, a question about its access — so a removed mailbox is
+// none of them.
 func (r *Repository) Get(ctx context.Context, id string) (Account, error) {
 	row := r.store.Reader().QueryRowContext(ctx,
-		`SELECT `+accountColumns+` FROM accounts WHERE id = ?`, id)
+		`SELECT `+accountColumns+` FROM accounts WHERE id = ? AND removed_at = 0`, id)
 	a, err := scanAccount(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Account{}, ErrNotFound
@@ -539,9 +564,10 @@ func (r *Repository) Get(ctx context.Context, id string) (Account, error) {
 	return a, err
 }
 
-// GetByEmail reads the account linked under an address in one workspace.
-// The same address may be linked in several workspaces, each its own
-// mailbox; within one it is linked at most once.
+// GetByEmail reads the account linked under an address in one workspace,
+// a removed one included: its address stays taken while it is kept. The
+// same address may be linked in several workspaces, each its own mailbox;
+// within one it is linked at most once.
 func (r *Repository) GetByEmail(ctx context.Context, workspaceID, email string) (Account, error) {
 	row := r.store.Reader().QueryRowContext(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE workspace_id = ? AND email = ? COLLATE NOCASE`,
@@ -591,8 +617,8 @@ func (r *Repository) List(ctx context.Context) ([]Account, error) {
 }
 
 // OwnedBy returns the mailboxes of a person's personal workspace, oldest
-// first, whether or not they are still active: the mailboxes that sync under
-// their own consent.
+// first, whether or not they are still active, removed ones included: the
+// mailboxes that sync under their own consent, and go with them.
 func (r *Repository) OwnedBy(ctx context.Context, userID string) ([]Account, error) {
 	rows, err := r.store.Reader().QueryContext(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE owner_user_id = ? ORDER BY created_at, id`, userID)
@@ -1190,7 +1216,10 @@ func (r *Repository) SweepFlows(ctx context.Context) ([]string, error) {
 // SaveGrant stores the token a consent produced, which client issued it, and
 // that the account is now active — in one transaction, so the account can
 // never hold a token together with the name of a client that cannot refresh
-// it.
+// it. A removed account stores nothing (ErrNotFound): a consent finishing
+// after the removal leaves it as it was. A token source refreshing a grant
+// is another thing: it records a rotated token on a removed account too
+// (SaveToken), which a recovery needs.
 func (r *Repository) SaveGrant(ctx context.Context, id string, token *oauth2.Token, client string) error {
 	return r.saveGrant(ctx, id, token, client, nil)
 }
@@ -1216,7 +1245,7 @@ func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Tok
 				return err
 			}
 		}
-		previous, err := currentStateTx(ctx, tx, id)
+		previous, err := liveStateTx(ctx, tx, id)
 		if err != nil {
 			return err
 		}

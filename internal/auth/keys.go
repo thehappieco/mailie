@@ -330,12 +330,12 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 			return fmt.Errorf("auth: insert key: %w", err)
 		}
 		for _, accountID := range req.AccountIDs {
-			// An instance key reaches the operator workspace's mailboxes
-			// and nothing else: one restricted to a person's mailbox would
-			// reach nothing at all.
+			// An instance key reaches the operator workspace's live
+			// mailboxes and nothing else: one restricted to a person's
+			// mailbox, or to a removed one, would reach nothing at all.
 			var operator int
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?`,
-				accountID, workspace.OperatorID).Scan(&operator); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM accounts WHERE id = ? AND workspace_id = ?
+				AND removed_at = 0`, accountID, workspace.OperatorID).Scan(&operator); err != nil {
 				return fmt.Errorf("auth: check account %s: %w", accountID, err)
 			}
 			if operator == 0 {
@@ -563,9 +563,10 @@ func (k *Keys) Recheck(ctx context.Context, p Principal) error {
 }
 
 // recheckRestriction refuses, with ErrKeyNarrowed, a principal that names a
-// mailbox its key's restriction no longer does. A mailbox removed since is no
-// difference: its id is never reused, so nothing can be reached through it
-// again.
+// mailbox its key's restriction no longer does. A mailbox deleted for good
+// since is no difference: its id is never reused, so nothing can be reached
+// through it again. A removed one is still there, kept for a recovery, so a
+// principal that still names it is refused like any other narrowed one.
 func (k *Keys) recheckRestriction(ctx context.Context, p Principal) error {
 	if len(p.AccountIDs) == 0 {
 		// Unrestricted when it authenticated, and a key never gains a

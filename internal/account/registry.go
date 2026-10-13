@@ -1164,6 +1164,10 @@ func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oaut
 }
 
 // Mailbox returns the provider mailbox for an account, building it once.
+// It builds one only through Get, so a removed account gets none
+// (ErrNotFound): every IMAP and SMTP connection and every token refresh
+// starts here, and none reaches a removed mailbox. One built before the
+// removal is dropped with the rest of what is cached for it (forget).
 func (r *Registry) Mailbox(ctx context.Context, accountID string) (provider.Mailbox, error) {
 	r.mu.Lock()
 	if mb, ok := r.mailboxes[accountID]; ok {

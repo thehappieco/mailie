@@ -22,6 +22,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -356,6 +357,31 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		VALUES ('inv_0000000000000004', ?, 'gil@example.com', 'member', ?, ?, ?, ?, 'member')`,
 		[]byte(strings.Repeat("04", 16)), ana.UserID, now, now+3600, support.ID)
 
+	// A mailbox of the team she removed, kept for its 30 days, and the
+	// journal of what she and bob did to the team's mailboxes, with what it
+	// told each of them: deleting her forgets that she did it, and takes
+	// what she was told.
+	removed, err := f.repo.Create(t.Context(), account.Account{ID: "acc_00000000000000ad", Email: "old@mail.example",
+		Provider: "imap", AuthKind: "password", IMAPHost: "h", IMAPPort: 993, SMTPHost: "h", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "old", WorkspaceID: support.ID}, bob.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := func(kind store.MailboxEventKind, accountID, actor string, readers ...string) {
+		t.Helper()
+		if err := f.db.Write(t.Context(), func(tx *sql.Tx) error {
+			_, _, err := store.JournalMailboxTx(t.Context(), tx, store.MailboxEvent{Kind: kind, AccountID: accountID,
+				Actor: actor, At: now}, readers, true)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal(store.MailboxRemoved, removed.ID, ana.UserID, bob.UserID)
+	f.exec(t, `UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ? WHERE id = ?`,
+		now, ana.UserID, now+30*24*60*60, removed.ID)
+	journal(store.MailboxSyncPaused, teamBox.ID, bob.UserID, ana.UserID, bob.UserID)
+
 	// The identities ana and bob sign in with through a provider, and the
 	// keys pinned for each; and a key pinned for an identity no sign-in ever
 	// linked, which is not hers: the hourly sweep deletes such a pin
@@ -403,11 +429,6 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	unseeded := map[string]string{
 		"meta":             "instance settings; nothing about anyone",
 		"attachment_blobs": "nothing writes it before phase 2, and then its rows and files need their own deletion",
-		// Nothing writes the mailbox journal before removing a mailbox keeps
-		// it, which seeds it here when it does.
-		"mailbox_events":        "nothing writes it yet",
-		"mailbox_event_readers": "nothing writes it yet",
-		"notices":               "nothing writes it yet",
 	}
 	for _, name := range f.tables(t) {
 		if _, ok := unseeded[name]; !ok && f.count(t, `SELECT count(*) FROM "`+name+`"`) == 0 {
@@ -487,6 +508,12 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		"the key pinned for nobody": f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-nobody'`),
 		"bob's recovery under way":  f.count(t, `SELECT count(*) FROM auth_tickets WHERE user_id = ?`, bob.UserID),
 		"bob's reset invitation":    f.count(t, `SELECT count(*) FROM reset_invites WHERE user_id = ?`, bob.UserID),
+		"the mailbox she removed, kept": f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0
+			AND removed_by = ''`, removed.ID),
+		"its removal, unsigned, told bob": f.count(t, `SELECT count(*) FROM mailbox_events e JOIN notices n ON n.event_seq = e.seq
+			WHERE e.account_id = ? AND e.kind = 'removed' AND e.actor = '' AND n.user_id = ?`, removed.ID, bob.UserID),
+		"what bob did, its readers bob alone": f.count(t, `SELECT count(*) FROM mailbox_event_readers r
+			JOIN mailbox_events e ON e.seq = r.event_seq WHERE e.account_id = ? AND e.actor = ?`, teamBox.ID, bob.UserID),
 	} {
 		if n != 1 {
 			t.Errorf("%s: %d rows, want 1", what, n)
