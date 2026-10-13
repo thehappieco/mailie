@@ -1585,6 +1585,8 @@ gets `403` on these routes, and a member does too. No key creates a key.
   "expires_at": 1797776000,
   "last_used_at": 1790003600,      // absent if never used; one-minute resolution
   "revoked_at": 1790000000,        // absent while alive
+  "stop_reason": "manual",         // why a revoked key stopped; absent while alive, and on a key
+                                   // revoked before it was recorded
   "live": true,                    // neither revoked nor expired
   "terms_version": "2026-10-open-api-keys-2",
   "sends": false                   // can send at all: the send scope, on a server whose keys may send
@@ -1611,6 +1613,10 @@ gets `403` on these routes, and a member does too. No key creates a key.
 - The secret appears **once**, in the `POST` answer (`Cache-Control: no-store`).
 - A key is revoked when the person who created it leaves the workspace, or is disabled or deleted
   on the instance; demoting them, or disabling their membership, keeps it.
+- A revoked key is listed with **why it stopped**, `stop_reason`: `manual`, `creator_left`,
+  `creator_disabled`, `creator_suspended`, `creator_deleted`, `account_recovered`,
+  `restriction_emptied` or `migration`; absent on a live key, and on one revoked before the reason
+  was recorded ([workspaces.md](workspaces.md), "API keys").
 - A key sends through `POST /v1/messages/send` from a mailbox it holds `send` on, with
   `confirm: true`, at most 100 a day; the message goes out under the address alone; its record is
   the key's own, and its owners and admins list its sends.

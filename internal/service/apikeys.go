@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // The operator's keys are managed with an instance key only, here. An
@@ -38,7 +39,10 @@ type APIKey struct {
 	CreatedAt  int64 `json:"created_at"`
 	ExpiresAt  int64 `json:"expires_at,omitempty"`
 	RevokedAt  int64 `json:"revoked_at,omitempty"`
-	LastUsedAt int64 `json:"last_used_at,omitempty"`
+	// StopReason is why a revoked key stopped (KeyStopReasons); absent for
+	// a live key, and for one revoked before the reason was recorded.
+	StopReason workspace.KeyStopReason `json:"stop_reason,omitempty"`
+	LastUsedAt int64                   `json:"last_used_at,omitempty"`
 	// TermsVersion is the key terms revision the person who created a
 	// workspace key agreed to; absent for an instance key.
 	TermsVersion string `json:"terms_version,omitempty"`
@@ -193,9 +197,17 @@ func presentKey(k auth.Key) APIKey {
 		Prefix: k.Prefix, Name: k.Name, Scope: k.Scope, WorkspaceID: k.WorkspaceID, AccountIDs: ids,
 		Restricted: k.Restricted && k.IsInstance(),
 		CreatedAt:  unixOrZero(k.CreatedAt), ExpiresAt: unixOrZero(k.ExpiresAt),
-		RevokedAt: unixOrZero(k.RevokedAt), LastUsedAt: unixOrZero(k.LastUsedAt),
+		RevokedAt: unixOrZero(k.RevokedAt), StopReason: stopReason(k), LastUsedAt: unixOrZero(k.LastUsedAt),
 		TermsVersion: k.TermsVersion, CreatedBy: k.CreatedBy,
 	}
+}
+
+// stopReason is why a key stopped, as listed: only for a revoked key.
+func stopReason(k auth.Key) workspace.KeyStopReason {
+	if !k.Revoked() {
+		return ""
+	}
+	return k.StopReason
 }
 
 func unixOrZero(t time.Time) int64 {

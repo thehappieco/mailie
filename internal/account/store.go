@@ -780,9 +780,10 @@ func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt,
 // trigger). Three things are not, and go here first:
 //
 //   - A live instance key restricted to nothing but these accounts is
-//     revoked. Its restriction rows cascade away, and an instance key with no
-//     restriction rows reaches every operator mailbox: without this, deleting
-//     the one mailbox a key was limited to would hand it all of them.
+//     revoked, saying its last mailbox went (restriction_emptied). Its
+//     restriction rows cascade away, and an instance key with no restriction
+//     rows reaches every operator mailbox: without this, deleting the one
+//     mailbox a key was limited to would hand it all of them.
 //   - The event journal names accounts without a foreign key, so that event
 //     retention cannot cascade into pending webhook deliveries. The accounts'
 //     events, and any delivery of them, are deleted explicitly.
@@ -802,13 +803,13 @@ func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, now int64) (int, err
 		query string
 		args  []any
 	}{
-		{"revoke the keys limited to them", `UPDATE api_keys SET revoked_at = ?
+		{"revoke the keys limited to them", `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
 		   WHERE revoked_at = 0
 		     AND EXISTS (SELECT 1 FROM api_key_accounts r
 		                  WHERE r.key_prefix = api_keys.prefix AND r.account_id IN ` + in + `)
 		     AND NOT EXISTS (SELECT 1 FROM api_key_accounts r
 		                      WHERE r.key_prefix = api_keys.prefix AND r.account_id NOT IN ` + in + `)`,
-			[]any{now, list, list}},
+			[]any{now, string(workspace.KeyStopRestrictionEmptied), list, list}},
 		{"delete deliveries of their events", `DELETE FROM webhook_deliveries
 		   WHERE event_seq IN (SELECT seq FROM events WHERE account_id IN ` + in + `)`,
 			[]any{list}},

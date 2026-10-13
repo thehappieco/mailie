@@ -38,3 +38,31 @@ func TestAMissingAccountDoesNotBlameMailAdminAPI(t *testing.T) {
 		t.Errorf("a missing account failed with %v", err)
 	}
 }
+
+func TestTheKeyListSaysWhyAKeyStopped(t *testing.T) {
+	cfg, _ := fakeDaemon(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`[
+		  {"prefix":"0a0b0c01","name":"Live","scope":"read","workspace_id":"wsp_1","created_at":1,"expires_at":0},
+		  {"prefix":"0a0b0c02","name":"Left","scope":"read","workspace_id":"wsp_1","created_at":1,"revoked_at":2,
+		   "stop_reason":"creator_left"},
+		  {"prefix":"0a0b0c03","name":"Old","scope":"read","workspace_id":"wsp_1","created_at":1,"revoked_at":2}
+		]`))
+	})
+	out, err := captureStdout(t, func() error { return apikeyList(t.Context(), cfg, nil) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for prefix, state := range map[string]string{
+		"0a0b0c01": "active", "0a0b0c02": "revoked (creator_left)", "0a0b0c03": "revoked",
+	} {
+		var line string
+		for _, l := range strings.Split(out, "\n") {
+			if strings.HasPrefix(l, prefix) {
+				line = strings.TrimSpace(l)
+			}
+		}
+		if !strings.HasSuffix(line, "  "+state) {
+			t.Errorf("key %s is listed %q, want it to end %q", prefix, line, state)
+		}
+	}
+}

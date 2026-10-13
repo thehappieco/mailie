@@ -128,6 +128,10 @@ const (
 	OriginPersonAll = "person-all"
 )
 
+// KeyStopReason is why a key stopped: the workspace package's, where the
+// writes that stop a key with its creator's place in a workspace live.
+type KeyStopReason = workspace.KeyStopReason
+
 // Key is a stored key, as listed. It never carries the secret: that exists
 // once, in the response to the call that created it.
 type Key struct {
@@ -154,6 +158,9 @@ type Key struct {
 	ExpiresAt  time.Time
 	RevokedAt  time.Time
 	LastUsedAt time.Time
+	// StopReason is why a revoked key stopped; empty for a live key, and
+	// for one revoked before the reason was recorded (migration 0017).
+	StopReason KeyStopReason
 	// TermsVersion is the revision of the key terms the person who created
 	// a workspace key agreed to; empty for an instance key.
 	TermsVersion string
@@ -658,7 +665,7 @@ func liveFirst(keys []Key, now time.Time) []Key {
 func (k *Keys) list(ctx context.Context, workspaceID, where string, args ...any) ([]Key, error) {
 	rows, err := k.store.Reader().QueryContext(ctx,
 		`SELECT k.prefix, k.name, k.scope, coalesce(k.workspace_id, ''), k.origin, k.created_at, k.expires_at,
-		        k.revoked_at, k.last_used_at, k.terms_version, k.created_by, k.restricted
+		        k.revoked_at, k.stop_reason, k.last_used_at, k.terms_version, k.created_by, k.restricted
 		   FROM api_keys k WHERE `+where+` ORDER BY k.created_at DESC, k.rowid DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("auth: list keys: %w", err)
@@ -674,7 +681,7 @@ func (k *Keys) list(ctx context.Context, workspaceID, where string, args ...any)
 			created, expires, revoked, lastUsed int64
 		)
 		if err := rows.Scan(&key.Prefix, &key.Name, &scopeStr, &key.WorkspaceID, &key.Origin, &created, &expires,
-			&revoked, &lastUsed, &key.TermsVersion, &key.CreatedBy, &key.Restricted); err != nil {
+			&revoked, &key.StopReason, &lastUsed, &key.TermsVersion, &key.CreatedBy, &key.Restricted); err != nil {
 			return nil, fmt.Errorf("auth: scan key: %w", err)
 		}
 		key.Scope = Scope(scopeStr)
@@ -742,14 +749,15 @@ func (k *Keys) holds(ctx context.Context, key *Key, workspaceID string) error {
 // ErrNotFound means no key carries that prefix, or none the caller may see.
 var ErrNotFound = errors.New("auth: no such key")
 
-// Revoke marks a key unusable: the operator's, for any key. Revoking an
-// already-revoked key is not an error: the caller asked for a state, and the
-// state holds.
+// Revoke marks a key unusable: the operator's, for any key, which says it
+// was revoked (KeyStopManual). Revoking an already-revoked key is not an
+// error: the caller asked for a state, and the state holds, with the reason
+// it stopped for first.
 func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE api_keys SET revoked_at = ? WHERE prefix = ? AND revoked_at = 0`,
-			k.now().Unix(), prefix)
+			`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE prefix = ? AND revoked_at = 0`,
+			k.now().Unix(), string(workspace.KeyStopManual), prefix)
 		if err != nil {
 			return fmt.Errorf("auth: revoke key: %w", err)
 		}
@@ -770,11 +778,13 @@ func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 	})
 }
 
-// RevokeIn revokes a key of a workspace: one of its own keys is revoked; a
-// carried-over key that holds mailboxes of the workspace loses them, and is
-// revoked with its last (the schema's trigger), since it is not this
-// workspace's alone. Any other key is ErrNotFound. check runs first in the
-// transaction. Revoking a key already revoked is not an error.
+// RevokeIn revokes a key of a workspace, saying it was revoked
+// (KeyStopManual): one of its own keys is revoked; a carried-over key that
+// holds mailboxes of the workspace loses them, since it is not this
+// workspace's alone, and is revoked first, for the same reason, when they are
+// the last it holds (the schema's trigger would say its last mailbox went).
+// Any other key is ErrNotFound. check runs first in the transaction.
+// Revoking a key already revoked is not an error.
 func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check func(*sql.Tx) error) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		if check != nil {
@@ -799,12 +809,18 @@ func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check f
 			if revoked != 0 {
 				return nil
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ? WHERE prefix = ? AND revoked_at = 0`,
-				k.now().Unix(), prefix); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE prefix = ? AND revoked_at = 0`,
+				k.now().Unix(), string(workspace.KeyStopManual), prefix); err != nil {
 				return fmt.Errorf("auth: revoke key: %w", err)
 			}
 			return nil
 		case ws == "" && held > 0:
+			if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?1, stop_reason = ?2
+				WHERE prefix = ?3 AND revoked_at = 0
+				  AND NOT EXISTS (SELECT 1 FROM key_access x WHERE x.key_prefix = ?3 AND x.workspace_id <> ?4)`,
+				k.now().Unix(), string(workspace.KeyStopManual), prefix, workspaceID); err != nil {
+				return fmt.Errorf("auth: revoke key: %w", err)
+			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM key_access WHERE key_prefix = ? AND workspace_id = ?`,
 				prefix, workspaceID); err != nil {
 				return fmt.Errorf("auth: take the workspace out of the key: %w", err)
@@ -816,8 +832,9 @@ func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check f
 }
 
 // RevokeCreatedBy revokes a workspace key a person created, in any
-// workspace. Anyone else's key, or an instance key, is ErrNotFound: to this
-// caller it does not exist. Revoking one already revoked is not an error.
+// workspace, saying it was revoked (KeyStopManual). Anyone else's key, or an
+// instance key, is ErrNotFound: to this caller it does not exist. Revoking
+// one already revoked is not an error.
 func (k *Keys) RevokeCreatedBy(ctx context.Context, prefix, userID string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		var revokedAt int64
@@ -832,12 +849,46 @@ func (k *Keys) RevokeCreatedBy(ctx context.Context, prefix, userID string) error
 		case revokedAt != 0:
 			return nil
 		}
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE api_keys SET revoked_at = ? WHERE prefix = ? AND revoked_at = 0`, k.now().Unix(), prefix); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE prefix = ? AND revoked_at = 0`,
+			k.now().Unix(), string(workspace.KeyStopManual), prefix); err != nil {
 			return fmt.Errorf("auth: revoke key: %w", err)
 		}
 		return nil
 	})
+}
+
+// ErrStopReason is a key stopped for no reason, or for one the schema does
+// not know.
+var ErrStopReason = errors.New("auth: not a reason a key stops for")
+
+// RevokeCreatedBefore revokes every live key a person created before a
+// moment, in every workspace, saying why, and reports how many it revoked.
+// Keys they created at or after it stay. The moment is compared with each
+// key's creation time as stored, in whole seconds: a caller that must not
+// spare a key created just before it, by a clock a little behind, adds its
+// own margin. Nobody's keys (an empty userID) are none.
+func (k *Keys) RevokeCreatedBefore(ctx context.Context, userID string, before time.Time, reason KeyStopReason) (int, error) {
+	if !reason.Valid() {
+		return 0, ErrStopReason
+	}
+	if userID == "" {
+		return 0, nil
+	}
+	var n int
+	err := k.store.Write(ctx, func(tx *sql.Tx) error {
+		var err error
+		n, err = execCount(ctx, tx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
+			WHERE created_by = ? AND created_at < ? AND revoked_at = 0`,
+			k.now().Unix(), string(reason), userID, before.Unix())
+		if err != nil {
+			return fmt.Errorf("auth: revoke the keys the person created: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // CarriedOverLive counts the live keys migration 0012 carried over from a

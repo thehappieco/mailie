@@ -67,6 +67,7 @@
     "revoked_at": 1790000000,
     "scope": "write",
     "sends": false,
+    "stop_reason": "manual",
     "terms_version": "2026-10-open-api-keys-2",
     "workspace_id": "wsp_0000000000000001"
   }

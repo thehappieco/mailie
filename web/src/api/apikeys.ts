@@ -31,6 +31,7 @@ export function listed(key: WorkspaceKey): WorkspaceKey {
   if (key.created_by !== undefined) out.created_by = key.created_by
   if (key.last_used_at !== undefined) out.last_used_at = key.last_used_at
   if (key.revoked_at !== undefined) out.revoked_at = key.revoked_at
+  if (key.stop_reason !== undefined) out.stop_reason = key.stop_reason
   return out
 }
 

@@ -311,6 +311,16 @@ export interface KeyMailbox extends KeyFlags {
  */
 export type KeyOrigin = 'person' | 'person-all'
 /**
+ * Why a key stopped (docs/workspaces.md, "API keys"), as the server recorded
+ * it in the write that revoked the key, once: someone revoked it ("manual");
+ * the person who created it left its workspace, was disabled on this server,
+ * suspended, or deleted, or their account was recovered; the last mailbox it
+ * could reach was removed ("restriction_emptied"); or an upgrade of the
+ * server stopped it ("migration").
+ */
+export type KeyStopReason = 'manual' | 'creator_left' | 'creator_disabled' | 'creator_suspended' | 'creator_deleted'
+  | 'account_recovered' | 'restriction_emptied' | 'migration'
+/**
  * A key of a workspace, as its owners and admins list it (GET
  * /v1/workspaces/{id}/apikeys), and as the person who created it does (GET
  * /v1/me/apikeys). Never the secret: that exists once, in the answer to the
@@ -323,7 +333,8 @@ export type KeyOrigin = 'person' | 'person-all'
  * created_by: the person who created it, absent once they are deleted.
  * sends: whether it can send at all (the send scope, on a server whose keys
  * may send, under the current key terms). terms_version: the revision of the
- * key terms its creator agreed to.
+ * key terms its creator agreed to. stop_reason: why a revoked key stopped;
+ * absent on a live key, and on one revoked before the server recorded why.
  */
 export interface WorkspaceKey {
   prefix: string
@@ -340,6 +351,8 @@ export interface WorkspaceKey {
   expires_at: number
   last_used_at?: number
   revoked_at?: number
+  /** The running console reads a reason it does not know as its identifier. */
+  stop_reason?: KeyStopReason | (string & {})
   /** Neither revoked nor expired, by the server's clock. */
   live: boolean
   terms_version: string
@@ -630,6 +643,8 @@ export const syncStates: readonly SyncState[] = ['off', 'initial', 'live', 'back
 export const archiveReasons: readonly ArchiveReason[] = ['all_mail_hidden']
 export const keyScopes: readonly KeyScope[] = ['read', 'write', 'send']
 export const keyOrigins: readonly KeyOrigin[] = ['person', 'person-all']
+export const keyStopReasons: readonly KeyStopReason[] = ['manual', 'creator_left', 'creator_disabled', 'creator_suspended',
+  'creator_deleted', 'account_recovered', 'restriction_emptied', 'migration']
 export const sendStates: readonly SendState[] = ['sending', 'sent', 'failed', 'unknown']
 export const sentCopyStates = ['n/a', 'pending', 'appended', 'failed'] as const
 export const keyLifetimes: readonly KeyLifetime[] = [30, 90, 365]
@@ -880,7 +895,7 @@ export function isInvite(v: unknown, strict = false): v is Invite {
 }
 
 const keyFields = ['prefix', 'name', 'scope', 'workspace_id', 'carried_over', 'origin', 'mailboxes', 'other_workspaces', 'created_by',
-  'created_at', 'expires_at', 'last_used_at', 'revoked_at', 'live', 'terms_version', 'sends'] as const
+  'created_at', 'expires_at', 'last_used_at', 'revoked_at', 'stop_reason', 'live', 'terms_version', 'sends'] as const
 
 /**
  * A key's prefix names it in a path (DELETE …/apikeys/{prefix}), so the
@@ -905,7 +920,10 @@ function keyListed(v: Fields, strict: boolean): boolean {
     && Array.isArray(mailboxes) && mailboxes.every(item => isKeyMailbox(item, strict))
     && optional(v.other_workspaces, counter) && optional(v.created_by, x => filled(x, 128))
     && seconds(v.created_at) && seconds(v.expires_at) && optional(v.last_used_at, seconds) && optional(v.revoked_at, seconds)
+    && optional(v.stop_reason, x => strict ? oneOf(keyStopReasons)(x) : filled(x, 64))
     && flag(v.live) && text(v.terms_version, 128) && flag(v.sends)
+    // Only a key that stopped says why.
+    && (!strict || v.stop_reason === undefined || v.revoked_at !== undefined)
     // A key has its workspace, or was carried over without one; only a carried-over key counts other workspaces.
     && (!strict || ((v.workspace_id === undefined) === (v.carried_over === true) && (v.other_workspaces === undefined || v.carried_over === true)))
     // A key's mailboxes are its workspace's.

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -41,6 +42,49 @@ var (
 	// ErrNoKeyAccess is a key that holds nothing on that mailbox.
 	ErrNoKeyAccess = errors.New("workspace: the key holds nothing on that mailbox")
 )
+
+// KeyStopReason is why a key stopped (migration 0017): written in the same
+// write that revokes it, by whatever revokes it, and never changed. A key
+// revoked before that migration says none ("").
+type KeyStopReason string
+
+// Why a key stopped.
+const (
+	// KeyStopManual is a key someone revoked: the operator, an owner or an
+	// admin of its workspace, or the person who created it.
+	KeyStopManual KeyStopReason = "manual"
+	// KeyStopCreatorLeft is a key whose creator left its workspace, or was
+	// removed from it.
+	KeyStopCreatorLeft KeyStopReason = "creator_left"
+	// KeyStopCreatorDisabled is a key whose creator was disabled on this
+	// server.
+	KeyStopCreatorDisabled KeyStopReason = "creator_disabled"
+	// KeyStopCreatorSuspended is a key whose creator was suspended by an
+	// extension of the daemon.
+	KeyStopCreatorSuspended KeyStopReason = "creator_suspended"
+	// KeyStopCreatorDeleted is a key whose creator was deleted.
+	KeyStopCreatorDeleted KeyStopReason = "creator_deleted"
+	// KeyStopAccountRecovered is a key created before its creator's account
+	// was recovered.
+	KeyStopAccountRecovered KeyStopReason = "account_recovered"
+	// KeyStopRestrictionEmptied is a key whose last mailbox went: an
+	// operator key restricted to mailboxes that are all gone, or a
+	// carried-over key that lost its last one.
+	KeyStopRestrictionEmptied KeyStopReason = "restriction_emptied"
+	// KeyStopMigration is reserved for a migration that stops keys.
+	KeyStopMigration KeyStopReason = "migration"
+)
+
+// KeyStopReasons lists every reason a key may stop for, as the schema does.
+func KeyStopReasons() []KeyStopReason {
+	return []KeyStopReason{
+		KeyStopManual, KeyStopCreatorLeft, KeyStopCreatorDisabled, KeyStopCreatorSuspended, KeyStopCreatorDeleted,
+		KeyStopAccountRecovered, KeyStopRestrictionEmptied, KeyStopMigration,
+	}
+}
+
+// Valid reports whether r is one of KeyStopReasons; "" is not.
+func (r KeyStopReason) Valid() bool { return slices.Contains(KeyStopReasons(), r) }
 
 // KeyGrant is what a key is given on one mailbox. Manage is never a key's.
 type KeyGrant struct {
@@ -349,18 +393,26 @@ func (r *Repository) KeyWorkspaces(ctx context.Context, prefix string) ([]string
 }
 
 // revokeCreatedInTx revokes the keys a person created in a workspace, when
-// they leave it: a key of the workspace is revoked; a carried-over key loses
-// the workspace's mailboxes, and is revoked with its last (the schema's
-// trigger). It returns how many keys of the workspace it revoked.
+// they leave it, saying so (KeyStopCreatorLeft): a key of the workspace is
+// revoked; a carried-over key loses the workspace's mailboxes, and is revoked
+// with them when they were the last it held, for the same reason rather than
+// the schema trigger's. It returns how many keys of the workspace it revoked.
 func revokeCreatedInTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string, now int64) (int, error) {
-	res, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?
-		WHERE workspace_id = ? AND created_by = ? AND revoked_at = 0`, now, workspaceID, userID)
+	res, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
+		WHERE workspace_id = ? AND created_by = ? AND revoked_at = 0`, now, string(KeyStopCreatorLeft), workspaceID, userID)
 	if err != nil {
 		return 0, fmt.Errorf("workspace: revoke the keys the person created: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("workspace: revoke the keys the person created: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?1, stop_reason = ?2
+		WHERE workspace_id IS NULL AND created_by = ?4 AND revoked_at = 0
+		  AND EXISTS (SELECT 1 FROM key_access x WHERE x.key_prefix = api_keys.prefix AND x.workspace_id = ?3)
+		  AND NOT EXISTS (SELECT 1 FROM key_access x WHERE x.key_prefix = api_keys.prefix AND x.workspace_id <> ?3)`,
+		now, string(KeyStopCreatorLeft), workspaceID, userID); err != nil {
+		return 0, fmt.Errorf("workspace: revoke the person's carried-over keys: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM key_access
 		WHERE workspace_id = ? AND key_prefix IN (SELECT prefix FROM api_keys WHERE workspace_id IS NULL AND created_by = ?)`,

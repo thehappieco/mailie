@@ -315,6 +315,15 @@ describe('the HTTP contract the Go handlers answer with', () => {
     }
   })
 
+  it('says why a revoked key stopped, and nothing on a key that works', () => {
+    const keys = [...(fixture('apikeys') as WorkspaceKey[]), ...(fixture('my_apikeys') as WorkspaceKey[])]
+    const stopped = keys.filter(key => key.revoked_at !== undefined)
+    // The daemon that writes the fixtures revokes one key through its workspace's owner.
+    expect(stopped.length).toBeGreaterThan(0)
+    for (const key of stopped) expect(key.stop_reason, key.prefix).toBe('manual')
+    for (const key of keys.filter(key => key.revoked_at === undefined)) expect(key, key.prefix).not.toHaveProperty('stop_reason')
+  })
+
   it('makes every key its workspace’s, holding only that workspace’s mailboxes, each flag within its scope', () => {
     const keys = [fixture('apikey_created'), ...(fixture('apikeys') as WorkspaceKey[]), ...(fixture('my_apikeys') as WorkspaceKey[])] as WorkspaceKey[]
     const workspaces = new Set((fixture('workspaces') as Workspace[]).map(item => item.id))

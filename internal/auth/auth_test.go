@@ -15,6 +15,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func newKeys(t *testing.T) (*auth.Keys, *store.Store, *time.Time) {
@@ -293,8 +294,8 @@ func TestAKeyWhoseLastMailboxIsRemovedStopsRatherThanReachingEveryMailbox(t *tes
 		t.Fatal(err)
 	}
 	for _, key := range listed {
-		if strings.HasPrefix(one, key.Prefix+".") && !key.Revoked() {
-			t.Error("the key for the removed mailbox is not listed as revoked")
+		if strings.HasPrefix(one, key.Prefix+".") && (!key.Revoked() || key.StopReason != workspace.KeyStopRestrictionEmptied) {
+			t.Errorf("the key for the removed mailbox is listed revoked %v, for %q", key.Revoked(), key.StopReason)
 		}
 	}
 	remove("acc_2")

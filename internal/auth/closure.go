@@ -179,9 +179,10 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 		// Revoked rather than left to fail: switching the person back on
 		// must not bring a key back, any more than it brings a session back.
 		// A key stops when the person who created it is closed, whatever it
-		// holds: the key terms they agreed to say so.
+		// holds: the key terms they agreed to say so, and the key says why.
 		out.Keys, err = execCount(ctx, tx,
-			`UPDATE api_keys SET revoked_at = ? WHERE created_by = ? AND revoked_at = 0`, now, id)
+			`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
+			now, string(workspace.KeyStopCreatorDisabled), id)
 		if err != nil {
 			return fmt.Errorf("auth: revoke the user's keys: %w", err)
 		}
@@ -265,10 +266,13 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	// A key they created stays where it belongs, revoked, until its
 	// workspace goes: their personal workspace's and the teams' they were
 	// alone in below, with what they held (both cascade on the workspace);
-	// another team's stays as the team's record, without their name.
+	// another team's stays as the team's record, without their name. One
+	// still live says it stopped with them; one stopped before keeps its
+	// moment and its reason.
 	if out.Keys, err = execCount(ctx, tx, `UPDATE api_keys
-		SET revoked_at = CASE revoked_at WHEN 0 THEN ? ELSE revoked_at END, created_by = ''
-		WHERE created_by = ?`, u.now().Unix(), id); err != nil {
+		SET revoked_at = CASE revoked_at WHEN 0 THEN ? ELSE revoked_at END,
+		    stop_reason = CASE revoked_at WHEN 0 THEN ? ELSE stop_reason END, created_by = ''
+		WHERE created_by = ?`, u.now().Unix(), string(workspace.KeyStopCreatorDeleted), id); err != nil {
 		return Removed{}, fmt.Errorf("auth: revoke the user's keys: %w", err)
 	}
 	if out.Invites, err = execCount(ctx, tx,

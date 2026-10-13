@@ -129,7 +129,7 @@ func TestWhatAKeyHoldsStaysInItsWorkspaceAndWithinItsScope(t *testing.T) {
 		workspace.ErrNoKeyAccess)
 
 	// A key revoked, or expired, is given nothing more.
-	if _, err := f.db.Writer().ExecContext(ctx, `UPDATE api_keys SET revoked_at = 1 WHERE prefix = ?`, reader); err != nil {
+	if _, err := f.db.Writer().ExecContext(ctx, `UPDATE api_keys SET revoked_at = 1, stop_reason = 'manual' WHERE prefix = ?`, reader); err != nil {
 		t.Fatal(err)
 	}
 	want(t, "a revoked key", set(reader, shared.ID, readOnly()), workspace.ErrKeyNotLive)

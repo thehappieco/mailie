@@ -602,6 +602,20 @@ keys, as Wappie does. Deleting a person deletes the keys of their personal works
 teams they were alone in, with those workspaces, and blanks their name on the keys they created in
 a team that stays, which stay revoked as the team's record.
 
+**Why a key stopped** (migration 0017). Every write that revokes a key records why, once, in
+`api_keys.stop_reason`, and the listings answer it as `stop_reason` on a revoked key (absent on a
+live one): `manual` (the operator, an owner or an admin of its workspace, or its creator revoked
+it), `creator_left` (its creator left the workspace or was removed from it), `creator_disabled`,
+`creator_suspended` (by an extension of the daemon), `creator_deleted`, `account_recovered` (its
+creator's account was recovered: the keys they had created before stop), `restriction_emptied`
+(the last mailbox it could reach went: an operator key restricted to mailboxes that are all gone, or
+a carried-over key that lost its last one) and `migration` (reserved). A carried-over key revoked
+in, or losing with its creator, the last workspace it held mailboxes in says `manual` or
+`creator_left`, not `restriction_emptied`. The schema holds it: a key that stops without a reason
+is refused, a reason is only on a revoked key, and it never changes. A key revoked before 0017
+says none. `mailserver apikey list` prints it after `revoked`. An extension stops a person's keys
+created before a moment with `Service.RevokeKeysCreatedBefore`, naming the reason; no route does.
+
 **Held principals.** A workspace key's principal names no mailbox: every use reads what the key
 holds now, so the stdio MCP session, a resource subscription, an event stream and a long poll see
 a mailbox given or taken at once (the stream says so with `event: access`), and a key revoked or
@@ -785,7 +799,8 @@ Shapes:
 // WorkspaceKey (the secret is never here; created_by absent once that person is deleted; origin
 // "person" or "person-all" for a person's key 0012 moved into its workspace; carried_over and
 // other_workspaces for one it carried over; sends: the key can send at all, its scope and the
-// server allowing)
+// server allowing; a revoked key adds revoked_at and stop_reason, why it stopped, absent on a key
+// revoked before 0017)
 {"prefix": "0a1b2c3d", "name": "Claude Code", "scope": "read", "workspace_id": "wsp_…",
  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "read": true, "act": false,
                 "send": false, "granted_by": "usr_…", "updated_at": 1790000000}],

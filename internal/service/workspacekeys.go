@@ -106,6 +106,9 @@ type WorkspaceKey struct {
 	ExpiresAt  int64  `json:"expires_at"`
 	LastUsedAt int64  `json:"last_used_at,omitempty"`
 	RevokedAt  int64  `json:"revoked_at,omitempty"`
+	// StopReason is why a revoked key stopped (KeyStopReasons); absent for
+	// a live key, and for one revoked before the reason was recorded.
+	StopReason workspace.KeyStopReason `json:"stop_reason,omitempty"`
 	// Live is neither revoked nor expired.
 	Live bool `json:"live"`
 	// TermsVersion is the revision of the key terms its creator agreed to.
@@ -536,6 +539,35 @@ func (s *Service) RevokeMyAPIKey(ctx context.Context, p Principal, prefix string
 	return nil
 }
 
+// RevokeKeysCreatedBefore stops every live key a person created before a
+// moment, in every workspace, for the reason given, and reports how many it
+// stopped: for an extension of the daemon (internal/app's
+// Options.Extensions), which learns elsewhere that what stood behind those
+// keys changed (the person's account recovered, say). No transport calls it,
+// and it takes no principal: the extension answers for it, as for
+// SignInExternal. The moment is compared in whole seconds with when each key
+// was created; the extension adds whatever margin its clock needs. Keys
+// created at or after it stay, and a key already stopped keeps its reason.
+func (s *Service) RevokeKeysCreatedBefore(ctx context.Context, userID string, before time.Time,
+	reason workspace.KeyStopReason,
+) (int, error) {
+	if !reason.Valid() {
+		return 0, Ef(CodeBadRequest, nil, "%q is not a reason a key stops for", reason)
+	}
+	if strings.TrimSpace(userID) == "" || before.IsZero() {
+		return 0, E(CodeBadRequest, "stopping a person's keys needs the person and a moment", nil)
+	}
+	n, err := s.keys.RevokeCreatedBefore(ctx, userID, before, reason)
+	if err != nil {
+		return 0, E(CodeInternal, "stopping the person's keys failed", err)
+	}
+	if n > 0 {
+		s.accessChanged()
+		s.log.Info("api keys stopped", "created_by", userID, "keys", n, "reason", string(reason))
+	}
+	return n, nil
+}
+
 // presentKeys renders keys for their workspace's owners and admins, or the
 // person who created them.
 func (s *Service) presentKeys(keys []auth.Key) []WorkspaceKey {
@@ -555,8 +587,8 @@ func (s *Service) presentWorkspaceKey(k auth.Key) WorkspaceKey {
 		Prefix: k.Prefix, Name: k.Name, Scope: k.Scope, WorkspaceID: k.WorkspaceID, CarriedOver: k.WorkspaceID == "",
 		Origin: k.Origin, Mailboxes: mailboxes, OtherWorkspaces: k.OtherWorkspaces, CreatedBy: k.CreatedBy,
 		CreatedAt: unixOrZero(k.CreatedAt), ExpiresAt: unixOrZero(k.ExpiresAt),
-		LastUsedAt: unixOrZero(k.LastUsedAt), RevokedAt: unixOrZero(k.RevokedAt), Live: k.Live(s.now()),
-		TermsVersion: k.TermsVersion, Sends: s.keySends(k.Scope, k.Origin),
+		LastUsedAt: unixOrZero(k.LastUsedAt), RevokedAt: unixOrZero(k.RevokedAt), StopReason: stopReason(k),
+		Live: k.Live(s.now()), TermsVersion: k.TermsVersion, Sends: s.keySends(k.Scope, k.Origin),
 	}
 }
 

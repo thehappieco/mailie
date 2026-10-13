@@ -128,6 +128,7 @@ func apikeyList(ctx context.Context, cfg config.Config, args []string) error {
 		AccountIDs  []string `json:"account_ids"`
 		ExpiresAt   int64    `json:"expires_at"`
 		RevokedAt   int64    `json:"revoked_at"`
+		StopReason  string   `json:"stop_reason"`
 		LastUsedAt  int64    `json:"last_used_at"`
 	}
 	if err := json.Unmarshal(body, &keys); err != nil {
@@ -141,7 +142,13 @@ func apikeyList(ctx context.Context, cfg config.Config, args []string) error {
 	for _, k := range keys {
 		state := "active"
 		if k.RevokedAt != 0 {
+			// Why it stopped, when that was recorded (migration 0017):
+			// revoked by someone (manual), or with its creator or its last
+			// mailbox.
 			state = "revoked"
+			if k.StopReason != "" {
+				state += " (" + k.StopReason + ")"
+			}
 		} else if k.ExpiresAt != 0 && time.Now().After(time.Unix(k.ExpiresAt, 0)) {
 			state = "expired"
 		}
