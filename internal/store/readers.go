@@ -14,9 +14,11 @@ package store
 // The packages that decide access build their queries from these fragments
 // and from nothing else: this package's sync eligibility, workspace's last
 // reader, access and directory, and account's visibility. Whether a team is
-// closed is a gate beside the rule, never part of it (OpenWorkspaceSQL). It
-// lives here because store imports neither of them; a copy elsewhere is a
-// second rule.
+// closed is a gate beside the rule, never part of it (OpenWorkspaceSQL). A
+// removed mailbox (migration 0020) is read by nobody: the rule holds only
+// on a live one (LiveSQL), so it has no reader, nobody waits for its key and
+// nobody is its last reader while it is kept. It lives here because store
+// imports neither of them; a copy elsewhere is a second rule.
 //
 // Each fragment takes the SQL expressions it is about (an alias's column,
 // a bound parameter) and names its own tables reader_*, so it nests inside a
@@ -42,13 +44,23 @@ func CurrentGrantSQL(account, user string) string {
 		  AND reader_g.user_id = ` + user + ` AND reader_g.epoch = ` + CurrentEpochSQL(account) + `)`
 }
 
+// LiveSQL is the condition that the mailbox whose id is the expression
+// account is not removed (migration 0020): a removed mailbox is kept, with
+// its grants and its key, for a recovery, and is read by nobody meanwhile.
+// Every fragment of the rule holds only on a live mailbox. A mailbox nobody
+// knows is live: what it is about is for the query to have found.
+func LiveSQL(account string) string {
+	return `NOT EXISTS (SELECT 1 FROM accounts reader_a WHERE reader_a.id = ` + account + ` AND reader_a.removed_at <> 0)`
+}
+
 // FlagHolderSQL is the condition, over mailbox_access aliased alias, that its
-// holder holds the read flag and it counts: they are an active member of the
-// mailbox's workspace and active on the instance (neither disabled nor
-// suspended). On a mailbox without a key it is reading (ReaderSQL); on one
-// with a key it is who may be given the key, or waits for it (WaitingSQL).
+// holder holds the read flag and it counts: the mailbox is live (LiveSQL),
+// and they are an active member of its workspace and active on the instance
+// (neither disabled nor suspended). On a mailbox without a key it is reading
+// (ReaderSQL); on one with a key it is who may be given the key, or waits
+// for it (WaitingSQL).
 func FlagHolderSQL(alias string) string {
-	return `(` + alias + `.read = 1
+	return `(` + alias + `.read = 1 AND ` + LiveSQL(alias+`.account_id`) + `
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.status = 'active'))`
@@ -66,13 +78,13 @@ func ReaderSQL(alias string) string {
 // that its holder would read the mailbox once resumed: they are suspended by
 // an extension of the daemon (users.suspended_at), which keeps their grants,
 // and are otherwise a reader by the rule above, an active member of the
-// mailbox's workspace holding the read flag and, on a mailbox that has a
-// key, a grant at its current epoch. They read nothing now, and count for
+// live mailbox's workspace holding the read flag and, on a mailbox that has
+// a key, a grant at its current epoch. They read nothing now, and count for
 // nothing anywhere the rule decides: this is only what keeps a mailbox they
 // alone would read from being called one nobody can ever read again.
 func SuspendedReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
-	return `(` + alias + `.read = 1
+	return `(` + alias + `.read = 1 AND ` + LiveSQL(account) + `
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.suspended_at <> 0)

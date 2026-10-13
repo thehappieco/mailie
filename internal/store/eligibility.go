@@ -40,6 +40,12 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 // (OpenWorkspaceSQL): it keeps its index, its consent and its readers, and
 // catches up once the team reopens.
 //
+// Nor does a removed mailbox (removed_at, migration 0020), kept with its
+// index for a recovery, nor a recovered one whose sync is held
+// (sync_held_at) until someone who may turns it on, which catches up from
+// the index it kept: both are in syncPermitted, so neither reads as
+// switched on anywhere.
+//
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
 // on for somebody else's personal mailbox, and a withdrawal stops it whatever
 // that column says.
@@ -64,9 +70,10 @@ func (s *Store) eligibleRule() string {
 }
 
 // syncPermitted is the consent half of the rule, as a boolean expression over
-// accounts aliased a. SyncPermitted reports it on its own; syncEligible adds
-// that the account is active.
-var syncPermitted = `CASE
+// accounts aliased a: a live mailbox whose sync nothing holds, under its
+// consent. SyncPermitted reports it on its own; syncEligible adds that the
+// account is active.
+var syncPermitted = `a.removed_at = 0 AND a.sync_held_at = 0 AND CASE
 	WHEN a.owner_user_id IS NOT NULL THEN EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id
 	                                                AND u.status = 'active' AND u.sync_consent_at <> 0)
 	WHEN a.workspace_id = 'wsp_operator' THEN a.sync_enabled_at <> 0
@@ -160,7 +167,8 @@ func syncEligibleOn(ctx context.Context, q queryRower, rule, accountID string) (
 // included, which index nothing more and can never be read again: they can
 // only be removed (and linked again), or turned off to delete what is still
 // indexed. A mailbox a suspended person would read once resumed is not one
-// of those: it waits for them.
+// of those: it waits for them. Nor is a removed one, which is about to go and
+// asks nothing of anyone.
 func (s *Store) TeamSyncNotices(ctx context.Context) (keptStopped, noReader []string, err error) {
 	keptStopped, err = s.teamIDs(ctx, teamsKeptStopped)
 	if err != nil {
@@ -176,10 +184,11 @@ func (s *Store) TeamSyncNotices(ctx context.Context) (keptStopped, noReader []st
 // The queries of TeamSyncNotices.
 var (
 	teamsKeptStopped = `SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		WHERE w.kind = 'team' AND a.sync_enabled_via = 'migration' AND a.sync_enabled_at = 0 AND ` + hasReader + `
+		WHERE w.kind = 'team' AND a.removed_at = 0 AND a.sync_enabled_via = 'migration' AND a.sync_enabled_at = 0
+		  AND ` + hasReader + `
 		ORDER BY a.created_at, a.id`
 	teamsNobodyReads = `SELECT a.id FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
-		WHERE w.kind = 'team' AND NOT ` + hasReader + ` AND NOT ` + hasSuspendedReader + `
+		WHERE w.kind = 'team' AND a.removed_at = 0 AND NOT ` + hasReader + ` AND NOT ` + hasSuspendedReader + `
 		ORDER BY a.created_at, a.id`
 )
 

@@ -394,7 +394,8 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 // SyncPermitted reports, for each account named, whether sync is allowed for
 // it: a personal mailbox's person is active and consented; a team mailbox
 // has its workspace's consent and a reader; an operator mailbox was switched
-// on. Whether the account is also active — the rest of the engine's rule —
+// on. A removed mailbox is not, and neither is one whose sync a recovery
+// holds until someone turns it on. Whether the account is also active — the rest of the engine's rule —
 // is the caller's to read from the account itself. An account that does not
 // exist is absent from the map.
 func (s *Store) SyncPermitted(ctx context.Context, accountIDs []string) (map[string]bool, error) {

@@ -403,6 +403,11 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	unseeded := map[string]string{
 		"meta":             "instance settings; nothing about anyone",
 		"attachment_blobs": "nothing writes it before phase 2, and then its rows and files need their own deletion",
+		// Nothing writes the mailbox journal before removing a mailbox keeps
+		// it, which seeds it here when it does.
+		"mailbox_events":        "nothing writes it yet",
+		"mailbox_event_readers": "nothing writes it yet",
+		"notices":               "nothing writes it yet",
 	}
 	for _, name := range f.tables(t) {
 		if _, ok := unseeded[name]; !ok && f.count(t, `SELECT count(*) FROM "`+name+`"`) == 0 {
