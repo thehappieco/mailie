@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -597,4 +598,128 @@ func TestATeamMailboxSyncingUnderASuspendedPersonsOwnConsentPausesAndKeepsItsInd
 	if !slices.Contains(engine.reconciledIDs()[heard:], shared) {
 		t.Error("the engine did not hear of the mailbox bound to her consent when she was resumed")
 	}
+}
+
+func TestClosingASuspendedPersonAsksForTheMailboxesTheyWouldReadOnceResumed(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	ctx := t.Context()
+	// Bea alone reads a mailbox of a team Ana stays in.
+	alone, key := tm.keyedTeamMailbox(t, f, "orders@mail.example")
+	if _, err := f.svc.SetAccess(ctx, tm.ana, alone, tm.bea.UserID, key.give(t, f, tm.bea.UserID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RevokeAccess(ctx, tm.ana, alone, tm.ana.UserID, workspace.Flags{Read: true}); err != nil {
+		t.Fatal(err)
+	}
+	f.suspend(t, tm.bea.UserID)
+
+	// The mailbox waits for her; closing her without force would leave it
+	// to nobody, for good, as it would were she active.
+	_, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), alone) {
+		t.Errorf("disabling suspended Bea without force: %v, want a conflict naming %s", err, alone)
+	}
+	_, err = f.svc.DeleteUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), alone) {
+		t.Errorf("deleting suspended Bea without force: %v, want a conflict naming %s", err, alone)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_grants WHERE account_id = ? AND user_id = ?`, alone, tm.bea.UserID); n != 1 {
+		t.Errorf("the refusals left Bea %d grants on the mailbox, want hers kept", n)
+	}
+	if disabled, suspended := personState(t, f, tm.bea.UserID); !disabled || !suspended {
+		t.Errorf("after the refusals Bea is disabled %v, suspended %v, want still suspended", disabled, suspended)
+	}
+
+	// With force, the mailbox is left to nobody, and marked so.
+	if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com", Force: true}); err != nil {
+		t.Fatal(err)
+	}
+	directory, err := f.svc.AccessDirectory(ctx, tm.ana, tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(directory) != 1 || !directory[0].NoReader {
+		t.Errorf("the directory shows %+v, want the mailbox nobody can read marked", directory)
+	}
+}
+
+func TestDisablingASuspendedPersonStopsTheirBoundConsentAndAsksTheProtectionsAgain(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	ctx := t.Context()
+	// Ana reads a mailbox that syncs under the consent migration 0011 copied
+	// from Bea's own.
+	shared, _ := tm.keyedTeamMailbox(t, f, "support@mail.example")
+	migrated(t, f, shared, tm.bea.UserID)
+	f.seedMailbox(t, shared, "indexed under her consent")
+	f.suspend(t, tm.bea.UserID)
+	if n := indexed(t, f, shared); n != 1 {
+		t.Fatalf("suspended, the bound mailbox's index holds %d messages, want it kept", n)
+	}
+
+	// Disabling her here is the whole disable: the consent bound to her is
+	// asked about first.
+	_, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), shared) {
+		t.Fatalf("disabling suspended Bea without force: %v, want a conflict naming %s", err, shared)
+	}
+	if n := indexed(t, f, shared); n != 1 {
+		t.Errorf("the refusal left the bound mailbox %d messages, want its index kept", n)
+	}
+
+	disabled, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com", Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(disabled.TeamSyncsStopped, []string{shared}) {
+		t.Errorf("disabling suspended Bea stopped %v, want the mailbox bound to her consent", disabled.TeamSyncsStopped)
+	}
+	if n := indexed(t, f, shared); n != 0 {
+		t.Errorf("the stopped mailbox keeps %d indexed messages", n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_at = 0`, shared); n != 1 {
+		t.Error("the consent bound to her still stands")
+	}
+	if isDisabled, suspended := personState(t, f, tm.bea.UserID); !isDisabled || suspended {
+		t.Errorf("Bea is disabled %v, suspended %v, want disabled here", isDisabled, suspended)
+	}
+}
+
+func TestNeitherATeamsNorTheInstancesLastOwnerHoldsUpASuspension(t *testing.T) {
+	f := newFixture(t)
+	tm := newSupportTeam(t, f)
+	ctx := t.Context()
+	// Ana is the team's only owner, with Bea in it; Olga the instance's only
+	// active owner.
+	olga := f.person(t, "olga@example.com", auth.RoleOwner)
+	if n := f.count(t, `SELECT count(*) FROM users WHERE role = 'owner' AND status = 'active' AND id <> ?`, olga.UserID); n != 0 {
+		t.Fatalf("%d other active owners of the instance", n)
+	}
+
+	f.suspend(t, tm.ana.UserID)
+	f.suspend(t, olga.UserID)
+
+	// While she is suspended, nobody is the team's last owner: Ana counts for
+	// nothing, and Bea owns nothing.
+	members, err := f.svc.ListMembers(ctx, admin(), tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if m.LastOwner {
+			t.Errorf("%s is listed as the last owner of a team whose only owner is suspended", m.UserID)
+		}
+	}
+}
+
+// personState is what the service's view of the users row says of a person:
+// whether they are active, and whether they are suspended.
+func personState(t *testing.T, f *fixture, userID string) (disabled, suspended bool) {
+	t.Helper()
+	user, err := f.users.Get(t.Context(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return user.Disabled, user.Suspended
 }

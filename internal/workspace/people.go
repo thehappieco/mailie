@@ -23,7 +23,10 @@ type Blocks struct {
 	// teams that outlive them (every team but a local one they are the only
 	// member of, GoesWithPersonSQL: another member remains, whatever their
 	// status, or the team comes from another source), which nobody could
-	// ever read again.
+	// ever read again. For a person an extension suspended, the mailboxes
+	// they would be the only reader of once resumed count too: they wait
+	// for them (store.SuspendedReaderSQL), and closing them would leave
+	// those to nobody, for good.
 	LastReaderOf []string
 	// BoundTo are the team mailboxes whose consent to sync migration 0011
 	// copied from theirs, and nobody has confirmed for the team since, that
@@ -70,7 +73,7 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 	if err != nil {
 		return Blocks{}, err
 	}
-	b.LastReaderOf, err = lastReaderOf(ctx, tx, userID, lastReaders{outlived: true})
+	b.LastReaderOf, err = lastReaderOf(ctx, tx, userID, lastReaders{outlived: true, orSuspended: true})
 	if err != nil {
 		return Blocks{}, err
 	}

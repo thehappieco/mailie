@@ -25,7 +25,9 @@ import (
 // Guarded: revoking the last reader's read, disabling or removing their
 // membership (leaving included), disabling or deleting them on the instance
 // without force, unless the team goes with them (a local team they are the
-// only member of, GoesWithPersonSQL), and resetting their account key without
+// only member of, GoesWithPersonSQL) — a suspended person included, for the
+// mailboxes they would read once resumed, which closing them takes for
+// good — and resetting their account key without
 // force (the reset deletes their grants, so it takes read only on a mailbox
 // that has a key). Not guarded: removing the mailbox itself, and role
 // changes, which change no read. Each check runs inside the transaction that
@@ -52,15 +54,28 @@ type lastReaders struct {
 	// keyed keeps only the mailboxes that have a key: what deleting the
 	// person's grants, and nothing else, takes read from.
 	keyed bool
+	// orSuspended counts, for the person asked about, the mailboxes they
+	// would read once resumed (store.SuspendedReaderSQL) as well as those
+	// they read now: what closing a suspended person takes from them for
+	// good, since a disable here deletes their grants and a deletion
+	// everything of theirs. Only the person's own closure asks it
+	// (blocksOn); anyone else's change, and every listing, counts a
+	// suspended person as reading nothing, so they are nobody's other
+	// reader.
+	orSuspended bool
 }
 
 // lastReaderOf lists the team mailboxes userID is the only reader of, oldest
 // first, among those in narrows to.
 func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders) ([]string, error) {
+	reads := store.ReaderSQL("g")
+	if in.orSuspended {
+		reads = `(` + reads + ` OR ` + store.SuspendedReaderSQL("g") + `)`
+	}
 	query := `SELECT a.id FROM accounts a
 		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
 		  JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = ?1
-		 WHERE ` + store.ReaderSQL("g") + `
+		 WHERE ` + reads + `
 		   AND NOT EXISTS (SELECT 1 FROM mailbox_access o
 		                    WHERE o.account_id = a.id AND o.user_id <> ?1 AND ` + store.ReaderSQL("o") + `)
 		   AND (?2 = '' OR a.workspace_id = ?2)`

@@ -1062,6 +1062,8 @@ key.
   again where they hold the flag and a grant at the current epoch, and wait where they hold the flag
   alone. A disable here, which deletes their grants as the bullet above says, stands over a
   suspension: it clears the suspension, and a resume never lifts it (threat model, section 5.13).
+  Disabling or deleting them without force is refused where they would be the only reader of a
+  team mailbox once resumed, as it is for an active person who reads it now.
 - **The last reader** of a team mailbox is the last active member who reads it by the first
   bullet: holding the flag **and** a grant at the current epoch on a mailbox that has a key, the
   flag on one that has none; keys and roles never count. Every path that takes "read" away keeps
@@ -1666,7 +1668,10 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     account key while they are suspended. The keys they created stop, saying `creator_suspended`.
   - **They protect nothing.** Neither the last owner of a team, nor the last reader of a mailbox,
     nor a consent still bound to them holds a suspension up, and while suspended they count in
-    none of them.
+    none of them for anyone else. Closing them (a disable here, a deletion) asks the protections
+    as for anyone active, counting as theirs the team mailboxes they would be the only reader of
+    once resumed: those wait for them, and closing them without force would leave each to nobody
+    for good.
   - **The resume** makes them active again, with no act of any owner or admin: they read where they
     hold the flag and, on a mailbox that has a key, a grant at its current epoch. A "read" taken
     meanwhile took their grants with it, and a first key written meanwhile sealed nothing to them,

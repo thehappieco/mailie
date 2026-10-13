@@ -305,9 +305,13 @@ gives a consent or counts in a protection. What tells them apart is what they ke
   their mailboxes catch up. No session and no key comes back.
 - **A disable here stands over a suspension.** Disabling a suspended person here runs the whole
   disable (their grants go, a bound consent stops, and the protections are asked again, but for the
-  instance's last owner, which they no longer are) and clears `suspended_at`, so a resume lifts
-  nothing; suspending someone disabled here marks nothing; and switching a suspended person back on
-  here is refused (`auth.ErrUserSuspended`): only a resume lifts a suspension.
+  instance's last owner, which they no longer are, with the team mailboxes they would be the only
+  reader of once resumed counted as theirs) and clears `suspended_at`, so a resume lifts nothing;
+  suspending someone disabled here marks nothing; and switching a suspended person back on here is
+  refused (`auth.ErrUserSuspended`): only a resume lifts a suspension. Once disabled here, the
+  suspension is no longer recorded: switching the person back on here (`auth.Users.SetDisabled`,
+  which no route or command calls) makes them active, and an extension that still holds them
+  suspended suspends them again.
 
 ### Closed teams
 
@@ -582,8 +586,10 @@ member role`), a team mailbox without a reader, which then syncs nothing and is 
 `no_reader`, and a bound mailbox stopped with its index deleted.
 A suspension (see [People on the instance](#people-on-the-instance)) is refused by none of these,
 and while suspended a person counts in none of them: not as another owner, another reader, or the
-instance's other active owner. Disabling a suspended person here asks them again, as for anyone
-active, but for the instance's last owner.
+instance's other active owner. Disabling or deleting a suspended person here asks them again, as for
+anyone active, but for the instance's last owner: a team mailbox they would be the only reader of
+once resumed counts as one they read, since it waits for them and closing them would leave it to
+nobody for good.
 Deleting a person removes the mailboxes of their personal workspace and every local team whose only
 member they were, with its mailboxes, through the account registry's usual clean-up (workers,
 cached credentials, consent attempts, compaction); a team mailbox of a team others are in stays,

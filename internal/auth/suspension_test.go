@@ -84,9 +84,14 @@ func TestADisableHereStandsOverASuspension(t *testing.T) {
 	if disabled, isSuspended := personState(t, users, bea.ID); !disabled || isSuspended {
 		t.Errorf("after the resume Bea is disabled %v, suspended %v", disabled, isSuspended)
 	}
-	// Only a switch here brings her back, waiting for the key.
+	// Only a switch here brings her back, waiting for the key: nothing
+	// records the suspension the disable stood over, which an extension that
+	// still holds it makes again.
 	if err := users.SetDisabled(t.Context(), bea.ID, false); err != nil {
 		t.Fatal(err)
+	}
+	if disabled, isSuspended := personState(t, users, bea.ID); disabled || isSuspended {
+		t.Errorf("switched back on here, Bea is disabled %v, suspended %v", disabled, isSuspended)
 	}
 	if readsBy(t, db, mailbox, bea.ID) {
 		t.Error("switched back on here, Bea reads without a grant")

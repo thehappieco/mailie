@@ -267,6 +267,12 @@ func (u *Users) SetName(ctx context.Context, id, name string) (User, error) {
 // transaction. Switching back on revives none of them, and lifts only a
 // disable made here: a person an extension suspended is resumed by it
 // (Resume), never here, and is ErrUserSuspended.
+//
+// A disable here stands over a suspension and clears its mark (Disable), so
+// once a suspended person is disabled here nothing records the suspension:
+// switching them back on here makes them active, and an extension that still
+// holds them suspended has to suspend them again. No route or command calls
+// it to switch anyone back on; one that does says so to whoever uses it.
 func (u *Users) SetDisabled(ctx context.Context, id string, disabled bool) error {
 	if disabled {
 		_, err := u.Disable(ctx, id, true)
