@@ -818,6 +818,10 @@ Migration 0017 adds `api_keys.stop_reason` and changes no row.
   signed in. Changing the password, replacing the recovery code and signing out everywhere keep
   them, as before. A key asked for by a session that a recovery or a reset has just ended is
   refused (`401`).
+- **Texts.** The open console's key terms are now `2026-10-open-api-keys-3`: they say a key also
+  stops when its creator's account is recovered, with the recovery code or a reset link. A new key
+  needs them; a key created under `2026-10-open-api-keys-2` keeps working under those terms. A
+  server that names its own key terms (`MAIL_CONSENT_VERSION_KEYS`) changes nothing here.
 
 ### People suspended by an extension (migration 0018)
 

@@ -27,9 +27,10 @@ export const ACTIONS_TEXT_VERSION = '2026-10-open-actions-3'
  * them; that it may act and send where it is given to, whatever anyone
  * chooses about actions in their account, every send confirmed by the tool;
  * that it stops when its creator leaves or is closed; and that keys under
- * the first keep it, and never send.
+ * the first keep it, and never send. The third, that it also stops when its
+ * creator's account is recovered, with the recovery code or a reset link.
  */
-export const KEY_TERMS_VERSION = '2026-10-open-api-keys-2'
+export const KEY_TERMS_VERSION = '2026-10-open-api-keys-3'
 /**
  * The open console asks nobody about sending: it has no text for it, and
  * sends nothing. The server's default names this revision all the same.

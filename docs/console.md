@@ -1189,7 +1189,7 @@ Each text a person agrees to has a revision, configured on the daemon:
 | `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-3` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), and who reads a team mailbox's index (`web/src/open/SyncText.vue`) |
 | `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-3` | the server changing a mailbox when someone allowed to act on it asks, and a key given Act acting under the key terms, not under this agreement (`web/src/open/ActionsText.vue`) |
 | `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console has no such text) |
-| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-2` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
+| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-3` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
 
 The defaults are the open console's texts, held to `web/src/open/versions.ts` by
 `web/test/contract.spec.ts`: moving a default without a new text fails the build. A server that
@@ -1621,7 +1621,7 @@ gets `403` on these routes, and a member does too. No key creates a key.
   "stop_reason": "manual",         // why a revoked key stopped; absent while alive, and on a key
                                    // revoked before it was recorded
   "live": true,                    // neither revoked nor expired
-  "terms_version": "2026-10-open-api-keys-2",
+  "terms_version": "2026-10-open-api-keys-3",
   "sends": false                   // can send at all: the send scope, on a server whose keys may send
   // "origin": "person" | "person-all" for a person's key the upgrade moved into its workspace;
   // "carried_over": true and "other_workspaces": n for one it carried over with no workspace

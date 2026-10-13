@@ -49,7 +49,7 @@ const SYNC_VERSION = '2026-10-open-sync-3'
 /** The one that describes actions on messages. */
 const ACTIONS_VERSION = '2026-10-open-actions-3'
 /** The text a person agrees to by creating an API key. */
-const KEY_TERMS_VERSION = '2026-10-open-api-keys-2'
+const KEY_TERMS_VERSION = '2026-10-open-api-keys-3'
 
 /**
  * The core's fake daemon (fakeDaemon.mjs), asking about the open console's

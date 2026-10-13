@@ -32,7 +32,7 @@ const (
 	DefaultSyncConsentVersion    = "2026-10-open-sync-3"
 	DefaultActionsConsentVersion = "2026-10-open-actions-3"
 	DefaultSendConsentVersion    = "2026-10-open-sending"
-	DefaultKeyTermsVersion       = "2026-10-open-api-keys-2"
+	DefaultKeyTermsVersion       = "2026-10-open-api-keys-3"
 )
 
 // maxConsentVersionLen bounds a revision: it is stored beside every consent

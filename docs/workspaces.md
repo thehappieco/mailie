@@ -920,7 +920,7 @@ Shapes:
  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "read": true, "act": false,
                 "send": false, "granted_by": "usr_…", "updated_at": 1790000000}],
  "created_by": "usr_…", "created_at": 1790000000, "expires_at": 1797776000,
- "last_used_at": 1790003600, "live": true, "terms_version": "2026-10-open-api-keys-2",
+ "last_used_at": 1790003600, "live": true, "terms_version": "2026-10-open-api-keys-3",
  "sends": false}
 
 // MailboxKeyPair: a mailbox's key at one epoch, as Account.mailbox_key, a first key and a new key

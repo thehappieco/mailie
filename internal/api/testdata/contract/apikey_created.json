@@ -19,6 +19,6 @@
   "prefix": "0a0b0c01",
   "scope": "read",
   "sends": false,
-  "terms_version": "2026-10-open-api-keys-2",
+  "terms_version": "2026-10-open-api-keys-3",
   "workspace_id": "wsp_0000000000000001"
 }

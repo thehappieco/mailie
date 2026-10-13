@@ -202,7 +202,7 @@ describe('creating a key', () => {
     const text = words(dialog()!)
     expect(text).toContain('The key belongs to Support: its owners and admins see it, choose which of the team’s mailboxes it reaches and what it may do in each, and can revoke it.')
     expect(text).toContain('You, and any owner or admin of Support, can revoke the key here whenever you want, and it stops working at once.')
-    expect(text).toContain('It stops working when it expires or is revoked, and when you leave Support or your account on this server is disabled or deleted.')
+    expect(text).toContain('It stops working when it expires or is revoked, when you leave Support, and when your account on this server is disabled or deleted, or recovered with your recovery code or a reset link.')
     expect(flag(ONE, 'read')!.disabled).toBe(false)
     expect(flag(TWO, 'read')!.disabled).toBe(true)
     expect(words(find('dialog .mailbox-flag-row', 'vendas@support.example')!)).toContain('You do not read it')

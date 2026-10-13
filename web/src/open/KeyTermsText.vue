@@ -40,8 +40,8 @@ defineProps<{ write: boolean; send?: boolean; team?: string }>()
     </ul>
     <p v-if="send">{{ t('It cannot connect or remove mailboxes, create other keys, or change anyone’s access or account.') }}</p>
     <p v-else>{{ t('It cannot send email, connect or remove mailboxes, create other keys, or change anyone’s access or account.') }}</p>
-    <p v-if="team">{{ t('It stops working when it expires or is revoked, and when you leave {team} or your account on this server is disabled or deleted.', { team }) }}</p>
-    <p v-else>{{ t('It stops working when it expires or is revoked, and when your account on this server is disabled or deleted.') }}</p>
+    <p v-if="team">{{ t('It stops working when it expires or is revoked, when you leave {team}, and when your account on this server is disabled or deleted, or recovered with your recovery code or a reset link.', { team }) }}</p>
+    <p v-else>{{ t('It stops working when it expires or is revoked, and when your account on this server is disabled or deleted, or recovered with your recovery code or a reset link.') }}</p>
     <p>{{ t('This server does not store what it fetches for the tool. So that the tool can pick up a dropped connection, the MCP server holds what it sent in memory only, never on disk, for at most five minutes.') }}</p>
     <p>{{ t('What the tool does with the data is up to that tool and whoever provides it, under their own terms. An AI assistant such as Claude, for example, sends it to Anthropic to answer you.') }}</p>
     <p>{{ t('Keys created under this server’s earlier terms for API keys keep working under those terms, and never send email.') }}</p>
