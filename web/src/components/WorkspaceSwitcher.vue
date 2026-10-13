@@ -2,18 +2,23 @@
 // Which workspace the console shows: the person's own, or a team they are in.
 // A native select, so a phone opens its own picker and a screen reader reads
 // it as one. Shown once there is more than one to choose from; when the list
-// could not be read, it says so where the choice would be, with a retry.
+// could not be read, it says so where the choice would be, with a retry. A
+// team nothing can be used in (closed, or not offered by this server) is
+// still offered, marked so: its sections say why there is nothing in them.
 import { computed, useId } from 'vue'
+import type { Workspace } from '../api/types'
 import { loadWorkspaces, selectWorkspace, workspaces } from '../state/workspaces'
-import { workspaceName, workspaceRoleLabel } from '../ui/access'
+import { unusableLabel, workspaceName, workspaceRoleLabel, workspaceUnusable } from '../ui/access'
 import { describe } from '../ui/errors'
 import { t } from '../ui/i18n'
 
 const id = useId()
-const options = computed(() => workspaces.list.map(item => ({
-  id: item.id,
-  label: item.kind === 'team' ? t('{name} · {role}', { name: workspaceName(item), role: workspaceRoleLabel(item.role) }) : workspaceName(item),
-})))
+function label(item: Workspace): string {
+  const name = item.kind === 'team' ? t('{name} · {role}', { name: workspaceName(item), role: workspaceRoleLabel(item.role) }) : workspaceName(item)
+  const why = workspaceUnusable(item)
+  return why ? t('{name} · {state}', { name, state: unusableLabel(why) }) : name
+}
+const options = computed(() => workspaces.list.map(item => ({ id: item.id, label: label(item) })))
 const shown = computed(() => workspaces.supported && workspaces.list.length > 1)
 
 function choose(event: Event) {

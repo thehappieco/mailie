@@ -8,7 +8,9 @@
 // its sends (KeySheet), and revoking one after saying what that does. And,
 // where the edition offers the MCP server at this origin and the server says
 // it answers there (state/mcp.ts), how to connect an AI assistant with a key.
-// A key's secret is never here: only the creation dialog ever holds it.
+// A key's secret is never here: only the creation dialog ever holds it. A
+// team nothing can be used in (closed, or not offered by this server) shows
+// why instead of its keys, which reach nothing there.
 import { computed, onMounted, ref, watch } from 'vue'
 import type { WorkspaceKey } from '../api/types'
 import { accounts } from '../state/accounts'
@@ -18,7 +20,7 @@ import { keysMaySend, loadMcpAccess, mcpOffered } from '../state/mcp'
 import { session } from '../state/session'
 import { loadMembers, personName, team } from '../state/team'
 import { currentWorkspace, workspaces } from '../state/workspaces'
-import { workspaceName } from '../ui/access'
+import { workspaceName, workspaceUnusable } from '../ui/access'
 import { announce } from '../ui/announce'
 import {
   MAX_LIVE_KEYS, keyFlagsSummary, keyOriginNote, keyPerson, keyStanding, scopeLabel, standingLabel, stopReasonLabel, type KeyStanding,
@@ -31,6 +33,7 @@ import ConsoleDialog from './ConsoleDialog.vue'
 import CreateKeyDialog from './CreateKeyDialog.vue'
 import KeySheet from './KeySheet.vue'
 import McpConnect from './McpConnect.vue'
+import UnusableWorkspace from './UnusableWorkspace.vue'
 
 const showMcp = computed(mcpOffered)
 const creating = ref(false)
@@ -48,6 +51,8 @@ const headingTarget = () => heading.value
 const workspace = computed(currentWorkspace)
 const inTeam = computed(() => workspace.value?.kind === 'team')
 const teamName = computed(() => workspaceName(workspace.value))
+/** Why nothing of the team shown can be used: closed, or not offered by this server; null where it can. */
+const unusable = computed(() => workspaceUnusable(workspace.value))
 const me = computed(() => session.user?.id ?? '')
 const tone: Record<KeyStanding, string> = { live: 'live', expired: 'off', revoked: 'bad' }
 const rank: Record<KeyStanding, number> = { live: 0, expired: 1, revoked: 2 }
@@ -96,11 +101,11 @@ async function confirmRevoke() {
 /** The keys, the members who created them, and whether /mcp is served if the server could not say yet. */
 function refresh() {
   void loadKeys()
-  if (inTeam.value) void loadMembers()
+  if (inTeam.value && !unusable.value) void loadMembers()
   void loadMcpAccess()
 }
 function readTeam() {
-  if (inTeam.value && !team.members.loaded && !team.members.loading) void loadMembers()
+  if (inTeam.value && !unusable.value && !team.members.loaded && !team.members.loading) void loadMembers()
 }
 
 onMounted(() => {
@@ -116,6 +121,11 @@ watch(() => workspaces.currentID, () => {
   if (!apiKeys.loaded && !apiKeys.loading) void loadKeys()
   readTeam()
 })
+// A team that reopened (or is offered again): its keys, read now.
+watch(unusable, (now, before) => {
+  if (before && !now && !apiKeys.loading) void loadKeys()
+  readTeam()
+})
 </script>
 
 <template>
@@ -127,15 +137,16 @@ watch(() => workspaces.currentID, () => {
       <h2 ref="heading" tabindex="-1">{{ inTeam ? t('API keys of {team}', { team: teamName }) : t('Your API keys') }}</h2>
       <div class="section-actions">
         <button class="ghost small" type="button" :disabled="apiKeys.loading" @click="refresh"><AppIcon name="refresh" :size="16" />{{ t('Refresh') }}</button>
-        <button v-if="!apiKeys.loaded || apiKeys.list.length" class="primary small" type="button" aria-haspopup="dialog" :disabled="limited" @click="create"><AppIcon name="plus" :size="16" />{{ t('Create key') }}</button>
+        <button v-if="!unusable && (!apiKeys.loaded || apiKeys.list.length)" class="primary small" type="button" aria-haspopup="dialog" :disabled="limited" @click="create"><AppIcon name="plus" :size="16" />{{ t('Create key') }}</button>
       </div>
     </div>
-    <p v-if="limited" class="dim limit-note">{{ t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) }) }}</p>
+    <p v-if="limited && !unusable" class="dim limit-note">{{ t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) }) }}</p>
 
-    <div v-if="apiKeys.failure" class="alert with-action" role="alert"><span>{{ describe(apiKeys.failure) }}</span><button class="ghost small" type="button" @click="loadKeys">{{ t('Try again') }}</button></div>
-    <p v-if="apiKeys.loading && !apiKeys.loaded" class="dim" role="status">{{ t('Loading the API keys…') }}</p>
+    <UnusableWorkspace v-if="unusable" :workspace="workspace" />
+    <div v-else-if="apiKeys.failure" class="alert with-action" role="alert"><span>{{ describe(apiKeys.failure) }}</span><button class="ghost small" type="button" @click="loadKeys">{{ t('Try again') }}</button></div>
+    <p v-if="!unusable && apiKeys.loading && !apiKeys.loaded" class="dim" role="status">{{ t('Loading the API keys…') }}</p>
 
-    <section class="cards" :aria-label="inTeam ? t('API keys of {team}', { team: teamName }) : t('Your API keys')" :aria-busy="apiKeys.loading">
+    <section v-if="!unusable" class="cards" :aria-label="inTeam ? t('API keys of {team}', { team: teamName }) : t('Your API keys')" :aria-busy="apiKeys.loading">
       <article v-for="{ key, standing } in ordered" :key="key.prefix" class="account-card key-card" :class="{ ended: standing !== 'live' }" :data-key="key.prefix">
         <div class="head">
           <span class="provider-tile"><AppIcon name="key" :size="21" /></span>
@@ -168,9 +179,9 @@ watch(() => workspaces.currentID, () => {
       </div>
     </section>
 
-    <p v-if="inTeam" class="hint keys-rule">{{ t('Every owner and admin of {team} sees these keys and can revoke them. What a key holds stays when whoever gave it, or created it, loses their own access; a key stops when the person who created it leaves the team or is disabled on this server. Keys never count as readers of a mailbox.', { team: teamName }) }}</p>
+    <p v-if="inTeam && !unusable" class="hint keys-rule">{{ t('Every owner and admin of {team} sees these keys and can revoke them. What a key holds stays when whoever gave it, or created it, loses their own access; a key stops when the person who created it leaves the team or is disabled on this server. Keys never count as readers of a mailbox.', { team: teamName }) }}</p>
 
-    <McpConnect v-if="showMcp" />
+    <McpConnect v-if="showMcp && !unusable" />
 
     <CreateKeyDialog v-if="creating" :return-focus="headingTarget" @close="creating = false" />
     <KeySheet v-if="openedKey" :key-prefix="openedKey.prefix" :return-focus="headingTarget" @close="opened = ''" @revoke="askRevoke(openedKey!); opened = ''" />

@@ -712,7 +712,18 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   request and never kept, in storage or in the list of pending invitations, which only revokes.
   Before an invitation is made the dialog says who its link works for: someone with an account
   here, signed in; and someone without one only when the person inviting is an owner of the
-  server.
+  server. A person disabled on the server is marked "Disabled on this server", and a suspended one
+  (`person_suspended`) "Suspended" instead: their place and their grants wait, unusable, until the
+  suspension lifts where it was decided.
+- **A team nothing can be used in.** A closed team (`closed_at`) and one this server's edition
+  does not offer yet (`withheld`, which comes first) are still listed and chosen, marked so in the
+  switcher ("Closed", "Not offered here") and among the person's teams in Members
+  (`ui/access.ts` `workspaceUnusable`). Mailboxes, Members, API keys & MCP and Storage then show a
+  notice in place of what they hold, naming the team and saying why nothing in it can be used and
+  that nothing of it is lost (`components/UnusableWorkspace.vue`); nothing is offered there, and
+  the console never asks for the team's people, directory, invitations or keys, which the server
+  refuses. A refusal of its mailboxes' list is not shown beside the notice. Once the workspaces read
+  again say it reopened, its mailboxes, keys and figures are read again.
 - **An invitation opened signed in.** Where teams are made here, an invitation link no longer signs
   the browser out: the remembered session is restored and asked to join the team the invitation
   names (`POST /v1/auth/invites/accept`), saying that joining gives access to no mailbox. One for
@@ -767,7 +778,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/users/disable` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}`: sessions ended, keys revoked, and `team_syncs_stopped` |
 | `POST /v1/users/delete` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}` → what was deleted, and `team_syncs_stopped` |
 | `GET /v1/providers` | read | which providers and flows **this** caller can use, the default first |
-| `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts; a closed team with `closed_at`, when it closed |
+| `GET /v1/workspaces` | read | the caller's workspaces with their role in each; an instance key the operator workspace; the operator every workspace, with counts; a closed team with `closed_at`, when it closed; every team `withheld: true` where the server's edition does not offer teams |
 | `POST /v1/workspaces` | session; operator | `{name}` (the operator adds `owner_email`) → `Workspace` (201), a team |
 | `PATCH /v1/workspaces/{id}` | team owner or admin; operator | `{name}` → `Workspace` |
 | `POST /v1/workspaces/{id}/close`, `…/reopen` | operator, a local team only (a person: `403`) | `Workspace`; the console never calls them. While a team is closed its mailboxes are `404` for everyone, its keys included, and its members, invites, keys and directory `409` for its members ([`workspaces.md`](workspaces.md), "Closed teams") |

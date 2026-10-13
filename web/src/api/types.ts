@@ -517,6 +517,12 @@ export interface Workspace {
    * open, and for every workspace that is not a team.
    */
   closed_at?: number
+  /**
+   * A team on a server whose edition does not offer teams yet: nothing in
+   * it is used there, and nothing of it is lost. Only ever true, and only on
+   * a team.
+   */
+  withheld?: true
 }
 /**
  * A membership of a workspace. last_owner and last_reader_of mark the
@@ -532,6 +538,12 @@ export interface Member {
   status: MemberStatus | (string & {})
   /** Switched off on the server: the membership counts for nothing until they are back. */
   person_disabled?: boolean
+  /**
+   * Switched off by a suspension, which only lifts where it was decided:
+   * person_disabled is set too. Their grants are kept, unusable, until it
+   * lifts. Absent otherwise, and from a daemon older than suspensions.
+   */
+  person_suspended?: boolean
   last_owner: boolean
   /** The team's mailboxes this person alone can read. Absent from a daemon older than the rule. */
   last_reader_of?: string[]
@@ -996,13 +1008,14 @@ const pathID = (v: unknown): v is string => filled(v, 64) && !/[\s/\\?#]/.test(v
 const word = <T extends string>(options: readonly T[], strict: boolean) => (v: unknown): boolean => strict ? oneOf(options)(v) : filled(v, 32)
 
 export function isWorkspace(v: unknown, strict = false): v is Workspace {
-  return record(v) && known(v, ['id', 'kind', 'source', 'name', 'role', 'status', 'members', 'mailboxes', 'created_at', 'closed_at'], strict)
+  return record(v) && known(v, ['id', 'kind', 'source', 'name', 'role', 'status', 'members', 'mailboxes', 'created_at', 'closed_at', 'withheld'], strict)
     && pathID(v.id) && word(workspaceKinds, strict)(v.kind) && word(workspaceSources, strict)(v.source) && text(v.name, 1024)
     && optional(v.role, word(workspaceRoles, strict)) && optional(v.status, word(memberStatuses, strict))
     && optional(v.members, counter) && optional(v.mailboxes, counter) && seconds(v.created_at)
-    && optional(v.closed_at, seconds)
-    // A team has a name; the others are named by the console. Only a team closes.
-    && (!strict || ((v.kind === 'team') === (v.name !== '') && (v.closed_at === undefined || v.kind === 'team')))
+    && optional(v.closed_at, seconds) && optional(v.withheld, x => x === true)
+    // A team has a name; the others are named by the console. Only a team closes, or is withheld.
+    && (!strict || ((v.kind === 'team') === (v.name !== '')
+      && (v.closed_at === undefined || v.kind === 'team') && (v.withheld === undefined || v.kind === 'team')))
 }
 
 export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {
@@ -1013,9 +1026,12 @@ export function isWorkspaceList(v: unknown, strict = false): v is Workspace[] {
 const pathIDs = (v: unknown): v is string[] => Array.isArray(v) && v.every(pathID)
 
 export function isMember(v: unknown, strict = false): v is Member {
-  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'last_owner', 'last_reader_of', 'seal_id', 'public_key', 'joined_at'], strict)
+  return record(v) && known(v, ['user_id', 'email', 'name', 'role', 'status', 'person_disabled', 'person_suspended', 'last_owner', 'last_reader_of', 'seal_id', 'public_key', 'joined_at'], strict)
     && pathID(v.user_id) && filled(v.email, 320) && text(v.name, 1024) && word(workspaceRoles, strict)(v.role)
-    && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && flag(v.last_owner)
+    && word(memberStatuses, strict)(v.status) && optional(v.person_disabled, flag) && optional(v.person_suspended, flag)
+    // A suspended person is switched off on the server.
+    && (!strict || v.person_suspended !== true || v.person_disabled === true)
+    && flag(v.last_owner)
     // The daemon that writes the fixtures always says, [] for none; an older one may not.
     && (strict ? pathIDs(v.last_reader_of) : optional(v.last_reader_of, pathIDs))
     // Every person has a seal id; an account public key once they enrol.

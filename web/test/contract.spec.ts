@@ -29,7 +29,7 @@ import {
   type WorkspaceKey,
 } from '../src/api/types'
 import { invitationLink } from '../src/api/workspaces'
-import { grantChange } from '../src/ui/access'
+import { grantChange, workspaceUnusable } from '../src/ui/access'
 import { heldOn, listed } from '../src/api/apikeys'
 import { keyStanding, scopeActs, stopReasonLabel } from '../src/ui/apikeys'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
@@ -87,9 +87,11 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['storage', value => isStorage(value, true)],
   ['mcp', value => isMcpAccess(value, true)],
   ['workspaces', value => isWorkspaceList(value, true)],
+  ['workspaces_withheld', value => isWorkspaceList(value, true)],
   ['workspace_created', value => isWorkspace(value, true)],
   ['invite_accepted', value => isWorkspace(value, true)],
   ['members', value => isMemberList(value, true)],
+  ['members_suspended', value => isMemberList(value, true)],
   ['member', value => isMember(value, true)],
   ['team_invite', value => isTeamInvite(value, true)],
   ['team_invites', value => isTeamInviteList(value, true)],
@@ -436,6 +438,21 @@ describe('the HTTP contract the Go handlers answer with', () => {
     const ids = new Set(list.map(item => item.id))
     expect(ids.has((fixture('account') as Account).workspace_id!)).toBe(true)
     for (const mailbox of (fixture('storage') as Storage).mailboxes) expect(ids.has(mailbox.workspace_id!)).toBe(true)
+    // Where teams are offered, none is withheld.
+    expect(list.filter(item => item.withheld !== undefined)).toEqual([])
+  })
+
+  it('marks every team withheld where the server’s edition does not offer teams, and nothing else', () => {
+    const list = fixture('workspaces_withheld') as Workspace[]
+    expect(list.filter(item => item.withheld).map(item => item.kind)).toEqual(['team'])
+    expect(list.filter(item => item.kind !== 'team' && item.withheld !== undefined)).toEqual([])
+    expect(workspaceUnusable(list.find(item => item.kind === 'team'))).toBe('withheld')
+    expect(workspaceUnusable(list.find(item => item.kind === 'personal'))).toBeNull()
+    // Only a team is withheld, and only ever as true.
+    const personal = list.find(item => item.kind === 'personal')!
+    expect(isWorkspace({ ...personal, withheld: true }, true)).toBe(false)
+    const team = list.find(item => item.kind === 'team')!
+    expect(isWorkspace({ ...team, withheld: false }, true)).toBe(false)
   })
 
   it('makes the person who creates a team its owner, and joins an invited person with the role the invitation gives', () => {
@@ -468,6 +485,12 @@ describe('the HTTP contract the Go handlers answer with', () => {
       expect(marked.filter(([, id]) => id === entry.account_id), entry.account_id).toEqual([])
     }
     expect(isMember(fixture('member'), true)).toBe(true)
+    // A suspended person is listed so, and as switched off on the server:
+    // they count for nothing until the suspension lifts.
+    const suspended = (fixture('members_suspended') as Member[]).filter(member => member.person_suspended)
+    expect(suspended).toHaveLength(1)
+    expect(suspended[0]!.person_disabled).toBe(true)
+    expect(isMember({ ...suspended[0]!, person_disabled: false }, true)).toBe(false)
     // Always named, [] for none: a list without it is not this daemon's.
     const { last_reader_of: _, ...older } = fixture('member') as Member
     expect(isMember(older, true)).toBe(false)

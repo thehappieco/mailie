@@ -6,7 +6,10 @@
 // another owner remains, renaming it, and invitations. A member of the team
 // is shown none of it (the console offers them no Members section; the
 // server refuses them the list). In the personal workspace: creating a team,
-// and the teams the person is in.
+// and the teams the person is in. A team nothing can be used in (closed, or
+// not offered by this server) shows why instead of its people, and is marked
+// so in the person's list of teams. A person suspended on the server is
+// marked so: their place and their grants wait, unusable, until it lifts.
 //
 // What a person's role allows is offered, and what the team's protections
 // refuse is said beside it beforehand (ui/access.ts memberPermissions): the
@@ -17,14 +20,15 @@ import { computed, onMounted, ref, useId, watch } from 'vue'
 import type { Member, TeamInvite, WorkspaceRole } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import ConsoleDialog from '../components/ConsoleDialog.vue'
+import UnusableWorkspace from '../components/UnusableWorkspace.vue'
 import { accounts } from '../state/accounts'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
 import { changeMember, directoryEntry, leaveTeam, loadDirectory, loadInvites, loadMembers, removeMember, revokeInvite, team } from '../state/team'
 import { createTeam, currentWorkspace, loadWorkspaces, renameTeam, selectWorkspace, workspaces } from '../state/workspaces'
 import {
-  administers, changeableTeam, lastReaderOf, memberPermissions, seesInvitations, teamsCreatedHere, workspaceName, workspaceRoleLabel,
-  type MemberPermissions,
+  administers, changeableTeam, lastReaderOf, memberPermissions, seesInvitations, teamsCreatedHere, unusableLabel, workspaceName,
+  workspaceRoleLabel, workspaceUnusable, type MemberPermissions,
 } from '../ui/access'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
@@ -33,8 +37,10 @@ import { t } from '../ui/i18n'
 import TeamInviteDialog from './TeamInviteDialog.vue'
 
 const shown = computed(currentWorkspace)
+/** Why nothing of the team shown can be used: closed, or not offered by this server; null where it can. */
+const unusable = computed(() => workspaceUnusable(shown.value))
 /** A team made here, shown to one of its owners or admins: what this section administers. */
-const inTeam = computed(() => changeableTeam(shown.value) && administers(shown.value))
+const inTeam = computed(() => changeableTeam(shown.value) && administers(shown.value) && !unusable.value)
 /** A team made here, shown to a member of it: nothing here is theirs to see. */
 const memberOnly = computed(() => changeableTeam(shown.value) && !administers(shown.value))
 const teamName = computed(() => workspaceName(shown.value))
@@ -70,7 +76,7 @@ onMounted(() => {
   if (!team.directory.loaded && !team.directory.loading) void loadDirectory()
   if (invites.value && !team.invites.loaded && !team.invites.loading) void loadInvites()
 })
-watch(() => [workspaces.currentID, myRole.value], () => { done.value = ''; read() })
+watch(() => [workspaces.currentID, myRole.value, unusable.value], () => { done.value = ''; read() })
 /** Refresh reads the person's workspaces too: their own role may have changed, or they joined a team elsewhere. */
 function refresh() {
   void loadWorkspaces()
@@ -252,7 +258,8 @@ const headingTarget = () => heading.value
               <span v-if="member.last_owner" class="pill">{{ t('Only owner') }}</span>
               <span v-if="lastReaderOf(member).length" class="pill">{{ t('Only reader: {count}', { count: count(lastReaderOf(member).length) }) }}</span>
               <span v-if="member.status === 'disabled'" class="pill bad">{{ t('Disabled') }}</span>
-              <span v-if="member.person_disabled" class="pill bad">{{ t('Disabled on this server') }}</span>
+              <span v-if="member.person_suspended" class="pill bad">{{ t('Suspended') }}</span>
+              <span v-else-if="member.person_disabled" class="pill bad">{{ t('Disabled on this server') }}</span>
             </span>
           </div>
           <div class="member-controls">
@@ -291,6 +298,8 @@ const headingTarget = () => heading.value
       <div v-if="creatable" class="team-more"><button class="ghost small" type="button" aria-haspopup="dialog" @click="openNaming('create')"><AppIcon name="plus" :size="16" />{{ t('Create another team…') }}</button></div>
     </template>
 
+    <UnusableWorkspace v-else-if="unusable" :workspace="shown" />
+
     <p v-else-if="memberOnly" class="note">{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</p>
 
     <template v-else>
@@ -306,7 +315,10 @@ const headingTarget = () => heading.value
         <div class="section-title"><h2>{{ t('Your teams') }}</h2></div>
         <ul class="member-list" :aria-label="t('Your teams')">
           <li v-for="item in teams" :key="item.id" class="member-row">
-            <div class="who"><strong>{{ workspaceName(item) }}</strong><small>{{ workspaceRoleLabel(item.role) }}</small></div>
+            <div class="who">
+              <strong>{{ workspaceName(item) }}</strong><small>{{ workspaceRoleLabel(item.role) }}</small>
+              <span v-if="workspaceUnusable(item)" class="badges"><span class="pill">{{ unusableLabel(workspaceUnusable(item)!) }}</span></span>
+            </div>
             <div class="member-controls"><button class="ghost small" type="button" @click="selectWorkspace(item.id)">{{ t('Show') }}</button></div>
           </li>
         </ul>

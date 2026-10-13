@@ -6,7 +6,8 @@ import { describe, expect, it } from 'vitest'
 import type { GrantFlags, MailboxConsent, Member, Workspace } from '../src/api/types'
 import {
   actorName, administers, canLinkInto, changeableTeam, grantChange, grantPermissions, grantSummary, inviteRoles, managesByRole, memberPermissions,
-  NO_ACCESS, seesInvitations, teamsCreatedHere, teamSyncStanding, toggleFlag, workspaceName, FULL_ACCESS, type GrantContext,
+  NO_ACCESS, seesInvitations, teamsCreatedHere, teamSyncStanding, toggleFlag, unusableLabel, unusableNotice, workspaceName, workspaceUnusable,
+  FULL_ACCESS, type GrantContext,
 } from '../src/ui/access'
 
 const ANA = 'usr_ana'
@@ -191,5 +192,29 @@ describe('workspaces', () => {
   it('names a team by its name and the others in the person’s language', () => {
     expect(workspaceName(team('owner'))).toBe('Support')
     expect(workspaceName({ kind: 'personal', name: '' })).toBe('Personal')
+  })
+
+  it('says why nothing in a team can be used: withheld by the server’s edition first, then closed', () => {
+    expect(workspaceUnusable(team('owner'))).toBeNull()
+    expect(workspaceUnusable(team('owner', { closed_at: 1_790_000_100 }))).toBe('closed')
+    expect(workspaceUnusable(team('member', { withheld: true }))).toBe('withheld')
+    expect(workspaceUnusable(team('owner', { withheld: true, closed_at: 1_790_000_100 }))).toBe('withheld')
+    expect(workspaceUnusable(undefined)).toBeNull()
+    // Only a team is ever unusable, whatever a server says of another.
+    const personal: Workspace = { id: 'wsp_me', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 }
+    expect(workspaceUnusable({ ...personal, closed_at: 1_790_000_100, withheld: true })).toBeNull()
+  })
+
+  it('names the team in what an unusable one says instead of what it holds, and that nothing of it is lost', () => {
+    expect(unusableLabel('closed')).toBe('Closed')
+    expect(unusableLabel('withheld')).toBe('Not offered here')
+    const closed = unusableNotice('closed', 'Support')
+    expect(closed.title).toBe('Support is closed')
+    expect(closed.text).toContain('until it reopens')
+    expect(closed.text).toContain('kept')
+    const withheld = unusableNotice('withheld', 'Support')
+    expect(withheld.title).toBe('Support is not available on this server')
+    expect(withheld.text).toContain('does not offer team workspaces yet')
+    expect(withheld.text).toContain('Nothing of it is lost')
   })
 })

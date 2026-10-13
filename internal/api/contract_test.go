@@ -463,6 +463,13 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("new_key", http.StatusOK, http.MethodPut, "/v1/accounts/"+imapID+"/mailbox-key", token,
 		jsonOf(t, map[string]any{"epoch": 2, "public_key": contractMailboxKey(6), "grant": contractGrant(2, 0x66)}))
 
+	// A member suspended by an extension of the daemon is listed so, and as
+	// switched off on the server.
+	if _, err := h.users.Suspend(t.Context(), beaID); err != nil {
+		t.Fatal(err)
+	}
+	capture("members_suspended", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/members", token, "")
+
 	// An edition that does not offer teams lists one an edition that offers
 	// them made, marked withheld.
 	edition := newHarnessWith(t, func(h *api.Handler) { h.Limits = nil }, serviceOptions{

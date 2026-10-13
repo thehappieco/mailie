@@ -90,6 +90,39 @@ export function workspaceName(workspace: Pick<Workspace, 'kind' | 'name'> | unde
   }
 }
 
+/**
+ * Why nothing in a workspace can be used, as the server lists it: a team the
+ * server's edition does not offer yet (withheld), or one that closed
+ * (closed_at). Withheld says more, so it comes first. null for a workspace
+ * that can be used, and for every one that is not a team.
+ */
+export type WorkspaceUnusable = 'withheld' | 'closed'
+
+export function workspaceUnusable(workspace: Pick<Workspace, 'kind' | 'closed_at' | 'withheld'> | undefined): WorkspaceUnusable | null {
+  if (workspace?.kind !== 'team') return null
+  if (workspace.withheld) return 'withheld'
+  if (workspace.closed_at) return 'closed'
+  return null
+}
+
+/** The word beside an unusable workspace's name, where it is chosen. */
+export function unusableLabel(why: WorkspaceUnusable): string {
+  return why === 'withheld' ? t('Not offered here') : t('Closed|team')
+}
+
+/** What a workspace nothing can be used in says instead of what it holds: a heading and a sentence. */
+export function unusableNotice(why: WorkspaceUnusable, team: string): { title: string; text: string } {
+  return why === 'withheld'
+    ? {
+        title: t('{team} is not available on this server', { team }),
+        text: t('This server does not offer team workspaces yet, so nothing in {team} can be used here: its mailboxes, people and API keys. Nothing of it is lost.', { team }),
+      }
+    : {
+        title: t('{team} is closed', { team }),
+        text: t('Nothing in {team} can be used until it reopens: its mailboxes reach nobody and do not sync, and its API keys reach nothing. Its mailboxes, what they have indexed and its keys are kept, and work again once it reopens.', { team }),
+      }
+}
+
 /** The caller administers the workspace's people and grants: an owner or an admin of a team, active in it. */
 export function administers(workspace: Workspace | undefined): boolean {
   return workspace?.kind === 'team' && (workspace.role === 'owner' || workspace.role === 'admin') && workspace.status !== 'disabled'

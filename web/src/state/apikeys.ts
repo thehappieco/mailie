@@ -26,7 +26,7 @@ import { reactive, watch } from 'vue'
 import * as api from '../api/apikeys'
 import type { CreateKeyRequest, CreatedKey, KeyFlags, KeyLifetime, KeyMailboxRequest, KeyScope, KeySend, WorkspaceKey } from '../api/types'
 import { edition } from '../edition'
-import { administersKeys } from '../ui/access'
+import { administersKeys, workspaceUnusable } from '../ui/access'
 import { MAX_LIVE_KEYS, holdsAnyKeyFlag, keyStanding, sameKeyFlags } from '../ui/apikeys'
 import { accounts } from './accounts'
 import { failure, type Failure } from './failure'
@@ -81,10 +81,14 @@ function current(): () => boolean {
   return () => at === generation
 }
 
-/** The workspace shown, when the person may see its keys there: its owners and admins, or the person of a personal one. */
+/**
+ * The workspace shown, when the person may see its keys there: its owners
+ * and admins, or the person of a personal one; never a team nothing can be
+ * used in (closed, or not offered by this server), whose keys reach nothing.
+ */
 function keysWorkspace(): string {
   const shown = workspaces.list.find(item => item.id === workspaces.currentID)
-  return administersKeys(shown) ? shown!.id : ''
+  return administersKeys(shown) && !workspaceUnusable(shown) ? shown!.id : ''
 }
 
 // A mailbox gone from the list of the same workspace was removed (or its

@@ -1,0 +1,43 @@
+[
+  {
+    "email": "ana@example.com",
+    "joined_at": 1790000000,
+    "last_owner": true,
+    "last_reader_of": [
+      "acc_0000000000000005",
+      "acc_0000000000000007"
+    ],
+    "name": "Ana Lima",
+    "public_key": "MTExMTExMTExMTExMTExMTExMTExMTExMTExMTExMTE",
+    "role": "owner",
+    "seal_id": "00000000-0000-4000-8000-000000000001",
+    "status": "active",
+    "user_id": "usr_0000000000000001"
+  },
+  {
+    "email": "bea@example.com",
+    "joined_at": 1790000000,
+    "last_owner": false,
+    "last_reader_of": [],
+    "name": "Bea Lima",
+    "person_disabled": true,
+    "person_suspended": true,
+    "public_key": "NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU",
+    "role": "member",
+    "seal_id": "00000000-0000-4000-8000-000000000002",
+    "status": "active",
+    "user_id": "usr_0000000000000003"
+  },
+  {
+    "email": "carol@example.com",
+    "joined_at": 1790000000,
+    "last_owner": false,
+    "last_reader_of": [],
+    "name": "",
+    "public_key": "OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk5OTk",
+    "role": "member",
+    "seal_id": "00000000-0000-4000-8000-000000000003",
+    "status": "active",
+    "user_id": "usr_0000000000000002"
+  }
+]

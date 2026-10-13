@@ -567,6 +567,21 @@ describe('the people of a team', () => {
   }
   const row = (userID: string) => find(`li[data-user="${userID}"]`)!
 
+  it('marks a person suspended on the server as suspended, and one disabled here as disabled on this server', async () => {
+    const EVE = 'usr_00000000000000e5'
+    const FAY = 'usr_00000000000000f6'
+    await membersOf('owner', undefined, undefined, [
+      member(EVE, { name: 'Eve Lima', person_disabled: true, person_suspended: true }),
+      member(FAY, { name: 'Fay Dias', person_disabled: true }),
+    ])
+    const pills = (userID: string) => row(userID).querySelectorAll('.pill').map(pill => words(pill))
+    expect(pills(EVE)).toContain('Suspended')
+    expect(pills(EVE)).not.toContain('Disabled on this server')
+    expect(pills(FAY)).toContain('Disabled on this server')
+    expect(pills(FAY)).not.toContain('Suspended')
+    expect(pills(BEA)).not.toContain('Suspended')
+  })
+
   it('changes a role at once from its list, and sets it back when the server refuses', async () => {
     let refuse = false
     await membersOf('owner', ({ path, method, body }) => {
@@ -759,5 +774,80 @@ describe('turning sync off', () => {
     const dialog = words(find('dialog')!)
     expect(dialog).toContain('Mailie stops syncing all your mailboxes and deletes everything it indexed for them')
     expect(dialog).not.toMatch(/team/i)
+  })
+})
+
+describe('a team nothing can be used in', () => {
+  const closed = (role: string): Workspace => ({ ...support(role), closed_at: 1_790_000_100 })
+  const withheld = (role: string): Workspace => ({ ...support(role), withheld: true })
+  const open = (label: string) => click(find('.console-sidebar .console-nav-item', label))
+
+  it('says a closed team is closed in place of its mailboxes, people, keys and storage, and asks for none of its people or keys', async () => {
+    await signedIn('owner', ({ path, method }) => {
+      // A closed team's mailboxes reach nobody: the server lists none.
+      if (path === '/v1/accounts' && method === 'GET') return json([])
+      if (path === '/v1/providers') return json([])
+      if (path === '/v1/events') return failure('not_authorized', 403)
+      return failure('not_found', 404)
+    }, () => [personal, closed('owner')])
+    mounted = mount(OpenConsole)
+    await vi.waitFor(() => expect(accounts.loaded).toBe(true))
+    await flush()
+    const notice = () => words(find('[data-unusable]')!)
+    expect(notice()).toContain('Support is closed')
+    expect(notice()).toContain('Nothing in Support can be used until it reopens')
+    expect(find('button', 'Connect an email account')).toBeNull()
+    expect(find('.console-overview')).toBeNull()
+    for (const section of ['Members', 'API keys & MCP', 'Storage']) {
+      await open(section)
+      await flush()
+      expect(page.querySelectorAll('[data-unusable]').filter(item => words(item).includes('Support is closed')).length, section)
+        .toBeGreaterThan(0)
+    }
+    expect(find('button', 'Invite someone')).toBeNull()
+    expect(find('button', 'Create key')).toBeNull()
+    // Nothing of the team's people, grants or keys is asked for.
+    for (const path of ['members', 'access', 'invites', 'apikeys']) expect(sent('GET', `/v1/workspaces/${TEAM}/${path}`), path).toEqual([])
+  })
+
+  it('says a team this server does not offer is not available, with no failure beside it, and marks it where it is chosen', async () => {
+    await signedIn('member', ({ path, method }) => {
+      if (path === '/v1/accounts' && method === 'GET') return failure('not_authorized', 403)
+      return failure('not_found', 404)
+    }, () => [personal, withheld('member')])
+    await loadAccounts()
+    mounted = mount(AccountsPanel)
+    await flush()
+    expect(words(find('[data-unusable]')!)).toContain('Support is not available on this server')
+    expect(words(find('[data-unusable]')!)).toContain('This server does not offer team workspaces yet')
+    expect(find('[role=alert]')).toBeNull()
+    expect(words()).not.toContain('The people of Support')
+    mounted.unmount()
+    mounted = mount(WorkspaceSwitcher)
+    await flush()
+    expect(find('select[name=workspace]')!.querySelectorAll('option').map(option => words(option)))
+      .toEqual(['Personal', 'Support · Member · Not offered here'])
+    mounted.unmount()
+    // Among the person's teams, in their personal workspace.
+    selectWorkspace(PERSONAL)
+    mounted = mount(OpenMembers)
+    await flush()
+    expect(find('.member-row', 'Support')!.querySelectorAll('.pill').map(pill => words(pill))).toEqual(['Not offered here'])
+  })
+
+  it('lists a team that reopened as it was, once the workspaces are read again', async () => {
+    let shut = true
+    await signedIn('owner', ({ path, method }) => {
+      if (path === '/v1/accounts' && method === 'GET') return json(shut ? [] : [shared])
+      return failure('not_found', 404)
+    }, () => [personal, shut ? closed('owner') : support('owner')])
+    await loadAccounts()
+    mounted = mount(AccountsPanel)
+    await flush()
+    expect(find('[data-unusable]')).not.toBeNull()
+    shut = false
+    await loadWorkspaces()
+    await vi.waitFor(() => expect(words()).toContain('suporte@example.test'))
+    expect(find('[data-unusable]')).toBeNull()
   })
 })

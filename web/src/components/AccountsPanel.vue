@@ -11,6 +11,8 @@
 // workspace, or a team they own or administer. In another team the button
 // would only ever connect to their personal workspace, so it is not there;
 // an empty list says where their own mailboxes go, and shows it on request.
+// A team nothing can be used in (closed, or not offered by this server) shows
+// why instead of its mailboxes, which reach nobody.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
@@ -18,7 +20,7 @@ import { accounts, dismissNotice, loadAccounts, openDetail } from '../state/acco
 import { consent, loadConsent, needsConsent } from '../state/sync'
 import { directoryEntry, loadDirectory, loadMembers, team } from '../state/team'
 import { currentWorkspace, loadWorkspaces, selectWorkspace, workspaces } from '../state/workspaces'
-import { accessOf, administers, canLinkInto, grantSummary, waitsForKey, workspaceName } from '../ui/access'
+import { accessOf, administers, canLinkInto, grantSummary, waitsForKey, workspaceName, workspaceUnusable } from '../ui/access'
 import { describe } from '../ui/errors'
 import { count, since } from '../ui/format'
 import { t } from '../ui/i18n'
@@ -30,6 +32,7 @@ import AppIcon from './AppIcon.vue'
 import StatusChip from './StatusChip.vue'
 import SyncConsentCard from './SyncConsentCard.vue'
 import SyncStatus from './SyncStatus.vue'
+import UnusableWorkspace from './UnusableWorkspace.vue'
 
 // The dialog is either adding a new mailbox or finishing an existing one's
 // authorization; one instance at a time, so two flows never poll at once.
@@ -42,6 +45,8 @@ const detail = computed(() => accounts.list.find(item => item.id === accounts.de
 const shown = computed(currentWorkspace)
 const inTeam = computed(() => shown.value?.kind === 'team')
 const teamName = computed(() => workspaceName(shown.value))
+/** Why nothing of the team shown can be used: closed, or not offered by this server; null where it can. */
+const unusable = computed(() => workspaceUnusable(shown.value))
 /** An owner or an admin of the team shown, who manages every mailbox of it by that role. */
 const admin = computed(() => administers(shown.value))
 /**
@@ -61,19 +66,24 @@ const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: t
  * Connect buttons go. A server without workspaces (or one not read yet) has
  * only the person's own.
  */
-const linksHere = computed(() => !workspaces.supported || canLinkInto(shown.value))
+const linksHere = computed(() => !workspaces.supported || (canLinkInto(shown.value) && !unusable.value))
 /** The person's personal workspace, where their own mailboxes are connected. */
 const personalID = computed(() => workspaces.list.find(item => item.kind === 'personal')?.id ?? '')
 
 /** The team's people and directory, which only its owners and admins read: who can read each mailbox, and its sync. */
 function readTeam() {
-  if (!inTeam.value || !admin.value) return
+  if (!inTeam.value || !admin.value || unusable.value) return
   if (!team.members.loaded && !team.members.loading) void loadMembers()
   if (!team.directory.loaded && !team.directory.loading) void loadDirectory()
 }
 onMounted(readTeam)
 watch(() => workspaces.currentID, readTeam)
 watch(() => shown.value?.role, readTeam)
+// A team that reopened (or is offered again) lists its mailboxes once more.
+watch(unusable, (now, before) => {
+  if (before && !now) void loadAccounts()
+  readTeam()
+})
 /**
  * Refresh reads the consent again too: it may have changed in another tab or
  * on another device, and a first read that failed left this page without its
@@ -84,7 +94,7 @@ function refresh() {
   void loadWorkspaces()
   void loadAccounts()
   if (!consent.loading && !consent.busy) void loadConsent()
-  if (inTeam.value && admin.value) {
+  if (inTeam.value && admin.value && !unusable.value) {
     void loadMembers()
     void loadDirectory()
   }
@@ -119,9 +129,9 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
     </div>
 
     <SyncConsentCard v-if="askConsent" />
-    <p v-if="inTeam && !admin" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
+    <p v-if="inTeam && !admin && !unusable" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
 
-    <div class="console-overview">
+    <div v-if="!unusable" class="console-overview">
       <article><span>{{ t('Email accounts') }}</span><strong>{{ accounts.loaded ? count(accounts.list.length) : '—' }}</strong><small>{{ t('added to Mailie') }}</small></article>
       <article><span>{{ t('Active accounts') }}</span><strong>{{ accounts.loaded ? count(active) : '—' }}</strong><small>{{ t('sign-in accepted') }}</small></article>
       <article><span>{{ t('Need attention') }}</span><strong>{{ accounts.loaded ? count(attention) : '—' }}<i v-if="attention > 0" class="summary-status warn" aria-hidden="true" /></strong><small>{{ t('waiting for you') }}</small></article>
@@ -135,10 +145,11 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
       </div>
     </div>
 
-    <div v-if="accounts.failure" class="alert with-action" role="alert"><span>{{ describe(accounts.failure) }}</span><button class="ghost small" type="button" @click="loadAccounts">{{ t('Try again') }}</button></div>
-    <p v-if="accounts.loading && !accounts.loaded" class="dim" role="status">{{ t('Loading your email accounts…') }}</p>
+    <UnusableWorkspace v-if="unusable" :workspace="shown" />
+    <div v-else-if="accounts.failure" class="alert with-action" role="alert"><span>{{ describe(accounts.failure) }}</span><button class="ghost small" type="button" @click="loadAccounts">{{ t('Try again') }}</button></div>
+    <p v-if="!unusable && accounts.loading && !accounts.loaded" class="dim" role="status">{{ t('Loading your email accounts…') }}</p>
 
-    <section class="cards" :aria-label="t('Email accounts')" :aria-busy="accounts.loading">
+    <section v-if="!unusable" class="cards" :aria-label="t('Email accounts')" :aria-busy="accounts.loading">
       <article v-for="account in accounts.list" :key="account.id" class="account-card">
         <!-- Two rows: an address is long, and beside a status it would break mid-word. -->
         <div class="head">
