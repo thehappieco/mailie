@@ -35,7 +35,8 @@ import PasswordInput from './PasswordInput.vue'
 // form sends a password, whatever the server answers. Besides signing in and
 // up: recovering an account with its recovery code, and a reset link from
 // the operator (#reset=…), which is also the way back for an account made
-// before the key scheme that never enrolled.
+// before the key scheme that never enrolled. Both say, above the button that
+// confirms them, that they stop every API key the person created.
 const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | null }>()
 const legal = edition().legal
 const teams = edition().teams === true
@@ -61,6 +62,18 @@ let resetOpening: Opening | undefined
 
 /** Modes that choose a new password, with a second field to repeat it. */
 const choosing = computed(() => mode.value !== 'sign-in')
+/**
+ * What a recovery or a reset stops besides the sessions, said before the
+ * person confirms: every API key they created (docs/key-scheme.md sections
+ * 12.4 and 12.6). A password change, from their account, keeps them.
+ */
+const keysStop = computed(() => {
+  switch (mode.value) {
+    case 'recover': return t('Recovering your account stops every API key you created. You can create new ones once you are signed in.')
+    case 'reset': return t('Saving stops every API key this account created. You can create new ones once you are signed in.')
+    default: return ''
+  }
+})
 const title = computed(() => {
   switch (mode.value) {
     case 'sign-up': return t('Create your account')
@@ -201,7 +214,9 @@ async function submit(event: SubmitEvent) {
             <label for="confirm">{{ t('Repeat the password') }}</label>
             <PasswordInput id="confirm" v-model="confirm" name="confirm-password" required :minlength="MIN_PASSWORD" autocomplete="new-password" :disabled="busy" />
           </div>
-          <button class="primary" type="submit" :disabled="busy || (mode === 'reset' && problem?.op === 'reset' && problem.code === 'not_authorized')">
+          <p v-if="keysStop" id="keys-stop" class="note keys-stop"><AppIcon name="info" :size="16" />{{ keysStop }}</p>
+          <button class="primary" type="submit" :aria-describedby="keysStop ? 'keys-stop' : undefined"
+            :disabled="busy || (mode === 'reset' && problem?.op === 'reset' && problem.code === 'not_authorized')">
             <span v-if="busy" class="loading-spinner inline" aria-hidden="true" />
             {{ action }}
           </button>
@@ -228,6 +243,8 @@ async function submit(event: SubmitEvent) {
 .unlock-card { border-radius: var(--card-radius); box-shadow: var(--card-shadow); }
 form .primary { min-height: 46px; border-radius: var(--control-radius); margin-top: 6px; }
 .working { margin: 10px 0 0; text-align: center; }
+.keys-stop { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 12px; line-height: 1.5; }
+.keys-stop .app-icon { flex: none; margin-top: 1px; }
 .auth-footer { display: grid; justify-items: start; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .auth-footnote { display: flex; align-items: flex-start; gap: 8px; margin: 0; color: var(--text-dim); font-size: 12px; line-height: 1.5; }
 .auth-footnote .app-icon { margin-top: 1px; }

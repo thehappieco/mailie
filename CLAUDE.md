@@ -308,7 +308,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mints one); a key reaches exactly what it holds in `key_access`, read live — `read` given only by
   an owner or an admin who reads that mailbox then, `act` and `send` by any of them — and keeps it
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
-  leaves the workspace or is disabled, suspended or deleted (not on a demotion). A suspended person
+  leaves the workspace or is disabled, suspended or deleted (not on a demotion), and in every
+  workspace when they recover their account or complete a reset (`account_recovered`, in that
+  transaction; a password change and signing out everywhere keep it). A suspended person
   reads nothing, waits for no key, is supplied none and counts in no protection; their grants
   persist for a resume, which restores no session and no key. A closed team (migration 0019) is a
   gate on use, never the reading rule (`store.OpenWorkspaceSQL` beside `ReaderSQL` in visibility,

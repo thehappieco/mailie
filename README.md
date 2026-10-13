@@ -225,10 +225,11 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
   `manage` to members only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
   for a team invite.
-- A forgotten password is recovered with the recovery code. A person who lost both gets a **reset
-  invitation** from the operator, with the daemon stopped: `mailserver user password --bootstrap
-  --email X` prints a single-use link with which they choose a new password and get a new account
-  key; their sessions end and what was granted to the old key goes. It refuses, without `--force`,
+- A forgotten password is recovered with the recovery code, which stops every API key the person
+  created. A person who lost both gets a **reset invitation** from the operator, with the daemon
+  stopped: `mailserver user password --bootstrap --email X` prints a single-use link with which
+  they choose a new password and get a new account key; their sessions end, the API keys they
+  created stop and what was granted to the old key goes. It refuses, without `--force`,
   the last person who can read a team mailbox. No route sets or resets a password. It is also the
   way back for a person who signed up before the key scheme and never signed in on the release that
   brought it ([`docs/self-hosting.md`](docs/self-hosting.md#upgrades)).

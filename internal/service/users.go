@@ -426,7 +426,8 @@ func (s *Service) OpenRecovery(ctx context.Context, req RecoverOpenRequest) (Rec
 
 // FinishRecovery stores a new password and a new recovery code over the same
 // account key, with the recovery proof that opened it presented again. Every
-// session of the person ends; they sign in with the new password.
+// session of the person ends, and every API key they created stops; they
+// sign in with the new password.
 func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) error {
 	if err := s.passwordsInUse(); err != nil {
 		return err
@@ -441,6 +442,9 @@ func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) 
 	}); err != nil {
 		return fromUsers(err, "finishing the recovery failed")
 	}
+	// The keys it stopped reach nothing more, an event stream open with one
+	// included.
+	s.accessChanged()
 	return nil
 }
 
@@ -510,7 +514,8 @@ func (s *Service) OpenReset(ctx context.Context, req ResetOpenRequest) (ResetOpe
 
 // CompleteReset redeems a reset invitation: the person gets a new password,
 // recovery code and account key, every grant sealed to their old key goes,
-// every session of theirs ends, and this browser is signed in. Their flags
+// every session of theirs ends, every API key they created stops, and this
+// browser is signed in. Their flags
 // stay: on every mailbox that has a key they wait for it again
 // (docs/key-scheme.md section 12.6), and a team mailbox a forced reset left
 // with nobody who reads it stops syncing.
@@ -526,8 +531,9 @@ func (s *Service) CompleteReset(ctx context.Context, req ResetRequest, userAgent
 	if err != nil {
 		return Session{}, fromUsers(err, "resetting the password failed")
 	}
-	// What they read by a grant they no longer read; the engine hears of
-	// every mailbox they hold read on, whose readers may have changed.
+	// What they read by a grant they no longer read, and what the keys it
+	// stopped reached; the engine hears of every mailbox they hold read on,
+	// whose readers may have changed.
 	s.accessChanged()
 	s.reconcile(s.readBy(ctx, user.ID)...)
 	return presentSession(token, session, user), nil

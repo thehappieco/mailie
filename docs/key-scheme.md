@@ -848,8 +848,8 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    unused, a `current_auth_key` the ticket was not issued to: a session and the answer of step 2,
    copied, set nothing. It checks that `kdf` is its current default, and stores the target, the
    new verifier and the new wrap; the account key, its public key, the grants and the recovery
-   wrap do not change. Other sessions end, as today, unless the ticket is a sign-in's
-   re-derivation (section 12.2, step 5).
+   wrap do not change, nor do the API keys the person created. Other sessions end, as today,
+   unless the ticket is a sign-in's re-derivation (section 12.2, step 5).
 
 ### 12.4 Recovery
 
@@ -868,11 +868,14 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
    ticket rides in the same answer as the recovery wrap, and whoever saw only that answer (a
    proxy's log) must not set a password and a code of their own with it (threat model, section
    5.12). It checks that `kdf` is its current default and stores the target with the rest. The
-   account key is unchanged, so every grant still opens. Every session ends, and the person signs
-   in with the new password (section 12.2). The browser shows the new code once. A sign-in after
-   it that fails (the account's rate limit, the network) leaves the recovery done: the browser
-   says so and asks for the new password, never for another recovery, which would only replace
-   the code it just showed.
+   account key is unchanged, so every grant still opens. Every session ends, and, in the same
+   transaction, every API key the person created stops, in every workspace, saying
+   `account_recovered`: a key outlives the sessions that end, and whoever held the password or a
+   session this recovery puts aside may have made one. The browser says so before the person
+   confirms. The person signs in with the new password (section 12.2), and creates keys again.
+   The browser shows the new code once. A sign-in after it that fails (the account's rate limit,
+   the network) leaves the recovery done: the browser says so and asks for the new password,
+   never for another recovery, which would only replace the code it just showed.
 
 ### 12.5 Replacing the recovery code
 
@@ -898,8 +901,10 @@ not change. Not a challenge, which answers an account off its target the salt it
 reset stores the target, so a password derived under the challenge's answer would never sign in
 again. It gives the person a **new** password, recovery code and account key. In one transaction
 the server replaces `users.public_key` (the one replacement of a written-once key), the verifiers
-and wraps, and **deletes every grant sealed to the old key** and
-every platform wrap of the person, and ends their sessions. Their personal mailboxes then open
+and wraps, **deletes every grant sealed to the old key** and every platform wrap of the person,
+ends their sessions and stops every API key they created, in every workspace, saying
+`account_recovered`, before it opens the session the reset answers; the command that prints the
+link and the browser's form say so first. Their personal mailboxes then open
 only once they write them a new key (section 12.12); a team's mailboxes, on which they keep the
 flag, once a reader supplies them the key (section 12.13). The reset is also the way back for a
 person from before this scheme who never enrolled (section 12.7): it enrols them, under the seal
@@ -1670,3 +1675,23 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     grants as section 12.13 says and clears `suspended_at` in the same statement, so that a resume
     never lifts it; suspending someone disabled here marks nothing. Who decides a resume decides
     who reads again: the threat model's section 5.13.
+- Version 1, a recovery or a reset stops the person's API keys (2026-10-13). No byte changed. The
+  owner decided that a recovery (section 12.4) and a reset (section 12.6) stop every API key the
+  person created, in every workspace, in the transaction that stores the new secrets, each key
+  saying it stopped for `account_recovered` (`docs/workspaces.md`, "API keys"); a password change
+  (section 12.3), replacing the recovery code (section 12.5) and signing out everywhere end what
+  they ended before, and keep them. A key outlives the sessions both ceremonies end, and both are
+  what a person does when someone else may hold their password, their recovery code, their account
+  key or a session of theirs (threat model, sections 4.5 and 4.6), any of which may have made a
+  key. What the code had to choose, recorded here:
+  - **Every key, not those before a moment.** Inside the transaction every key the person created
+    exists already, since the store writes one transaction at a time; a bound on creation times
+    would spare one created in the same second, or under a clock that stepped back. An extension
+    that learns of a recovery made elsewhere stops the keys created before a moment it names, with
+    its own margin (`Service.RevokeKeysCreatedBefore`).
+  - **No key for a session that ended.** Creating a key checks, in the transaction that writes it,
+    that the session asking is still live: a request authenticated before a recovery or a reset
+    committed creates no key after it (`unauthorized`).
+  - **Said before.** The console's recovery and reset forms say, above the button that confirms
+    them, that every API key the person created stops; `mailserver user password --bootstrap` says
+    so when it prints the link, with how many are live then.

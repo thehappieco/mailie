@@ -338,16 +338,30 @@ func endWaysInTx(ctx context.Context, tx *sql.Tx, id string, now int64, reason w
 	// key back, any more than it brings a session back. A key stops when the
 	// person who created it is closed or suspended, whatever it holds: the
 	// key terms they agreed to say so, and the key says why.
-	out.Keys, err = execCount(ctx, tx,
-		`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
-		now, string(reason), id)
-	if err != nil {
-		return Ended{}, fmt.Errorf("auth: revoke the user's keys: %w", err)
+	if out.Keys, err = revokeKeysCreatedByTx(ctx, tx, id, now, reason); err != nil {
+		return Ended{}, err
 	}
 	if out.Invites, err = expireInvitesByTx(ctx, tx, id, now); err != nil {
 		return Ended{}, err
 	}
 	return out, nil
+}
+
+// revokeKeysCreatedByTx revokes, inside the caller's transaction, every live
+// key a person created, in whichever workspace, saying why, and reports how
+// many it revoked. Every key they created exists by then, since the store
+// writes one transaction at a time, and none is spared for its creation
+// time, which a clock behind this one's would put later. A key written after
+// it answers to what it ended: creating one needs its person active, and the
+// session asking live, in the transaction that writes it.
+func revokeKeysCreatedByTx(ctx context.Context, tx *sql.Tx, id string, now int64, reason workspace.KeyStopReason) (int, error) {
+	n, err := execCount(ctx, tx,
+		`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
+		now, string(reason), id)
+	if err != nil {
+		return 0, fmt.Errorf("auth: revoke the user's keys: %w", err)
+	}
+	return n, nil
 }
 
 // Removed is what deleting a person removed.

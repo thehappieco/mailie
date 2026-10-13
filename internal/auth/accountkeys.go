@@ -633,8 +633,9 @@ type RecoveryFinish struct {
 // the recovery proof it was issued to (CurrentRecoveryProof); anything else is
 // ErrTicketInvalid, refused before any hash, and leaves the ticket unused.
 // The account key is unchanged, so every grant still opens. Every session of
-// the person ends, and every other ticket; the person signs in with the new
-// password.
+// the person ends, and every other ticket, and every API key they created
+// stops (workspace.KeyStopAccountRecovered), in whichever workspace; the
+// person signs in with the new password, and creates keys again.
 func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 	if err := checkSecretText(in.CurrentRecoveryProof); err != nil {
 		return err
@@ -689,7 +690,13 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 		if err := dropTicketsTx(ctx, tx, t.userID); err != nil {
 			return err
 		}
-		_, err = revokeSessionsTx(ctx, tx, t.userID, now.Unix())
+		if _, err := revokeSessionsTx(ctx, tx, t.userID, now.Unix()); err != nil {
+			return err
+		}
+		// A key outlives the sessions that end here, and whoever made one
+		// with a session of theirs, or with the password this recovery puts
+		// aside, would keep it (docs/key-scheme.md section 12.4).
+		_, err = revokeKeysCreatedByTx(ctx, tx, t.userID, now.Unix(), workspace.KeyStopAccountRecovered)
 		return err
 	})
 }
@@ -788,6 +795,14 @@ func (u *Users) RequireStepUpTx(ctx context.Context, tx *sql.Tx, userID, session
 
 func requireStepUpTx(ctx context.Context, tx *sql.Tx, userID, sessionID string, now time.Time) error {
 	return requireStepUpOn(ctx, tx, userID, sessionID, now)
+}
+
+// RequireSessionTx refuses, with ErrInvalidSession, inside the caller's
+// transaction, a session that is no longer live, or not the person's: one
+// authenticated before a change that ended it committed (a recovery, a
+// reset, a sign-out everywhere), whose request writes after it.
+func (u *Users) RequireSessionTx(ctx context.Context, tx *sql.Tx, userID, sessionID string) error {
+	return requireLiveSessionTx(ctx, tx, userID, sessionID, u.now())
 }
 
 func requireStepUpOn(ctx context.Context, q rowQuerier, userID, sessionID string, now time.Time) error {
@@ -1040,6 +1055,7 @@ func ResetLink(publicURL, code, email string) string {
 // replaces the public key (the one replacement of a key written once), the
 // verifiers and the wraps, deletes every grant sealed to the old key and
 // every platform wrap of the person, ends their sessions and every ticket,
+// stops every API key they created (workspace.KeyStopAccountRecovered),
 // enrols them if they had not, clears any old password hash, and starts a
 // session whose step-up time is now.
 //
@@ -1140,6 +1156,13 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 			return fmt.Errorf("auth: reset: %w", err)
 		}
 		if _, err := revokeSessionsTx(ctx, tx, userID, now.Unix()); err != nil {
+			return err
+		}
+		// Before the session this reset opens, which creates keys afresh:
+		// a reset is the remedy for an account key or a password that may
+		// have been copied (docs/key-scheme.md section 12.6), and a key made
+		// with either outlives the sessions that end here.
+		if _, err := revokeKeysCreatedByTx(ctx, tx, userID, now.Unix(), workspace.KeyStopAccountRecovered); err != nil {
 			return err
 		}
 		token, session, err = startSessionTx(ctx, tx, userID, userAgent, now, SessionTTL, now)

@@ -144,7 +144,10 @@ days (less on the hosted service).
 that includes reading their mailboxes through the server, and acting and sending as their flags
 allow; ask for their grants, which open nothing without their account key. The platform wrap is
 answered only to a sign-in through id., with an access token of its own, never to a session (spec
-§12.8), and opens nothing without `sk_p` either.
+§12.8), and opens nothing without `sk_p` either. Where the person owns or administers a workspace,
+create an API key in it, which outlives the session: revoking it stops it, and so do the person's
+recovery and a reset (spec §12.4 and §12.6), which stop every key the person created; a password
+change and signing out everywhere end sessions only.
 
 **Can, if it was copied within 10 minutes of the session's sign-in or last step-up** (spec §11):
 also what the step-up guards, until those 10 minutes end: give an accomplice "read" with 88 bytes
@@ -530,5 +533,9 @@ reading only with the flag and a grant at the current epoch, and no session or k
 paused, never emptied), `internal/auth/suspension_test.go` (a disable here standing over a
 suspension, a suspension marking nothing on someone disabled here, a key saying it stopped with
 the suspension) and `internal/store/migrate_eighteen_test.go` (the schema refusing a suspended
-person who is active). The specification's sections 11 and 12 are what those tests hold the server
+person who is active). That a recovery and a reset stop every key the person created, and a
+password change, a new recovery code and signing out everywhere keep them, is tested in
+`internal/auth/keystops_test.go`; that a session one of them ended creates no key after it, and
+each ceremony through the service, in `internal/service/keystops_test.go`; that the console says
+so before either is confirmed, in `web/test/signIn.page.spec.ts` and `web/test/render.spec.ts`. The specification's sections 11 and 12 are what those tests hold the server
 and the console to.

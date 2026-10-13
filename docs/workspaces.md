@@ -50,8 +50,9 @@ conflicts with the code or with another rule, it says so in
   an owner or an admin who reads the mailbox then, `act` and `send` from any of them. What a key
   holds stands on its own, whoever gave it; keys never count as readers and never pass `read`. A key
   may send, with the `send` scope and flag and `confirm: true`, unless the server says keys may not
-  (`MAIL_KEYS_MAY_SEND=false`). It stops when its creator leaves the workspace or is disabled or
-  deleted on the instance. See [API keys](#api-keys).
+  (`MAIL_KEYS_MAY_SEND=false`). It stops when its creator leaves the workspace, is disabled,
+  suspended or deleted on the instance, or recovers their account (with their recovery code or a
+  reset invitation). See [API keys](#api-keys).
 - A **closed team** is used by nobody until it reopens: its mailboxes reach nobody, its keys
   included, and sync nothing, keeping their index, consent and grants, and nothing in it changes.
   The operator closes a local team; a team from another source closes where it is managed. See
@@ -691,20 +692,27 @@ to `true` only under the open key terms: a daemon whose `MAIL_CONSENT_VERSION_KE
 terms refuses to start until it is set ([conflict 25](#conflicts-and-resolutions)).
 
 **Revoked automatically**, in the same transaction, the keys a person created: when they are
-removed from the workspace (a carried-over key loses that workspace's mailboxes), and when they
-are disabled or deleted on the instance. Demoting them or disabling their membership keeps the
-keys, as Wappie does. Deleting a person deletes the keys of their personal workspace and of the
-teams they were alone in, with those workspaces, and blanks their name on the keys they created in
-a team that stays, which stay revoked as the team's record.
+removed from the workspace (a carried-over key loses that workspace's mailboxes), when they are
+disabled, suspended or deleted on the instance, and, in every workspace, when they recover their
+account with their recovery code or complete a reset invitation ([`key-scheme.md`](key-scheme.md)
+sections 12.4 and 12.6): whoever held their password, their recovery code or a session of theirs
+may have made one, and a key outlives a session. The console's forms and `mailserver user
+password` say so before. Changing the password, replacing the recovery code and signing out
+everywhere keep them, and so do demoting them and disabling their membership, as Wappie does.
+Deleting a person deletes the keys of their personal workspace and of the teams they were alone
+in, with those workspaces, and blanks their name on the keys they created in a team that stays,
+which stay revoked as the team's record.
 
 **Why a key stopped** (migration 0017). Every write that revokes a key records why, once, in
 `api_keys.stop_reason`, and the listings answer it as `stop_reason` on a revoked key (absent on a
 live one): `manual` (the operator, an owner or an admin of its workspace, or its creator revoked
 it), `creator_left` (its creator left the workspace or was removed from it), `creator_disabled`,
 `creator_suspended` (by an extension of the daemon), `creator_deleted`, `account_recovered` (its
-creator's account was recovered: the keys they had created before stop), `restriction_emptied`
-(the last mailbox it could reach went: an operator key restricted to mailboxes that are all gone, or
-a carried-over key that lost its last one) and `migration` (reserved). A carried-over key revoked
+creator recovered their account, with their recovery code or a reset invitation, which stops every
+key they had created; or an extension stopped the keys created before a recovery made elsewhere),
+`restriction_emptied` (the last mailbox it could reach went: an operator key restricted to
+mailboxes that are all gone, or a carried-over key that lost its last one) and `migration`
+(reserved). A carried-over key revoked
 in, or losing with its creator, the last workspace it held mailboxes in says `manual` or
 `creator_left`, not `restriction_emptied`. The schema holds it: a key that stops without a reason
 is refused, a reason is only on a revoked key, and it never changes. A key revoked before 0017

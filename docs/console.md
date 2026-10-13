@@ -199,17 +199,20 @@ presented has no minimum.
   new password and sends `POST /v1/auth/password/finish {ticket, current_auth_key, auth_key, kdf,
   password_wrap}`, the same current auth key again.
   Every session of the person ends, and the reply is the one this browser goes on with; the account
-  key, the grants and the recovery code do not change. A person without a password has no current
-  one to prove, and the console does not offer the change (`user.has_password` is `false`).
+  key, the grants, the recovery code and the API keys the person created do not change. A person
+  without a password has no current one to prove, and the console does not offer the change
+  (`user.has_password` is `false`).
 - **Recovery.** `POST /v1/auth/recover/open {email, recovery_proof}` answers the recovery wrap, the
   seal id, the public key, the target and a ticket, only to the proof verified in that request;
   `POST /v1/auth/recover/finish {ticket, current_recovery_proof, auth_key, kdf, password_wrap,
   recovery_wrap, recovery_proof}`, with the proof that opened the recovery sent again
   (`current_recovery_proof`; `recovery_proof` is the new code's), stores a new password and a new
-  recovery code over the same account key, and ends every session. The console then signs in with
-  the new password; when that sign-in fails (too many attempts, the network), the recovery is done
-  all the same, and the form says so and asks for the new password rather than for another
-  recovery, which would only replace the code it just showed.
+  recovery code over the same account key, ends every session, and stops every API key the person
+  created, in every workspace (`account_recovered`), which the form says above its button before
+  the person confirms. The console then signs in with the new password; when that sign-in fails
+  (too many attempts, the network), the recovery is done all the same, and the form says so and
+  asks for the new password rather than for another recovery, which would only replace the code it
+  just showed.
 - **Replacing the recovery code.** `POST /v1/auth/recovery {current_auth_key, recovery_wrap,
   recovery_proof}` replaces the recovery code of a signed-in person, with their current auth key
   verified in that request under the account's sign-in limit, as `password/begin` is: a session
@@ -258,8 +261,9 @@ presented has no minimum.
   challenge answers an account off its target), and the person's seal id. It then makes a new
   account key, password and recovery code and sends `POST /v1/auth/reset {reset, email, auth_key,
   kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`; in one transaction the server replaces the public key (the one replacement of a
-  key written once), deletes every grant sealed to the old one, ends every session and signs this
-  browser in. A reset takes "read" from the person on every mailbox that has a key, so the command
+  key written once), deletes every grant sealed to the old one, ends every session, stops every
+  API key the person created (`account_recovered`) and signs this browser in. The form says so
+  above its button, and the command when it prints the link, with how many keys are live then. A reset takes "read" from the person on every mailbox that has a key, so the command
   refuses, naming the mailboxes, while the person is the last reader of a team mailbox, a team they
   are alone in included (closing a person leaves that team out, since it goes with them; a reset
   leaves it), unless `--force`, which the invitation records; one issued without force checks
@@ -763,9 +767,9 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/auth/signup/open` | anyone | `{invite, email}` → `{salt, kdf, seal_id}`; checks the invitation as the sign-up will |
 | `POST /v1/auth/signup` | anyone | `{invite, email, name, seal_id, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session` (201); an instance invite, or a team invite the operator or an instance owner made |
 | `POST /v1/auth/reset/open` | anyone | `{reset, email}` → `{salt, kdf, seal_id}`, the account's target, which the reset stores, and the person's seal id; nothing changes |
-| `POST /v1/auth/reset` | anyone | `{reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; a new account key, every session and grant of the old one ends |
+| `POST /v1/auth/reset` | anyone | `{reset, email, auth_key, kdf, public_key, password_wrap, recovery_wrap, recovery_proof}` → `Session`; a new account key, every session and grant of the old one ends, every API key the person created stops |
 | `POST /v1/auth/recover/open` | anyone | `{email, recovery_proof}` → `{seal_id, public_key, recovery_wrap, salt, kdf, ticket}` |
-| `POST /v1/auth/recover/finish` | anyone | `{ticket, current_recovery_proof, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends; `current_recovery_proof` is the proof that opened the recovery (`recover/open`'s), `recovery_proof` the new code's |
+| `POST /v1/auth/recover/finish` | anyone | `{ticket, current_recovery_proof, auth_key, kdf, password_wrap, recovery_wrap, recovery_proof}` → 204; every session ends, every API key the person created stops; `current_recovery_proof` is the proof that opened the recovery (`recover/open`'s), `recovery_proof` the new code's |
 | `GET /v1/auth/me` | session | `{user, session}`; `user.has_password` is `false` for a person who signs in only through an extension; `user.seal_id`, `user.public_key`, `session.authenticated_at` |
 | `POST /v1/auth/logout` | session | `{everywhere?}` → 204 |
 | `POST /v1/auth/password/begin` | session | `{current_auth_key}` → `{password_wrap, salt, kdf, ticket}` |
@@ -1640,8 +1644,11 @@ gets `403` on these routes, and a member does too. No key creates a key.
   the terms it was created with.
 - At most **20 live keys** per workspace; the 21st is `409`.
 - The secret appears **once**, in the `POST` answer (`Cache-Control: no-store`).
-- A key is revoked when the person who created it leaves the workspace, or is disabled or deleted
-  on the instance; demoting them, or disabling their membership, keeps it.
+- A key is revoked when the person who created it leaves the workspace, is disabled, suspended or
+  deleted on the instance, or recovers their account (a recovery code or a reset invitation, in
+  every workspace); demoting them, disabling their membership, changing their password and signing
+  out everywhere keep it. Creating a key checks, as it writes it, that the session asking is still
+  live, so one a recovery or a reset just ended creates none (`401`).
 - A revoked key is listed with **why it stopped**, `stop_reason`: `manual`, `creator_left`,
   `creator_disabled`, `creator_suspended`, `creator_deleted`, `account_recovered`,
   `restriction_emptied` or `migration`; absent on a live key, and on one revoked before the reason

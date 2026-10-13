@@ -781,6 +781,72 @@ clear. No migration runs and the schema does not change; **back up first**, as a
 - **Going back** to the release that brought the key scheme is the copy and that version, as ever;
   the upgrade then works again there for whoever has not enrolled.
 
+### A workspace's kind, source and person never change (migration 0016)
+
+The release that brings migrations 0016 to 0019 adds three columns and triggers, and changes no
+row. **Back up first**, as above: an older binary refuses the migrated schema, and going back is
+that copy. Migration 0016 adds a trigger: a workspace's kind (personal, team or the operator's),
+its source and the person of a personal workspace never change, whatever writes the row. Nothing
+in the server ever changed them; a script that edits the database directly is refused.
+
+- **A team from another source outlives its people.** Only a binary that embeds the daemon with an
+  extension has teams whose source is not local; `mailserver serve` has none. Such a team stays,
+  with its mailboxes, when its last member here is deleted, and no count of its members here makes
+  anyone its last owner ([`workspaces.md`](workspaces.md#the-workspace-source)). A local team is as
+  before: one whose only member is deleted goes with them.
+
+### Why an API key stopped (migration 0017)
+
+Migration 0017 adds `api_keys.stop_reason` and changes no row.
+
+- **A key that stops says why**, from now on: `manual` (revoked), `creator_left`,
+  `creator_disabled`, `creator_suspended`, `creator_deleted`, `account_recovered` or
+  `restriction_emptied` ([`workspaces.md`](workspaces.md#api-keys)). The listings answer it as
+  `stop_reason` on a revoked key (`GET /v1/apikeys`, `/v1/workspaces/{id}/apikeys` and
+  `/v1/me/apikeys`), `mailserver apikey list` prints it after `revoked`, and the console says it
+  beside the key. A key revoked before the upgrade says none: nothing recorded one. The schema
+  refuses a key that stops without a reason, and a reason that changes, so a script that revokes
+  keys by writing to the database directly must name one.
+- **A recovery or a reset now stops the API keys the person created**, in every workspace, saying
+  `account_recovered`, where it ended their sessions only: recovering an account with its recovery
+  code in the console, and completing a reset invitation
+  ([A forgotten password](#a-forgotten-password)). Whoever held the person's password, their
+  recovery code or a session of theirs may have created a key, and a key outlives a session. The
+  console's recovery and reset forms say so before the person confirms, and
+  `mailserver user password --bootstrap` when it prints the link, with how many of their keys are
+  live then; whoever uses one of those keys in a tool needs a new one, which the person creates once
+  signed in. Changing the password, replacing the recovery code and signing out everywhere keep
+  them, as before. A key asked for by a session that a recovery or a reset has just ended is
+  refused (`401`).
+
+### People suspended by an extension (migration 0018)
+
+Migration 0018 adds `users.suspended_at`, 0 for everyone, and changes no row: a person disabled
+before stays disabled here. A person is suspended only by an extension of the daemon, following a
+decision taken elsewhere ([`workspaces.md`](workspaces.md#people-on-the-instance)); `mailserver
+serve` has none, so nobody is ever suspended on a server it runs, and nothing changes for it. On a
+binary that has one, a suspended person is not active, as a disabled one is not: every session,
+key and waiting invite of theirs ends, and their grants stay, unusable, for a resume. A disable
+here stands over a suspension, and `mailserver user password --bootstrap` says when its person is
+suspended. The members listing says `person_suspended` of a suspended member.
+
+### Closed teams (migration 0019)
+
+Migration 0019 adds `workspaces.closed_at`, 0 for every workspace, so every team stays open, and
+the triggers that refuse giving a closed team anything.
+
+- **The operator may close a team**, with the daemon running: `mailserver workspace close
+  --workspace ID` (or `POST /v1/workspaces/{id}/close` with an unrestricted instance admin key),
+  and `mailserver workspace reopen --workspace ID` to undo it. While a team is closed nothing in it
+  is used: its mailboxes reach nobody, its owners, its admins and its keys included, and sync
+  nothing, keeping their index, their consent to sync, their grants and what the team's keys hold;
+  and nothing in it changes, by anyone, the operator included (`409`), until it reopens. Closing
+  it expires the invites into it still waiting and ends the consent attempts on its mailboxes.
+  Reopened, it is as it was, and its mailboxes catch up. No person closes a team, its owner
+  included, and the console has no such action ([`workspaces.md`](workspaces.md#closed-teams)).
+- **The daemon says at start** which teams are closed (`teams closed`), and `mailserver workspace
+  list` and `GET /v1/workspaces` show each with when it closed (`closed_at`).
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
@@ -838,12 +904,14 @@ with the same remedy, or clearing the site's data in their browser.
 
 ## A forgotten password
 
-A person who forgot their password replaces it with their recovery code, in the console. Nobody can
-set a password, through the API or the command line: the server never knows one. A person who lost
+A person who forgot their password replaces it with their recovery code, in the console, which
+stops every API key they created: they create new ones once signed in. Nobody can set a password,
+through the API or the command line: the server never knows one. A person who lost
 both their password and their recovery code gets a **reset invitation** from the operator, with the
 daemon stopped: `user password --bootstrap` prints a link, valid seven days and once, for that
 person only. With it they choose a new password and get a new recovery code and a new account key;
-their sessions end then, and everything sealed to their old key goes: their personal mailboxes
+their sessions end then, every API key they created stops (the command says how many are live),
+and everything sealed to their old key goes: their personal mailboxes
 then need a new key, which they write in the console, and a team's mailboxes a reader to give them
 theirs again. Until the link is used, nothing of theirs changes; a newer one replaces it. It is
 also the way back for a person who signed up before the key scheme and never enrolled

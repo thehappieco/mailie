@@ -350,18 +350,20 @@ func captureOutput(t *testing.T, fn func() error) (stdout, stderr string, err er
 }
 
 // resetState is what a reset invitation changes for one person before it is
-// used: nothing of theirs, and how many reset invitations wait for them.
+// used: nothing of theirs, their sessions and keys included, and how many
+// reset invitations wait for them.
 func resetState(t *testing.T, db *store.Store, userID string) string {
 	t.Helper()
 	var verifier string
-	var live, resets int
+	var live, keys, resets int
 	if err := db.Reader().QueryRowContext(t.Context(),
 		`SELECT auth_verifier, (SELECT count(*) FROM sessions WHERE user_id = users.id AND revoked_at = 0),
+		        (SELECT count(*) FROM api_keys WHERE created_by = users.id AND revoked_at = 0),
 		        (SELECT count(*) FROM reset_invites WHERE user_id = users.id)
-		   FROM users WHERE id = ?`, userID).Scan(&verifier, &live, &resets); err != nil {
+		   FROM users WHERE id = ?`, userID).Scan(&verifier, &live, &keys, &resets); err != nil {
 		t.Fatal(err)
 	}
-	return fmt.Sprintf("%s|%d live|%d resets", verifier, live, resets)
+	return fmt.Sprintf("%s|%d live|%d keys|%d resets", verifier, live, keys, resets)
 }
 
 func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(t *testing.T) {
@@ -371,6 +373,7 @@ func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(
 	users := auth.NewUsers(db)
 	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	laptop := authtest.SignIn(t, users, "ana@example.com")
+	key := authtest.NewWorkspaceKey(t, db, auth.ScopeRead, authtest.Personal(t, db, ana.ID), ana.ID)
 	before := resetState(t, db, ana.ID)
 
 	// As an operator runs it: through the binary's entry, its configuration
@@ -416,10 +419,18 @@ func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(
 	if _, err := users.AuthenticateSession(t.Context(), laptop); !errors.Is(err, auth.ErrInvalidSession) {
 		t.Errorf("a session survived the reset: %v", err)
 	}
-	// The operator's event is in the log, and the code nowhere in it.
+	if _, err := auth.NewKeys(db).Authenticate(t.Context(), key, nil); !errors.Is(err, auth.ErrInvalidKey) {
+		t.Errorf("a key she created before survived the reset: %v", err)
+	}
+	// The operator's event is in the log, and the code nowhere in it; the
+	// notes said, before the link was used, that it stops her key.
 	if !strings.Contains(logs, "reset invitation made by the operator") || !strings.Contains(logs, ana.ID) ||
 		strings.Contains(logs, fragment.Get("reset")) {
 		t.Errorf("standard error says %q", logs)
+	}
+	if !strings.Contains(logs, "every API key they created stops") ||
+		!strings.Contains(logs, "They have a live API key now: using the link stops it") {
+		t.Errorf("standard error does not say the reset stops her key: %q", logs)
 	}
 }
 

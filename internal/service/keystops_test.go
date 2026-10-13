@@ -2,12 +2,14 @@ package service_test
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -63,6 +65,25 @@ func (f *fixture) stopped(t *testing.T, prefix string) (bool, workspace.KeyStopR
 		t.Fatalf("key %s: %v", prefix, err)
 	}
 	return revoked, reason
+}
+
+// recoverAccount recovers a person's account with their recovery code, as
+// their browser would: a new password and recovery code over the same
+// account key.
+func (f *fixture) recoverAccount(t *testing.T, email string) {
+	t.Helper()
+	opened, err := f.svc.OpenRecovery(t.Context(), service.RecoverOpenRequest{Email: email, RecoveryProof: authtest.RecoveryProof})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := authtest.Enrolment(t)
+	enc := base64.RawURLEncoding.EncodeToString
+	if err := f.svc.FinishRecovery(t.Context(), service.RecoverFinishRequest{
+		Ticket: opened.Ticket, CurrentRecoveryProof: authtest.RecoveryProof, AuthKey: in.AuthKey, KDF: opened.KDF,
+		PasswordWrap: enc(in.PasswordWrap), RecoveryWrap: enc(in.RecoveryWrap), RecoveryProof: in.RecoveryProof,
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // created makes a read key of the workspace that p creates, holding nothing.
@@ -154,6 +175,18 @@ func TestEveryWayAKeyStopsSaysWhy(t *testing.T) {
 				k := f.created(t, tm.carol, tm.id)
 				f.carryOver(t, k, tm.shared)
 				must(t, f.svc.RemoveMember(t.Context(), tm.ana, tm.id, tm.carol.UserID))
+				return k
+			}},
+		{"its creator recovered their account with their recovery code", workspace.KeyStopAccountRecovered,
+			func(t *testing.T, f *fixture, tm keysTeam, _ service.Principal) string {
+				k := f.created(t, tm.carol, tm.id)
+				f.recoverAccount(t, "carol@example.com")
+				return k
+			}},
+		{"its creator used a reset invitation", workspace.KeyStopAccountRecovered,
+			func(t *testing.T, f *fixture, tm keysTeam, _ service.Principal) string {
+				k := f.created(t, tm.carol, tm.id)
+				f.resetKey(t, tm.carol.UserID, "carol@example.com")
 				return k
 			}},
 		{"its creator's account was recovered after it was created", workspace.KeyStopAccountRecovered,
@@ -275,5 +308,34 @@ func must(t *testing.T, err error) {
 	t.Helper()
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestASessionARecoveryEndedCreatesNoKey(t *testing.T) {
+	// Ana's session was authenticated before her recovery and asks for a key
+	// after it, as a request in flight while the recovery commits would: the
+	// recovery stopped every key she had created, and misses none.
+	f := newFixture(t)
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	personal := authtest.Personal(t, f.db, ana.UserID)
+	before := f.created(t, ana, personal)
+	f.recoverAccount(t, "ana@example.com")
+
+	_, err := f.svc.CreateWorkspaceKey(t.Context(), ana, personal, keyRequest("after", "read"))
+	wantCode(t, "a key asked for by a session the recovery ended", err, service.CodeUnauthorized)
+	if n := f.count(t, `SELECT count(*) FROM api_keys WHERE created_by = ?`, ana.UserID); n != 1 {
+		t.Errorf("Ana created %d keys, want the one from before her recovery", n)
+	}
+	if revoked, reason := f.stopped(t, before); !revoked || reason != workspace.KeyStopAccountRecovered {
+		t.Errorf("her key from before is revoked %v, for %q", revoked, reason)
+	}
+	// Signed in again, with her new password, she creates keys as before.
+	again, err := f.users.AuthenticateSession(t.Context(), authtest.SignIn(t, f.users, "ana@example.com"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := f.created(t, again, personal)
+	if revoked, _ := f.stopped(t, after); revoked {
+		t.Error("a key created after the recovery, by a session of it, stopped")
 	}
 }

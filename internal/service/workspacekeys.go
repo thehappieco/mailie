@@ -292,6 +292,13 @@ func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspace
 		if err := s.keyAdminTx(ctx, tx, p, w.ID); err != nil {
 			return err
 		}
+		// The session that asks is still live where the key is written: a
+		// recovery or a reset that ended it after it was authenticated
+		// stopped every key its person had created, and must not miss
+		// this one.
+		if err := s.users.RequireSessionTx(ctx, tx, p.UserID, p.SessionID); err != nil {
+			return fromCredential(err)
+		}
 		for _, g := range grants {
 			ws, err := workspace.MailboxWorkspaceTx(ctx, tx, g.AccountID)
 			switch {

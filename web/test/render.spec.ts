@@ -299,12 +299,17 @@ describe('what the console renders', () => {
     expect(text(html)).toContain('Choose a new password')
     expect(html.match(/minlength="12"/g)).toHaveLength(2)
     expect(html).toContain('autocomplete="new-password"')
+    // What saving stops besides the sessions, said before the button that confirms it, and tied to it.
+    expect(text(html)).toContain('Saving stops every API key this account created. You can create new ones once you are signed in.')
+    expect(html.indexOf('id="keys-stop"')).toBeLessThan(html.indexOf('type="submit"'))
+    expect(html).toContain('aria-describedby="keys-stop"')
   })
 
   it('offers recovery with the code from the sign-in card, and asks a new password for twelve characters', async () => {
     const signin = await render(SignInView, { invitation: null })
     expect(text(signin)).toContain('Forgot your password?')
     expect(signin).not.toContain('minlength')
+    expect(text(signin)).not.toContain('API key')
     const signup = await render(SignInView, { invitation: { invite: 'SyntheticInviteCode_0123456789abcdefghijklmn', email: 'new@example.test' } })
     expect(text(signup)).toContain('Use at least 12 characters.')
     expect(signup.match(/minlength="12"/g)).toHaveLength(2)

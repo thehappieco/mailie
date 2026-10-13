@@ -1,8 +1,8 @@
 // The sign-in card as a person uses it, on a page (test/dom.ts), against the
 // in-memory server half of test/accountServer.ts: what it says while it
 // works, that the password stays here, which holds now that no sign-in
-// sends one, and what it says when a recovery went through but the sign-in
-// after it did not.
+// sends one, what a recovery says it stops before it is confirmed, and what
+// it says when a recovery went through but the sign-in after it did not.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { click, fill, find, flush, submit, words, type FakeElement } from './dom'
@@ -84,6 +84,9 @@ describe('the sign-in card', { timeout: 30_000 }, () => {
     mounted = mount(SignInView, { invitation: null })
     await flush()
     await click(find('button', 'Forgot your password?'))
+    // Before anything is confirmed, the form says what a recovery stops besides the sessions.
+    expect(words()).toContain('Recovering your account stops every API key you created. You can create new ones once you are signed in.')
+    expect(find('button[type=submit]')!.getAttribute('aria-describedby')).toBe('keys-stop')
     await fill(find('input[name=username]'), 'ana@example.test')
     await fill(find('input[name=recovery-code]'), made.recoveryCode)
     await fill(find('input[name=password]'), 'my brand new password')

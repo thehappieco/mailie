@@ -326,9 +326,11 @@ func closeBody(req service.CloseUserRequest) map[string]any {
 // single-use link, valid for seven days, with the code in its fragment, which
 // the person opens to choose a new password; their browser makes a new
 // account key and recovery code, and in one transaction the server replaces
-// their public key, deletes every grant sealed to the old one and ends their
-// sessions. It is refused, naming the mailboxes, while the person is the last
-// reader of a team mailbox, unless --force, which the invitation records.
+// their public key, deletes every grant sealed to the old one, ends their
+// sessions and stops every API key they created, which the command says
+// before anyone uses the link. It is refused, naming the mailboxes, while the
+// person is the last reader of a team mailbox, unless --force, which the
+// invitation records.
 
 func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("user password", flag.ContinueOnError)
@@ -379,6 +381,11 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Fprintf(os.Stderr, "MAIL_PUBLIC_URL is not set; the link points at %s, "+
 			"where `npm run dev` serves the console.\n", devConsoleURL)
 	}
+	// Counted first: the notes below say what using the link will stop.
+	live, err := liveKeysCreatedBy(ctx, auth.NewKeys(db), user.ID)
+	if err != nil {
+		return fmt.Errorf("user password: %w; nothing was made", err)
+	}
 	code, reset, err := users.CreateReset(ctx, user.ID, *force, "cli")
 	var blocked *auth.BlockedError
 	if errors.As(err, &blocked) {
@@ -396,7 +403,16 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 		reset.ExpiresAt.Local().Format(time.RFC3339))
 	fmt.Fprintln(os.Stderr, "Send the link to that person only. It works once, for that address, and replaces "+
 		"any earlier one. With it they choose a new password and get a new recovery code and account key; "+
-		"their sessions end, and their personal mailboxes need a new key before they open again.")
+		"their sessions end, every API key they created stops, and their personal mailboxes need a new key "+
+		"before they open again.")
+	switch {
+	case live == 1:
+		fmt.Fprintln(os.Stderr, "They have a live API key now: using the link stops it, and any they create "+
+			"before then. They create new ones once signed in.")
+	case live > 1:
+		fmt.Fprintf(os.Stderr, "They have %d live API keys now, in their workspaces: using the link stops them, "+
+			"and any they create before then. They create new ones once signed in.\n", live)
+	}
 	switch {
 	case user.Suspended:
 		fmt.Fprintln(os.Stderr, "This person is suspended: the link works only once they are resumed.")
@@ -404,6 +420,22 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Fprintln(os.Stderr, "This person is disabled: the link works only once they are enabled again.")
 	}
 	return nil
+}
+
+// liveKeysCreatedBy counts the live API keys a person created, in every
+// workspace: those a reset of theirs stops.
+func liveKeysCreatedBy(ctx context.Context, keys *auth.Keys, userID string) (int, error) {
+	all, err := keys.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n, now := 0, time.Now()
+	for _, k := range all {
+		if k.CreatedBy == userID && k.Live(now) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // stdinIsTerminal and readHidden stand for the terminal, which `go test`
