@@ -380,6 +380,7 @@ func adminDo(ctx context.Context, cfg config.Config, method, path string, body [
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
+	//nolint:gosec // G704: the daemon's own address from the configuration; every id in path is escaped by its caller
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, reader)
 	if err != nil {
 		return nil, err
@@ -395,7 +396,7 @@ func adminDo(ctx context.Context, cfg config.Config, method, path string, body [
 	// compacting what held its index — so the daemon's answer, not this
 	// client, is what ends a slow request.
 	client := &http.Client{Timeout: 160 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: the request built above, to the daemon's own address
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the daemon at %s: %w", cfg.HTTPAddr, err)
 	}
