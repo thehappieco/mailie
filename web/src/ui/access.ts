@@ -129,6 +129,18 @@ export function administers(workspace: Workspace | undefined): boolean {
 }
 
 /**
+ * Whether the caller owns the workspace: the person of their personal
+ * workspace, or an active owner of a team. Only they remove its mailboxes,
+ * see the removed ones, recover them and delete them for good
+ * (docs/workspaces.md, "Removed mailboxes"); an admin of a team no longer
+ * removes one, but for abandoning a link of their own that never connected.
+ */
+export function owns(workspace: Workspace | undefined): boolean {
+  if (workspace?.kind === 'personal') return workspace.status !== 'disabled'
+  return workspace?.kind === 'team' && workspace.role === 'owner' && workspace.status !== 'disabled'
+}
+
+/**
  * Whether the caller sees, creates and revokes the workspace's API keys: an
  * owner or an admin of a team, active in it, or the person of their personal
  * workspace. A member of a team sees none; nobody's is the operator's.

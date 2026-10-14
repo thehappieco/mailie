@@ -21,19 +21,25 @@
 // ten minutes, with two of them to spare: it is asked over this dialog
 // before anything moves (state/stepUp.ts), and closing it leaves the form as
 // it was. Finishing an authorization sends no key: the mailbox has its own.
+//
+// An address removed from the workspace is kept there 30 days, and linking it
+// again is refused (conflict) as for one connected already. To an owner of
+// the workspace the dialog reads its removed mailboxes and, when the address
+// is one of them, offers recovering it, or deleting it for good (its address
+// typed again) and then connecting it anew; anyone else is told an owner can.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { enrolled, type Account, type ProviderID } from '../api/types'
+import { enrolled, type Account, type ProviderID, type RemovedMailbox } from '../api/types'
 import { edition } from '../edition'
-import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, LINK_STEP_UP_MARGIN_S, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, LINK_STEP_UP_MARGIN_S, loadRemoved, purgeRemoved, recoverRemoved, removed, removedByEmail, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
 import { session } from '../state/session'
 import { ensureStepUp, StepUpCancelled } from '../state/stepUp'
 import { consent, consentTextOutdated, loadConsent } from '../state/sync'
 import { currentWorkspace, selectWorkspace, workspaces } from '../state/workspaces'
-import { canLinkInto, workspaceName } from '../ui/access'
+import { canLinkInto, owns, workspaceName } from '../ui/access'
 import { draftRequest, emptyDraft, signsInWithPassword, type AccountDraft } from '../ui/accountDraft'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
-import { countdown } from '../ui/format'
+import { countdown, dayStamp } from '../ui/format'
 import { t } from '../ui/i18n'
 import { providerChoice, providerIcon, providerName } from '../ui/labels'
 import { noticeText } from '../ui/notices'
@@ -216,6 +222,48 @@ const failureText = computed(() => {
   return found.code === 'bad_request' && sentTeamSync.value && outdated.value ? syncText.changedWhileOpen() : describe(found)
 })
 
+/** The removed mailbox a refused link's address is, as the workspace's owners list it: offered back, or for deleting. */
+const removedMatch = ref<RemovedMailbox | null>(null)
+/** Its deletion for good is being confirmed, with its address typed again; and it was deleted. */
+const purgeAsked = ref(false)
+const purgeTyped = ref('')
+const purgeTypedID = useId()
+const purgedNow = ref(false)
+const purgeArmed = computed(() => !!removedMatch.value && purgeTyped.value.trim().toLowerCase() === removedMatch.value.email.toLowerCase())
+const removedBusy = computed(() => removed.busy !== '')
+const removedProblem = computed(() => removedMatch.value && removed.problem?.id === removedMatch.value.id ? removed.problem.failure : null)
+// A link refused for an address the workspace already has may be one removed
+// and kept: its owners are told which, from the removed mailboxes read now.
+watch(() => connect.failure, async found => {
+  removedMatch.value = null
+  purgeAsked.value = false
+  purgeTyped.value = ''
+  purgedNow.value = false
+  const op = found?.op
+  if (found?.code !== 'conflict' || (op !== 'add-account' && op !== 'test-login' && op !== 'test-login-icloud')) return
+  if (!owns(currentWorkspace())) return
+  const email = connect.email
+  await loadRemoved()
+  if (connect.failure === found) removedMatch.value = removedByEmail(email) ?? null
+})
+async function recoverMatch() {
+  const match = removedMatch.value
+  if (!match || removedBusy.value) return
+  if (await recoverRemoved(match.id)) {
+    resetConnect()
+    emit('close')
+  }
+}
+async function purgeMatch() {
+  const match = removedMatch.value
+  if (!match || !purgeArmed.value || removedBusy.value) return
+  if (await purgeRemoved(match.id)) {
+    purgeAsked.value = false
+    purgedNow.value = true
+    announce(t('{email} was deleted for good. You can connect it again now.', { email: match.email }))
+  }
+}
+
 watch(() => connect.phase, phase => {
   clearInterval(ticker)
   if (phase === 'waiting') ticker = setInterval(() => { now.value = Date.now() }, 1000)
@@ -361,6 +409,36 @@ onBeforeUnmount(() => {
         <div class="dialog-actions"><button class="primary" type="button" @click="close">{{ t('Done') }}</button></div>
       </div>
 
+      <!-- 5b. Refused: the address was removed from this workspace and is kept, which its owner may undo. -->
+      <div v-else-if="connect.phase === 'failed' && removedMatch" class="outcome">
+        <template v-if="purgedNow">
+          <div class="success"><AppIcon name="check" :size="18" /><span>{{ t('{email} was deleted for good. You can connect it again now.', { email: removedMatch.email }) }}</span></div>
+          <div class="dialog-actions">
+            <button class="ghost" type="button" @click="close">{{ t('Close') }}</button>
+            <button class="primary" type="button" @click="retry">{{ t('Connect it again') }}</button>
+          </div>
+        </template>
+        <form v-else-if="purgeAsked" class="form-stack removed-offer" autocomplete="off" @submit.prevent="purgeMatch">
+          <p class="dim">{{ t('Mailie deletes the mailbox and everything it kept for it: the saved sign-in, its index and its key. It cannot be recovered afterwards. Nothing is deleted at the provider, and the address can then be connected again.') }}</p>
+          <label :for="purgeTypedID">{{ t('Type {address} to confirm', { address: removedMatch.email }) }}</label>
+          <input :id="purgeTypedID" v-model="purgeTyped" name="purge-confirm" autocomplete="off" :spellcheck="false" autocapitalize="off" inputmode="email" :placeholder="removedMatch.email" :disabled="removedBusy" />
+          <p v-if="removedProblem" class="alert" role="alert">{{ describe(removedProblem) }}</p>
+          <div class="dialog-actions">
+            <button class="ghost" type="button" :disabled="removedBusy" @click="purgeAsked = false">{{ t('Back') }}</button>
+            <button class="danger" type="submit" :disabled="removedBusy || !purgeArmed">{{ removedBusy ? t('Deleting…') : t('Delete for good') }}</button>
+          </div>
+        </form>
+        <template v-else>
+          <p class="note removed-offer-text">{{ t('{email} was removed from this workspace on {removed}, and is kept until {kept}. Recover it to use it again, with what it kept, or delete it for good to connect it anew.', { email: removedMatch.email, removed: dayStamp(removedMatch.removed_at), kept: dayStamp(removedMatch.purge_after) }) }}</p>
+          <p v-if="removedProblem" class="alert" role="alert">{{ describe(removedProblem) }}</p>
+          <div class="dialog-actions">
+            <button class="ghost" type="button" :disabled="removedBusy" @click="close">{{ t('Close') }}</button>
+            <button class="ghost" type="button" :disabled="removedBusy" @click="purgeAsked = true">{{ t('Delete for good…') }}</button>
+            <button class="primary" type="button" :disabled="removedBusy" @click="recoverMatch">{{ removedBusy ? t('Recovering…') : t('Recover') }}</button>
+          </div>
+        </template>
+      </div>
+
       <!-- 5. Failed. -->
       <div v-else-if="connect.phase === 'failed' && connect.failure" class="outcome">
         <p class="alert" role="alert">{{ failureText }}</p>
@@ -413,6 +491,10 @@ onBeforeUnmount(() => {
 .team-sync .hint { font-size: 12px; line-height: 1.45; }
 .user-code { justify-self: start; font-family: var(--mono); font-size: 28px; letter-spacing: .14em; padding: 10px 18px; border: 1px dashed var(--accent); border-radius: 12px; background: var(--accent-dim); color: var(--text); }
 .outcome .alert { margin: 0; }
+.removed-offer-text { margin: 0; line-height: 1.55; }
+.removed-offer p { margin: 0; }
+.removed-offer input { color: var(--text); background: var(--bg-input); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; width: 100%; }
+@media (max-width: 600px) { .removed-offer input { font-size: 16px; } }
 .success strong { font-weight: 650; }
 @media (max-width: 760px) { .waiting .primary { justify-self: stretch; } }
 </style>

@@ -40,7 +40,9 @@ export interface ConsoleSection {
 // every section's lists follow it, and the header names it on the sections
 // that are a workspace's: never on the person's own (scope 'person', and the
 // account section always), which no workspace holds. When it goes away from
-// under the person, or they join a team, a line above the section says so.
+// under the person, or they join a team, a line above the section says so;
+// and above every section, the person's notices (PersonNotices): a mailbox
+// they read that someone else removed, or whose sync they turned off.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { edition } from '../edition'
 import { accounts, loadAccounts, loadProviders } from '../state/accounts'
@@ -59,6 +61,7 @@ import AppearanceMenu from './AppearanceMenu.vue'
 import AppIcon from './AppIcon.vue'
 import BrandLockup from './BrandLockup.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
+import PersonNotices from './PersonNotices.vue'
 import WorkspaceSwitcher from './WorkspaceSwitcher.vue'
 
 const props = defineProps<{
@@ -185,6 +188,7 @@ onBeforeUnmount(() => {
         <div class="console-section-intro"><p>{{ current.description }}</p><span class="connection-label" :class="{ connected: server.reachable }" role="status"><i aria-hidden="true" />{{ server.reachable ? t('Server connected') : t('No connection to the server') }}</span></div>
         <!-- Said by the live region (ui/announce.ts) as it appears. -->
         <p v-if="workspaceNotice" class="note workspace-notice"><AppIcon name="info" :size="17" /><span class="grow">{{ workspaceNotice }}</span><button class="icon-btn" type="button" :aria-label="t('Dismiss')" @click="dismissWorkspaceNotice"><AppIcon name="close" :size="16" /></button></p>
+        <PersonNotices />
         <template v-for="item in sections" :key="item.id">
           <component :is="item.component" v-if="visited.has(item.id)" v-show="section === item.id" />
         </template>

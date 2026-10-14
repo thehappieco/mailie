@@ -572,15 +572,17 @@ adds with an instance key.
   server and disables or deletes them, and sees no mailbox by being one. The `member` role is
   everybody else.
 - An address is linked at most once per workspace; the same address linked in two workspaces is
-  two independent mailboxes. Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`).
+  two independent mailboxes. Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`),
+  and a removed one keeps its address taken there until it is deleted for good (`409`).
 
 Protections, each `409` and marked in advance in the listings (`last_owner` and `last_reader_of`
 on members, `readers` and `no_reader` on the directory): a team keeps an active owner, and a team
 mailbox someone reads keeps a **reader** — the last person who can read it (the flag, and on a
 mailbox that has a key a grant at its current epoch) keeps `read`, and is not disabled, removed,
 reset, or closed without `force`. A team mailbox nobody can read (a forced closure)
-syncs nothing, is never switched on again (`409`), and is marked `no_reader`; its owners and admins
-remove it, or remove it and link it again, or turn its sync off to delete what is still indexed. A team mailbox syncs under its **workspace's consent** ([Sync and consent](#sync-and-consent)).
+syncs nothing, is never switched on again (`409`), and is marked `no_reader`; its owners remove it,
+and delete it for good to link it again, and its owners and admins turn its sync off to delete what
+is still indexed. A team mailbox syncs under its **workspace's consent** ([Sync and consent](#sync-and-consent)).
 
 ### Workspaces in the console
 
@@ -647,8 +649,13 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   and one that needs authorizing tells whoever does not manage it that an owner or an admin has
   to. One whose key the person waits for (`access.waiting_key`) says that instead, apart from not
   reading it: in a team, that anyone who reads it can hand the key over; a personal one, that its
-  details offer a new key ([Mailbox keys](#mailbox-keys)). Removing is a team's owners' and admins' (or a personal mailbox's person's): it asks for the
-  mailbox's address typed and sends its id as `confirm`.
+  details offer a new key ([Mailbox keys](#mailbox-keys)). Removing is a team's owners' (or a
+  personal mailbox's person's; `ui/access.ts` `owns`), and an admin's only for a link of their own
+  that never connected (`pending_auth`, which the server deletes at once); an admin is told that
+  only an owner removes the team's mailboxes. It says beforehand that the mailbox is kept 30 days,
+  recoverable, that what keys held on it goes, and in a team that everyone who reads it is told; it
+  asks for the mailbox's address typed and sends its id as `confirm`. The answer (`Removal`) says
+  until when it is kept, which the notice repeats, or that it was deleted at once.
 - **A member of a team** gets the switcher and cards for the mailboxes they hold a grant on
   (re-authorizing where they hold `manage`; an edition with Mail and Compose offers those they read
   or may send from). No Members, no API keys, no Access, no team sync switch and no removing: one
@@ -671,7 +678,8 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   is not offered; an owner or an admin who does not read it is told that they cannot give Read,
   not even to themselves, and one who waits for its key, that they can once someone who reads it
   hands it over; a mailbox nobody can read
-  (`no_reader`) says so, and that removing it, or removing it and linking it again, is the way out.
+  (`no_reader`) says so, and that an owner removing it, and deleting it for good to link it again,
+  is the way out.
   A change that only takes flags away is `DELETE …/access/{user}?flags=` naming them; one that gives
   anything sets the grant exactly (`PUT`, all four). The sheet also shows the mailbox's sync for
   the team — who turned it on, when and to which revision, and whether it is the current one or a
@@ -681,8 +689,8 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   offered a reload); off asks for the address typed and says the index is deleted for its
   `readers`. A consent to an earlier text, or a carried-over one, offers confirming it for the team
   in place of the switch. One kept stopped says that its index stays only while it is stopped:
-  turning it on resumes from it, and turning it off, removing the mailbox or deleting the account
-  of the person it is still bound to deletes it. A mailbox nobody can read offers no way to turn
+  turning it on resumes from it, and turning it off, deleting the mailbox for good or deleting the
+  account of the person it is still bound to deletes it. A mailbox nobody can read offers no way to turn
   it on, and offers turning off alone while something of it is still on or kept. An owner or an admin sees every team mailbox's card in the list, from the role; the
   access directory (`GET /v1/workspaces/{id}/access`) is read again whenever one of the team's
   mailboxes leaves or joins their list.
@@ -695,10 +703,42 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   The console shows the workspace chosen before connecting, so the new card lands in the list it
   belongs to; a provider's return shows the workspace of the mailbox it authorized. A link carries
   the mailbox's first key, and asks for the step-up first when the session's has less than two
-  minutes left ([Mailbox keys](#mailbox-keys)).
+  minutes left ([Mailbox keys](#mailbox-keys)). A link refused (`409`) for an address the
+  workspace keeps removed is told apart only by its owners: the dialog reads the workspace's
+  removed mailboxes and, when the address is one of them, says since and until when it is kept
+  and offers recovering it, or deleting it for good (its address typed again) and connecting it
+  anew; anyone else is told that the address is connected already, or removed and kept, and that
+  an owner can recover it or delete it for good.
+- **Removed mailboxes** (`components/RemovedMailboxes.vue`), below the cards, for the workspace's
+  owners only (`owns`: the person of their personal workspace, an active owner of a team; nobody
+  else's console asks for them): each removed mailbox of the workspace shown
+  (`GET /v1/workspaces/{id}/removed-mailboxes`), who removed it and when, until when it is kept, in
+  a team how many people would read it again, and whether its index went with its sync. Recover
+  (`POST …/recover`) brings its card back, its sync paused; one nobody in the team who could read
+  it is left to read offers no recovery, which the server refuses, and says to delete it for good
+  and connect it again. Delete for good asks for its address typed and sends its id
+  (`POST …/purge` `{confirm}`); already gone counts as done. The list is shown only while there is
+  one, or while it could not be read, and is read again on Refresh, after a removal, and when
+  access changes. A server older than removed mailboxes (`404`) has none.
+- **A mailbox recovered** (`sync.held`) says on its card and in its sheet that its sync is paused
+  since its recovery, whatever its consent says, until someone who may turns it on: its person, in
+  the sheet of a personal mailbox, which sends `{"enabled": true}` alone; a team's owners and
+  admins, in its team sync, turning it on again for the team to the current sync text, in place of
+  the switch; a member who reads it is told they do.
+- **Notices** (`components/PersonNotices.vue`, in the console's frame above every section, every
+  edition's): the person's notices (`GET /v1/me/notices`), in whichever workspace they happened —
+  a mailbox they read removed, or a team mailbox's sync turned off, by someone else — naming the
+  mailbox as the server does (its address while kept, a masked hint once deleted) and where it
+  stands now, never who did it. Each is said once through the live region the first time it is
+  read, and stays until dismissed (`DELETE /v1/me/notices/{id}`). They are read when the console
+  starts, on Refresh, when access changes, and when the stream says `event: notice`; a server
+  older than notices (`404`) has none, and a failure to read them is shown nowhere: the next read
+  tries again.
 - **Events.** `event: access` reads the list again (once for several, a second later), Storage if
-  it was read, and what was read of the team shown (its members and its directory), and forgets the
-  folders of a mailbox no longer readable; an edition hears it through `onLiveAccess()`. A stream narrowed to a workspace the person is no longer in ends with
+  it was read, what was read of the team shown (its members and its directory), the workspace's
+  removed mailboxes and the person's notices if they were read, and forgets the folders of a
+  mailbox no longer readable; an edition hears it through `onLiveAccess()`. `event: notice` reads
+  the person's notices again. A stream narrowed to a workspace the person is no longer in ends with
   `not_found`: the console reads their workspaces again, shows another and says which went.
 - **Members** (the open edition, `teams`): shown for the personal workspace, where a person
   creates a team (and becomes its owner) and sees the teams they are in, and, to its owners and
@@ -1177,6 +1217,7 @@ Every account in the JSON has `sync`, the `AccountSync` that `GET /v1/accounts/{
 | `last_synced_at` | the last pass without error (unix) |
 | `error_class` | a short class of the last failure (`needs_reauth`, `auth_failed`, `connection_closed`, `rate_limited`, …), never the server's text |
 | `next_retry_at` | when an account in backoff tries again |
+| `held` / `held_since` | a mailbox recovered after it was removed, and since when: nothing syncs, `enabled` false whatever its consent says, until someone who may turns it on (`PUT …/sync`); absent otherwise |
 
 `POST /v1/accounts/{id}/sync` answers `202`, or `409` when sync is off for the account, it needs
 authorizing, the engine has not picked it up yet, or the daemon runs without an engine.

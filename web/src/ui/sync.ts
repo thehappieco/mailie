@@ -4,7 +4,7 @@
 // generic sentence, never the class itself.
 
 import type { Account, Folder } from '../api/types'
-import { ahead } from './format'
+import { ahead, dayStamp } from './format'
 import { t } from './i18n'
 import type { Tone } from './labels'
 
@@ -20,12 +20,15 @@ export interface SyncView {
 
 /**
  * syncView describes a syncing account: one that is active and whose owner
- * turned sync on. Anything else is described by its account state
- * (labels.stateDetail), and this answers null.
+ * turned sync on; and an active one recovered after it was removed, whose
+ * sync is held until someone who may turns it on. Anything else is described
+ * by its account state (labels.stateDetail), and this answers null.
  */
 export function syncView(account: Account, now = Date.now()): SyncView | null {
   const sync = account.sync
-  if (account.state !== 'active' || !sync.enabled) return null
+  if (account.state !== 'active') return null
+  if (sync.held) return { tone: 'warn', label: t('Paused'), detail: heldText(account) }
+  if (!sync.enabled) return null
   switch (sync.state) {
     case 'initial':
       return { tone: 'busy', label: t('Syncing'), detail: t('Indexing the last 90 days, newest first.'), progress: Math.min(100, Math.max(0, sync.initial_progress)) }
@@ -48,6 +51,16 @@ export function syncView(account: Account, now = Date.now()): SyncView | null {
     default:
       return { tone: 'off', label: t('Sync is on'), detail: '' }
   }
+}
+
+/** Whether an account's sync is held since it was recovered: nothing syncs until someone who may turns it on. */
+export function syncHeld(account: Pick<Account, 'sync'>): boolean {
+  return account.sync.held === true
+}
+
+/** Why a recovered mailbox does not sync, and since when. */
+export function heldText(account: Pick<Account, 'sync'>): string {
+  return t('Paused since it was recovered on {date}: nothing syncs until it is turned on again.', { date: dayStamp(account.sync.held_since) })
 }
 
 /** What went wrong, from the short class the server reports (provider.Class). */

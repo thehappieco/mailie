@@ -511,8 +511,12 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           // As the daemon does: nothing is removed unless the id is repeated.
           if (url.searchParams.get('confirm') !== one[1]) return fail(400, 'bad_request')
           calls.removed.push(mine[index].email)
+          // As the daemon answers (service.Removal): one that never connected
+          // is deleted at once; any other is kept 30 days, recoverable.
+          const purged = mine[index].state === 'pending_auth'
+          const removal = purged ? { account_id: one[1], purged: true } : { account_id: one[1], purged: false, purge_after: now() + 30 * 86_400 }
           mine.splice(index, 1)
-          return route.fulfill({ status: 204 })
+          return json(removal)
         }
         const account = mine[index]
         calls.polls++

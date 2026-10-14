@@ -384,7 +384,7 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.equal(await sheet.getByText('Included in sync').count() > 0, true, 'a folder sync would take is marked as planned, not done')
       assert.equal(await sheet.getByText('From Mailie’s index').count(), 0, 'without consent the list comes from the mail server')
       await sheet.getByRole('button', { name: 'Remove account…' }).click()
-      const remove = sheet.getByRole('button', { name: 'Remove permanently' })
+      const remove = sheet.getByRole('button', { name: 'Remove', exact: true })
       assert.equal(await remove.isDisabled(), true, 'removal is armed only by typing the address')
       await sheet.getByLabel('Type suporte@example.test to confirm').scrollIntoViewIfNeeded()
       await shot('sheet-remove')
@@ -393,7 +393,7 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.locator('.success').filter({ hasText: 'suporte@example.test was removed' }).waitFor()
       // The Details button that opened the sheet went with the card.
       await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Your mailboxes')
-      assert.match(await spoken(page), /suporte@example\.test was removed from Mailie\./, 'the removal is said, not only drawn')
+      assert.match(await spoken(page), /suporte@example\.test was removed\. Mailie keeps it until .+: until then it can be recovered, under Removed mailboxes\./, 'the removal is said, not only drawn, with until when it is kept')
 
       // --- the account section ---------------------------------------------
       await openSection('Account')

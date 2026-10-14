@@ -504,8 +504,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 - A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
   admins see it marked (`no_reader`). One a suspended member would read once resumed is not marked:
   it waits for them. Read passes only from someone who reads it, so its sync is
-  never turned on again (`409`), and the way out is removing it, or removing it and linking it
-  again (the linker gets `read`); turning it off deletes what is still indexed.
+  never turned on again (`409`), and the way out is an owner removing it and deleting it for good
+  (it is not recovered while nobody would read it), and linking it again (the linker gets `read`);
+  turning it off deletes what is still indexed.
 - **A migrated consent stays bound to its linker.** Migration 0011 copied each team mailbox's
   linker's own consent (when the linker was active and had agreed) to the mailbox, with its date
   and revision, and marked it (`sync_enabled_via = 'migration'`, `sync_enabled_by` = the linker).

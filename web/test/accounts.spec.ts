@@ -423,6 +423,23 @@ describe('the accounts list', () => {
     expect(announcement.value).toBe('suporte@example.test was removed from Mailie.')
   })
 
+  it('says until when a removed mailbox is kept, and that one that never connected was deleted at once', async () => {
+    let purged = false
+    const { store } = await signedIn(({ method, path }) => method === 'DELETE'
+      ? json(purged ? { account_id: path.split('/').at(-1), purged: true } : { account_id: path.split('/').at(-1), purged: false, purge_after: 1_792_592_000 })
+      : json([account({ state: 'active' }), account({ id: 'acc_0000000000000002', email: 'novo@example.test' })]))
+    const { announcement } = await import('../src/ui/announce')
+    await store.loadAccounts()
+    expect(await store.removeAccount('acc_0000000000000001')).toBe(true)
+    expect(store.accounts.notice).toEqual({ kind: 'removed', email: 'suporte@example.test', keptUntil: 1_792_592_000 })
+    await nextTick()
+    expect(announcement.value).toMatch(/^suporte@example\.test was removed\. Mailie keeps it until .*2026: until then it can be recovered, under Removed mailboxes\.$/)
+    purged = true
+    expect(await store.removeAccount('acc_0000000000000002')).toBe(true)
+    expect(store.accounts.notice).toEqual({ kind: 'removed', email: 'novo@example.test' })
+    expect(store.accounts.list).toEqual([])
+  })
+
   it('survives a password change, which replaces the token but not the person', async () => {
     const { session, store } = await signedIn(({ path }) => {
       if (path === '/v1/accounts') return json([account({ state: 'active' })])

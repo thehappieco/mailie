@@ -14,7 +14,7 @@ import type { SyncConsent } from '../api/types'
 import { announce } from '../ui/announce'
 import { edition } from '../edition'
 import { t } from '../ui/i18n'
-import { forgetIndexedFolders, forgetLiveFolders, loadAccounts, mergeSync, notifySync } from './accounts'
+import { forgetFolders, forgetIndexedFolders, forgetLiveFolders, loadAccounts, mergeSync, notifySync } from './accounts'
 import { failure, type Failure } from './failure'
 import { authorized, identity } from './session'
 
@@ -177,6 +177,28 @@ export async function withdrawConsent(): Promise<boolean> {
     return false
   } finally {
     if (ok()) consent.busy = ''
+  }
+}
+
+/**
+ * Turns sync on again for a mailbox of the person's personal workspace that
+ * was recovered after it was removed, whose sync is held until they do
+ * (docs/workspaces.md, "Removed mailboxes"): {enabled: true} alone, which
+ * lifts the hold and nothing more. It syncs under their own agreement, when
+ * they have given it, catching up from the index it kept. The card takes the
+ * sync the answer says. A team mailbox's hold is lifted by turning its sync
+ * on for the team (state/team.ts switchTeamSync).
+ */
+export async function resumeSync(id: string): Promise<Failure | null> {
+  const ok = current()
+  try {
+    const status = await authorized(token => api.setMailboxSync(token, id, { enabled: true }))
+    if (!ok()) return null
+    mergeSync(id, status)
+    forgetFolders(id)
+    return null
+  } catch (error) {
+    return failure('resume-sync', error)
   }
 }
 

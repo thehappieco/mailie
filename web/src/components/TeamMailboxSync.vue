@@ -11,8 +11,10 @@
 // confirming it for the team in place of the switch. A mailbox nobody can
 // read says it does not sync, and offers no way to turn it on, which the
 // server refuses: nobody could be given Read on it again. Only turning it off
-// is offered, while something of it is still on or kept. The server decides;
-// this says beforehand what it will do.
+// is offered, while something of it is still on or kept. A mailbox recovered
+// after it was removed is paused whatever its agreement says (sync.held):
+// turning it on again for the team, to the current text, lifts that. The
+// server decides; this says beforehand what it will do.
 import { computed, onMounted, ref, useId } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
@@ -41,11 +43,17 @@ const since = computed(() => record.value?.enabled_at ? dayStamp(record.value.en
 const outdated = computed(consentTextOutdated)
 /** Nobody can read it, nor be given Read on it: it can be turned off, never on. */
 const unreadable = computed(() => !!entry.value?.no_reader)
+/** Recovered after it was removed: nothing syncs until it is turned on again for the team. */
+const held = computed(() => props.account.sync.held === true)
 
 const summary = computed(() => {
   if (!entry.value) return team.directory.failure ? '' : t('Checking…')
   // A migrated agreement names whoever it is tied to; once they were deleted, nobody.
   const values = { team: teamName.value, date: since.value, name: giver.value || t('someone no longer in the team') }
+  if (held.value) {
+    return t('Paused since it was recovered on {date}: nothing syncs until an owner or an admin of {team} turns it on again for the team, to the current sync text. It then catches up from what it kept.',
+      { team: teamName.value, date: dayStamp(props.account.sync.held_since) })
+  }
   switch (standing.value) {
     case 'on': return giver.value
       ? t('On for {team} since {date}, turned on by {name}. Turning it off deletes its index for everyone who reads it.', values)
@@ -54,8 +62,8 @@ const summary = computed(() => {
     case 'migrated': return t('On since {date} under the agreement {name} gave for their own mailboxes before this server was updated. It is still tied to them: if they turn their sync off or their account is closed, it stops and its index is deleted. Confirm it for {team} to keep it syncing.', values)
     // Kept for as long as it stays stopped, and still tied to them: deleting them deletes it too.
     case 'kept': return unreadable.value
-      ? t('Stopped since this server was updated, because {name}, who connected it, was disabled on this server then. Its index is kept while it stays stopped, until its sync is turned off, the mailbox is removed, or their account on this server is deleted.', values)
-      : t('Stopped since this server was updated, because {name}, who connected it, was disabled on this server then. Its index is kept while it stays stopped: turning its sync on for {team} resumes from it, and turning it off, removing the mailbox or deleting their account on this server deletes it.', values)
+      ? t('Stopped since this server was updated, because {name}, who connected it, was disabled on this server then. Its index is kept while it stays stopped, until its sync is turned off, the mailbox is deleted for good, or their account on this server is deleted.', values)
+      : t('Stopped since this server was updated, because {name}, who connected it, was disabled on this server then. Its index is kept while it stays stopped: turning its sync on for {team} resumes from it, and turning it off, deleting the mailbox for good or deleting their account on this server deletes it.', values)
     default: return t('Sync is off. Nothing from this mailbox is stored.')
   }
 })
@@ -64,8 +72,9 @@ const summary = computed(() => {
  * For a mailbox nobody can read, only turning off what is still on or kept.
  */
 const paused = computed(() => {
-  const again = standing.value === 'migrated' || standing.value === 'on-earlier'
+  const again = held.value ? !!record.value?.enabled : standing.value === 'migrated' || standing.value === 'on-earlier'
   if (unreadable.value) return again || standing.value === 'kept' ? { off: t('Turn off…') } : null
+  if (held.value) return again ? { agree: t('Turn on again for {team}…', { team: teamName.value }), off: t('Turn off…') } : null
   return again ? { agree: t('Confirm for {team}…', { team: teamName.value }), off: t('Turn off…') } : null
 })
 

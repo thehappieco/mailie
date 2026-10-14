@@ -4,27 +4,34 @@
 // server live), who can use it, in a team, and removing it. What the person
 // may do here follows their grant: folders and Sync now need read,
 // authorizing again needs manage. In a team, its owners and admins manage
-// every mailbox by their role: they see who can use it and change that,
-// give or withdraw the team's agreement to sync it, and remove it; a member
+// every mailbox by their role: they see who can use it and change that, and
+// give or withdraw the team's agreement to sync it; only its owners remove
+// it, and an admin only a link of their own that never connected. A member
 // sees their own card. Anyone who holds Read on it sees its key's section
 // (MailboxKeyPanel): waiting for the key, handing it over, a first key and a
 // personal mailbox's new one. Removal is typed, never a confirm(): the person
 // writes the address, which also makes them read it, and the server is
-// sent the mailbox's id to confirm.
+// sent the mailbox's id to confirm. A removed mailbox is kept 30 days,
+// recoverable by the workspace's owners, which the sheet says before; one
+// that never connected is deleted at once. A mailbox recovered after it was
+// removed says its sync is paused: its person turns it on here, and a team's
+// owners and admins in the team's sync below.
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
 import { accounts, closeDetail, loadFolders, removeAccount } from '../state/accounts'
-import { consent, reviewConsent, syncNow, syncRequests } from '../state/sync'
+import type { Failure } from '../state/failure'
+import { session } from '../state/session'
+import { consent, resumeSync, reviewConsent, syncNow, syncRequests } from '../state/sync'
 import { directoryEntry, personName } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
-import { accessOf, actorName, administers, grantSummary, waitsForKey, workspaceName } from '../ui/access'
+import { accessOf, actorName, administers, grantSummary, owns, waitsForKey, workspaceName } from '../ui/access'
 import { announce } from '../ui/announce'
 import { describe, describeFolders } from '../ui/errors'
 import { count, since, stamp } from '../ui/format'
 import { t } from '../ui/i18n'
 import { authKindLabel, folderRoleIcon, folderRoleLabel, needsAuthorization, providerIcon, providerName, sortFolders, stateDetail, syncTierLabel } from '../ui/labels'
-import { folderBadge, fromIndex } from '../ui/sync'
+import { folderBadge, fromIndex, heldText } from '../ui/sync'
 import AccessPanel from './AccessPanel.vue'
 import AppIcon from './AppIcon.vue'
 import LiveRegion from './LiveRegion.vue'
@@ -60,8 +67,26 @@ const teamName = computed(() => workspaceName(workspace.value))
 const admin = computed(() => inTeam.value && administers(workspace.value))
 /** Who connected it, for the record: the access directory says, to the team's owners and admins. */
 const linker = computed(() => admin.value ? actorName(directoryEntry(props.account.id)?.linked_by, personName) : '')
-/** A team's mailboxes are removed by its owners and admins; a person's own, by its person. */
-const removable = computed(() => inTeam.value ? admin.value : access.value.manage)
+/** Never connected: nothing was stored for it, and removing it deletes it at once. */
+const neverConnected = computed(() => props.account.state === 'pending_auth')
+/**
+ * A workspace's mailboxes are removed by its owners: a team's active owners,
+ * a personal mailbox's person; and an admin abandons a link of their own that
+ * never connected. On a server without workspaces, whoever manages it.
+ */
+const removable = computed(() => {
+  if (!workspace.value) return access.value.manage
+  if (owns(workspace.value)) return true
+  return admin.value && neverConnected.value && !!session.user && directoryEntry(props.account.id)?.linked_by === session.user.id
+})
+/** An admin of the team, shown that only its owners remove its mailboxes. */
+const ownersRemove = computed(() => admin.value && !removable.value)
+/** Recovered after it was removed: its sync waits until someone who may turns it on. */
+const held = computed(() => sync.value.held === true)
+/** Its person turns a personal mailbox's held sync on; a team's is turned on for the team (TeamMailboxSync). */
+const resumes = computed(() => held.value && !inTeam.value && access.value.manage)
+const resuming = ref(false)
+const resumeProblem = ref<Failure | null>(null)
 const request = computed(() => syncRequests[props.account.id])
 const armed = computed(() => typed.value.trim().toLowerCase() === props.account.email.toLowerCase())
 const folders = computed(() => sortFolders(view.value?.list ?? []))
@@ -106,6 +131,13 @@ async function destroy() {
   await removeAccount(props.account.id)
 }
 function requestSync() { void syncNow(props.account.id) }
+async function resume() {
+  if (resuming.value) return
+  resuming.value = true
+  resumeProblem.value = await resumeSync(props.account.id)
+  resuming.value = false
+  if (!resumeProblem.value) announce(t('Sync of {email} is on again.', { email: props.account.email }))
+}
 /** Back to the accounts page, where the consent card is, with the focus on it. */
 function turnOn() {
   closeDetail()
@@ -155,7 +187,15 @@ function authorize() {
               <AppIcon name="refresh" :size="16" />{{ request?.busy ? t('Requesting…') : t('Sync now') }}
             </button>
           </div>
-          <template v-if="syncing">
+          <!-- Recovered after it was removed: nothing syncs until someone who may turns it on. -->
+          <template v-if="held">
+            <SyncStatus v-if="account.state === 'active'" :account="account" />
+            <p v-else class="dim">{{ heldText(account) }}</p>
+            <button v-if="resumes" class="ghost small held-resume" type="button" :disabled="resuming" @click="resume"><AppIcon name="refresh" :size="16" />{{ resuming ? t('Turning on…') : t('Turn sync on again') }}</button>
+            <p v-else-if="inTeam && !admin" class="dim">{{ t('The owners and admins of {team} turn it on again, for the team.', { team: teamName }) }}</p>
+            <p v-if="resumeProblem" class="alert" role="alert">{{ describe(resumeProblem) }}</p>
+          </template>
+          <template v-else-if="syncing">
             <SyncStatus :account="account" />
             <dl class="facts sync-facts">
               <div><dt>{{ t('Messages indexed') }}</dt><dd>{{ count(sync.messages) }}</dd></div>
@@ -217,20 +257,30 @@ function authorize() {
 
         <section v-if="removable" class="sheet-section danger-zone">
           <h3>{{ t('Remove account') }}</h3>
-          <p>{{ t('Removes this mailbox from Mailie and deletes the saved sign-in and everything else Mailie keeps for it. Nothing is deleted at the provider.') }}</p>
-          <p v-if="inTeam">{{ t('Everyone in {team} who has access to it loses it, and its index is deleted for all of them.', { team: teamName }) }}</p>
+          <p v-if="neverConnected">{{ t('This mailbox never finished connecting, so nothing was stored for it: removing it deletes it at once. Nothing is deleted at the provider.') }}</p>
+          <template v-else>
+            <p>{{ t('Removes this mailbox from Mailie: it stops syncing, and nobody reads it or uses it here any more. Nothing is deleted at the provider.') }}</p>
+            <p>{{ inTeam
+              ? t('Mailie keeps it for 30 days, with what it stored for it, and any owner of {team} can recover it until then; then it is deleted for good. What API keys held on it goes at once, and does not come back with it.', { team: teamName })
+              : t('Mailie keeps it for 30 days, with what it stored for it, and you can recover it until then; then it is deleted for good. What API keys held on it goes at once, and does not come back with it.') }}</p>
+            <p v-if="inTeam">{{ t('Everyone in {team} who reads it loses it, and is told.', { team: teamName }) }}</p>
+          </template>
           <p v-if="accounts.removeFailure" class="alert" role="alert">{{ describe(accounts.removeFailure) }}</p>
           <button v-if="!confirming" class="danger" type="button" @click="confirming = true"><AppIcon name="trash" :size="17" />{{ t('Remove account…') }}</button>
           <div v-else class="field">
             <label :for="confirmID">{{ t('Type {address} to confirm', { address: account.email }) }}</label>
             <input :id="confirmID" v-model="typed" autocomplete="off" :spellcheck="false" autocapitalize="off" inputmode="email" :placeholder="account.email" :disabled="accounts.removing" />
-            <p class="hint">{{ t('This cannot be undone. To use the mailbox again, connect it again.') }}</p>
+            <p v-if="!neverConnected" class="hint">{{ t('Until it is deleted for good, it is listed under Removed mailboxes.') }}</p>
           </div>
+        </section>
+        <section v-else-if="ownersRemove" class="sheet-section">
+          <h3>{{ t('Remove account') }}</h3>
+          <p class="dim">{{ t('Only an owner of {team} removes its mailboxes.', { team: teamName }) }}</p>
         </section>
       </div>
       <footer v-if="confirming" class="sheet-footer">
         <button class="ghost" type="button" :disabled="accounts.removing" @click="cancelRemoval">{{ t('Cancel') }}</button>
-        <button class="danger" type="button" :disabled="!armed || accounts.removing" @click="destroy">{{ accounts.removing ? t('Removing…') : t('Remove permanently') }}</button>
+        <button class="danger" type="button" :disabled="!armed || accounts.removing" @click="destroy">{{ accounts.removing ? t('Removing…') : t('Remove') }}</button>
       </footer>
     </section>
   </dialog>
@@ -271,6 +321,7 @@ function authorize() {
 .sync-facts { margin-top: 14px; }
 .sync-section .hint, .folder-note { margin-top: 10px; }
 .sync-section > .ghost { margin-top: 10px; }
+.held-resume { display: inline-flex; align-items: center; gap: 6px; }
 .folder-count { font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
 .danger-zone h3 { color: var(--danger); }
 .danger-zone .field { margin: 14px 0 0; }

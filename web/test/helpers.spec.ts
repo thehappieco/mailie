@@ -221,7 +221,8 @@ describe('failure text', () => {
     expect(describeFailure({ op: 'leave-team', code: 'not_authorized' })).toBe('Only an owner leaves a team, while another owner remains.')
     // A removal whose id the server did not find repeated removed nothing.
     expect(describeFailure({ op: 'remove-account', code: 'bad_request' })).toContain('The server removed nothing')
-    expect(describeFailure({ op: 'remove-account', code: 'not_authorized' })).toBe('Only the owners and admins of a team remove its mailboxes.')
+    // Only an owner removes a team's mailbox: an admin no longer does.
+    expect(describeFailure({ op: 'remove-account', code: 'not_authorized' })).toBe('Only an owner of the team removes its mailboxes.')
     // Members see none of the team's people or directory.
     expect(describeFailure({ op: 'load-members', code: 'not_authorized' })).toBe('Only the owners and admins of the team see its members.')
     expect(describeFailure({ op: 'load-access', code: 'not_authorized' })).toBe('Only the owners and admins of the team see who has access to its mailboxes.')
@@ -229,8 +230,22 @@ describe('failure text', () => {
     expect(describeFailure({ op: 'team-sync-off', code: 'not_authorized' })).toBe('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
     // Turned on to a text the server no longer asks about: the edition says the text changed.
     expect(describeFailure({ op: 'team-sync-on', code: 'bad_request' })).toBe(edition().sync.changedWhileOpen())
-    expect(describeFailure({ op: 'team-sync-on', code: 'conflict' })).toBe('Nobody in the team can read this mailbox, so its sync cannot be turned on. Remove it, and connect it again, to use it.')
+    expect(describeFailure({ op: 'team-sync-on', code: 'conflict' })).toBe('Nobody in the team can read this mailbox, so its sync cannot be turned on. To use it again, an owner of the team removes it, deletes it for good and connects it again.')
     expect(describeFailure({ op: 'team-sync-off', code: 'unavailable' })).toContain('doing it twice is safe')
+  })
+
+  it('says what refuses a removed mailbox’s recovery or deletion, and that an address removed and kept cannot be connected again until then', () => {
+    // A recovery refused: its 30 days over, its team closed, or nobody left who could read it.
+    expect(describeFailure({ op: 'recover-mailbox', code: 'conflict' })).toBe('This mailbox cannot be recovered: its 30 days are over, its team is closed, or nobody in the team who could read it is left. To use it again, delete it for good and connect it again.')
+    expect(describeFailure({ op: 'recover-mailbox', code: 'not_found' })).toBe('This mailbox is no longer kept: it was recovered or deleted for good meanwhile.')
+    expect(describeFailure({ op: 'recover-mailbox', code: 'not_authorized' })).toBe('Only an owner of the workspace recovers its removed mailboxes.')
+    // Deleting one for good that was recovered meanwhile; and twice is harmless.
+    expect(describeFailure({ op: 'purge-mailbox', code: 'conflict' })).toBe('This mailbox was recovered meanwhile: it is in use again.')
+    expect(describeFailure({ op: 'purge-mailbox', code: 'unavailable' })).toContain('doing it twice is safe')
+    expect(describeFailure({ op: 'load-removed', code: 'internal' })).toBe('Could not load the removed mailboxes. Try again in a moment.')
+    // The same conflict says an address connected already, or removed and still kept.
+    for (const op of ['add-account', 'test-login'] as const) expect(describeFailure({ op, code: 'conflict' }), op).toContain('or was removed from it and is still kept')
+    expect(describeFailure({ op: 'add-account', code: 'conflict' })).toContain('If it is waiting for authorization, finish it from its card')
   })
 
   it('depends on what was being done, not only on the code', () => {
@@ -260,7 +275,7 @@ describe('failure text', () => {
   it('names the app-specific password when iCloud refuses the sign-in, and keeps the general texts for the rest', () => {
     expect(describeFailure({ op: 'test-login-icloud', code: 'bad_request' })).toBe('iCloud refused the sign-in. Check the address and that you used an app-specific password, not your Apple Account password.')
     expect(describeFailure({ op: 'test-login', code: 'bad_request' })).toContain('the server names')
-    expect(describeFailure({ op: 'test-login-icloud', code: 'conflict' })).toBe('This address is already connected in this workspace.')
+    expect(describeFailure({ op: 'test-login-icloud', code: 'conflict' })).toBe('This address is already connected in this workspace, or was removed from it and is still kept: an owner of the workspace can recover it, or delete it for good to connect it again.')
     expect(describeFailure({ op: 'test-login-icloud', code: 'not_authorized' })).toBe('Your account is not allowed to connect mailboxes here. In a team, only its owners and admins connect them.')
     expect(describeFailure({ op: 'test-login-icloud', code: 'unavailable' })).toBe('Could not reach the server. Check your connection and try again.')
     locale.value = 'pt'

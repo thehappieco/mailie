@@ -83,7 +83,8 @@ function specific(failure: Failure): string | undefined {
     case 'load-providers':
       return t('Could not check which providers this server supports. You can still try to connect.')
     case 'add-account':
-      if (code === 'conflict') return t('This address is already connected in this workspace. If it is waiting for authorization, finish it from its card.')
+      // Connected already, or removed and still kept (docs/workspaces.md, "Removed mailboxes"): the code is the same.
+      if (code === 'conflict') return t('This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.')
       if (code === 'bad_request') return t('The server did not accept these details. Check the address and try again.')
       if (code === 'not_authorized') return t('Your account is not allowed to connect mailboxes here. In a team, only its owners and admins connect them.')
       if (code === 'not_found') return t('This workspace is no longer yours. Choose another and try again.')
@@ -91,7 +92,7 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'test-login':
       if (code === 'bad_request') return t('The mail server refused the sign-in or could not be reached. Check the address, the password and the server names.')
-      if (code === 'conflict') return t('This address is already connected in this workspace.')
+      if (code === 'conflict') return t('This address is already connected in this workspace, or was removed from it and is still kept: an owner of the workspace can recover it, or delete it for good to connect it again.')
       if (code === 'not_authorized' || code === 'not_found') return specific({ op: 'add-account', code })
       return undefined
     case 'test-login-icloud':
@@ -118,9 +119,30 @@ function specific(failure: Failure): string | undefined {
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')
-      if (code === 'not_authorized') return t('Only the owners and admins of a team remove its mailboxes.')
+      if (code === 'not_authorized') return t('Only an owner of the team removes its mailboxes.')
       // The id the removal repeats did not match: nothing was removed.
       if (code === 'bad_request') return t('The server removed nothing: the mailbox to remove was not confirmed. Close this and try again.')
+      return undefined
+    case 'load-removed':
+      if (code === 'unavailable' || code === 'internal') return t('Could not load the removed mailboxes. Try again in a moment.')
+      return undefined
+    case 'recover-mailbox':
+      // Its 30 days are over, its team is closed, or nobody who could read it is left: the code is the same.
+      if (code === 'conflict') return t('This mailbox cannot be recovered: its 30 days are over, its team is closed, or nobody in the team who could read it is left. To use it again, delete it for good and connect it again.')
+      if (code === 'not_found') return t('This mailbox is no longer kept: it was recovered or deleted for good meanwhile.')
+      if (code === 'not_authorized') return t('Only an owner of the workspace recovers its removed mailboxes.')
+      return undefined
+    case 'purge-mailbox':
+      if (code === 'conflict') return t('This mailbox was recovered meanwhile: it is in use again.')
+      if (code === 'not_authorized') return t('Only an owner of the workspace deletes its removed mailboxes for good.')
+      // Deleting twice is harmless, so asking again is the answer to not knowing.
+      if (code === 'unavailable' || code === 'internal') return t('Could not confirm that the mailbox was deleted for good. Try again: doing it twice is safe.')
+      return undefined
+    case 'dismiss-notice':
+      if (code === 'unavailable' || code === 'internal') return t('Could not dismiss this notice. Try again in a moment.')
+      return undefined
+    case 'resume-sync':
+      if (code === 'not_found') return t('This mailbox no longer exists.')
       return undefined
     case 'folders':
       if (code === 'not_authorized') return t('You do not have read access to this mailbox. It comes only from an owner or an admin of the team who reads it.')
@@ -272,7 +294,7 @@ function specific(failure: Failure): string | undefined {
       if (code === 'not_authorized') return t('Only the owners and admins of the team turn its mailboxes’ sync on or off.')
       if (code === 'not_found') return t('This mailbox no longer exists.')
       // Nobody reads it any more, nor can be given Read on it.
-      if (code === 'conflict') return t('Nobody in the team can read this mailbox, so its sync cannot be turned on. Remove it, and connect it again, to use it.')
+      if (code === 'conflict') return t('Nobody in the team can read this mailbox, so its sync cannot be turned on. To use it again, an owner of the team removes it, deletes it for good and connects it again.')
       return undefined
     case 'team-sync-off':
       if (code === 'not_authorized') return specific({ op: 'team-sync-on', code })
@@ -342,7 +364,7 @@ export function describe(failure: Failure): string {
 export function describeFolders(failure: Failure, account: Pick<Account, 'state' | 'auth_kind' | 'provider' | 'email' | 'state_reason'>): string {
   if (failure.code !== 'conflict') return describe(failure)
   if (account.state === 'pending_auth') return t('Finish the authorization before listing folders.')
-  if (account.auth_kind !== 'oauth2') return t('The mail server did not accept the saved password, or cannot be reached from this server. To change the password, remove the account and connect it again.')
+  if (account.auth_kind !== 'oauth2') return t('The mail server did not accept the saved password, or cannot be reached from this server. To change the password, remove the account, delete it for good under Removed mailboxes, and connect it again.')
   // Beside the "Finish authorization" button the sheet shows for it, and
   // below the status, which already says the reason when there is one.
   if (account.state === 'needs_reauth' || reasonText(account)) return describe(failure)

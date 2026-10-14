@@ -16,12 +16,19 @@
 // (docs/key-scheme.md section 12.11), made and sealed to the person here on
 // every attempt, after a fresh step-up (state/stepUp.ts); resuming an
 // abandoned link sends none, since the mailbox has the one its link wrote.
+//
+// Removing a mailbox keeps it 30 days, recoverable by its workspace's owners
+// (docs/workspaces.md, "Removed mailboxes"), or, for one that never
+// connected, deletes it at once: the answer says which, and the notice says
+// it. The workspace's owners see its removed mailboxes in a list of their own
+// (removed, below), read for the workspace shown, from which they recover
+// one or delete it for good.
 
 import { reactive, watch } from 'vue'
 import * as api from '../api/accounts'
 import { ApiError } from '../api/http'
 import { listProviders } from '../api/providers'
-import { enrolled, type Account, type AccountState, type AccountSync, type AddAccountRequest, type AddAccountResult, type AuthFlow, type Folder, type Provider, type ProviderID } from '../api/types'
+import { enrolled, type Account, type AccountState, type AccountSync, type AddAccountRequest, type AddAccountResult, type AuthFlow, type Folder, type Provider, type ProviderID, type RemovedMailbox } from '../api/types'
 import { CeremonyError } from '../crypto/errors'
 import { linkKey } from '../crypto/mailbox'
 import { announce } from '../ui/announce'
@@ -32,7 +39,7 @@ import { failure, type Failure, type Operation } from './failure'
 import { FLOW_LIFETIME_MS, rememberOAuthStart, takeOAuthReturn, takeOAuthStart } from './oauthReturn'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
-import { selectWorkspace, settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
+import { loadWorkspaces, selectWorkspace, settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
 
 export const POLL_INTERVAL_MS = 3_000
 /** While the event stream is open, account.state events end the wait; this poll only covers one that went missing. */
@@ -43,7 +50,16 @@ export interface FolderView { loading: boolean; loaded: boolean; list: Folder[];
 export type Notice =
   /** syncing: the new mailbox starts syncing at once, under its person's agreement or its team's. */
   | { kind: 'connected'; email: string; syncing: boolean }
-  | { kind: 'removed'; email: string }
+  /**
+   * keptUntil: kept until then (unix seconds), recoverable by the workspace's
+   * owners; absent, deleted at once (one that never connected, or a server
+   * that keeps nothing), or gone already.
+   */
+  | { kind: 'removed'; email: string; keptUntil?: number }
+  /** A removed mailbox recovered by its owner, its sync held until it is turned on. */
+  | { kind: 'recovered'; email: string }
+  /** A removed mailbox deleted for good by its owner. */
+  | { kind: 'purged'; email: string }
   | { kind: 'failed'; email: string; failure: Failure }
   | { kind: 'sync-on' }
   | { kind: 'sync-off' }
@@ -65,6 +81,23 @@ interface AccountsState {
   removing: boolean
   removeFailure: Failure | null
   folders: Record<string, FolderView>
+}
+
+/**
+ * The removed mailboxes of the workspace shown, which only its owners list
+ * (the server refuses everyone else), and what was last done to one of them.
+ */
+interface RemovedState {
+  list: RemovedMailbox[]
+  /** The workspace the list was read for. */
+  workspace: string
+  loaded: boolean
+  loading: boolean
+  failure: Failure | null
+  /** The removed mailbox a recovery or a deletion for good is under way for. */
+  busy: string
+  /** What the last recovery or deletion failed with, for the mailbox it was. */
+  problem: { id: string; failure: Failure } | null
 }
 
 export type ConnectPhase = 'idle' | 'starting' | 'redirecting' | 'waiting' | 'done' | 'failed'
@@ -91,6 +124,7 @@ const freshAccounts = (): AccountsState => ({
   providers: [], providersLoaded: false, providersFailure: null,
   notice: null, detailID: '', removing: false, removeFailure: null, folders: {},
 })
+const freshRemoved = (): RemovedState => ({ list: [], workspace: '', loaded: false, loading: false, failure: null, busy: '', problem: null })
 const freshConnect = (): ConnectState => ({
   phase: 'idle', provider: '', email: '', accountID: '', created: false, flow: '',
   authURL: '', userCode: '', verificationURI: '', expiresAt: 0, failure: null,
@@ -98,6 +132,7 @@ const freshConnect = (): ConnectState => ({
 
 export const accounts = reactive<AccountsState>(freshAccounts())
 export const connect = reactive<ConnectState>(freshConnect())
+export const removed = reactive<RemovedState>(freshRemoved())
 
 /** How the page leaves for the provider. A seam, so tests can watch it instead of navigating. */
 export const navigation = { assign: (url: string) => { location.assign(url) } }
@@ -112,9 +147,21 @@ let nudged = false
 
 watch(identity, () => {
   accountsGeneration++
+  removedGeneration++
   stopConnect()
   Object.assign(accounts, freshAccounts())
   Object.assign(connect, freshConnect())
+  Object.assign(removed, freshRemoved())
+}, { flush: 'sync' })
+
+let removedGeneration = 0
+// Another workspace shown: its removed mailboxes are its own, and whether
+// they are asked for at all is for whoever shows them to its owners
+// (RemovedMailboxes): a person who does not own it is never asked about them.
+watch(() => workspaces.currentID, id => {
+  if (removed.workspace === id && removed.loaded) return
+  removedGeneration++
+  Object.assign(removed, freshRemoved())
 }, { flush: 'sync' })
 
 /** The read of the list in flight, if any: what a caller that switched workspaces waits for. */
@@ -312,13 +359,20 @@ function notify(notice: Notice): void {
   if (notice.kind !== 'failed') announce(noticeText(notice))
 }
 
+/**
+ * Removes a mailbox: kept 30 days, recoverable, unless it never connected,
+ * which the server deletes at once. The notice says which, and until when;
+ * the workspace's removed mailboxes, when they were read, are read again.
+ */
 export async function removeAccount(id: string): Promise<boolean> {
   const current = currentAccounts()
   const email = accounts.list.find(item => item.id === id)?.email ?? ''
   accounts.removing = true
   accounts.removeFailure = null
+  let keptUntil: number | undefined
   try {
-    await authorized(token => api.removeAccount(token, id))
+    const removal = await authorized(token => api.removeAccount(token, id))
+    if (removal && !removal.purged) keptUntil = removal.purge_after
   } catch (error) {
     // Already gone is what was asked for.
     if (!(error instanceof ApiError && error.code === 'not_found')) {
@@ -329,8 +383,116 @@ export async function removeAccount(id: string): Promise<boolean> {
   if (!current()) return false
   accounts.removing = false
   forget(id)
-  notify({ kind: 'removed', email })
+  notify(keptUntil ? { kind: 'removed', email, keptUntil } : { kind: 'removed', email })
+  if (keptUntil) refreshRemoved()
   return true
+}
+
+// --- removed mailboxes ----------------------------------------------------------
+
+function currentRemoved(): () => boolean {
+  const generation = removedGeneration
+  return () => generation === removedGeneration
+}
+
+/**
+ * Reads the removed mailboxes of the workspace shown, which only its owners
+ * may: a person their personal workspace's, an owner a team's. A server older
+ * than removed mailboxes, or a workspace that is no longer the person's,
+ * answers not_found, and one the person no longer owns not_authorized: an
+ * empty list, said nowhere, and for the second their workspaces are read
+ * again, so what the console offers follows the role they have now.
+ */
+export async function loadRemoved(): Promise<void> {
+  const workspace = workspaces.currentID
+  if (!workspace) return
+  const current = currentRemoved()
+  removed.loading = true
+  removed.failure = null
+  try {
+    const list = await authorized(token => api.listRemoved(token, workspace))
+    if (!current() || workspace !== workspaces.currentID) return
+    Object.assign(removed, { list, workspace, loaded: true })
+  } catch (error) {
+    if (!current()) return
+    const found = failure('load-removed', error)
+    if (found.code === 'not_found' || found.code === 'not_authorized') {
+      Object.assign(removed, { list: [], workspace, loaded: true })
+      if (found.code === 'not_authorized') void loadWorkspaces()
+    } else removed.failure = found
+  } finally {
+    if (current()) removed.loading = false
+  }
+}
+
+/** Reads the removed mailboxes again when they were read, or asked for: something may have come or gone. */
+export function refreshRemoved(): void {
+  if (removed.loaded || removed.loading || removed.failure) void loadRemoved()
+}
+
+/**
+ * Recovers a removed mailbox: it is back in the list, its sync held until
+ * someone who may turns it on. Refused once its 30 days are over, in a closed
+ * team, and for a team mailbox nobody who could read it is left to read
+ * (conflict); gone meanwhile (not_found), the list is read again.
+ */
+export async function recoverRemoved(id: string): Promise<boolean> {
+  if (removed.busy) return false
+  const current = currentRemoved()
+  const email = removed.list.find(item => item.id === id)?.email ?? ''
+  removed.busy = id
+  removed.problem = null
+  try {
+    const recovered = await authorized(token => api.recoverAccount(token, id))
+    if (!current()) return false
+    removed.list = removed.list.filter(item => item.id !== id)
+    upsert(recovered)
+    notify({ kind: 'recovered', email: recovered.email || email })
+    return true
+  } catch (error) {
+    if (!current()) return false
+    removed.problem = { id, failure: failure('recover-mailbox', error) }
+    if (removed.problem.failure.code === 'not_found' || removed.problem.failure.code === 'conflict') void loadRemoved()
+    return false
+  } finally {
+    if (current()) removed.busy = ''
+  }
+}
+
+/**
+ * Deletes a removed mailbox for good, with what it kept, once the person
+ * typed its address. Already gone is what was asked for.
+ */
+export async function purgeRemoved(id: string): Promise<boolean> {
+  if (removed.busy) return false
+  const current = currentRemoved()
+  const email = removed.list.find(item => item.id === id)?.email ?? ''
+  removed.busy = id
+  removed.problem = null
+  try {
+    await authorized(token => api.purgeAccount(token, id))
+  } catch (error) {
+    if (!(error instanceof ApiError && error.code === 'not_found')) {
+      if (current()) {
+        removed.problem = { id, failure: failure('purge-mailbox', error) }
+        removed.busy = ''
+        // Recovered meanwhile: the lists say where it is now.
+        if (removed.problem.failure.code === 'conflict') { void loadRemoved(); void loadAccounts() }
+      }
+      return false
+    }
+  }
+  if (!current()) return false
+  removed.busy = ''
+  removed.list = removed.list.filter(item => item.id !== id)
+  notify({ kind: 'purged', email })
+  return true
+}
+
+/** The removed mailbox of the workspace shown with this address, as last listed. */
+export function removedByEmail(email: string): RemovedMailbox | undefined {
+  const wanted = email.trim().toLowerCase()
+  return wanted ? removed.list.find(item => item.email.toLowerCase() === wanted) : undefined
 }
 
 /**

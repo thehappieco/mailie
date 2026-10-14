@@ -38,14 +38,16 @@ const unusable = computed(() => workspaceUnusable(currentWorkspace()))
 
 /**
  * What a mailbox's figures mean when it is not syncing now, as the accounts
- * list says. Sync off: nothing is indexed, and its zeros say so. Sync on for
- * an account that does not work (waiting for authorization, or refused): the
- * server stops syncing it and keeps its index, so its figures are what was
- * indexed before.
+ * list says. Recovered after it was removed: its sync is held, and what it
+ * kept is counted. Sync off: nothing is indexed, and its zeros say so. Sync
+ * on for an account that does not work (waiting for authorization, or
+ * refused): the server stops syncing it and keeps its index, so its figures
+ * are what was indexed before.
  */
 function note(id: string): string {
   const account = accounts.list.find(item => item.id === id)
   if (!account) return ''
+  if (account.sync.held) return t('Sync is paused since this mailbox was recovered, until it is turned on again. What was indexed is kept.')
   if (!account.sync.enabled) return t('Not synced: nothing from this mailbox is indexed.')
   if (account.state !== 'active') return t('Sync is paused until the account works again. What was indexed is kept.')
   return ''

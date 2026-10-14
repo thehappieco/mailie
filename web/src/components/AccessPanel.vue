@@ -194,7 +194,7 @@ onMounted(() => {
     <p v-else-if="gone" class="note" role="status">{{ t('{email} is no longer a mailbox of {team}: it was removed.', { email, team: teamName }) }}</p>
 
     <template v-else>
-      <p v-if="entry?.no_reader" class="note access-nobody" role="status"><AppIcon name="eye-off" :size="16" /><span>{{ t('Nobody in {team} can read this mailbox any more, so it does not sync. Read is given only by someone who reads it: remove the mailbox, or remove it and connect it again, which gives Read to whoever connects it.', { team: teamName }) }}</span></p>
+      <p v-if="entry?.no_reader" class="note access-nobody" role="status"><AppIcon name="eye-off" :size="16" /><span>{{ t('Nobody in {team} can read this mailbox any more, so it does not sync. Read is given only by someone who reads it: an owner of {team} can remove the mailbox, and delete it for good to connect it again, which gives Read to whoever connects it.', { team: teamName }) }}</span></p>
       <p v-if="giving" class="hint">{{ giving }}</p>
       <ul class="access-rows" :aria-label="t('Access to {email}', { email })">
         <li v-for="row in rows" :key="row.member.user_id" class="access-row" :data-user="row.member.user_id">

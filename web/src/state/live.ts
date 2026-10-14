@@ -12,7 +12,10 @@
 // an event says "this account changed", and the account is read again, at
 // most once a second per account, so whatever the events said and whatever
 // arrived out of order, the card shows what the server holds. A folder list
-// read from the index is read again the same way. An edition hears every
+// read from the index is read again the same way. When the person is given a
+// notice (a mailbox they read removed, a team mailbox's sync turned off), the
+// server says so (`event: notice`, which carries nothing) and their notices
+// are read again (state/notices.ts). An edition hears every
 // event too (onLiveEvent), and that events were lost (onLiveLagged): an
 // edition that shows messages patches the row a message event names, or
 // hands a send's outcome to whatever waits for it.
@@ -31,8 +34,9 @@ import { readEventStream, type StreamMessage } from '../api/events'
 import { isServerEvent, type ServerEvent, type eventTypes } from '../api/types'
 import { announce } from '../ui/announce'
 import { t } from '../ui/i18n'
-import { accounts, loadAccounts, nudge, refreshAccount, reloadIndexedFolders } from './accounts'
+import { accounts, loadAccounts, nudge, refreshAccount, refreshRemoved, reloadIndexedFolders } from './accounts'
 import { setStream } from './connection'
+import { noticesChanged } from './notices'
 import { authorized, identity, session } from './session'
 import { loadStorage, storage } from './storage'
 import { refreshTeam } from './team'
@@ -223,6 +227,11 @@ function receive(message: StreamMessage): void {
     for (const handler of accessHandlers) handler(change)
     return
   }
+  if (message.event === 'notice') {
+    // Given a notice: which one is the notices' own to read.
+    noticesChanged()
+    return
+  }
   if (message.event === 'lagged') {
     // Events after the cursor were pruned: what the page shows may be
     // missing changes no event will bring back. Read it all again.
@@ -266,9 +275,11 @@ function isAccessChange(value: unknown): value is AccessChange {
 }
 
 /**
- * Reads the list again, storage if it was read, and what was read of the team
+ * Reads the list again, storage if it was read, what was read of the team
  * shown (a mailbox removed leaves its directory, and its last reader's
- * protection may go), once however many access changes arrive together.
+ * protection may go), the workspace's removed mailboxes and the person's
+ * notices if they were read (a mailbox removed or recovered elsewhere), once
+ * however many access changes arrive together.
  */
 function scheduleAccess(): void {
   if (accessTimer) return
@@ -279,6 +290,8 @@ function scheduleAccess(): void {
     void loadAccounts()
     if (storage.loaded) void loadStorage()
     refreshTeam()
+    refreshRemoved()
+    noticesChanged()
   }, ACCESS_REFRESH_MS)
 }
 

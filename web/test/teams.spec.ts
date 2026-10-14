@@ -141,7 +141,7 @@ describe('mailboxes in a team', () => {
     teamState([anaMember({ role: 'owner', last_owner: true })], [entryOf(managed, { readers: 0, no_reader: true, grants: [] })])
     Object.assign(accounts, { list: [managed], loaded: true, workspace: TEAM })
     const words = text(await render(AccountsPanel))
-    expect(words).toContain('Nobody can read this mailbox any more, so it does not sync. Remove it, or remove it and connect it again.')
+    expect(words).toContain('Nobody can read this mailbox any more, so it does not sync. An owner of the team can remove it, and delete it for good to connect it again.')
     const sheet = text(await render(AccountSheet, { account: managed }))
     expect(sheet).toContain('Nobody in Support can read this mailbox any more, so it does not sync.')
     expect(sheet).toContain('Remove account')
@@ -191,7 +191,7 @@ describe('mailboxes in a team', () => {
     expect(words).not.toContain('Turn on sync…')
   })
 
-  it('shows an owner or an admin who does not read a team mailbox its card, access, sync and removal, never its folders', async () => {
+  it('shows an owner or an admin who does not read a team mailbox its card, access and sync, never its folders, and its removal to an owner only', async () => {
     showing(TEAM, [personal, support('admin')])
     teamState([anaMember({ role: 'admin' }), beaMember({ last_reader_of: [managed.id] })], [entryOf(managed)])
     Object.assign(accounts, { list: [managed], loaded: true, workspace: TEAM })
@@ -207,8 +207,32 @@ describe('mailboxes in a team', () => {
     expect(words).toContain(`Agreed to the sync text of revision ${SYNC_TEXT_VERSION}.`)
     expect(html).toContain('role="switch"')
     expect(html).toContain('aria-label="Access to diretoria@example.test"')
-    expect(words).toContain('Remove account')
-    expect(words).toContain('Everyone in Support who has access to it loses it, and its index is deleted for all of them.')
+    // Removing a team's mailbox is its owners' alone: an admin is told so, with nothing to press.
+    expect(words).toContain('Only an owner of Support removes its mailboxes.')
+    expect(html).not.toContain('Remove account…')
+    showing(TEAM, [personal, support('owner')])
+    teamState([anaMember({ role: 'owner', last_owner: true }), beaMember({ last_reader_of: [managed.id] })], [entryOf(managed)])
+    const owned = text(await render(AccountSheet, { account: managed }))
+    expect(owned).toContain('Remove account…')
+    expect(owned).toContain('Mailie keeps it for 30 days, with what it stored for it, and any owner of Support can recover it until then; then it is deleted for good.')
+    expect(owned).toContain('Everyone in Support who reads it loses it, and is told.')
+    expect(owned).not.toContain('Only an owner of Support removes its mailboxes.')
+  })
+
+  it('lets an admin abandon only a link of their own that never connected, which removing deletes at once', async () => {
+    const pending = account({ id: 'acc_pending', email: 'novo@example.test', state: 'pending_auth', workspace_id: TEAM, access: { ...none, manage: true } })
+    showing(TEAM, [personal, support('admin')])
+    Object.assign(accounts, { list: [pending], loaded: true, workspace: TEAM })
+    teamState([anaMember({ role: 'admin' }), beaMember()], [entryOf(pending, { linked_by: ana.id, readers: 0, no_reader: true, grants: [] })])
+    const mine = text(await render(AccountSheet, { account: pending }))
+    expect(mine).toContain('Remove account…')
+    expect(mine).toContain('This mailbox never finished connecting, so nothing was stored for it: removing it deletes it at once.')
+    expect(mine).not.toContain('Mailie keeps it for 30 days')
+    // Linked by someone else: the team's owners remove it.
+    teamState([anaMember({ role: 'admin' }), beaMember()], [entryOf(pending, { linked_by: BEA, readers: 0, no_reader: true, grants: [] })])
+    const theirs = text(await render(AccountSheet, { account: pending }))
+    expect(theirs).not.toContain('Remove account…')
+    expect(theirs).toContain('Only an owner of Support removes its mailboxes.')
   })
 
   it('says where a team mailbox’s agreement to sync stands: an earlier text, one carried over from whoever linked it, or stopped with its index', async () => {
@@ -228,13 +252,13 @@ describe('mailboxes in a team', () => {
     expect(text(migrated)).toContain('Confirm for Support…')
     const kept = await sheet({ enabled: false, enabled_by: BEA, migrated: true, current: false })
     // Kept while stopped, and still tied to whoever connected it: deleting them deletes it.
-    expect(text(kept)).toContain('Its index is kept while it stays stopped: turning its sync on for Support resumes from it, and turning it off, removing the mailbox or deleting their account on this server deletes it.')
+    expect(text(kept)).toContain('Its index is kept while it stays stopped: turning its sync on for Support resumes from it, and turning it off, deleting the mailbox for good or deleting their account on this server deletes it.')
     expect(kept).toContain('role="switch"')
     const off = await sheet({ enabled: false, current: false })
     expect(text(off)).toContain('Sync is off. Nothing from this mailbox is stored.')
     // Nobody can read it, nor be given Read on it: never turned on, only off while something of it is kept or on.
     const keptUnread = await sheet({ enabled: false, enabled_by: BEA, migrated: true, current: false }, true)
-    expect(text(keptUnread)).toContain('Its index is kept while it stays stopped, until its sync is turned off, the mailbox is removed, or their account on this server is deleted.')
+    expect(text(keptUnread)).toContain('Its index is kept while it stays stopped, until its sync is turned off, the mailbox is deleted for good, or their account on this server is deleted.')
     expect(text(keptUnread)).toContain('Nobody in Support can read this mailbox, so it does not sync, and its sync cannot be turned on: Read is given only by someone who reads it.')
     expect(keptUnread).not.toContain('role="switch"')
     expect(text(keptUnread)).toContain('Turn off…')
@@ -248,6 +272,35 @@ describe('mailboxes in a team', () => {
     const anonymous = await sheet({ enabled: true, enabled_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current: true })
     expect(text(anonymous)).toContain('On for Support since')
     expect(text(anonymous)).not.toContain('turned on by')
+  })
+
+  it('says a team mailbox recovered after it was removed is paused until an owner or an admin turns it on again for the team', async () => {
+    const recovered = account({ ...managed, id: 'acc_recovered', sync: { ...syncing(), enabled: false, running: false, state: 'off', held: true, held_since: 1_790_000_000 } })
+    const consent = { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true }
+    for (const role of ['owner', 'admin']) {
+      showing(TEAM, [personal, support(role)])
+      Object.assign(accounts, { list: [recovered], loaded: true, workspace: TEAM })
+      teamState([anaMember({ role }), beaMember({ last_reader_of: [recovered.id] })], [entryOf(recovered, { sync: consent })])
+      // Its card: paused, whatever its agreement says.
+      const card = text(await render(AccountsPanel))
+      expect(card, role).toContain('Paused')
+      expect(card, role).toContain('Paused since it was recovered on')
+      expect(card, role).not.toContain('Messages indexed')
+      // Its sheet: turning it on again for the team, to the current text, in place of the switch.
+      const html = await render(AccountSheet, { account: recovered })
+      expect(text(html), role).toContain('nothing syncs until an owner or an admin of Support turns it on again for the team, to the current sync text.')
+      expect(text(html), role).toContain('Turn on again for Support…')
+      expect(html, role).not.toContain('role="switch"')
+      expect(text(html), role).not.toContain('Turn sync on again')
+    }
+    // A member who reads it is told who turns it on.
+    showing(TEAM, [personal, support('member')])
+    const read = { ...recovered, access: { ...none, read: true } }
+    Object.assign(accounts, { list: [read], loaded: true, workspace: TEAM })
+    const member = text(await render(AccountSheet, { account: read }))
+    expect(member).toContain('Paused since it was recovered on')
+    expect(member).toContain('The owners and admins of Support turn it on again, for the team.')
+    expect(member).not.toContain('Turn sync on again')
   })
 })
 
@@ -306,7 +359,7 @@ describe('who can use a mailbox', () => {
     showing(TEAM, [personal, support('owner')])
     teamState([anaMember({ role: 'owner', last_owner: true }), beaMember()], [entry([[BEA, { send: true }]])])
     const html = await render(AccessPanel, { accountId: 'acc_shared', email: 'suporte@example.test' })
-    expect(text(html)).toContain('Nobody in Support can read this mailbox any more, so it does not sync. Read is given only by someone who reads it: remove the mailbox, or remove it and connect it again, which gives Read to whoever connects it.')
+    expect(text(html)).toContain('Nobody in Support can read this mailbox any more, so it does not sync. Read is given only by someone who reads it: an owner of Support can remove the mailbox, and delete it for good to connect it again, which gives Read to whoever connects it.')
     expect(box(html, BEA, 'read')).toContain('disabled')
   })
 

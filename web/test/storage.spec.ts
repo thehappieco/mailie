@@ -92,6 +92,21 @@ describe('the Storage section', () => {
     ])
   })
 
+  it('says a mailbox recovered after it was removed keeps what was indexed while its sync is paused', async () => {
+    const answer: Storage = {
+      mailboxes: [{ account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 1284, bytes: 52_000_000 }],
+      total: { messages: 1284, bytes: 52_000_000 },
+    }
+    const { accounts, storage } = await signedIn(({ path }) => {
+      if (path === '/v1/me/storage') return json(answer)
+      return json([account({ state: 'active', email: 'ana@gmail.com', sync: syncOff({ held: true, held_since: 1_790_000_000 }) })])
+    })
+    await accounts.loadAccounts()
+    await storage.loadStorage()
+    const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
+    expect(rows).toEqual(['ana@gmail.com Sync is paused since this mailbox was recovered, until it is turned on again. What was indexed is kept. Messages 1,284 Size 52 MB'])
+  })
+
   it('reads once more when asked while a read is in flight, and keeps the later answer', async () => {
     const answers: ((response: Response) => void)[] = []
     const { storage, fetch } = await signedIn(({ path }) => path === '/v1/me/storage' ? new Promise<Response>(done => { answers.push(done) }) : json([]))

@@ -6,8 +6,8 @@
 import { segment } from './endpoint'
 import { checked, request } from './http'
 import {
-  isAccount, isAccountList, isAddAccountResult, isAuthFlow, isFolderList,
-  type Account, type AddAccountRequest, type AddAccountResult, type AuthFlow, type FlowKind, type Folder,
+  isAccount, isAccountList, isAddAccountResult, isAuthFlow, isFolderList, isRemoval, isRemovedMailboxList,
+  type Account, type AddAccountRequest, type AddAccountResult, type AuthFlow, type FlowKind, type Folder, type Removal, type RemovedMailbox,
 } from './types'
 
 /**
@@ -49,12 +49,41 @@ export async function completeOAuth(token: string, redirectURL: string): Promise
 }
 
 /**
- * Removes a mailbox with its index. The server removes nothing unless the
- * id is repeated in ?confirm=: the console sends it once the person typed
- * the mailbox's address.
+ * Deleting a removed mailbox for good deletes its index and then compacts
+ * the files that held it; the route allows 150 s for that. The client waits
+ * a little longer, so the server's answer decides the outcome.
  */
-export async function removeAccount(token: string, id: string): Promise<void> {
-  await request<void>(`/v1/accounts/${segment(id)}`, { token, method: 'DELETE', query: { confirm: id } })
+export const PURGE_TIMEOUT_MS = 160_000
+
+/**
+ * Removes a mailbox. The server removes nothing unless the id is repeated in
+ * ?confirm=: the console sends it once the person typed the mailbox's
+ * address. The answer says what it did: kept 30 days, recoverable until when,
+ * or, for one that never connected, deleted at once. null is a daemon older
+ * than removed mailboxes, which answered nothing and deleted it at once.
+ */
+export async function removeAccount(token: string, id: string): Promise<Removal | null> {
+  const answer = await request<unknown>(`/v1/accounts/${segment(id)}`, { token, method: 'DELETE', query: { confirm: id } })
+  return answer === undefined ? null : checked(answer, isRemoval)
+}
+
+/** The removed mailboxes of a workspace, for its owners: the oldest removal first. */
+export async function listRemoved(token: string, workspace: string, signal?: AbortSignal): Promise<RemovedMailbox[]> {
+  return checked(await request(`/v1/workspaces/${segment(workspace)}/removed-mailboxes`, { token, signal }), isRemovedMailboxList)
+}
+
+/** Recovers a removed mailbox within its 30 days: the answer is the mailbox, live again, its sync held until it is turned on. */
+export async function recoverAccount(token: string, id: string): Promise<Account> {
+  return checked(await request(`/v1/accounts/${segment(id)}/recover`, { token, body: {} }), isAccount)
+}
+
+/**
+ * Deletes a removed mailbox for good. As with removing it, the server deletes
+ * nothing unless the id is repeated (in the body's confirm): the console
+ * sends it once the person typed the mailbox's address.
+ */
+export async function purgeAccount(token: string, id: string): Promise<void> {
+  await request<void>(`/v1/accounts/${segment(id)}/purge`, { token, body: { confirm: id }, timeoutMS: PURGE_TIMEOUT_MS })
 }
 
 export async function listFolders(token: string, id: string, signal?: AbortSignal): Promise<Folder[]> {

@@ -23,6 +23,7 @@ import {
   isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
   isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
   isGrantText, isMailboxKeyPair, isMailboxKeyState, isSealedGrant, isSealIDText, readsNow,
+  isPersonNoticeList, isRemoval, isRemovedMailboxList, type PersonNotice, type Removal, type RemovedMailbox,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
   type KeyMailbox, type KeySend, type MailboxAccess, type MailboxKeyPair, type MailboxKeyState, type McpAccess, type Me, type Member, type Provider,
   type SealedGrant, type ServerEvent, type SessionReply, type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace,
@@ -104,6 +105,11 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['grant_supplied', value => isSealedGrant(value, true)],
   ['first_key', value => isMailboxKeyPair(value, true)],
   ['new_key', value => isMailboxKeyPair(value, true)],
+  ['removal', value => isRemoval(value, true)],
+  ['removal_purged', value => isRemoval(value, true)],
+  ['removed_mailboxes', value => isRemovedMailboxList(value, true)],
+  ['notices', value => isPersonNoticeList(value, true)],
+  ['account_held', value => isAccount(value, true)],
 ]
 
 describe('the HTTP contract the Go handlers answer with', () => {
@@ -628,5 +634,56 @@ describe('the HTTP contract the Go handlers answer with', () => {
     const stored = fixture('account') as Account
     expect(isAccount({ ...stored, send: { available: false, reason: 'needs_reauth' } }, true)).toBe(true)
     expect(isAccount({ ...stored, send: { available: true, reason: 'needs_reauth' } }, true)).toBe(false)
+  })
+
+  it('answers a removal with until when the mailbox is kept, or that one that never connected was deleted at once', () => {
+    const kept = fixture('removal') as Removal
+    expect(kept.purged).toBe(false)
+    expect(kept.purge_after).toBeGreaterThan(0)
+    const purged = fixture('removal_purged') as Removal
+    expect(purged).toEqual({ account_id: purged.account_id, purged: true })
+    // Deleted at once keeps nothing, and a kept one always says until when.
+    expect(isRemoval({ ...purged, purge_after: kept.purge_after }, true)).toBe(false)
+    expect(isRemoval({ account_id: kept.account_id, purged: false }, true)).toBe(false)
+  })
+
+  it('lists a workspace’s removed mailboxes kept 30 days from their removal, with who would read one again', () => {
+    const removed = fixture('removed_mailboxes') as RemovedMailbox[]
+    expect(removed.length).toBeGreaterThan(0)
+    for (const item of removed) {
+      expect(item.purge_after - item.removed_at, item.id).toBe(30 * 86_400)
+      expect(item.removed_by, item.id).toMatch(/^usr_/)
+      expect(item.readers, item.id).toBeGreaterThanOrEqual(0)
+    }
+    // Its removal's answer and its listing name the same day it is deleted for good.
+    const kept = fixture('removal') as Removal
+    expect(removed.find(item => item.id === kept.account_id)?.purge_after).toBe(kept.purge_after)
+    expect(isRemovedMailboxList([{ ...removed[0]!, purge_after: removed[0]!.removed_at + 86_400 }], true)).toBe(false)
+  })
+
+  it('names a notice’s mailbox and where it stands, with until when it can be recovered only while it is kept', () => {
+    const notices = fixture('notices') as PersonNotice[]
+    expect(notices.length).toBeGreaterThan(0)
+    for (const notice of notices) {
+      expect(notice.id, notice.id).toMatch(/^mbe_[0-9a-f]{16}$/)
+      expect(notice.state === 'removed', notice.id).toBe(notice.recoverable_until !== undefined)
+    }
+    const removed = notices.find(notice => notice.kind === 'removed')!
+    expect(removed.mailbox).toContain('@')
+    expect(removed.recoverable_until).toBe((fixture('removal') as Removal).purge_after)
+    // Once deleted for good, nothing is recoverable any more.
+    expect(isPersonNoticeList([{ ...removed, state: 'deleted' }], true)).toBe(false)
+    expect(isPersonNoticeList([{ ...removed, kind: 'renamed' }], true)).toBe(false)
+  })
+
+  it('holds a recovered mailbox’s sync, never enabled while it is, and says since when', () => {
+    const held = fixture('account_held') as Account
+    expect(held.sync).toMatchObject({ enabled: false, held: true })
+    expect(held.sync.held_since).toBeGreaterThan(0)
+    expect(held.id).toBe((fixture('removal') as Removal).account_id)
+    // Every other account says nothing of a hold.
+    for (const name of ['account', 'account_icloud', 'account_syncing']) expect((fixture(name) as Account).sync, name).not.toHaveProperty('held')
+    expect(isAccountSync({ ...held.sync, enabled: true }, true)).toBe(false)
+    expect(isAccountSync({ ...held.sync, held_since: undefined }, true)).toBe(false)
   })
 })

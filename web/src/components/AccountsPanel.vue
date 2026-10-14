@@ -12,15 +12,19 @@
 // would only ever connect to their personal workspace, so it is not there;
 // an empty list says where their own mailboxes go, and shows it on request.
 // A team nothing can be used in (closed, or not offered by this server) shows
-// why instead of its mailboxes, which reach nobody.
+// why instead of its mailboxes, which reach nobody. Below the cards, the
+// workspace's owners see its removed mailboxes, kept 30 days, to recover or
+// delete for good (RemovedMailboxes); a mailbox recovered says on its card
+// that its sync is paused until someone who may turns it on.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
-import { accounts, dismissNotice, loadAccounts, openDetail } from '../state/accounts'
+import { accounts, dismissNotice, loadAccounts, openDetail, refreshRemoved } from '../state/accounts'
+import { noticesChanged } from '../state/notices'
 import { consent, loadConsent, needsConsent } from '../state/sync'
 import { directoryEntry, loadDirectory, loadMembers, team } from '../state/team'
 import { currentWorkspace, loadWorkspaces, selectWorkspace, workspaces } from '../state/workspaces'
-import { accessOf, administers, canLinkInto, grantSummary, waitsForKey, workspaceName, workspaceUnusable } from '../ui/access'
+import { accessOf, administers, canLinkInto, grantSummary, owns, waitsForKey, workspaceName, workspaceUnusable } from '../ui/access'
 import { describe } from '../ui/errors'
 import { count, since } from '../ui/format'
 import { t } from '../ui/i18n'
@@ -29,6 +33,7 @@ import { noticeText } from '../ui/notices'
 import AccountSheet from './AccountSheet.vue'
 import AddAccountDialog from './AddAccountDialog.vue'
 import AppIcon from './AppIcon.vue'
+import RemovedMailboxes from './RemovedMailboxes.vue'
 import StatusChip from './StatusChip.vue'
 import SyncConsentCard from './SyncConsentCard.vue'
 import SyncStatus from './SyncStatus.vue'
@@ -49,6 +54,8 @@ const teamName = computed(() => workspaceName(shown.value))
 const unusable = computed(() => workspaceUnusable(shown.value))
 /** An owner or an admin of the team shown, who manages every mailbox of it by that role. */
 const admin = computed(() => administers(shown.value))
+/** The workspace's owners see its removed mailboxes: the person of their personal workspace, an owner of a team. */
+const owner = computed(() => workspaces.supported && owns(shown.value) && !unusable.value)
 /**
  * Asked once there is a mailbox the person's agreement would sync: one of
  * their personal workspace (or any, on a server without workspaces), and
@@ -58,6 +65,8 @@ const admin = computed(() => administers(shown.value))
 const askConsent = computed(() => accounts.loaded && !inTeam.value && accounts.list.length > 0 && needsConsent() && !consent.dismissed)
 /** Syncing: active, and its agreement to sync stands. */
 const syncing = (account: Account) => account.state === 'active' && account.sync.enabled
+/** Active and recovered, its sync held until someone who may turns it on: its card says so. */
+const held = (account: Account) => account.state === 'active' && account.sync.held === true
 /** A team mailbox nobody can read: the directory its owners and admins read says so. */
 const nobodyReads = (account: Account) => admin.value && !!directoryEntry(account.id)?.no_reader
 const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: teamName.value }) : t('Your mailboxes'))
@@ -93,6 +102,8 @@ watch(unusable, (now, before) => {
 function refresh() {
   void loadWorkspaces()
   void loadAccounts()
+  refreshRemoved()
+  noticesChanged()
   if (!consent.loading && !consent.busy) void loadConsent()
   if (inTeam.value && admin.value && !unusable.value) {
     void loadMembers()
@@ -165,9 +176,9 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
           <div v-if="syncing(account) && account.sync.last_synced_at"><dt>{{ t('Last sync') }}</dt><dd>{{ since(account.sync.last_synced_at) }}</dd></div>
           <div v-if="account.access" class="grant"><dt>{{ t('Your access') }}</dt><dd>{{ grantSummary(account.access) }}</dd></div>
         </dl>
-        <SyncStatus v-if="syncing(account)" :account="account" />
+        <SyncStatus v-if="syncing(account) || held(account)" :account="account" />
         <p v-else class="account-note" :class="stateTone(account.state)"><AppIcon name="info" :size="15" />{{ stateDetail(account) }}</p>
-        <p v-if="nobodyReads(account)" class="account-note bad"><AppIcon name="alert" :size="15" />{{ t('Nobody can read this mailbox any more, so it does not sync. Remove it, or remove it and connect it again.') }}</p>
+        <p v-if="nobodyReads(account)" class="account-note bad"><AppIcon name="alert" :size="15" />{{ t('Nobody can read this mailbox any more, so it does not sync. An owner of the team can remove it, and delete it for good to connect it again.') }}</p>
         <p v-else-if="waitsForKey(account)" class="account-note warn"><AppIcon name="key" :size="15" />{{ inTeam ? t('You hold Read on this mailbox, but are waiting for its key. Anyone who reads it can hand it to you.') : t('This mailbox is waiting for its key. Create a new one from its details to read it again.') }}</p>
         <p v-else-if="!accessOf(account).read && admin" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You manage this mailbox by your role, but do not read it. Read comes only from an owner or an admin who reads it.') }}</p>
         <p v-else-if="!accessOf(account).read" class="account-note"><AppIcon name="eye-off" :size="15" />{{ t('You can see this mailbox, but not read it. Read comes only from an owner or an admin of the team who reads it.') }}</p>
@@ -189,6 +200,8 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
         <button v-if="personalID" class="ghost" type="button" @click="showPersonal"><AppIcon name="user" :size="18" />{{ t('Show your personal workspace') }}</button>
       </div>
     </section>
+
+    <RemovedMailboxes v-if="owner" />
 
     <AddAccountDialog v-if="dialog" :resume="dialog.resume" :return-focus="headingTarget" @close="dialog = null" />
     <AccountSheet v-if="detail" :account="detail" :return-focus="headingTarget" @authorize="authorize" />

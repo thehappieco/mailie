@@ -231,6 +231,15 @@ export interface AccountSync {
   /** A short fixed class (needs_reauth, rate_limited, …), never the server's words. */
   error_class?: string
   next_retry_at?: number
+  /**
+   * A mailbox recovered after it was removed, whose sync waits, whatever its
+   * agreement says, until someone who may turns it on: its person for a
+   * personal mailbox, an owner or an admin of a team for a team's. Only ever
+   * true, never beside enabled; held_since says when it was recovered.
+   * Absent from a daemon older than removed mailboxes.
+   */
+  held?: true
+  held_since?: number
 }
 /** A person's answer about sync, and the revision of the text the server asks about. */
 export interface SyncConsent { consented: boolean; version?: string; consented_at?: number; current_version: string }
@@ -620,8 +629,63 @@ export interface MailboxAccess {
   /** The live API keys holding something on it. Absent from a daemon older than workspace keys. */
   keys?: MailboxKey[]
 }
-/** The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on to the sync text revision shown. */
+/**
+ * The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on
+ * to the sync text revision shown; and, from a personal mailbox's person,
+ * {enabled: true} alone, which lifts a recovery's hold and nothing more.
+ */
 export interface MailboxSyncRequest { enabled: boolean; version?: string }
+/**
+ * What removing a mailbox did (DELETE /v1/accounts/{id}): kept 30 days,
+ * recoverable by its workspace's owners until purge_after (unix seconds),
+ * then deleted for good; or, for one that never connected, deleted at once
+ * (purged), with nothing kept.
+ */
+export interface Removal { account_id: string; purged: boolean; purge_after?: number }
+/**
+ * A removed mailbox, as its workspace's owners see it
+ * (GET /v1/workspaces/{id}/removed-mailboxes): when it was removed and by
+ * whom ("usr_…", "key:<prefix>" or "cli"; absent once that person is
+ * deleted), until when it is kept, whether it keeps an index a recovery
+ * catches up from (none once its sync was turned off meanwhile), and how
+ * many people would read it again. A team mailbox nobody would read is not
+ * recovered: it is deleted for good and connected again.
+ */
+export interface RemovedMailbox {
+  id: string
+  workspace_id: string
+  email: string
+  display_name?: string
+  provider: ProviderID | (string & {})
+  removed_at: number
+  removed_by?: string
+  purge_after: number
+  index_kept: boolean
+  readers: number
+}
+/** What a person's notice is about: a mailbox they read removed, or a team mailbox's sync turned off. */
+export type NoticeKind = 'removed' | 'sync_off'
+/** Where the mailbox a notice is about stands now: removed (kept, recoverable), deleted for good, or live. */
+export type NoticeStanding = 'removed' | 'deleted' | 'live'
+/**
+ * One of a person's notices (GET /v1/me/notices): something someone else
+ * did to a mailbox they read, kept until they dismiss it. mailbox is its
+ * address while it is kept, and a masked hint of it ("a…@example.com"), or
+ * its name, once it is deleted for good; workspace_name is a team's, absent
+ * for a personal workspace and once the team is gone; recoverable_until,
+ * for a mailbox removed and still kept, is when it is deleted for good.
+ */
+export interface PersonNotice {
+  id: string
+  kind: NoticeKind | (string & {})
+  workspace_id: string
+  workspace_name?: string
+  account_id: string
+  mailbox: string
+  at: number
+  state: NoticeStanding | (string & {})
+  recoverable_until?: number
+}
 /**
  * An invitation into a team, as its owners and admins see it. url, the link
  * to send, is in the answer that creates it and nowhere else.
@@ -659,6 +723,8 @@ export const accountStates: readonly AccountState[] = ['pending_auth', 'active',
 export const flowKinds: readonly FlowKind[] = ['web', 'loopback', 'pasted', 'device']
 export const syncStates: readonly SyncState[] = ['off', 'initial', 'live', 'backoff', 'stopped']
 export const archiveReasons: readonly ArchiveReason[] = ['all_mail_hidden']
+export const noticeKinds: readonly NoticeKind[] = ['removed', 'sync_off']
+export const noticeStandings: readonly NoticeStanding[] = ['removed', 'deleted', 'live']
 export const keyScopes: readonly KeyScope[] = ['read', 'write', 'send']
 export const keyOrigins: readonly KeyOrigin[] = ['person', 'person-all']
 export const keyStopReasons: readonly KeyStopReason[] = ['manual', 'creator_left', 'creator_disabled', 'creator_suspended',
@@ -840,11 +906,14 @@ export function isAccountActions(v: unknown, strict = false): v is AccountAction
 }
 
 export function isAccountSync(v: unknown, strict = false): v is AccountSync {
-  return record(v) && known(v, ['enabled', 'running', 'state', 'tier', 'folders_synced', 'folders_total', 'messages', 'initial_progress', 'last_synced_at', 'error_class', 'next_retry_at'], strict)
+  return record(v) && known(v, ['enabled', 'running', 'state', 'tier', 'folders_synced', 'folders_total', 'messages', 'initial_progress', 'last_synced_at', 'error_class', 'next_retry_at', 'held', 'held_since'], strict)
     && flag(v.enabled) && flag(v.running) && (strict ? oneOf(syncStates)(v.state) : filled(v.state, 32))
     && optional(v.tier, x => text(x, 32)) && counter(v.folders_synced) && counter(v.folders_total) && counter(v.messages)
     && counter(v.initial_progress) && v.initial_progress <= 100
     && optional(v.last_synced_at, seconds) && optional(v.error_class, x => text(x, 64)) && optional(v.next_retry_at, seconds)
+    && optional(v.held, x => x === true) && optional(v.held_since, seconds)
+    // A hold says since when, and holds a sync that is not enabled.
+    && (!strict || ((v.held === true) === (v.held_since !== undefined) && (v.held !== true || v.enabled === false)))
 }
 
 export function isSyncConsent(v: unknown, strict = false): v is SyncConsent {
@@ -1112,6 +1181,39 @@ export function isTeamInvite(v: unknown, strict = false): v is TeamInvite {
 
 export function isTeamInviteList(v: unknown, strict = false): v is TeamInvite[] {
   return Array.isArray(v) && v.every(item => isTeamInvite(item, strict))
+}
+
+export function isRemoval(v: unknown, strict = false): v is Removal {
+  return record(v) && known(v, ['account_id', 'purged', 'purge_after'], strict)
+    && pathID(v.account_id) && flag(v.purged) && optional(v.purge_after, seconds)
+    // Kept says until when; deleted at once keeps nothing.
+    && (!strict || (v.purged === (v.purge_after === undefined)))
+}
+
+export function isRemovedMailbox(v: unknown, strict = false): v is RemovedMailbox {
+  return record(v) && known(v, ['id', 'workspace_id', 'email', 'display_name', 'provider', 'removed_at', 'removed_by', 'purge_after', 'index_kept', 'readers'], strict)
+    && pathID(v.id) && pathID(v.workspace_id) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
+    && word(providerIDs, strict)(v.provider) && seconds(v.removed_at) && optional(v.removed_by, actor)
+    && seconds(v.purge_after) && flag(v.index_kept) && counter(v.readers)
+    // Kept 30 days at least, from its removal.
+    && (!strict || (v.purge_after as number) - (v.removed_at as number) >= 30 * 86_400)
+}
+
+export function isRemovedMailboxList(v: unknown, strict = false): v is RemovedMailbox[] {
+  return Array.isArray(v) && v.every(item => isRemovedMailbox(item, strict))
+}
+
+export function isPersonNotice(v: unknown, strict = false): v is PersonNotice {
+  return record(v) && known(v, ['id', 'kind', 'workspace_id', 'workspace_name', 'account_id', 'mailbox', 'at', 'state', 'recoverable_until'], strict)
+    && pathID(v.id) && word(noticeKinds, strict)(v.kind) && pathID(v.workspace_id) && optional(v.workspace_name, x => filled(x, 1024))
+    && pathID(v.account_id) && filled(v.mailbox, 1024) && seconds(v.at) && word(noticeStandings, strict)(v.state)
+    && optional(v.recoverable_until, seconds)
+    // Only a mailbox removed and kept says until when it is recovered, and it always does.
+    && (!strict || ((v.state === 'removed') === (v.recoverable_until !== undefined)))
+}
+
+export function isPersonNoticeList(v: unknown, strict = false): v is PersonNotice[] {
+  return Array.isArray(v) && v.every(item => isPersonNotice(item, strict))
 }
 
 export function isErrorBody(v: unknown, strict = false): v is ErrorBody {

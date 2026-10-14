@@ -352,6 +352,50 @@ describe('the live stream', () => {
     live.stopLive()
   })
 
+  it('reads the person’s notices again when the stream says they were given one, and never before they were read', async () => {
+    const notice = { id: 'mbe_0000000000000001', kind: 'removed', workspace_id: 'wsp_000000000000bbbb', workspace_name: 'Support', account_id: 'acc_0000000000000001', mailbox: 'suporte@example.test', at: 1_790_000_000, state: 'removed', recoverable_until: 1_792_592_000 }
+    let given: object[] = []
+    const { live, fetch, streams } = await console_(({ path }) => {
+      if (path === '/v1/me/notices') return json(given)
+      if (path === '/v1/workspaces') return failure('not_found', 404)
+      return json([])
+    })
+    const notices = await import('../src/state/notices')
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    // Not read yet: a notice event alone asks for nothing; the console reads them when it starts.
+    streams[0]!.send('event: notice\ndata: {}\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(gets(fetch, '/v1/me/notices')).toBe(0)
+    await notices.loadNotices()
+    expect(notices.notices.list).toEqual([])
+    // Like access, a notice has no id: it is not a journal entry.
+    given = [notice]
+    streams[0]!.send('event: notice\ndata: {}\n\n')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(gets(fetch, '/v1/me/notices')).toBe(2)
+    expect(notices.notices.list.map(item => item.id)).toEqual([notice.id])
+    expect(live.lastEventID()).toBe('')
+    live.stopLive()
+  })
+
+  it('reads the workspace’s removed mailboxes and the person’s notices again when access changes, once they were read', async () => {
+    const list = [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 }]
+    const removedPath = '/v1/workspaces/wsp_000000000000aaaa/removed-mailboxes'
+    const { accounts, live, workspaces, fetch, streams } = await console_(({ path }) => json(path === '/v1/workspaces' ? list : []))
+    const notices = await import('../src/state/notices')
+    await workspaces.loadWorkspaces()
+    await Promise.all([accounts.loadRemoved(), notices.loadNotices()])
+    live.startLive()
+    await vi.advanceTimersByTimeAsync(0)
+    expect([gets(fetch, removedPath), gets(fetch, '/v1/me/notices')]).toEqual([1, 1])
+    // A mailbox removed or recovered elsewhere.
+    streams[0]!.send('event: access\ndata: {"account_id":"acc_0000000000000001","read":false}\n\n')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect([gets(fetch, removedPath), gets(fetch, '/v1/me/notices')]).toEqual([2, 2])
+    live.stopLive()
+  })
+
   it('reads the person’s workspaces again when the stream of one they are no longer in ends, and follows where they are', async () => {
     let list = [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1 },
       { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'member', status: 'active', created_at: 1 }]
