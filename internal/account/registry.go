@@ -67,6 +67,9 @@ type Registry struct {
 	mu        sync.Mutex
 	mailboxes map[string]provider.Mailbox
 	sources   map[string]*tokenSource
+	// forgets counts the calls to forget, guarded by mu: a mailbox built
+	// while one ran is built again, never cached (Mailbox).
+	forgets uint64
 	// grantMu orders storing a new grant against recording that the mail
 	// server refused the old one, so a refusal noticed late cannot stop an
 	// account whose new grant was stored meanwhile. Taken before mu, never
@@ -1172,16 +1175,58 @@ func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oaut
 // It builds one only through Get, so a removed account gets none
 // (ErrNotFound): every IMAP and SMTP connection and every token refresh
 // starts here, and none reaches a removed mailbox. One built before the
-// removal is dropped with the rest of what is cached for it (forget).
+// removal is dropped with the rest of what is cached for it (forget), and
+// one being built while it was is built again, never cached: a removal
+// commits before its forget, so the second build's Get finds nothing.
 func (r *Registry) Mailbox(ctx context.Context, accountID string) (provider.Mailbox, error) {
-	r.mu.Lock()
-	if mb, ok := r.mailboxes[accountID]; ok {
+	for {
+		r.mu.Lock()
+		if mb, ok := r.mailboxes[accountID]; ok {
+			r.mu.Unlock()
+			return mb, nil
+		}
+		forgets := r.forgets
 		r.mu.Unlock()
-		return mb, nil
-	}
-	r.mu.Unlock()
 
+		mb, err := r.build(ctx, accountID)
+		if err != nil {
+			return nil, err
+		}
+
+		r.mu.Lock()
+		// Another goroutine may have built one meanwhile; one mailbox per
+		// account keeps the connection budget meaningful.
+		if existing, ok := r.mailboxes[accountID]; ok {
+			r.mu.Unlock()
+			return existing, nil
+		}
+		if r.forgets == forgets {
+			r.mailboxes[accountID] = mb
+			r.mu.Unlock()
+			return mb, nil
+		}
+		r.mu.Unlock()
+		// Something cached was let go of while this one was being built —
+		// this account's, removed or given a new grant (which also retired
+		// the token source it was built on), or another's: it is built
+		// again from what the database says now.
+		//nolint:errcheck // a mailbox never opened, nothing to report
+		_ = mb.Close()
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
+}
+
+// build builds an account's provider mailbox from what the database says
+// now. An account Get does not find, removed or deleted, gets none, and
+// nothing is kept for it: a token source a build registered for it after it
+// was let go of is let go of too.
+func (r *Registry) build(ctx context.Context, accountID string) (provider.Mailbox, error) {
 	a, err := r.repo.Get(ctx, accountID)
+	if errors.Is(err, ErrNotFound) {
+		r.forget(accountID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1197,25 +1242,10 @@ func (r *Registry) Mailbox(ctx context.Context, accountID string) (provider.Mail
 	if err != nil {
 		return nil, err
 	}
-	var mb provider.Mailbox = imapMailbox
 	if a.UsesOAuth() {
-		mb = &guardedMailbox{Mailbox: imapMailbox, registry: r, accountID: a.ID}
+		return &guardedMailbox{Mailbox: imapMailbox, registry: r, accountID: a.ID}, nil
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// Another goroutine may have built one meanwhile; one mailbox per account
-	// keeps the connection budget meaningful.
-	if existing, ok := r.mailboxes[accountID]; ok {
-		return existing, nil
-	}
-	if source, ok := creds.Tokens.(*tokenSource); ok && source.retired.Load() {
-		// The grant it was built on was replaced while it was being built:
-		// good for this one use, not worth keeping.
-		return mb, nil
-	}
-	r.mailboxes[accountID] = mb
-	return mb, nil
+	return imapMailbox, nil
 }
 
 // guardedMailbox is an OAuth account's mailbox, which notices when its grant
@@ -1422,9 +1452,13 @@ func (r *Registry) StopFlowsBy(ctx context.Context, userID string) error {
 	return nil
 }
 
+// forget lets go of what is cached for an account: its mailbox, and its
+// token source, retired. A mailbox being built meanwhile is built again
+// (Mailbox).
 func (r *Registry) forget(accountID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.forgets++
 	if mb, ok := r.mailboxes[accountID]; ok {
 		//nolint:errcheck // dropping a cached factory, nothing to report
 		_ = mb.Close()

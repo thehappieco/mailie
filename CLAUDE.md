@@ -118,13 +118,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/account` — accounts, their encrypted credentials, OAuth flows and the registry of
   token sources. Removing a mailbox keeps it 30 days (`removal.go`; `removed_at`, `purge_after`):
   `Get` and `Visibility` leave it out, so nothing finds, dials or refreshes it (`Registry.Mailbox`
-  builds one only through `Get`), and only `GetRemoved`/`ListRemoved` read it; what keys held on
-  it and its consent attempts go at once. A recovery clears the removal and holds its sync
-  (`sync_held_at`) until someone who may turns it on. The hourly sweep, at start too, deletes it
-  for good past its 30 days, never early, a closed team's included (`PurgeExpired`); a link that
-  never connected (no credentials) is deleted at once, and so are the removed mailboxes that go
-  with a person closed, their journal entries with them. Its address stays taken in its workspace
-  meanwhile (`ErrRemovedDuplicate`).
+  builds one only through `Get`, and caches none built while a removal let go of it), and only
+  `GetRemoved`/`ListRemoved` read it; what keys held on it and its consent attempts go at once. A
+  recovery clears the removal and holds its sync (`sync_held_at`) until someone who may turns it
+  on. The hourly sweep, at start too, deletes it for good past its 30 days, never early, a closed
+  team's included (`PurgeExpired`); a link that never connected (no credentials) is deleted at
+  once, and so are the removed mailboxes that go with a person closed, their journal entries with
+  them. Its address stays taken in its workspace meanwhile (`ErrRemovedDuplicate`).
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)

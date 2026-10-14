@@ -20,7 +20,9 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider"
+	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/store/storetest"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -109,6 +111,69 @@ func TestARemovedMailboxIsNeverDialledNorRefreshed(t *testing.T) {
 	recoverBySQL(t, db, a.ID)
 	if _, err := registry.Mailbox(ctx, a.ID); err != nil {
 		t.Errorf("the recovered mailbox: %v", err)
+	}
+}
+
+// gatedSealer is a keyring whose next Open, once armed, waits to be let go:
+// a mailbox's build held between reading the account and opening its
+// credentials.
+type gatedSealer struct {
+	secrets.Sealer
+	armed   atomic.Bool
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (g *gatedSealer) Open(ctx context.Context, b secrets.Binding, envelope []byte) ([]byte, error) {
+	if g.armed.CompareAndSwap(true, false) {
+		close(g.entered)
+		<-g.release
+	}
+	return g.Sealer.Open(ctx, b, envelope)
+}
+
+func TestAMailboxBeingBuiltWhenItsAccountIsRemovedIsNeverKept(t *testing.T) {
+	keyring, err := secrets.NewKeyring(1, map[uint8][]byte{1: bytesOf(0xA1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &gatedSealer{Sealer: keyring, entered: make(chan struct{}), release: make(chan struct{})}
+	db := storetest.New(t)
+	repo := account.NewRepository(db, gate)
+	ctx := t.Context()
+	registry := account.NewRegistry(ctx, repo, account.RegistryOptions{})
+	t.Cleanup(func() { _ = registry.Close() })
+	a, err := repo.Create(ctx, account.Account{
+		ID: "acc_00000000000000a2", Email: "ops@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
+		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465,
+		SMTPTLS: "implicit", LoginUser: "ops@mail.example",
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SavePassword(ctx, a.ID, "hunter2"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A use of the mailbox reads the account, live, and is held opening its
+	// password while the mailbox is removed.
+	gate.armed.Store(true)
+	built := make(chan error, 1)
+	go func() {
+		_, err := registry.Mailbox(ctx, a.ID)
+		built <- err
+	}()
+	<-gate.entered
+	if _, err := registry.Remove(ctx, a.ID, "cli", nil); err != nil {
+		t.Fatal(err)
+	}
+	close(gate.release)
+	if err := <-built; !errors.Is(err, account.ErrNotFound) {
+		t.Errorf("the use under way when it was removed: %v, want ErrNotFound", err)
+	}
+	// Nothing was kept for it: every later use finds nothing either.
+	if _, err := registry.Mailbox(ctx, a.ID); !errors.Is(err, account.ErrNotFound) {
+		t.Errorf("a use after the removal: %v, want ErrNotFound", err)
 	}
 }
 
