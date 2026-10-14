@@ -135,12 +135,17 @@ async function destroy() {
   await removeAccount(props.account.id)
 }
 function requestSync() { void syncNow(props.account.id) }
+/** Says what lifting the pause did: it syncs again, or, without their agreement to sync, it waits for it. */
 async function resume() {
   if (resuming.value) return
   resuming.value = true
-  resumeProblem.value = await resumeSync(props.account.id)
+  const result = await resumeSync(props.account.id)
   resuming.value = false
-  if (!resumeProblem.value) announce(t('Sync of {email} is on again.', { email: props.account.email }))
+  resumeProblem.value = result && 'failure' in result ? result.failure : null
+  if (!result || 'failure' in result) return
+  announce(result.syncing
+    ? t('Sync of {email} is on again.', { email: props.account.email })
+    : t('{email} is no longer paused. Nothing of it syncs until you turn on sync.', { email: props.account.email }))
 }
 /** Back to the accounts page, where the consent card is, with the focus on it. */
 function turnOn() {

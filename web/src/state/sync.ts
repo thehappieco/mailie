@@ -186,19 +186,21 @@ export async function withdrawConsent(): Promise<boolean> {
  * (docs/workspaces.md, "Removed mailboxes"): {enabled: true} alone, which
  * lifts the hold and nothing more. It syncs under their own agreement, when
  * they have given it, catching up from the index it kept. The card takes the
- * sync the answer says. A team mailbox's hold is lifted by turning its sync
- * on for the team (state/team.ts switchTeamSync).
+ * sync the answer says, and the answer is what it became: syncing, or, when
+ * they have not agreed to sync, its pause lifted and nothing syncing until
+ * they do. Null when the session changed meanwhile. A team mailbox's hold is
+ * lifted by turning its sync on for the team (state/team.ts switchTeamSync).
  */
-export async function resumeSync(id: string): Promise<Failure | null> {
+export async function resumeSync(id: string): Promise<{ failure: Failure } | { syncing: boolean } | null> {
   const ok = current()
   try {
     const status = await authorized(token => api.setMailboxSync(token, id, { enabled: true }))
     if (!ok()) return null
     mergeSync(id, status)
     forgetFolders(id)
-    return null
+    return { syncing: status.enabled }
   } catch (error) {
-    return failure('resume-sync', error)
+    return ok() ? { failure: failure('resume-sync', error) } : null
   }
 }
 

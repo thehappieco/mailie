@@ -17,6 +17,7 @@ import { accounts, loadAccounts, loadProviders, openDetail, removed } from '../s
 import { adoptSession, signOut } from '../src/state/session'
 import { loadConsent } from '../src/state/sync'
 import { loadWorkspaces, selectWorkspace } from '../src/state/workspaces'
+import { announcement } from '../src/ui/announce'
 import { account, failure, json, reply, serve, stubPage, syncing, syncOff, type Route } from './support'
 
 const PERSONAL = 'wsp_000000000000aaaa'
@@ -273,5 +274,29 @@ describe('a personal mailbox recovered', () => {
     await vi.waitFor(() => expect(words(find('.account-card')!)).toContain('Indexing the last 90 days, newest first.'))
     expect(words(find('.account-card')!)).not.toContain('Paused since it was recovered')
     expect(find('.sheet button', 'Turn sync on again')).toBeNull()
+    expect(announcement.value).toBe('Sync of ana@gmail.example is on again.')
+  })
+
+  it('says, to a person who has not agreed to sync, that lifting the pause syncs nothing until they turn sync on', async () => {
+    const mine = recovered(kept('acc_mine', 'ana@gmail.example', { workspace_id: PERSONAL }))
+    list = [mine]
+    await signedIn('member', PERSONAL, ({ path, method }) => {
+      // As the daemon answers: the hold lifted, and nothing syncing without her agreement.
+      if (path === '/v1/accounts/acc_mine/sync' && method === 'PUT') {
+        list = [{ ...mine, sync: syncOff() }]
+        return json(syncOff())
+      }
+      if (path === '/v1/me/sync-consent') return json({ consented: false, current_version: SYNC_TEXT_VERSION })
+      return failure('not_found', 404)
+    })
+    await Promise.all([loadAccounts(), loadConsent()])
+    mounted = mount(AccountsPanel)
+    await flush()
+    openDetail('acc_mine')
+    await flush()
+    await click(find('.sheet button', 'Turn sync on again'))
+    await vi.waitFor(() => expect(announcement.value).toBe('ana@gmail.example is no longer paused. Nothing of it syncs until you turn on sync.'))
+    expect(words(find('.sheet')!)).toContain('Sync is off. Nothing from this mailbox is stored.')
+    expect(find('.sheet button', 'Turn on sync…')).not.toBeNull()
   })
 })
