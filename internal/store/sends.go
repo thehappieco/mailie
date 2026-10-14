@@ -449,13 +449,14 @@ func keySender(createdBy string) string {
 
 // SendsBy lists the send records of one sender ("key:<prefix>"), newest
 // first, at most limit: every one, or with workspaceID those from that
-// workspace's mailboxes.
+// workspace's mailboxes. A removed mailbox's are left out: it is found by
+// nobody while it is kept, and they come back with a recovery.
 func (s *Store) SendsBy(ctx context.Context, createdBy, workspaceID string, limit int) ([]Send, error) {
 	rows, err := s.r.QueryContext(ctx,
 		`SELECT s.account_id, s.idempotency_key, s.compose_hash, s.message_id_hdr, s.state, s.error, s.attempts,
 		        s.recipients, s.sent_copy_state, s.created_by, s.user_id, s.created_at, s.updated_at, s.sent_at
 		   FROM sends s JOIN accounts a ON a.id = s.account_id
-		  WHERE s.created_by = ?1 AND (?2 = '' OR a.workspace_id = ?2)
+		  WHERE s.created_by = ?1 AND (?2 = '' OR a.workspace_id = ?2) AND a.removed_at = 0
 		  ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?3`, createdBy, workspaceID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("store: list sends: %w", err)

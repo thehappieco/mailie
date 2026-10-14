@@ -404,8 +404,8 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 
 - **Kept, and used by nothing.** A removed mailbox stays with its credentials, folders, messages,
   drafts, sends, key, grants and consent, and reaches nobody, its owners and the operator included:
-  it is not listed, and every route about it answers `404`, but for what its owners do to a removed
-  mailbox below. It is never dialled nor refreshed
+  it is not listed, nor are a key's sends from it in that key's log, and every route about it
+  answers `404`, but for what its owners do to a removed mailbox below. It is never dialled nor refreshed
   (`Registry.Mailbox` builds a mailbox only through `Repository.Get`, which leaves it out), syncs
   nothing, and has no reader (`store.LiveSQL` in the one rule), so it protects none: its readers may
   leave the team, be disabled or be deleted meanwhile. Nothing is granted, keyed or given on it (the

@@ -34,6 +34,22 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 	ops := f.mailbox(t, admin(), "ops@mail.example")
 	f.seedIndex(t, tm.shared, "Zebra")
 	f.seedIndex(t, own, "Okapi")
+	// A send the key made from it, which its team's owners and admins see in
+	// the key's log.
+	f.exec(t, `INSERT INTO sends(account_id, idempotency_key, compose_hash, message_id_hdr, state, recipients,
+		created_by, user_id, created_at, updated_at) VALUES (?, 'k-1', 'h', 'm@x', 'sent', 1, ?, '',
+		unixepoch(), unixepoch())`, tm.shared, "key:"+created.Prefix)
+	keySends := func(p service.Principal) []service.SendStatus {
+		t.Helper()
+		sends, err := f.svc.ListKeySends(ctx, p, tm.id, created.Prefix)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sends
+	}
+	if n := len(keySends(tm.carol)); n != 1 {
+		t.Fatalf("before: Carol sees %d of the key's sends", n)
+	}
 	type use struct {
 		who string
 		p   service.Principal
@@ -110,6 +126,12 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 			t.Errorf("%s's directory of the team lists %+v", name, directory)
 		}
 	}
+	// Nor what a key sent from it, to the team's owners and admins.
+	for name, p := range map[string]service.Principal{"Ana": tm.ana, "Carol": tm.carol} {
+		if sends := keySends(p); len(sends) != 0 {
+			t.Errorf("%s sees the key's sends from the removed mailbox: %+v", name, sends)
+		}
+	}
 	listed, err := f.svc.ListWorkspaces(ctx, admin())
 	if err != nil {
 		t.Fatal(err)
@@ -125,6 +147,9 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 		WHERE id = ?`, tm.shared)
 	if a := accessOf(t, f, tm.bea, tm.shared); !a.Access.Read {
 		t.Errorf("recovered, Bea holds %+v on it", a.Access)
+	}
+	if n := len(keySends(tm.carol)); n != 1 {
+		t.Errorf("recovered, Carol sees %d of the key's sends from it", n)
 	}
 }
 
