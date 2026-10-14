@@ -242,13 +242,14 @@ func accountAuthorize(ctx context.Context, cfg config.Config, args []string) err
 	fs := flag.NewFlagSet("account authorize", flag.ContinueOnError)
 	paste := fs.Bool("paste", false, "print the URL and wait for the redirect to be pasted back")
 	device := fs.Bool("device", false, "show a code to type on another device")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(rest) != 1 {
 		return errors.New("account authorize: give exactly one account id")
 	}
-	accountID := fs.Arg(0)
+	accountID := rest[0]
 
 	kind := "loopback"
 	switch {
@@ -364,13 +365,14 @@ func orDash(s string) string {
 func accountRemove(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account remove", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(rest) != 1 {
 		return errors.New("account remove: give exactly one account id")
 	}
-	accountID := fs.Arg(0)
+	accountID := rest[0]
 
 	if !*yes && !confirmed(fmt.Sprintf("Remove %s? It is kept 30 days, used by nothing and recoverable, "+
 		"and then deleted for good with its stored credentials and everything indexed for it.", accountID)) {
@@ -461,13 +463,14 @@ func accountRecover(ctx context.Context, cfg config.Config, args []string) error
 func accountPurge(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account purge", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 1 {
+	if len(rest) != 1 {
 		return errors.New("account purge: give exactly one account id")
 	}
-	accountID := fs.Arg(0)
+	accountID := rest[0]
 	if !*yes && !confirmed(fmt.Sprintf("Delete the removed mailbox %s for good, with its stored credentials and "+
 		"everything indexed for it? Nothing brings it back.", accountID)) {
 		return nil
@@ -479,6 +482,24 @@ func accountPurge(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	fmt.Fprintln(os.Stderr, "deleted for good")
 	return nil
+}
+
+// parseInterspersed parses args with fs, its flags before or after the
+// arguments — `account remove ID --yes` as well as `account remove --yes
+// ID` — and returns the arguments. The flag package stops at the first
+// argument, which would leave a flag written after an id unread.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positional, nil
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
 }
 
 // confirmed asks a yes-or-no question on the terminal; anything but y is a
@@ -527,19 +548,18 @@ type syncJSON struct {
 func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account sync", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation before switching sync off")
-	if err := fs.Parse(args); err != nil {
+	rest, err := parseInterspersed(fs, args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 2 {
+	if len(rest) != 2 {
 		return fmt.Errorf("%w: account sync ID status|now|on|off", errUsage)
 	}
-	path := "/v1/accounts/" + url.PathEscape(fs.Arg(0)) + "/sync"
+	accountID := rest[0]
+	path := "/v1/accounts/" + url.PathEscape(accountID) + "/sync"
 
-	var (
-		raw []byte
-		err error
-	)
-	switch fs.Arg(1) {
+	var raw []byte
+	switch rest[1] {
 	case "status":
 		raw, err = adminGet(ctx, cfg, path)
 	case "now":
@@ -549,7 +569,7 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	case "off":
 		// Switching off deletes the account's index, as withdrawing consent
 		// does for a person's mailboxes.
-		if !*yes && !confirmed(fmt.Sprintf("Switch sync off for %s and delete everything indexed for it?", fs.Arg(0))) {
+		if !*yes && !confirmed(fmt.Sprintf("Switch sync off for %s and delete everything indexed for it?", accountID)) {
 			return nil
 		}
 		raw, err = adminDo(ctx, cfg, http.MethodPut, path, []byte(`{"enabled":false}`))
@@ -573,7 +593,7 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	if st.Held {
 		fmt.Printf("sync held since %s, when it was recovered; `mailserver account sync %s on` turns it on\n",
-			stamp(st.HeldSince), fs.Arg(0))
+			stamp(st.HeldSince), accountID)
 		return nil
 	}
 	fmt.Printf("sync %s, %s", enabled, st.State)

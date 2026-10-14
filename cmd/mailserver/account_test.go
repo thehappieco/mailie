@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"flag"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -178,8 +179,9 @@ func TestTheOperatorRemovesRecoversAndDeletesForGoodFromTheCommandLine(t *testin
 	}
 
 	// Removed: kept 30 days, and the command says until when and how to
-	// bring it back or finish it.
-	_, said := command("remove", "--yes", kept)
+	// bring it back or finish it. Written as the usage writes it, the flag
+	// after the id.
+	_, said := command("remove", kept, "--yes")
 	purgeAfter, _, found := removal(t, db, kept)
 	if !found || purgeAfter == 0 {
 		t.Fatalf("the removed mailbox: purge_after %d, found %v", purgeAfter, found)
@@ -240,7 +242,7 @@ func TestTheOperatorRemovesRecoversAndDeletesForGoodFromTheCommandLine(t *testin
 		t.Errorf("deleting a live mailbox for good: %v", err)
 	}
 	command("remove", "--yes", kept)
-	if _, said := command("purge", "--yes", kept); !strings.Contains(said, "deleted for good") {
+	if _, said := command("purge", kept, "--yes"); !strings.Contains(said, "deleted for good") {
 		t.Errorf("account purge said %q", said)
 	}
 	if _, _, found := removal(t, db, kept); found {
@@ -296,5 +298,33 @@ func TestTheOperatorDeletesAPersonsRemovedMailboxForGoodAndNeverRecoversIt(t *te
 	}
 	if _, _, found := removal(t, db, mine); found {
 		t.Error("the operator's deletion for good left the mailbox")
+	}
+}
+
+func TestAnAccountCommandReadsItsFlagsBeforeOrAfterTheID(t *testing.T) {
+	for _, args := range [][]string{
+		{"acc_00000000000000b1", "--yes"},
+		{"--yes", "acc_00000000000000b1"},
+		{"acc_00000000000000b1", "-yes=true"},
+	} {
+		fs := flag.NewFlagSet("account remove", flag.ContinueOnError)
+		yes := fs.Bool("yes", false, "")
+		rest, err := parseInterspersed(fs, args)
+		if err != nil || !*yes || len(rest) != 1 || rest[0] != "acc_00000000000000b1" {
+			t.Errorf("%q: yes %v, arguments %q (%v)", args, *yes, rest, err)
+		}
+	}
+	// Two arguments around a flag stay two, in their order.
+	fs := flag.NewFlagSet("account sync", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "")
+	rest, err := parseInterspersed(fs, []string{"acc_00000000000000b1", "--yes", "off"})
+	if err != nil || !*yes || strings.Join(rest, " ") != "acc_00000000000000b1 off" {
+		t.Errorf("account sync ID --yes off: yes %v, arguments %q (%v)", *yes, rest, err)
+	}
+	// Without a flag, nothing changes.
+	fs = flag.NewFlagSet("account remove", flag.ContinueOnError)
+	yes = fs.Bool("yes", false, "")
+	if rest, err := parseInterspersed(fs, []string{"acc_00000000000000b1"}); err != nil || *yes || len(rest) != 1 {
+		t.Errorf("account remove ID: yes %v, arguments %q (%v)", *yes, rest, err)
 	}
 }
