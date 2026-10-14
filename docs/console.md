@@ -651,11 +651,15 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   reading it: in a team, that anyone who reads it can hand the key over; a personal one, that its
   details offer a new key ([Mailbox keys](#mailbox-keys)). Removing is a team's owners' (or a
   personal mailbox's person's; `ui/access.ts` `owns`), and an admin's only for a link of their own
-  that never connected (`pending_auth`, which the server deletes at once); an admin is told that
-  only an owner removes the team's mailboxes. It says beforehand that the mailbox is kept 30 days,
-  recoverable, that what keys held on it goes, and in a team that everyone who reads it is told; it
-  asks for the mailbox's address typed and sends its id as `confirm`. The answer (`Removal`) says
-  until when it is kept, which the notice repeats, or that it was deleted at once.
+  that never connected, which the server deletes at once; an admin is told that only an owner
+  removes the team's mailboxes. Whether it connected is the server's to say (`connected`: something
+  to sign in with was stored), never its state: a mailbox being authorized again is back to
+  `pending_auth` and is kept all the same, and a first link whose consent failed is in `error` and
+  goes at once. It says beforehand that the mailbox is kept 30 days, recoverable, that what keys
+  held on it goes, and in a team that everyone who reads it is told, or that one that never
+  connected is deleted at once; it asks for the mailbox's address typed and sends its id as
+  `confirm`. The answer (`Removal`) says until when it is kept, which the notice repeats, or that it
+  was deleted at once.
 - **A member of a team** gets the switcher and cards for the mailboxes they hold a grant on
   (re-authorizing where they hold `manage`; an edition with Mail and Compose offers those they read
   or may send from). No Members, no API keys, no Access, no team sync switch and no removing: one

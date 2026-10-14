@@ -10,6 +10,7 @@
     "trash": false
   },
   "auth_kind": "password",
+  "connected": true,
   "created_at": 1790000000,
   "display_name": "Ana (iCloud)",
   "email": "ana@icloud.com",

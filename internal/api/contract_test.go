@@ -124,13 +124,17 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// Apple, and it may not point anywhere else. So it goes in the database
 	// the way the registry stores one — generic IMAP on Apple's servers — and
 	// the handler is what presents it as icloud.
-	icloud, err := account.NewRepository(h.store, nil).Create(t.Context(), account.Account{
+	repo := account.NewRepository(h.store, testKeyring(t))
+	icloud, err := repo.Create(t.Context(), account.Account{
 		ID: "acc_00000000000000c1", Email: "ana@icloud.com", DisplayName: "Ana (iCloud)",
 		Provider: provider.KindIMAP, AuthKind: "password",
 		IMAPHost: "imap.mail.me.com", IMAPPort: 993, SMTPHost: "smtp.mail.me.com", SMTPPort: 587, SMTPTLS: "starttls",
 		LoginUser: "ana@icloud.com", SaveSentCopy: true, State: account.StateActive,
 	}, ana.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SavePassword(t.Context(), icloud.ID, "app-specific-password"); err != nil {
 		t.Fatal(err)
 	}
 	capture("account_icloud", http.StatusOK, http.MethodGet, "/v1/accounts/"+icloud.ID, token, "")

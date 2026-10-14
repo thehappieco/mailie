@@ -100,9 +100,9 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // No sync_tier or last_ok_at: nothing in the daemon writes them until the
   // sync engine exists, and these screens should look like what it serves today.
   const accountsByUser = new Map([['usr_00000000000000a1', [
-    { id: 'acc_0000000000000001', email: 'suporte@example.test', display_name: 'Suporte', provider: 'gmail', auth_kind: 'oauth2', state: 'active', save_sent_copy: false, created_at: now() - 86400 * 12, sync: idle(), target: 1284 },
-    { id: 'acc_0000000000000002', email: 'ana.souza@example.test', provider: 'microsoft', auth_kind: 'oauth2', state: 'needs_reauth', state_reason: 'refresh token revoked', save_sent_copy: false, created_at: now() - 86400 * 40, sync: idle(), target: 90 },
-    { id: 'acc_0000000000000003', email: 'contato@<b>loja</b>.example.test', display_name: '<img src=x onerror=alert(1)>', provider: 'imap', auth_kind: 'password', state: 'active', save_sent_copy: true, created_at: now() - 86400 * 3, sync: idle(), target: 356 },
+    { id: 'acc_0000000000000001', email: 'suporte@example.test', display_name: 'Suporte', provider: 'gmail', auth_kind: 'oauth2', state: 'active', connected: true, save_sent_copy: false, created_at: now() - 86400 * 12, sync: idle(), target: 1284 },
+    { id: 'acc_0000000000000002', email: 'ana.souza@example.test', provider: 'microsoft', auth_kind: 'oauth2', state: 'needs_reauth', state_reason: 'refresh token revoked', connected: true, save_sent_copy: false, created_at: now() - 86400 * 40, sync: idle(), target: 90 },
+    { id: 'acc_0000000000000003', email: 'contato@<b>loja</b>.example.test', display_name: '<img src=x onerror=alert(1)>', provider: 'imap', auth_kind: 'password', state: 'active', connected: true, save_sent_copy: true, created_at: now() - 86400 * 3, sync: idle(), target: 356 },
   ]]])
   const owner = id => [...users.values()].find(user => (accountsByUser.get(user.id) ?? []).some(account => account.id === id))
   /** An account as the daemon presents it: the sync block says off unless its owner consented and it is active. */
@@ -434,7 +434,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         if (request_.provider === 'icloud' && ['imap_host', 'imap_port', 'smtp_host', 'smtp_port', 'smtp_tls'].some(key => key in request_)) return fail(400, 'bad_request')
         // A person's link carries the mailbox's first key and their own grant (docs/key-scheme.md section 12.11).
         if (!request_.public_key || !request_.namespace || !request_.grant) return fail(400, 'bad_request')
-        const account = { id: `acc_${String(++accountSerial).padStart(16, '0')}`, email: request_.email, provider: request_.provider, auth_kind: password ? 'password' : 'oauth2', state: 'pending_auth', save_sent_copy: password, created_at: now(), sync: idle(), target: 120 }
+        const account = { id: `acc_${String(++accountSerial).padStart(16, '0')}`, email: request_.email, provider: request_.provider, auth_kind: password ? 'password' : 'oauth2', state: 'pending_auth', connected: false, save_sent_copy: password, created_at: now(), sync: idle(), target: 120 }
         account.key = { epoch: 1, public_key: request_.public_key, namespace: request_.namespace, grant: request_.grant }
         if (request_.display_name) account.display_name = request_.display_name
         if (password) {
@@ -443,6 +443,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           // As Apple does: a custom-domain address is refused as the sign-in; the account's iCloud address is not.
           if (request_.provider === 'icloud' && !/@(icloud|me|mac)\.com$/i.test(request_.login_user || request_.email)) return fail(400, 'bad_request')
           account.state = 'active'
+          account.connected = true
           mine.push(account)
           if (user.consent) startSync(user, account)
           return json({ account: present(account) }, 201)
@@ -512,8 +513,9 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           if (url.searchParams.get('confirm') !== one[1]) return fail(400, 'bad_request')
           calls.removed.push(mine[index].email)
           // As the daemon answers (service.Removal): one that never connected
-          // is deleted at once; any other is kept 30 days, recoverable.
-          const purged = mine[index].state === 'pending_auth'
+          // (nothing stored to sign in with, whatever its state) is deleted
+          // at once; any other is kept 30 days, recoverable.
+          const purged = !mine[index].connected
           const removal = purged ? { account_id: one[1], purged: true } : { account_id: one[1], purged: false, purge_after: now() + 30 * 86_400 }
           mine.splice(index, 1)
           return json(removal)
@@ -534,6 +536,8 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         const previous = account.state
         if (previous === state) return
         account.state = state
+        // A grant stored: it connected, and stays so whatever comes next.
+        if (state === 'active') account.connected = true
         emit(user, 'account.state', account.id, { state, previous_state: previous })
         if (state === 'active' && user.consent) startSync(user, account)
       }

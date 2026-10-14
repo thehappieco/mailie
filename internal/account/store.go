@@ -128,6 +128,12 @@ type Account struct {
 	// nothing holds it: a held mailbox syncs nothing until someone who may
 	// turns it on again.
 	SyncHeldAt time.Time
+	// Connected is a mailbox that connected once: something to sign in to
+	// it with was stored (a credentials row). One that never did holds
+	// nothing, and removing it deletes it for good at once instead of
+	// keeping it; its state says nothing of this, since authorizing a
+	// mailbox again puts it back to pending_auth.
+	Connected bool
 }
 
 // Removed reports whether the mailbox is removed: kept, for a recovery, and
@@ -322,7 +328,8 @@ const accountColumns = `id, workspace_id, email, display_name, provider, auth_ki
 	sync_tier, sync_tier_resolved, save_sent_copy, initial_days, folder_overrides, state, state_reason,
 	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at,
 	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration',
-	removed_at, removed_by, purge_after, sync_held_at`
+	removed_at, removed_by, purge_after, sync_held_at,
+	EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = accounts.id)`
 
 // OAuth clients an account's grant can come from.
 const (
@@ -1461,7 +1468,7 @@ func scanAccount(row scanner) (Account, error) {
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
 		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated,
 		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated,
-		&removed, &a.RemovedBy, &purgeAfter, &held)
+		&removed, &a.RemovedBy, &purgeAfter, &held, &a.Connected)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, err

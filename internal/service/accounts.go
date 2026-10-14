@@ -41,6 +41,12 @@ type Account struct {
 	LastOKAt     int64  `json:"last_ok_at,omitempty"`
 	LastError    string `json:"last_error,omitempty"`
 	CreatedAt    int64  `json:"created_at"`
+	// Connected says the mailbox connected once: something to sign in to it
+	// with was stored. One that never did is deleted for good at once when
+	// it is removed, never kept, and an admin who linked it may abandon it.
+	// Its state does not say: authorizing a mailbox again puts it back to
+	// pending_auth, credentials and all.
+	Connected bool `json:"connected"`
 	// Sync is where the account's sync stands, as GET
 	// /v1/accounts/{id}/sync reports it.
 	Sync AccountSync `json:"sync"`
@@ -1053,7 +1059,7 @@ func presentAccount(a account.Account) Account {
 		Provider: a.ProviderName(), AuthKind: a.AuthKind,
 		State: string(a.State), StateReason: a.StateReason,
 		SyncTier: a.SyncTierResolved, SaveSentCopy: a.SaveSentCopy,
-		LastError: a.LastError,
+		LastError: a.LastError, Connected: a.Connected,
 	}
 	if !a.LastOKAt.IsZero() {
 		out.LastOKAt = a.LastOKAt.Unix()

@@ -67,8 +67,12 @@ const teamName = computed(() => workspaceName(workspace.value))
 const admin = computed(() => inTeam.value && administers(workspace.value))
 /** Who connected it, for the record: the access directory says, to the team's owners and admins. */
 const linker = computed(() => admin.value ? actorName(directoryEntry(props.account.id)?.linked_by, personName) : '')
-/** Never connected: nothing was stored for it, and removing it deletes it at once. */
-const neverConnected = computed(() => props.account.state === 'pending_auth')
+/**
+ * Never connected: nothing was stored for it, and removing it deletes it at
+ * once. The server says (connected); its state does not, since authorizing
+ * it again puts a mailbox that connected back to pending_auth.
+ */
+const neverConnected = computed(() => props.account.connected === undefined ? props.account.state === 'pending_auth' : !props.account.connected)
 /**
  * A workspace's mailboxes are removed by its owners: a team's active owners,
  * a personal mailbox's person; and an admin abandons a link of their own that

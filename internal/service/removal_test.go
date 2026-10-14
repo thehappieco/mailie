@@ -122,6 +122,16 @@ func TestAnAdminMayAbandonOnlyTheirOwnLinkThatNeverConnected(t *testing.T) {
 	link(anas, "ana.link@gmail.com", tm.ana.UserID)
 	link(connected, "carol.done@gmail.com", tm.carol.UserID)
 	f.connect(t, connected)
+	// Their cards say which connected, whatever their state says: one put
+	// back to pending_auth to be authorized again keeps what it stored.
+	f.exec(t, `UPDATE accounts SET state = 'pending_auth' WHERE id IN (?, ?)`, carols, connected)
+	for id, want := range map[string]bool{carols: false, connected: true} {
+		card, err := f.svc.GetAccount(ctx, tm.carol, id)
+		if err != nil || card.Connected != want || card.State != "pending_auth" {
+			t.Errorf("Carol's card of %s: connected %v, state %q (%v), want connected %v", id, card.Connected,
+				card.State, err, want)
+		}
+	}
 
 	// Someone else's link that never connected is an owner's to abandon.
 	wantCode(t, "Carol abandoning Ana's link", f.removeErr(t, tm.carol, anas), service.CodeNotAuthorized)

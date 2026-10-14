@@ -120,7 +120,7 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
   for (const account of accountsByUser.get(ANA)) account.workspace_id = PERSONAL[ANA]
   accountsByUser.set(BEA, [])
   accountsByUser.set(CAROL, [])
-  const teamMailbox = (id, email, workspaceID, linker, sync) => ({ id, email, provider: 'imap', auth_kind: 'password', state: 'active', save_sent_copy: true, created_at: at, workspace_id: workspaceID, linked_by: linker, consent: sync, target: 400 })
+  const teamMailbox = (id, email, workspaceID, linker, sync) => ({ id, email, provider: 'imap', auth_kind: 'password', state: 'active', connected: true, save_sent_copy: true, created_at: at, workspace_id: workspaceID, linked_by: linker, consent: sync, target: 400 })
   const teamAccounts = [
     teamMailbox(SUPPORT, 'suporte@atendimento.example', TEAM, BEA, { enabled_at: at, enabled_by: BEA, version: VERSIONS.sync }),
     teamMailbox(SALES, 'vendas@atendimento.example', TEAM, ANA, null),

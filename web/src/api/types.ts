@@ -94,6 +94,14 @@ export interface Account {
   last_ok_at?: number
   last_error?: string
   created_at: number
+  /**
+   * Whether it connected once: something to sign in to it with was stored.
+   * One that never did is deleted at once when it is removed, never kept,
+   * and the admin who linked it may abandon it. Its state does not say:
+   * authorizing a mailbox again puts it back to pending_auth. Absent from a
+   * daemon older than removed mailboxes, which deleted every one at once.
+   */
+  connected?: boolean
   /** Where the account's sync stands; the same block GET /v1/accounts/{id}/sync answers. */
   sync: AccountSync
   /**
@@ -824,11 +832,12 @@ export function isStepUpReply(v: unknown, strict = false): v is StepUpReply {
 }
 
 export function isAccount(v: unknown, strict = false): v is Account {
-  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'sync', 'actions', 'send', 'workspace_id', 'access', 'mailbox_key'], strict)
+  return record(v) && known(v, ['id', 'email', 'display_name', 'provider', 'auth_kind', 'state', 'state_reason', 'sync_tier', 'save_sent_copy', 'last_ok_at', 'last_error', 'created_at', 'connected', 'sync', 'actions', 'send', 'workspace_id', 'access', 'mailbox_key'], strict)
     && filled(v.id, 64) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
     && oneOf(providerIDs)(v.provider) && oneOf(authKinds)(v.auth_kind) && oneOf(accountStates)(v.state)
     && optional(v.state_reason, text) && optional(v.sync_tier, x => text(x, 64)) && flag(v.save_sent_copy)
     && optional(v.last_ok_at, seconds) && optional(v.last_error, text) && seconds(v.created_at)
+    && (strict ? flag(v.connected) : optional(v.connected, flag))
     && isAccountSync(v.sync, strict)
     // The daemon that writes the fixtures always says; an older one may not.
     && (strict ? isAccountActions(v.actions, strict) : optional(v.actions, x => isAccountActions(x)))

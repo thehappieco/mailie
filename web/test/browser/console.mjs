@@ -1349,7 +1349,7 @@ for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
     await shot('storage')
 
     // A new mailbox: its first sync runs, and Refresh shows what it indexed so far.
-    const added = { id: 'acc_0000000000000009', email: 'nova@example.test', provider: 'imap', auth_kind: 'password', state: 'active', save_sent_copy: true, created_at: now(), sync: { state: 'live', tier: 'condstore', folders_synced: 5, folders_total: 5, messages: 42, initial_progress: 100, last_synced_at: now() }, target: 42 }
+    const added = { id: 'acc_0000000000000009', email: 'nova@example.test', provider: 'imap', auth_kind: 'password', state: 'active', connected: true, save_sent_copy: true, created_at: now(), sync: { state: 'live', tier: 'condstore', folders_synced: 5, folders_total: 5, messages: 42, initial_progress: 100, last_synced_at: now() }, target: 42 }
     daemon.accountsByUser.get('usr_00000000000000a1').push(added)
     const before = daemon.calls.storage
     await section.getByRole('button', { name: text.refresh, exact: true }).click()

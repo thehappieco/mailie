@@ -11,6 +11,7 @@
       "trash": false
     },
     "auth_kind": "oauth2",
+    "connected": false,
     "created_at": 1790000000,
     "display_name": "Ana (Gmail)",
     "email": "ana@gmail.com",

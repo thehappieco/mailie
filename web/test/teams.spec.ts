@@ -7,7 +7,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, h, type Component } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
-import type { MailboxAccess, Member, TeamInvite, Workspace } from '../src/api/types'
+import type { Account, MailboxAccess, Member, TeamInvite, Workspace } from '../src/api/types'
 import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountSheet from '../src/components/AccountSheet.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
@@ -220,7 +220,7 @@ describe('mailboxes in a team', () => {
   })
 
   it('lets an admin abandon only a link of their own that never connected, which removing deletes at once', async () => {
-    const pending = account({ id: 'acc_pending', email: 'novo@example.test', state: 'pending_auth', workspace_id: TEAM, access: { ...none, manage: true } })
+    const pending = account({ id: 'acc_pending', email: 'novo@example.test', state: 'pending_auth', connected: false, workspace_id: TEAM, access: { ...none, manage: true } })
     showing(TEAM, [personal, support('admin')])
     Object.assign(accounts, { list: [pending], loaded: true, workspace: TEAM })
     teamState([anaMember({ role: 'admin' }), beaMember()], [entryOf(pending, { linked_by: ana.id, readers: 0, no_reader: true, grants: [] })])
@@ -233,6 +233,33 @@ describe('mailboxes in a team', () => {
     const theirs = text(await render(AccountSheet, { account: pending }))
     expect(theirs).not.toContain('Remove account…')
     expect(theirs).toContain('Only an owner of Support removes its mailboxes.')
+  })
+
+  it('goes by whether the server says a mailbox connected, never by its state, for who removes it and what removing it does', async () => {
+    const linkedByAna = (item: Account) => entryOf(item, { linked_by: ana.id, readers: 0, no_reader: true, grants: [] })
+    // A first link whose consent failed is in error, and holds nothing: its admin who linked it abandons it, deleted at once.
+    const failed = account({ id: 'acc_failed', email: 'falhou@example.test', state: 'error', state_reason: 'consent refused', connected: false, workspace_id: TEAM, access: { ...none, manage: true } })
+    showing(TEAM, [personal, support('admin')])
+    Object.assign(accounts, { list: [failed], loaded: true, workspace: TEAM })
+    teamState([anaMember({ role: 'admin' }), beaMember()], [linkedByAna(failed)])
+    const abandoned = text(await render(AccountSheet, { account: failed }))
+    expect(abandoned).toContain('Remove account…')
+    expect(abandoned).toContain('This mailbox never finished connecting, so nothing was stored for it: removing it deletes it at once.')
+    expect(abandoned).not.toContain('Mailie keeps it for 30 days')
+    expect(abandoned).not.toContain('Only an owner of Support removes its mailboxes.')
+    // One being authorized again is back to pending_auth, and keeps what it stored: an owner's to remove, kept 30 days.
+    const again = account({ id: 'acc_again', email: 'reautoriza@example.test', state: 'pending_auth', connected: true, workspace_id: TEAM, access: { ...none, manage: true } })
+    Object.assign(accounts, { list: [again], loaded: true, workspace: TEAM })
+    teamState([anaMember({ role: 'admin' }), beaMember()], [linkedByAna(again)])
+    const admin = text(await render(AccountSheet, { account: again }))
+    expect(admin).not.toContain('Remove account…')
+    expect(admin).toContain('Only an owner of Support removes its mailboxes.')
+    showing(TEAM, [personal, support('owner')])
+    teamState([anaMember({ role: 'owner', last_owner: true }), beaMember()], [linkedByAna(again)])
+    const owner = text(await render(AccountSheet, { account: again }))
+    expect(owner).toContain('Remove account…')
+    expect(owner).toContain('Mailie keeps it for 30 days, with what it stored for it, and any owner of Support can recover it until then; then it is deleted for good.')
+    expect(owner).not.toContain('never finished connecting')
   })
 
   it('says where a team mailbox’s agreement to sync stands: an earlier text, one carried over from whoever linked it, or stopped with its index', async () => {
