@@ -386,7 +386,9 @@ ref}`: the purpose is `credential/oauth-token`, `credential/password`, `send/has
 `auth/kdf-salt-key` (the salt key, the key of the salts passwords are derived under), and the ref
 is the mailbox's id (random, never derived from an address) or the meta row of the root or of the
 salt key. An envelope opens only for its own context, so one moved to another mailbox, field or env
-does not.
+does not. A fifth purpose, `extension/secret`, is only for a binary that embeds the daemon with an
+extension that keeps a secret of its own outside the database: `mailserver serve` never asks KMS
+for it, and the policy below need not allow it.
 
 - **The key.** A symmetric KMS key (`SYMMETRIC_DEFAULT`, `ENCRYPT_DECRYPT`). Give the daemon its
   full ARN, `arn:aws:kms:<region>:<account>:key/<id>`, never an alias, which whoever may update

@@ -146,7 +146,9 @@ func TestEveryPurposeIsOneAKeyServiceTakes(t *testing.T) {
 	// These names are what a key service's policy allows: a purpose added
 	// here changes that policy before the code that uses it ships, and a
 	// name changed here stops every envelope sealed under the old one.
-	want := []string{"credential/oauth-token", "credential/password", "send/hash-root", "auth/kdf-salt-key"}
+	want := []string{
+		"credential/oauth-token", "credential/password", "send/hash-root", "auth/kdf-salt-key", "extension/secret",
+	}
 	got := secrets.Purposes()
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("Purposes = %q, want %q", got, want)
@@ -167,6 +169,51 @@ func TestEveryPurposeIsOneAKeyServiceTakes(t *testing.T) {
 	} {
 		if b := secrets.Credential("acc_0123456789abcdef", field); b.Purpose != purpose || b.Validate() != nil {
 			t.Errorf("Credential(%q) = %+v, want the purpose %q", field, b, purpose)
+		}
+	}
+	// An extension's secret has a purpose of its own, whatever its ref.
+	if b := secrets.ExtensionSecret("ext_fixture"); b.Purpose != secrets.PurposeExtensionSecret ||
+		b.Ref != "ext_fixture" || b.Validate() != nil {
+		t.Errorf("ExtensionSecret = %+v, want the purpose %q", b, secrets.PurposeExtensionSecret)
+	}
+}
+
+func TestAnExtensionsSecretOpensOnlyForItsOwnRef(t *testing.T) {
+	kr := newKeyring(t, 1, map[uint8][]byte{1: key(0xA1)})
+	own := secrets.ExtensionSecret("ext_fixture")
+	for _, s := range []secrets.Sealer{kr, secretstest.New("kms"), secrets.NewComposite(secretstest.New("kms"), kr)} {
+		sealed := seal(t, s, own, "an extension's secret")
+		if bytes.Contains(sealed, []byte("extension's secret")) {
+			t.Fatalf("%s: the plaintext is visible in the envelope", s.Describe())
+		}
+		if got, err := s.Open(t.Context(), own, sealed); err != nil || string(got) != "an extension's secret" {
+			t.Fatalf("%s: Open for its own binding: %q, %v", s.Describe(), got, err)
+		}
+		// Another extension's ref, a credential or a meta row under the same
+		// ref, and the send-hash root: none of them opens it.
+		for _, other := range []secrets.Binding{
+			secrets.ExtensionSecret("ext_other"),
+			secrets.Credential("ext_fixture", "password"),
+			secrets.Credential("ext_fixture", "oauth_token"),
+			{Purpose: secrets.PurposeSendHashRoot, Ref: "ext_fixture"},
+			{Purpose: secrets.PurposeKDFSaltKey, Ref: "ext_fixture"},
+		} {
+			if _, err := s.Open(t.Context(), other, sealed); !errors.Is(err, secrets.ErrDecrypt) || !secrets.DoesNotOpen(err) {
+				t.Errorf("%s: opened for %+v: %v; want ErrDecrypt", s.Describe(), other, err)
+			}
+		}
+		// Nor does it open what was sealed for anything else.
+		credential := seal(t, s, secrets.Credential("ext_fixture", "password"), "hunter2")
+		if _, err := s.Open(t.Context(), own, credential); !errors.Is(err, secrets.ErrDecrypt) {
+			t.Errorf("%s: a credential opened as an extension's secret: %v", s.Describe(), err)
+		}
+		// A ref no key service would take is the caller's mistake, never an
+		// envelope that does not open.
+		for _, ref := range []string{"", "Ext Fixture", strings.Repeat("e", secrets.MaxBindingLen+1)} {
+			_, err := s.Open(t.Context(), secrets.ExtensionSecret(ref), sealed)
+			if !errors.Is(err, secrets.ErrBinding) || secrets.DoesNotOpen(err) {
+				t.Errorf("%s: the ref %q: %v; want ErrBinding", s.Describe(), ref, err)
+			}
 		}
 	}
 }
@@ -456,6 +503,14 @@ func TestTheEnvelopeLabelsNeverChange(t *testing.T) {
 			secrets.Binding{Purpose: secrets.PurposeSendHashRoot, Ref: "meta/send_hash_root"},
 			"010151caa69717ccdfe2e193e74384856484ce5a050109986cdd8ba16594330ad526a369268b5d4e35f8e0511ebfb01a9b375a02cc1a90cb69a1e9274281",
 			"the label of the send-hash root.",
+		},
+		// An extension's secret's purpose is its own label too. Sealed with
+		// AES-256-GCM alone, not the keyring, under the header followed by
+		// "mailserver/cred/v1/ext_fixture/extension/secret".
+		"an extension's secret": {
+			secrets.ExtensionSecret("ext_fixture"),
+			"010180d055e85ffe0f288cebb3ff927b2d1852ed9331b0852ac746319cfcee89a300280d5cd1c9be8a4c58c2f43811a19903f7dca4ba940686b71fa1",
+			"an extension's secret, sealed.",
 		},
 	} {
 		envelope, err := hex.DecodeString(tc.envelope)

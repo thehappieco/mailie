@@ -47,9 +47,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   reader of a removal or a sync turned off, never for whoever acted (a trigger), until dismissed,
   withdrawn by a recovery, or gone with its journal entry.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
-  four purposes, `credential/oauth-token`, `credential/password`, `send/hash-root` and
-  `auth/kdf-salt-key`, and a ref, a credential's account id or a meta row, both held to a key
-  service's encryption-context rule by every sealer;
+  five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
+  `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
+  the database, which `serve` never seals, never rewrapped: sealed again and re-installed), and a
+  ref, a credential's account id, a meta row or an extension's name for its secret, both held to a
+  key service's encryption-context rule by every sealer;
   `Knows`/`Current` read only the header) and a `Composite` that seals with its active sealer and
   opens what any of its sealers knows. An envelope that does not open is only `ErrDecrypt`,
   `ErrUnknownKey` or `ErrMalformed` (`DoesNotOpen`); any other error is a sealer that could not

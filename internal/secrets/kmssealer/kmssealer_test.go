@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/thehappieco/kit/kms"
@@ -251,6 +252,70 @@ func TestTheEncryptionContextIsTheBindingInItsDeployment(t *testing.T) {
 		}
 		if err := kmssealer.Context("prod", b).Validate(); err != nil {
 			t.Errorf("%+v: a context KMS would refuse: %v", b, err)
+		}
+	}
+}
+
+// recordingWrapper is a test wrapper that keeps the encryption context of
+// every call made to it.
+type recordingWrapper struct {
+	*secretstest.Wrapper
+	mu   sync.Mutex
+	seen []kms.Context
+}
+
+func (w *recordingWrapper) GenerateDataKey(ctx context.Context, ec kms.Context) ([]byte, []byte, error) {
+	w.record(ec)
+	return w.Wrapper.GenerateDataKey(ctx, ec)
+}
+
+func (w *recordingWrapper) Decrypt(ctx context.Context, wrapped []byte, ec kms.Context) ([]byte, error) {
+	w.record(ec)
+	return w.Wrapper.Decrypt(ctx, wrapped, ec)
+}
+
+func (w *recordingWrapper) record(ec kms.Context) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.seen = append(w.seen, ec)
+}
+
+func TestAnExtensionsSecretCarriesItsPurposeAndRefIntoTheEncryptionContext(t *testing.T) {
+	b := secrets.ExtensionSecret("ext_fixture")
+	want := map[string]string{"service": "mailie", "env": "prod", "purpose": "extension/secret", "ref": "ext_fixture"}
+	if got := kmssealer.EncryptionContext("prod", b); !maps.Equal(got, want) {
+		t.Fatalf("EncryptionContext = %v; want %v", got, want)
+	}
+	if err := kmssealer.Context("prod", b).Validate(); err != nil {
+		t.Fatalf("a context KMS would refuse: %v", err)
+	}
+
+	// What reaches the key service, sealing and opening, is that context and
+	// nothing else.
+	w := &recordingWrapper{Wrapper: secretstest.NewWrapper("kms")}
+	s := newSealer(t, w, "prod")
+	sealed := seal(t, s, b, "an extension's secret")
+	if got, err := s.Open(t.Context(), b, sealed); err != nil || string(got) != "an extension's secret" {
+		t.Fatalf("Open for its own binding: %q, %v", got, err)
+	}
+	if len(w.seen) != 2 {
+		t.Fatalf("the key service was called %d times; want a data key made and unwrapped", len(w.seen))
+	}
+	for _, ec := range w.seen {
+		if !maps.Equal(ec.Map(), want) {
+			t.Errorf("the key service was called under %v; want %v", ec.Map(), want)
+		}
+	}
+
+	// Under another ref, or as anything else the ref could name, it does not
+	// open: the context the key service unwraps under is not its own.
+	for _, other := range []secrets.Binding{
+		secrets.ExtensionSecret("ext_other"),
+		secrets.Credential("ext_fixture", "password"),
+	} {
+		_, err := s.Open(t.Context(), other, sealed)
+		if !errors.Is(err, secrets.ErrDecrypt) || !secrets.DoesNotOpen(err) {
+			t.Errorf("opened for %+v: %v; want ErrDecrypt", other, err)
 		}
 	}
 }

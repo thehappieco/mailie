@@ -1,5 +1,6 @@
 // Package secrets seals the secrets this server must be able to open again:
-// the credentials of every mailbox, and the send-hash root.
+// the credentials of every mailbox, the send-hash root, the salt key, and a
+// secret an extension of the daemon keeps outside the database.
 //
 // Unlike an archive that only ever accepts content, a mail client has to
 // authenticate to somebody else's IMAP and SMTP servers, so it needs the
@@ -243,7 +244,8 @@ func isTHCSEAL(envelope []byte) bool { return bytes.HasPrefix(envelope, []byte(M
 // credential's purpose: the credentials row's field, as it did before
 // purposes had names. Every stored credential was sealed with them, so they
 // never change (TestTheEnvelopeLabelsNeverChange); a purpose not listed, the
-// send-hash root's and the salt key's, is its own label.
+// send-hash root's, the salt key's and an extension's secret's, is its own
+// label.
 //
 //nolint:gosec // G101: field names, not credentials
 var keyringLabels = map[string]string{

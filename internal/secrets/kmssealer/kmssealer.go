@@ -37,8 +37,8 @@ const Service = "mailie"
 // {service: mailie, env, purpose, ref}. KMS writes it to CloudTrail in clear
 // and the key policy conditions on it, so it names what a secret is and
 // which row keeps it, never whose it is: the purpose is one of
-// secrets.Purposes, the ref a mailbox's random id or the meta row of the
-// send-hash root or the salt key.
+// secrets.Purposes, the ref a mailbox's random id, the meta row of the
+// send-hash root or the salt key, or an extension's name for its secret.
 func Context(env string, b secrets.Binding) kms.Context {
 	return kms.Context{Service: Service, Env: env, Purpose: b.Purpose, Ref: b.Ref}
 }

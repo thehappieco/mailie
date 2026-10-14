@@ -31,11 +31,16 @@ const (
 	// PurposeKDFSaltKey is the key of the salts the server hands out for
 	// the addresses people sign in with (docs/key-scheme.md section 5.3).
 	PurposeKDFSaltKey = "auth/kdf-salt-key"
+	// PurposeExtensionSecret is a secret an extension of the daemon keeps
+	// outside the database (ExtensionSecret). Only a binary that embeds the
+	// daemon with such an extension seals or opens one: `mailserver serve`
+	// never does, so a key policy for it alone need not allow this purpose.
+	PurposeExtensionSecret = "extension/secret"
 )
 
 // Purposes lists every purpose this server seals for.
 func Purposes() []string {
-	return []string{PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey}
+	return []string{PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey, PurposeExtensionSecret}
 }
 
 // MaxBindingLen is the longest purpose or ref a binding may have, as a key
@@ -45,9 +50,8 @@ const MaxBindingLen = 128
 // Binding is what an envelope is sealed for, and the only thing it opens
 // for. Purpose is what the secret is, one of Purposes; Ref is which one: a
 // credential's account id, the meta row that keeps the send-hash root or the
-// salt key. Both
-// are part of what an envelope authenticates, so one moved to another row
-// does not open there.
+// salt key, an extension's name for its secret. Both are part of what an
+// envelope authenticates, so one moved to another row does not open there.
 //
 // A binding is what a key service's encryption context carries beside the
 // service and the deployment, so Validate holds both to that context's rule
@@ -73,12 +77,22 @@ func Credential(accountID, field string) Binding {
 	return Binding{Purpose: credentialPurposes[field], Ref: accountID}
 }
 
+// ExtensionSecret is the binding of a secret an extension of the daemon keeps
+// outside the database, sealed by the daemon's sealer; ref is the extension's
+// name for it, held to the same rule as every ref. No row of the database
+// holds such an envelope, so `rewrap-credentials` never reaches one: after the
+// sealer's key or MAIL_ENV moves, the extension's secret is sealed again from
+// its source and installed again.
+func ExtensionSecret(ref string) Binding {
+	return Binding{Purpose: PurposeExtensionSecret, Ref: ref}
+}
+
 // Validate reports whether a sealer may seal or open for b: a purpose of
 // Purposes, and a ref within the encryption context's rule. The error says
 // which part fails, never its value.
 func (b Binding) Validate() error {
 	switch b.Purpose {
-	case PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey:
+	case PurposeOAuthToken, PurposePassword, PurposeSendHashRoot, PurposeKDFSaltKey, PurposeExtensionSecret:
 	case "":
 		return fmt.Errorf("%w: it has no purpose", ErrBinding)
 	default:
