@@ -142,8 +142,15 @@ Usage:
   mailserver account folders ID           List an account's folders
   mailserver account authorize ID         Authorise again after a grant expires
   mailserver account sync ID status|now   Show an account's sync, or ask for a pass
-  mailserver account sync ID on|off       Switch sync for a mailbox of the operator workspace
-  mailserver account remove ID            Forget an account and its index
+  mailserver account sync ID on|off       Switch sync for a mailbox of the operator workspace; on also
+                                          lifts the hold of one recovered after it was removed
+  mailserver account remove ID [--yes]    Remove a mailbox: kept 30 days, used by nothing and recoverable,
+                                          then deleted for good; one that never connected goes at once
+  mailserver account removed [--workspace ID]
+                                          List a workspace's removed mailboxes (the operator's by default)
+  mailserver account recover ID           Recover a removed mailbox of the operator workspace, its sync
+                                          held until account sync ID on
+  mailserver account purge ID [--yes]     Delete a removed mailbox for good, any workspace's
   mailserver apikey create --scope SCOPE --name NAME
                                           Issue an instance key (the daemon needs MAIL_ADMIN_API=true)
   mailserver apikey list                  List every key, with its workspace, revoked ones too (the same)

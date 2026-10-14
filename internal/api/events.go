@@ -45,7 +45,10 @@ func (h *Handler) eventPing() time.Duration {
 // nothing more: an idle stream learns it within one interval, and never
 // through another event. So is access: a mailbox the caller gains or loses
 // read on is announced as `event: access`, and once every mailbox the stream
-// follows is gone it ends with `event: error`, not_found.
+// follows is gone it ends with `event: error`, not_found. A person given a
+// notice meanwhile — a mailbox they read removed, a team mailbox's sync turned
+// off — is told at the same moments with `event: notice`, to read their
+// notices again (GET /v1/me/notices).
 func (h *Handler) streamEvents(q *request) {
 	params, err := q.query("since", "account", "types", "workspace")
 	if err != nil {
@@ -94,6 +97,21 @@ func (h *Handler) streamEvents(q *request) {
 	ping := time.NewTicker(h.eventPing())
 	defer ping.Stop()
 	events := stream.Events()
+	// tellNotices says, when the person was given a notice since the stream
+	// last looked, that they have one: like access, with no id, since a
+	// notice is the person's and no journal entry, and with nothing of it,
+	// which the console reads from GET /v1/me/notices. A key never has one.
+	// Reading them failing ends nothing: the next check reads them again.
+	tellNotices := func() {
+		told, err := stream.NewNotices(q.ctx())
+		switch {
+		case err != nil:
+			q.log().Warn("reading the person's notices for their event stream failed; the next check reads them again",
+				"err", err)
+		case told:
+			sse.event("", "notice", struct{}{})
+		}
+	}
 	// credentialWorks checks the caller again, and what they may still
 	// read, and ends the stream when the credential no longer works or
 	// nothing it follows is left.
@@ -107,6 +125,9 @@ func (h *Handler) streamEvents(q *request) {
 			for _, change := range changes {
 				sse.event("", "access", change)
 			}
+			// Told even on a stream that ends now, for the mailbox it
+			// lost: the notice is what says why.
+			tellNotices()
 			if err == nil {
 				return true
 			}

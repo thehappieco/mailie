@@ -482,6 +482,18 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	captureOn(edition, "workspaces_withheld", http.StatusOK, http.MethodGet, "/v1/workspaces",
 		authtest.SignIn(t, edition.users, "eva@example.com"), "")
 
+	// Removed mailboxes, after everything else, so their ids take no number
+	// another fixture has. Ana removes the team's billing mailbox, which
+	// carol reads too: it is kept 30 days, and carol is told. Ana, an owner
+	// of the team, lists its removed mailboxes and recovers it, its sync held
+	// until someone who may turns it on. Her Gmail, which never connected,
+	// is deleted at once.
+	capture("removal", http.StatusOK, http.MethodDelete, "/v1/accounts/"+billingID+"?confirm="+billingID, token, "")
+	capture("notices", http.StatusOK, http.MethodGet, "/v1/me/notices", carolToken, "")
+	capture("removed_mailboxes", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/removed-mailboxes", token, "")
+	capture("account_held", http.StatusOK, http.MethodPost, "/v1/accounts/"+billingID+"/recover", token, "")
+	capture("removal_purged", http.StatusOK, http.MethodDelete, "/v1/accounts/"+gmail+"?confirm="+gmail, token, "")
+
 	// A plain session, as signing up, a reset and a password change answer
 	// it: here a password change, which ends every session ana had, so it
 	// comes last.
@@ -688,7 +700,7 @@ func (n *normalizer) normalizeString(key, v string, inFlow bool) string {
 			return "fixed-oauth-state"
 		}
 	case "id", "account_id", "account_ids", "workspace_id", "linked_by", "user_id", "granted_by", "created_by",
-		"enabled_by", "last_reader_of":
+		"enabled_by", "last_reader_of", "removed_by":
 		return n.id(v)
 	case "message_id":
 		// The Message-ID a send generates: a random UUID at the sender's

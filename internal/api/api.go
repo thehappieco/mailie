@@ -140,7 +140,17 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// thirty seconds of its own.
 	mux.Handle("POST /v1/accounts", h.authenticated(auth.ScopeAdmin, opts().withTimeout(45*time.Second), h.addAccount))
 	// Removing a mailbox repeats its id in ?confirm=, or nothing is removed.
+	// It answers what it did: the mailbox kept 30 days, until when, or, for
+	// one that never connected, deleted for good at once.
 	mux.Handle("DELETE /v1/accounts/{id}", h.authenticated(auth.ScopeAdmin, opts(), h.removeAccount))
+	// A removed mailbox, for its workspace's owners and the operator:
+	// listed, recovered within its 30 days, or deleted for good, which
+	// repeats its id and compacts what held its index, given two minutes as
+	// switching sync off is.
+	mux.Handle("GET /v1/workspaces/{id}/removed-mailboxes", h.authenticated(auth.ScopeAdmin, opts(), h.listRemovedMailboxes))
+	mux.Handle("POST /v1/accounts/{id}/recover", h.authenticated(auth.ScopeAdmin, opts(), h.recoverAccount))
+	mux.Handle("POST /v1/accounts/{id}/purge",
+		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.purgeAccount))
 	mux.Handle("POST /v1/accounts/{id}/oauth/start", h.authenticated(auth.ScopeAdmin, opts(), h.startOAuth))
 	// The exchange behind a callback runs detached for up to forty seconds, so
 	// the code survives a caller that gives up; the route outlasts it, so the
@@ -210,12 +220,18 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// shows how to connect a tool with a key: it never shows an address that
 	// answers 404.
 	mux.Handle("GET /v1/me/mcp", h.authenticated(auth.ScopeRead, opts(), h.mcpAccess))
+	// The person's notices: a mailbox they read removed, or a team mailbox's
+	// sync turned off, until they dismiss them. The scope admits any
+	// credential; the service refuses a key, which has none.
+	mux.Handle("GET /v1/me/notices", h.authenticated(auth.ScopeRead, opts(), h.listNotices))
+	mux.Handle("DELETE /v1/me/notices/{id}", h.authenticated(auth.ScopeRead, opts(), h.dismissNotice))
 	mux.Handle("GET /v1/accounts/{id}/sync", h.authenticated(auth.ScopeRead, opts(), h.syncStatus))
 	mux.Handle("POST /v1/accounts/{id}/sync", h.authenticated(auth.ScopeWrite, opts(), h.triggerSync))
 	// A mailbox's own consent to sync: a team mailbox's, which its owners
 	// and admins give or withdraw on the team's behalf, and an operator
 	// mailbox's switch. Switching off deletes its index, as withdrawing
-	// consent does.
+	// consent does. Switching on also lifts a recovery's hold, a personal
+	// mailbox's by its person.
 	mux.Handle("PUT /v1/accounts/{id}/sync",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setMailboxSync))
 
@@ -300,12 +316,13 @@ func (h *Handler) removeAccount(q *request) {
 		q.fail(err)
 		return
 	}
-	if _, err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id"),
-		service.RemoveAccountRequest{Confirm: params["confirm"]}); err != nil {
+	removal, err := h.Service.RemoveAccount(q.ctx(), q.principal, q.r.PathValue("id"),
+		service.RemoveAccountRequest{Confirm: params["confirm"]})
+	if err != nil {
 		q.fail(err)
 		return
 	}
-	q.finish(http.StatusNoContent, nil)
+	q.finish(http.StatusOK, removal)
 }
 
 type startOAuthRequest struct {

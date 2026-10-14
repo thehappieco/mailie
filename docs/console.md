@@ -800,18 +800,22 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `PUT /v1/accounts/{id}/grants/{user}` | session reading it; fresh step-up | `{epoch, grant, public_key}` → `SealedGrant`: the key, to a member who holds `read` without it |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}` | read | the mailboxes the caller holds a grant on, and every mailbox of a team they own or administer (its card); `?workspace=` narrows the list |
 | `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link; a person sends the mailbox's first key, `public_key`, `namespace` and `grant`, with a fresh step-up |
-| `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner (an admin, their own link that never connected), a personal mailbox's person, the operator for its own | remove it: kept 30 days with its index, recoverable, then deleted for good; one that never connected is deleted at once; without the id repeated, `400` and nothing removed |
+| `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner (an admin, their own link that never connected), a personal mailbox's person, the operator for its own | remove it → `Removal` `{account_id, purged, purge_after?}`: kept 30 days with its index, recoverable until `purge_after`, then deleted for good; one that never connected is deleted at once (`purged`); without the id repeated, `400` and nothing removed |
+| `GET /v1/workspaces/{id}/removed-mailboxes` | admin: a personal workspace's person, a team's owners, signed in (an admin or a member: `403`); the operator, any workspace's | `[RemovedMailbox]`, the oldest removal first ([`workspaces.md`](workspaces.md#removed-mailboxes)) |
+| `POST /v1/accounts/{id}/recover` | admin: its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | → `Account`, live again, its `sync.held` until someone who may turns it on; `409` once its 30 days are over, in a closed team, and for a team mailbox nobody who could read it is left to read; anyone else is told it does not exist (`404`) |
+| `POST /v1/accounts/{id}/purge` | admin: its owners, as above; the operator, any workspace's | `{confirm: <id>}` → 204 (150 s): a removed mailbox deleted for good, compacting what held its index; a live one `409`; without the id repeated, `400` and nothing deleted |
 | `POST /v1/accounts/{id}/oauth/start` | admin, manage | start (or restart) its authorization; the flow is the caller's |
 | `POST /v1/accounts/oauth/callback` | admin, manage | `{redirect_url}` → `Account` (45 s); only the flow's starter |
 | `GET /v1/accounts/{id}/folders` | read, `read` | folders, from the index or from the server |
 | `GET /v1/accounts/{id}/sync` | read | `AccountSync` |
 | `POST /v1/accounts/{id}/sync` | write, `read` | ask for a pass now → `AccountSync` (202) |
-| `PUT /v1/accounts/{id}/sync` | a team mailbox: its owners and admins, signed in; an operator mailbox: unrestricted instance admin key | `{enabled, version?}` → `AccountSync`: the team's consent (on: `version` the current sync text) or the operator's switch; off deletes the index for everyone; `400` for a personal mailbox; `409` to turn on a team mailbox nobody can read |
+| `PUT /v1/accounts/{id}/sync` | a team mailbox: its owners and admins, signed in; an operator mailbox: unrestricted instance admin key; a personal mailbox: its person, `{"enabled": true}` only | `{enabled, version?}` → `AccountSync`: the team's consent (on: `version` the current sync text) or the operator's switch; off deletes the index for everyone; on also lifts a recovery's hold, and from a personal mailbox's person does only that (no `version`; anything else `400`); `409` to turn on a team mailbox nobody can read; a removed team mailbox's owners turn it off, deleting the index it kept |
 | `GET/POST/DELETE /v1/me/sync-consent` | see [Sync](#sync-and-consent) | the person's consent to sync |
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
 | `GET /v1/me/storage` | read | what the mailboxes the caller may read take up in the index; `?workspace=` narrows |
 | `GET /v1/me/mcp` | read | `{http, keys_send}`: whether this server answers MCP over HTTP at `/mcp`, and whether its API keys may send (`MAIL_KEYS_MAY_SEND`) |
+| `GET /v1/me/notices`, `DELETE /v1/me/notices/{id}` | session (a key: `403`) | `[PersonNotice]`, the person's notices, the newest first; dismissing one → 204, one they do not have `404` |
 | `GET /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the keys the person created, in every workspace; `POST` answers `400` |
 | `GET/POST /v1/workspaces/{id}/apikeys`, `DELETE …/apikeys/{prefix}` | session, owner or admin | the workspace's keys |
 | `PUT/DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | session, owner or admin | what a key holds on a mailbox |
@@ -1145,8 +1149,9 @@ off deletes what was stored. Whose consent it is depends on whose mailbox it is:
 - **A mailbox of the operator workspace** has no person to consent: it syncs only when the operator
   switches it on, `mailserver account sync ID on` (`PUT /v1/accounts/{id}/sync {"enabled": true}`,
   unrestricted instance admin key). `off` asks for confirmation and deletes its index. For a
-  person's mailbox the route answers `400` to the person and `404` to everyone else: nobody decides
-  for its person, not the operator either.
+  person's mailbox the route answers `400` to the person, but for `{"enabled": true}`, which lifts
+  the hold of their mailbox recovered after it was removed and nothing more, and `404` to everyone
+  else: nobody decides for its person, not the operator either.
 - **The rule the engine reads** (`internal/store/eligibility.go`): the account is `active` and, for
   a personal mailbox, its person is active and has consented; for a team mailbox, the team's
   consent stands and someone reads it; for an operator mailbox, the operator switched it on.
@@ -1281,6 +1286,11 @@ scope. A member who reads a shared mailbox never hears of another member's sends
   member of the workspace `?workspace=` named: do not reconnect with the same filter. A stream of
   everything the caller may read stays open, however little that is (none at all, after the last
   grant is revoked, or before the first), so a mailbox granted or linked later appears on it.
+- `event: notice` (no `id`, data `{}`) says the person was given a notice since the stream last
+  looked — a mailbox they read removed, or a team mailbox's sync turned off, by someone else —
+  checked at the same moments, and said even on a stream that ends then: read them again with
+  `GET /v1/me/notices`. A stream never says it of the notices the person already had when it
+  opened, which the console reads when it starts, and a key's never says it: a key has none.
 - `event: lagged` (no `id`) comes first when the cursor is older than the journal keeps (7 days,
   and always the latest 10,000 events): what survives follows, but the client must read again the
   state it keeps.

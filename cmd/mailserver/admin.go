@@ -390,9 +390,11 @@ func adminDo(ctx context.Context, cfg config.Config, method, path string, body [
 	}
 
 	// Longer than any route's own deadline — adding a password account
-	// spends up to thirty seconds logging in to its server — so the daemon's
-	// answer, not this client, is what ends a slow request.
-	client := &http.Client{Timeout: 70 * time.Second}
+	// spends up to thirty seconds logging in to its server, and switching
+	// sync off or deleting a mailbox for good up to two and a half minutes
+	// compacting what held its index — so the daemon's answer, not this
+	// client, is what ends a slow request.
+	client := &http.Client{Timeout: 160 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach the daemon at %s: %w", cfg.HTTPAddr, err)

@@ -16,11 +16,14 @@ import (
 	"time"
 
 	"github.com/thehappieco/mailie/internal/config"
+	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func accountCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: account needs a subcommand: add, list, authorize, folders, sync or remove", errUsage)
+		return fmt.Errorf("%w: account needs a subcommand: add, list, authorize, folders, sync, remove, removed, "+
+			"recover or purge", errUsage)
 	}
 	switch args[0] {
 	case "add":
@@ -33,6 +36,12 @@ func accountCommand(ctx context.Context, cfg config.Config, args []string) error
 		return accountFolders(ctx, cfg, args[1:])
 	case "remove":
 		return accountRemove(ctx, cfg, args[1:])
+	case "removed":
+		return accountRemoved(ctx, cfg, args[1:])
+	case "recover":
+		return accountRecover(ctx, cfg, args[1:])
+	case "purge":
+		return accountPurge(ctx, cfg, args[1:])
 	case "sync":
 		return accountSync(ctx, cfg, args[1:])
 	default:
@@ -49,6 +58,9 @@ type accountJSON struct {
 	StateReason string `json:"state_reason"`
 	SyncTier    string `json:"sync_tier"`
 	LastError   string `json:"last_error"`
+	Sync        struct {
+		Held bool `json:"held"`
+	} `json:"sync"`
 }
 
 type authFlowJSON struct {
@@ -284,6 +296,9 @@ func accountList(ctx context.Context, cfg config.Config, args []string) error {
 		if note == "" {
 			note = a.LastError
 		}
+		if note == "" && a.Sync.Held {
+			note = "sync held since it was recovered"
+		}
 		if note == "" && a.SyncTier != "" {
 			note = "sync: " + a.SyncTier
 		}
@@ -342,6 +357,10 @@ func orDash(s string) string {
 	return s
 }
 
+// accountRemove removes a mailbox. The daemon keeps it 30 days, used by
+// nothing, recoverable by its workspace's owners — for an operator mailbox,
+// the operator — and then deletes it for good; one that never connected,
+// which holds nothing, it deletes at once.
 func accountRemove(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account remove", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation")
@@ -353,25 +372,135 @@ func accountRemove(ctx context.Context, cfg config.Config, args []string) error 
 	}
 	accountID := fs.Arg(0)
 
-	if !*yes {
-		// Removing an account discards its index and its stored credential;
-		// re-adding it means authorising again and re-downloading everything.
-		fmt.Fprintf(os.Stderr, "Remove %s, its stored credentials and everything indexed for it? [y/N] ", accountID)
-		var answer string
-		//nolint:errcheck // an unreadable answer is not a yes
-		_, _ = fmt.Scanln(&answer)
-		if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-			fmt.Fprintln(os.Stderr, "cancelled")
-			return nil
-		}
+	if !*yes && !confirmed(fmt.Sprintf("Remove %s? It is kept 30 days, used by nothing and recoverable, "+
+		"and then deleted for good with its stored credentials and everything indexed for it.", accountID)) {
+		return nil
 	}
 	// The daemon removes nothing unless the request repeats the id.
-	if _, err := adminDo(ctx, cfg, "DELETE",
-		"/v1/accounts/"+url.PathEscape(accountID)+"?confirm="+url.QueryEscape(accountID), nil); err != nil {
+	var removal service.Removal
+	if err := adminJSON(ctx, cfg, http.MethodDelete,
+		"/v1/accounts/"+url.PathEscape(accountID)+"?confirm="+url.QueryEscape(accountID), nil, &removal); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "removed")
+	fmt.Fprintln(os.Stderr, removalSummary(accountID, removal))
 	return nil
+}
+
+// removalSummary says what removing a mailbox did, and how to undo it or
+// finish it while it is kept.
+func removalSummary(accountID string, r service.Removal) string {
+	if r.Purged {
+		return "deleted: it never connected, so nothing was kept"
+	}
+	return fmt.Sprintf("removed; kept until %s (`mailserver account recover %s` brings it back, "+
+		"`mailserver account purge %s` deletes it for good now)", stamp(r.PurgeAfter), accountID, accountID)
+}
+
+// accountRemoved lists a workspace's removed mailboxes: the operator's own by
+// default, and any workspace's by --workspace, which the operator may delete
+// for good (account purge) and never recovers.
+func accountRemoved(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("account removed", flag.ContinueOnError)
+	id := fs.String("workspace", workspace.OperatorID, "the workspace's id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("account removed: unexpected argument %q", fs.Arg(0))
+	}
+	var removed []service.RemovedMailbox
+	if err := adminJSON(ctx, cfg, http.MethodGet, "/v1/workspaces/"+url.PathEscape(*id)+"/removed-mailboxes",
+		nil, &removed); err != nil {
+		return err
+	}
+	if len(removed) == 0 {
+		fmt.Fprintf(os.Stderr, "no removed mailboxes in %s\n", *id)
+		return nil
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	//nolint:errcheck // checked by Flush
+	fmt.Fprintln(w, "ID\tEMAIL\tPROVIDER\tREMOVED\tBY\tKEPT UNTIL\tINDEX\tREADERS")
+	for _, m := range removed {
+		index := "kept"
+		if !m.IndexKept {
+			index = "none"
+		}
+		//nolint:errcheck // checked by Flush
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\n", m.ID, m.Email, m.Provider, stamp(m.RemovedAt),
+			orDash(m.RemovedBy), stamp(m.PurgeAfter), index, m.Readers)
+	}
+	return w.Flush()
+}
+
+// accountRecover recovers a removed mailbox of the operator workspace within
+// its 30 days. Its sync stays held until it is switched on again (account
+// sync ID on); a person's or a team's is recovered by its owners, in the
+// console.
+func accountRecover(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("account recover", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("account recover: give exactly one account id")
+	}
+	accountID := fs.Arg(0)
+	var recovered accountJSON
+	if err := adminJSON(ctx, cfg, http.MethodPost, "/v1/accounts/"+url.PathEscape(accountID)+"/recover",
+		nil, &recovered); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "recovered %s; its sync is held until `mailserver account sync %s on`\n",
+		recovered.Email, accountID)
+	return nil
+}
+
+// accountPurge deletes a removed mailbox for good, of any workspace: the
+// operator's way to erase one when its person asks. A live mailbox is
+// removed first.
+func accountPurge(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("account purge", flag.ContinueOnError)
+	yes := fs.Bool("yes", false, "do not ask for confirmation")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("account purge: give exactly one account id")
+	}
+	accountID := fs.Arg(0)
+	if !*yes && !confirmed(fmt.Sprintf("Delete the removed mailbox %s for good, with its stored credentials and "+
+		"everything indexed for it? Nothing brings it back.", accountID)) {
+		return nil
+	}
+	// The daemon deletes nothing unless the request repeats the id.
+	if err := adminJSON(ctx, cfg, http.MethodPost, "/v1/accounts/"+url.PathEscape(accountID)+"/purge",
+		service.PurgeAccountRequest{Confirm: accountID}, nil); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "deleted for good")
+	return nil
+}
+
+// confirmed asks a yes-or-no question on the terminal; anything but y is a
+// no, which it says.
+func confirmed(question string) bool {
+	fmt.Fprintf(os.Stderr, "%s [y/N] ", question)
+	var answer string
+	//nolint:errcheck // an unreadable answer is not a yes
+	_, _ = fmt.Scanln(&answer)
+	if strings.EqualFold(strings.TrimSpace(answer), "y") {
+		return true
+	}
+	fmt.Fprintln(os.Stderr, "cancelled")
+	return false
+}
+
+// stamp is a moment in unix seconds as the command line prints one.
+func stamp(unix int64) string {
+	if unix == 0 {
+		return "-"
+	}
+	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
 }
 
 // syncJSON is an account's sync, as GET /v1/accounts/{id}/sync answers.
@@ -386,12 +515,15 @@ type syncJSON struct {
 	InitialProgress int    `json:"initial_progress"`
 	LastSyncedAt    int64  `json:"last_synced_at"`
 	ErrorClass      string `json:"error_class"`
+	Held            bool   `json:"held"`
+	HeldSince       int64  `json:"held_since"`
 }
 
 // accountSync shows an account's sync, asks for a pass, or — for an account
-// nobody owns, which has no person to consent — switches sync on or off. A
-// person's mailbox syncs when they turn sync on in the console, and the
-// daemon refuses to let anyone else decide for them.
+// nobody owns, which has no person to consent — switches sync on or off;
+// switching on also lifts the hold of a mailbox recovered after it was
+// removed. A person's mailbox syncs when they turn sync on in the console,
+// and the daemon refuses to let anyone else decide for them.
 func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account sync", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation before switching sync off")
@@ -415,17 +547,10 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	case "on":
 		raw, err = adminDo(ctx, cfg, http.MethodPut, path, []byte(`{"enabled":true}`))
 	case "off":
-		if !*yes {
-			// Switching off deletes the account's index, as withdrawing
-			// consent does for a person's mailboxes.
-			fmt.Fprintf(os.Stderr, "Switch sync off for %s and delete everything indexed for it? [y/N] ", fs.Arg(0))
-			var answer string
-			//nolint:errcheck // an unreadable answer is not a yes
-			_, _ = fmt.Scanln(&answer)
-			if !strings.EqualFold(strings.TrimSpace(answer), "y") {
-				fmt.Fprintln(os.Stderr, "cancelled")
-				return nil
-			}
+		// Switching off deletes the account's index, as withdrawing consent
+		// does for a person's mailboxes.
+		if !*yes && !confirmed(fmt.Sprintf("Switch sync off for %s and delete everything indexed for it?", fs.Arg(0))) {
+			return nil
 		}
 		raw, err = adminDo(ctx, cfg, http.MethodPut, path, []byte(`{"enabled":false}`))
 	default:
@@ -445,6 +570,11 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	last := "-"
 	if st.LastSyncedAt != 0 {
 		last = time.Unix(st.LastSyncedAt, 0).Format(time.RFC3339)
+	}
+	if st.Held {
+		fmt.Printf("sync held since %s, when it was recovered; `mailserver account sync %s on` turns it on\n",
+			stamp(st.HeldSince), fs.Arg(0))
+		return nil
 	}
 	fmt.Printf("sync %s, %s", enabled, st.State)
 	if st.Tier != "" {

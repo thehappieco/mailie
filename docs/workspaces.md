@@ -859,6 +859,12 @@ see it, assuming that never changes. With grants it does:
   stream of everything the caller may read stays open however little that is — none since the last
   grant was revoked, or none yet — because one opened now would be the same: a mailbox granted or
   linked later appears on it without reconnecting.
+- **Notices.** A person's stream also says, at the same moments, when they were given a notice
+  since it last looked (`Stream.NewNotices`, which reads their notices again only when the service's
+  notice epoch moved): `event: notice`, with no `id` and `{}` for data, after any `access` it
+  writes, and even on a stream that ends then, since the notice says why it lost a mailbox. The
+  console reads them with `GET /v1/me/notices`. What the person had when the stream opened is never
+  announced, and a key has none ([Removed mailboxes](#removed-mailboxes)).
 - **`send.finished`** is not the mailbox's but one sender's record (see
   [conflict 10](#conflicts-and-resolutions)): its payload names the sender — `user_id` for a
   person, `sent_by` (`key:<prefix>`) for a key — and it goes only to whoever may read that record
@@ -927,6 +933,11 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `PUT /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | owner or admin, signed in; `read` only from one who reads the mailbox | `{read, act, send}`, all three required, not all false → `KeyMailbox` |
 | `DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | owner or admin, signed in | `204`: the mailbox is out of the key |
 | `GET /v1/workspaces/{id}/apikeys/{prefix}/sends` | owner or admin, signed in | `[SendStatus]`, the key's sends from the workspace's mailboxes, newest first (at most 200) |
+| `GET /v1/workspaces/{id}/removed-mailboxes` | a personal workspace's person, a team's active owners, signed in (an admin or a member: `403`); the operator, any workspace's | `[RemovedMailbox]`, the oldest removal first |
+| `POST /v1/accounts/{id}/recover` | its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | `Account`, live again, `sync.held` until someone who may turns it on; `409` past its 30 days, in a closed team, or for a team mailbox nobody who could read it is left to read; `404` for everyone else |
+| `POST /v1/accounts/{id}/purge` | its owners, as above; the operator, any workspace's | `{confirm}`, the id repeated, or `400` and nothing deleted → `204` (150 s): deleted for good; a live mailbox `409` |
+| `GET /v1/me/notices` | session (a key: `403`) | `[PersonNotice]`, the newest first |
+| `DELETE /v1/me/notices/{id}` | session | `204`; one the person does not have, `404` |
 | `GET /v1/me/apikeys` | session | `[WorkspaceKey]`: the keys the person created, in every workspace |
 | `DELETE /v1/me/apikeys/{prefix}` | session | `204`: revokes a key the person created |
 | `POST /v1/me/apikeys` | session | `400`: keys are created in a workspace |
@@ -941,9 +952,9 @@ Changed routes:
 | `PUT /v1/accounts/{id}/access/{user_id}` | optional `grant` and `public_key`: required together with `read` given on a mailbox that has a key to a person with an account key, refused otherwise; `public_key` is the key the grant was sealed to, `conflict` unless it is the person's now (phase 3) |
 | `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
-| `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected |
+| `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected; answers `Removal` (`200`, `204` before 0020) |
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's) |
-| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; `400` for a personal mailbox; `409` to turn on a team mailbox nobody can read. Answers `AccountSync` |
+| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on lifts a recovery's hold too; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while a recovery holds it |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
 | `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)); a key's are that key's |
@@ -1017,6 +1028,25 @@ Shapes:
 {"account_id": "acc_…", "user_id": "usr_…", "epoch": 1, "grant": "TUwBAQEAAQ…",
  "granted_by": "usr_…", "created_at": 1790000000}
 
+// Removal (DELETE /v1/accounts/{id}): purge_after, until when it is kept and recovered, absent
+// when purged, a link that never connected deleted at once
+{"account_id": "acc_…", "purged": false, "purge_after": 1792592000}
+
+// RemovedMailbox (removed_by "usr_…", "key:<prefix>" or "cli", absent once that person is deleted;
+// index_kept, an index a recovery catches up from, false once its sync was turned off; readers,
+// who would read it again once recovered: a team mailbox with none is deleted and linked again)
+{"id": "acc_…", "workspace_id": "wsp_…", "email": "billing@example.org", "provider": "imap",
+ "removed_at": 1790000000, "removed_by": "usr_…", "purge_after": 1792592000,
+ "index_kept": true, "readers": 2}
+
+// PersonNotice (kind "removed" or "sync_off"; state where the mailbox stands now, "removed",
+// "deleted" or "live"; mailbox its address while it is kept, its masked hint once deleted;
+// workspace_name absent for a personal workspace and once the team is gone; recoverable_until only
+// while it is removed)
+{"id": "mbe_…", "kind": "removed", "workspace_id": "wsp_…", "workspace_name": "Support",
+ "account_id": "acc_…", "mailbox": "billing@example.org", "at": 1790000000, "state": "removed",
+ "recoverable_until": 1792592000}
+
 // TeamInvite (role is the role in the team; url only in the answer that creates it). An instance
 // invite keeps the shape POST /v1/users/invites always answered: {email, role, url, expires_at}.
 {"id": "inv_…", "email": "bea@example.org", "workspace_id": "wsp_…", "role": "member",
@@ -1062,6 +1092,10 @@ mailserver access grant  --account ID --email EMAIL --manage
 mailserver access revoke --account ID --email EMAIL [--read] [--act] [--send] [--manage]   # none: every flag
 mailserver user invite --email EMAIL [--role owner|member]                      # an instance invite
 mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
+mailserver account remove  ID [--yes]           # an operator mailbox: kept 30 days, recoverable
+mailserver account removed [--workspace ID]     # the operator workspace's by default; any workspace's
+mailserver account recover ID                   # an operator mailbox, its sync held until `account sync ID on`
+mailserver account purge   ID [--yes]           # a removed mailbox of any workspace, deleted for good
 ```
 
 - `workspace close` and `reopen` take a local team only; `workspace list` notes a closed one
@@ -1076,6 +1110,14 @@ mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] 
   workspace (`several` for a carried-over one) and, for a workspace key, the mailboxes it holds
   (`none` when it holds none); `apikey revoke` revokes any key. A workspace's keys are created in
   the console only.
+- `account remove` says until when the mailbox is kept, or that one that never connected was
+  deleted at once. `account removed` lists a workspace's removed mailboxes (the operator workspace's
+  without `--workspace`), with who removed each, until when it is kept, whether its index is kept
+  and how many people would read it again; `account recover` recovers an operator mailbox only (a
+  person's or a team's is its owners' to recover, in the console), whose sync `account sync ID on`
+  then switches on again; `account purge` deletes a removed mailbox of any workspace for good, after
+  asking (`--yes` does not), to erase one when its person asks. See
+  [Removed mailboxes](#removed-mailboxes).
 - `user invite --bootstrap` takes `--workspace` too. Without `--role`, `--bootstrap` makes an
   `owner` invite while the instance has no active owner and no live owner invite, and a `member`
   invite otherwise ([conflict 6](#conflicts-and-resolutions)).

@@ -30,15 +30,8 @@ import (
 func realDaemon(t *testing.T) (config.Config, *store.Store) {
 	t.Helper()
 	db := storetest.New(t)
-	key := make([]byte, secrets.KeyLen)
-	for i := range key {
-		key[i] = 0x7e
-	}
-	keyring, err := secrets.NewKeyring(1, map[uint8][]byte{1: key})
-	if err != nil {
-		t.Fatal(err)
-	}
-	registry := account.NewRegistry(t.Context(), account.NewRepository(db, keyring), account.RegistryOptions{SpoolDir: t.TempDir()})
+	registry := account.NewRegistry(t.Context(), account.NewRepository(db, daemonKeyring(t)),
+		account.RegistryOptions{SpoolDir: t.TempDir()})
 	t.Cleanup(func() { _ = registry.Close() })
 	logger := obs.NewLogger("error", "text")
 	h := &api.Handler{
@@ -55,6 +48,21 @@ func realDaemon(t *testing.T) (config.Config, *store.Store) {
 	return config.Config{
 		HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: authtest.NewKey(t, db, auth.ScopeAdmin),
 	}, db
+}
+
+// daemonKeyring is the keyring realDaemon seals credentials with, for a test
+// that stores one the daemon then holds.
+func daemonKeyring(t *testing.T) *secrets.Keyring {
+	t.Helper()
+	key := make([]byte, secrets.KeyLen)
+	for i := range key {
+		key[i] = 0x7e
+	}
+	keyring, err := secrets.NewKeyring(1, map[uint8][]byte{1: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return keyring
 }
 
 func TestTheOperatorAdministersTeamsFromTheCommandLineAndGrantsOnlyManage(t *testing.T) {

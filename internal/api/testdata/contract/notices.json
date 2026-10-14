@@ -1,0 +1,13 @@
+[
+  {
+    "account_id": "acc_0000000000000006",
+    "at": 1790000000,
+    "id": "mbe_0000000000000001",
+    "kind": "removed",
+    "mailbox": "billing@mail.example",
+    "recoverable_until": 1792592000,
+    "state": "removed",
+    "workspace_id": "wsp_0000000000000002",
+    "workspace_name": "Support"
+  }
+]
