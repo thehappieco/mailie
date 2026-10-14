@@ -140,7 +140,7 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 // without what keys held on it. ErrNotFound for a mailbox nobody knows,
 // ErrNotRemoved for a live one, ErrRemovalOver once its 30 days are over,
 // workspace.ErrClosed in a closed team, and ErrNoReaderLeft for a team
-// mailbox nobody who could read it is left to read.
+// mailbox nobody who could read it is left to read, now or once resumed.
 func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check func(*sql.Tx) error) error {
 	at := r.now().UTC().Truncate(time.Second)
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
@@ -176,9 +176,14 @@ func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check
 		}
 		// A team mailbox syncs for its readers, and read passes only from
 		// someone who reads it: with none left, it is deleted for good and
-		// linked again instead.
+		// linked again instead. One a suspended person would read once
+		// resumed waits for them, as a live one does: its sync stays held,
+		// and is turned on only once someone reads it.
 		if workspace.Kind(kind) == workspace.KindTeam {
 			readable, err := workspace.HasReaderTx(ctx, tx, id)
+			if err == nil && !readable {
+				readable, err = workspace.AwaitsReaderTx(ctx, tx, id)
+			}
 			switch {
 			case err != nil:
 				return err
@@ -324,8 +329,13 @@ type RemovedAccount struct {
 	// IndexKept is an index it keeps: recovered, it catches up from it.
 	IndexKept bool
 	// Readers is how many people would read it again once recovered
-	// (store.KeptReaderSQL): a team mailbox with none is not recovered.
+	// (store.KeptReaderSQL).
 	Readers int
+	// NoReader is a team mailbox nobody would read once recovered, a
+	// suspended person who would once resumed aside
+	// (store.KeptSuspendedReaderSQL), whom it waits for: it is not
+	// recovered.
+	NoReader bool
 }
 
 // ListRemoved lists the removed mailboxes scope may see, the oldest removal
@@ -349,7 +359,10 @@ func (r *Repository) ListRemoved(ctx context.Context, scope RemovedScope) ([]Rem
 	//nolint:gosec // G202: built from constants and the rule's fragments; every value is bound
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT `+accountColumns+`,
 		  EXISTS (SELECT 1 FROM folders f WHERE f.account_id = accounts.id),
-		  (SELECT count(*) FROM mailbox_access g WHERE g.account_id = accounts.id AND `+store.KeptReaderSQL("g")+`)
+		  (SELECT count(*) FROM mailbox_access g WHERE g.account_id = accounts.id AND `+store.KeptReaderSQL("g")+`),
+		  EXISTS (SELECT 1 FROM workspaces w WHERE w.id = accounts.workspace_id AND w.kind = 'team')
+		    AND NOT EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = accounts.id
+		                     AND (`+store.KeptReaderSQL("g")+` OR `+store.KeptSuspendedReaderSQL("g")+`))
 		  FROM accounts WHERE `+where+` ORDER BY removed_at, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("account: list the removed mailboxes: %w", err)
@@ -359,7 +372,7 @@ func (r *Repository) ListRemoved(ctx context.Context, scope RemovedScope) ([]Rem
 	var out []RemovedAccount
 	for rows.Next() {
 		var ra RemovedAccount
-		ra.Account, err = scanAccount(removedRow{rows: rows, extra: []any{&ra.IndexKept, &ra.Readers}})
+		ra.Account, err = scanAccount(removedRow{rows: rows, extra: []any{&ra.IndexKept, &ra.Readers, &ra.NoReader}})
 		if err != nil {
 			return nil, err
 		}

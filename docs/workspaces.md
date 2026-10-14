@@ -438,8 +438,10 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   `{"enabled": true}`, which takes no version and only lifts the hold), an owner or an admin for a
   team's, to the current sync text, the operator for an operator mailbox. It then catches up from
   the index it kept. A team mailbox nobody who could read it is left to read is not recovered
-  (`409`): it is deleted for good and linked again, which gives the linker `read`. Nothing is
-  recovered in a closed team (`409`), nor once its 30 days are over (`409`).
+  (`409`): it is deleted for good and linked again, which gives the linker `read`. One that only a
+  person suspended by an extension would read, once resumed, waits for them as a live one does
+  (`no_reader` false in the list): it is recovered, its sync held, and turned on only once someone
+  reads it. Nothing is recovered in a closed team (`409`), nor once its 30 days are over (`409`).
 - **Deleting it for good** before its 30 days are over is for the same owners, repeating its id
   (`confirm`), and for the operator, any workspace's removed mailbox, to erase one when its person
   asks them to: the operator lists every workspace's removed mailboxes and never recovers a

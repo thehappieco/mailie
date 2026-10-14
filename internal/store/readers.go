@@ -97,8 +97,16 @@ func KeptReaderSQL(alias string) string {
 // nothing anywhere the rule decides: this is only what keeps a mailbox they
 // alone would read from being called one nobody can ever read again.
 func SuspendedReaderSQL(alias string) string {
+	return `(` + LiveSQL(alias+`.account_id`) + ` AND ` + KeptSuspendedReaderSQL(alias) + `)`
+}
+
+// KeptSuspendedReaderSQL is SuspendedReaderSQL on a removed mailbox as if it
+// were live: who would read it once it is recovered and they are resumed.
+// Like KeptReaderSQL, it decides nothing but that a removed team mailbox
+// waits for them rather than being one nobody could read again.
+func KeptSuspendedReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
-	return `(` + alias + `.read = 1 AND ` + LiveSQL(account) + `
+	return `(` + alias + `.read = 1
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.suspended_at <> 0)

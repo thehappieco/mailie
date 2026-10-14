@@ -123,6 +123,20 @@ func HasReaderTx(ctx context.Context, tx *sql.Tx, accountID string) (bool, error
 	return n > 0, nil
 }
 
+// AwaitsReaderTx reports, inside the caller's transaction, whether a mailbox
+// no one reads now would be read by a person suspended by an extension once
+// they are resumed (store.SuspendedReaderSQL): it waits for them, and is not
+// one nobody can ever read again.
+func AwaitsReaderTx(ctx context.Context, tx *sql.Tx, accountID string) (bool, error) {
+	var n int
+	err := tx.QueryRowContext(ctx, `SELECT count(*) FROM mailbox_access g
+		 WHERE g.account_id = ? AND `+store.SuspendedReaderSQL("g"), accountID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("workspace: read the mailbox's suspended readers: %w", err)
+	}
+	return n > 0, nil
+}
+
 // ReadsNowTx reports, inside the caller's transaction, whether a person reads
 // a mailbox now, by the one rule: what giving read to someone else, or to a
 // workspace key, and handing the mailbox's key on, are held to (the giver

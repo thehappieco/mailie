@@ -7,7 +7,8 @@
 // someone who may turns it on — or deletes it for good sooner, which asks for
 // its address typed, as removing it did, and sends its id to confirm. A team
 // mailbox nobody who could read it is left to read is not recovered: it is
-// deleted for good and connected again. Shown only while there is one, or
+// deleted for good and connected again. One that only someone suspended on
+// the server would read, once resumed, waits for them: it is recovered. Shown only while there is one, or
 // while they could not be read.
 import { computed, onMounted, ref, useId, watch } from 'vue'
 import type { ProviderID, RemovedMailbox } from '../api/types'
@@ -51,7 +52,9 @@ function removedLine(item: RemovedMailbox): string {
   return by ? t('Removed by {name} on {date}.', { name: by, date }) : t('Removed on {date}.', { date })
 }
 /** A team mailbox nobody would read once recovered: the server refuses to recover it. */
-const unreadable = (item: RemovedMailbox) => inTeam.value && item.readers === 0
+const unreadable = (item: RemovedMailbox) => inTeam.value && (item.no_reader ?? item.readers === 0)
+/** Nobody reads it now, but someone suspended would once resumed: it waits for them, and is recovered. */
+const awaitsReader = (item: RemovedMailbox) => inTeam.value && item.readers === 0 && !unreadable(item)
 const problemFor = (item: RemovedMailbox) => removed.problem?.id === item.id && !purging.value ? removed.problem.failure : null
 
 function recover(item: RemovedMailbox) { void recoverRemoved(item.id) }
@@ -91,6 +94,7 @@ async function purge() {
           <span v-if="!item.index_kept">{{ t('Its index was deleted when its sync was turned off: once recovered and turned on, it syncs from the start.') }}</span>
         </p>
         <p v-if="unreadable(item)" class="note removed-note"><AppIcon name="eye-off" :size="15" /><span>{{ t('Nobody in {team} who could read it is left, so it cannot be recovered. To use it again, delete it for good and connect it again.', { team: teamName }) }}</span></p>
+        <p v-else-if="awaitsReader(item)" class="note removed-note"><AppIcon name="eye-off" :size="15" /><span>{{ t('Nobody in {team} reads it now, but someone suspended on this server would once resumed: it can be recovered, and its sync turned on once someone reads it.', { team: teamName }) }}</span></p>
         <p v-if="problemFor(item)" class="alert" role="alert">{{ describe(problemFor(item)!) }}</p>
         <div class="row-actions">
           <button v-if="!unreadable(item)" class="ghost" type="button" :disabled="busy" @click="recover(item)"><AppIcon name="undo" :size="16" />{{ removed.busy === item.id && !purging ? t('Recovering…') : t('Recover') }}</button>

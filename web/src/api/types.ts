@@ -656,8 +656,10 @@ export interface Removal { account_id: string; purged: boolean; purge_after?: nu
  * whom ("usr_…", "key:<prefix>" or "cli"; absent once that person is
  * deleted), until when it is kept, whether it keeps an index a recovery
  * catches up from (none once its sync was turned off meanwhile), and how
- * many people would read it again. A team mailbox nobody would read is not
- * recovered: it is deleted for good and connected again.
+ * many people would read it again. A team mailbox nobody would read
+ * (no_reader) is not recovered: it is deleted for good and connected again.
+ * One that only someone suspended on the server would read, once resumed,
+ * is not no_reader: it waits for them, and is recovered with its sync held.
  */
 export interface RemovedMailbox {
   id: string
@@ -670,6 +672,8 @@ export interface RemovedMailbox {
   purge_after: number
   index_kept: boolean
   readers: number
+  /** A team mailbox nobody would read once recovered, someone suspended who would once resumed aside. Absent from an older daemon, where readers alone says. */
+  no_reader?: boolean
 }
 /** What a person's notice is about: a mailbox they read removed, or a team mailbox's sync turned off. */
 export type NoticeKind = 'removed' | 'sync_off'
@@ -1200,10 +1204,13 @@ export function isRemoval(v: unknown, strict = false): v is Removal {
 }
 
 export function isRemovedMailbox(v: unknown, strict = false): v is RemovedMailbox {
-  return record(v) && known(v, ['id', 'workspace_id', 'email', 'display_name', 'provider', 'removed_at', 'removed_by', 'purge_after', 'index_kept', 'readers'], strict)
+  return record(v) && known(v, ['id', 'workspace_id', 'email', 'display_name', 'provider', 'removed_at', 'removed_by', 'purge_after', 'index_kept', 'readers', 'no_reader'], strict)
     && pathID(v.id) && pathID(v.workspace_id) && filled(v.email, 320) && optional(v.display_name, x => text(x, 1024))
     && word(providerIDs, strict)(v.provider) && seconds(v.removed_at) && optional(v.removed_by, actor)
     && seconds(v.purge_after) && flag(v.index_kept) && counter(v.readers)
+    && (strict ? flag(v.no_reader) : optional(v.no_reader, flag))
+    // Nobody would read it: nobody is counted as reading it again.
+    && (!strict || !v.no_reader || v.readers === 0)
     // Kept 30 days at least, from its removal.
     && (!strict || (v.purge_after as number) - (v.removed_at as number) >= 30 * 86_400)
 }

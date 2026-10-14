@@ -719,8 +719,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   (`GET /v1/workspaces/{id}/removed-mailboxes`), who removed it and when, until when it is kept, in
   a team how many people would read it again, and whether its index went with its sync. Recover
   (`POST …/recover`) brings its card back, its sync paused; one nobody in the team who could read
-  it is left to read offers no recovery, which the server refuses, and says to delete it for good
-  and connect it again. Delete for good asks for its address typed and sends its id
+  it is left to read (`no_reader`) offers no recovery, which the server refuses, and says to delete
+  it for good and connect it again, while one that only someone suspended on the server would read,
+  once resumed, offers it and says so. Delete for good asks for its address typed and sends its id
   (`POST …/purge` `{confirm}`); already gone counts as done. The list is shown only while there is
   one, or while it could not be read, and is read again on Refresh, after a removal, and when
   access changes. A server older than removed mailboxes (`404`) has none.

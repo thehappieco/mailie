@@ -445,7 +445,7 @@ func TestRecoveryRestoresQualifyingReadersButNoKeyAccess(t *testing.T) {
 		t.Fatalf("removing Bea, its last reader, while it is removed: %v", err)
 	}
 	listed, err := f.svc.ListRemovedMailboxes(ctx, tm.ana, tm.id)
-	if err != nil || len(listed) != 1 || listed[0].Readers != 0 {
+	if err != nil || len(listed) != 1 || listed[0].Readers != 0 || !listed[0].NoReader {
 		t.Errorf("the removed mailboxes: %+v (%v), want one nobody would read", listed, err)
 	}
 	_, err = f.svc.RecoverAccount(ctx, tm.ana, alone)
@@ -455,6 +455,40 @@ func TestRecoveryRestoresQualifyingReadersButNoKeyAccess(t *testing.T) {
 	}
 	if err := f.svc.PurgeAccount(ctx, tm.ana, alone, service.PurgeAccountRequest{Confirm: alone}); err != nil {
 		t.Errorf("deleting it for good: %v", err)
+	}
+}
+
+func TestARemovedMailboxOnlyASuspendedPersonWouldReadWaitsForThemAndIsRecovered(t *testing.T) {
+	f := newFixture(t)
+	tm := newKeysTeam(t, f)
+	ctx := t.Context()
+	f.connect(t, tm.shared)
+	// Bea alone reads it, and is suspended while it is removed.
+	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	f.exec(t, `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.ana.UserID)
+	f.removed(t, tm.ana, tm.shared)
+	f.suspend(t, tm.bea.UserID)
+
+	// Nobody reads it now, but it is not one nobody could read again.
+	listed, err := f.svc.ListRemovedMailboxes(ctx, tm.ana, tm.id)
+	if err != nil || len(listed) != 1 || listed[0].Readers != 0 || listed[0].NoReader {
+		t.Fatalf("the removed mailboxes: %+v (%v), want one waiting for Bea", listed, err)
+	}
+	recovered, err := f.svc.RecoverAccount(ctx, tm.ana, tm.shared)
+	if err != nil {
+		t.Fatalf("recovering the mailbox Bea would read once resumed: %v", err)
+	}
+	if !recovered.Sync.Held || recovered.Sync.Enabled {
+		t.Errorf("the recovered mailbox: %+v, want its sync held", recovered.Sync)
+	}
+	// Its sync is turned on only once someone reads it.
+	on := true
+	turnOn := service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync}
+	_, err = f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, turnOn)
+	wantCode(t, "turning its sync on while Bea is suspended", err, service.CodeConflict)
+	f.resume(t, tm.bea.UserID)
+	if status, err := f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, turnOn); err != nil || status.Held {
+		t.Errorf("turning its sync on once Bea is resumed: %+v, %v", status, err)
 	}
 }
 

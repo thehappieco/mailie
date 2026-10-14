@@ -23,7 +23,8 @@ import (
 //   - a personal mailbox: its person;
 //   - a team mailbox: an active owner of the team, never an admin or a
 //     member, who are told it does not exist; nothing is recovered in a
-//     closed team, nor while nobody who could read it is left;
+//     closed team, nor while nobody who could read it is left (someone
+//     suspended on the server, who would read it once resumed, counts);
 //   - an operator mailbox: the operator, an unrestricted instance admin key.
 //
 // The operator also lists and deletes for good any workspace's removed
@@ -51,10 +52,13 @@ type RemovedMailbox struct {
 	// IndexKept is an index it keeps, which a recovery catches up from;
 	// false once its sync was turned off, which deleted it.
 	IndexKept bool `json:"index_kept"`
-	// Readers is how many people would read it again once recovered. A team
-	// mailbox with none is not recovered: it is deleted for good and linked
-	// again.
+	// Readers is how many people would read it again once recovered.
 	Readers int `json:"readers"`
+	// NoReader is a team mailbox nobody would read once recovered: it is not
+	// recovered, but deleted for good and linked again. One that only a
+	// person suspended on the server would read, once resumed, is not: it
+	// waits for them, recovered with its sync held until someone reads it.
+	NoReader bool `json:"no_reader"`
 }
 
 // PurgeAccountRequest names the mailbox again, as a guard against deleting
@@ -104,7 +108,7 @@ func (s *Service) ListRemovedMailboxes(ctx context.Context, p Principal, workspa
 		out = append(out, RemovedMailbox{
 			ID: ra.ID, WorkspaceID: ra.WorkspaceID, Email: ra.Email, DisplayName: ra.DisplayName,
 			Provider: ra.ProviderName(), RemovedAt: ra.RemovedAt.Unix(), RemovedBy: ra.RemovedBy,
-			PurgeAfter: ra.PurgeAfter.Unix(), IndexKept: ra.IndexKept, Readers: ra.Readers,
+			PurgeAfter: ra.PurgeAfter.Unix(), IndexKept: ra.IndexKept, Readers: ra.Readers, NoReader: ra.NoReader,
 		})
 	}
 	return out, nil

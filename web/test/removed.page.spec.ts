@@ -27,7 +27,7 @@ const full = { read: true, act: true, send: true, manage: true }
 const personal: Workspace = { id: PERSONAL, kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }
 const support = (role: string): Workspace => ({ id: TEAM, kind: 'team', source: 'local', name: 'Support', role, status: 'active', created_at: 1_790_000_000 })
 const kept = (id: string, email: string, fields: Partial<RemovedMailbox> = {}): RemovedMailbox => ({
-  id, workspace_id: TEAM, email, provider: 'imap', removed_at: 1_790_000_000, removed_by: BEA, purge_after: 1_790_000_000 + 30 * DAY, index_kept: true, readers: 2, ...fields,
+  id, workspace_id: TEAM, email, provider: 'imap', removed_at: 1_790_000_000, removed_by: BEA, purge_after: 1_790_000_000 + 30 * DAY, index_kept: true, readers: 2, no_reader: false, ...fields,
 })
 /** A mailbox recovered, as the server answers it: live again, its sync held. */
 const recovered = (item: RemovedMailbox): Account => account({
@@ -93,7 +93,8 @@ afterEach(async () => {
 
 describe('the removed mailboxes of a workspace', () => {
   it('shows an owner each one with until when it is kept, and recovers one with its card back and its sync paused', async () => {
-    removedList = [kept('acc_billing', 'billing@example.test'), kept('acc_old', 'old@example.test', { readers: 0 })]
+    removedList = [kept('acc_billing', 'billing@example.test'), kept('acc_old', 'old@example.test', { readers: 0, no_reader: true }),
+      kept('acc_waiting', 'waiting@example.test', { readers: 0 })]
     await signedIn('owner')
     await loadAccounts()
     mounted = mount(AccountsPanel)
@@ -108,6 +109,11 @@ describe('the removed mailboxes of a workspace', () => {
     const old = find('.removed-item', 'old@example.test')!
     expect(words(old)).toContain('Nobody in Support who could read it is left, so it cannot be recovered.')
     expect(old.querySelectorAll('button').map(button => words(button))).toEqual(['Delete for good…'])
+    // Only someone suspended would read it, once resumed: it waits for them, and is recovered.
+    const waiting = find('.removed-item', 'waiting@example.test')!
+    expect(words(waiting)).toContain('Nobody in Support reads it now, but someone suspended on this server would once resumed: it can be recovered, and its sync turned on once someone reads it.')
+    expect(words(waiting)).not.toContain('cannot be recovered')
+    expect(waiting.querySelectorAll('button').map(button => words(button))).toEqual(['Recover', 'Delete for good…'])
 
     await click(find('.removed-item button', 'Recover'))
     await vi.waitFor(() => expect(sent('POST', '/v1/accounts/acc_billing/recover')).toHaveLength(1))
