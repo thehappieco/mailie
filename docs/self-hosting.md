@@ -851,6 +851,67 @@ the triggers that refuse giving a closed team anything.
 - **The daemon says at start** which teams are closed (`teams closed`), and `mailserver workspace
   list` and `GET /v1/workspaces` show each with when it closed (`closed_at`).
 
+### Removed mailboxes are kept 30 days (migration 0020)
+
+Migration 0020 adds four columns to `accounts`, the mailbox journal and people's notices, and
+changes no row: every mailbox stays as it is. **Back up first**, as above: an older binary refuses
+schema 20, and going back is that copy, in which a mailbox removed since the upgrade is live again
+and one deleted for good since is back. What removing a mailbox does changes
+([`workspaces.md`](workspaces.md#removed-mailboxes)):
+
+- **Removing keeps it 30 days.** A mailbox removed from now on stays, with its credentials, its
+  index, its key and its consent, used by nothing: nobody finds it, it syncs nothing, and it is
+  never dialled nor refreshed. Within those days its owners recover it or delete it for good;
+  after them the hourly sweep deletes it for good, and so does the daemon's start, so that a
+  backup restored late deletes at once what is overdue. What API keys held on it, and its consent
+  attempts, go at once and never come back. A link that never connected is deleted at once, as
+  before. Its space on disk comes back only when it is deleted for good: when its person asks you
+  to erase it now, delete it for good yourself (`account purge`, below).
+- **Only owners remove a team's mailbox.** An admin of a team no longer removes its mailboxes, but a
+  link of their own that never connected. A team's active owners remove them, see the removed ones
+  below its cards, recover them and delete them for good, in the console; a personal mailbox is its
+  person's to do all of that, as before. Everyone who read a removed mailbox, but whoever removed
+  it, is told with a notice in the console, and so are the other readers of a team mailbox whose
+  sync is turned off.
+- **A recovered mailbox syncs nothing until it is turned on**: by its person, for a personal
+  mailbox; by a team's owners or admins, to the current sync text; with `mailserver account sync
+  ID on`, for an operator mailbox. It then catches up from the index it kept, with the readers who
+  still qualify and nothing an API key held. A team mailbox nobody who could read it is left to
+  read is not recovered: delete it for good and link it again. Nothing is recovered in a closed
+  team, whose removed mailboxes are deleted on time all the same.
+- **A recovered mailbox may need authorizing again.** Nothing refreshes its token while it is
+  kept, and a grant that ended meanwhile shows when its sync is turned on: the mailbox then needs
+  authorizing, from its card in the console (`mailserver account authorize ID` for an operator
+  mailbox). Under a Google OAuth client left in *Testing*, whose refresh tokens expire 7 days after
+  they are issued ([README](../README.md#google)), expect it of every Gmail mailbox recovered more
+  than 7 days after it was last authorized; a client **In production** has no such limit.
+- **An address kept removed is not linked again.** Linking it in the same workspace is refused
+  (`409`), saying until when it is kept: an owner recovers it, or deletes it for good and links it
+  again. A script that removed a mailbox and added it again (to replace an iCloud app-specific
+  password, which no route replaces) now deletes it for good in between.
+- **The command line.** `mailserver account remove` says until when the mailbox is kept, or that one
+  that never connected was deleted at once. `account removed [--workspace ID]` lists a workspace's
+  removed mailboxes (the operator workspace's by default). `account recover ID` recovers an
+  operator mailbox, whose sync `account sync ID on` then switches on again; a person's or a team's
+  is their owners' to recover, never yours. `account purge ID [--yes]` deletes a removed mailbox
+  of any workspace for good, after asking: how you erase one when its person asks you to.
+  `rewrap-credentials` re-seals the credentials of removed mailboxes too. Closing a person
+  (`user delete`) deletes at once, for good, the removed mailboxes that go with them, as it does
+  their live ones.
+- **Texts.** The open console's sync text is now `2026-10-open-sync-4`, which says all this:
+  everyone is asked again, and sync keeps running for whoever agreed before. A server that sets
+  `MAIL_CONSENT_VERSION_SYNC` keeps its own text; if that text says removing a mailbox deletes its
+  index, it no longer does, and the text needs a new revision.
+- **API changes** for scripts: `DELETE /v1/accounts/{id}?confirm=<id>` answers `200` with
+  `{account_id, purged, purge_after}` where it answered `204`; `GET
+  /v1/workspaces/{id}/removed-mailboxes`, `POST /v1/accounts/{id}/recover` and `POST
+  /v1/accounts/{id}/purge` (`{"confirm": "<id>"}`) are new; `POST /v1/accounts` answers `409` for an
+  address kept removed; `AccountSync` has `held` and `held_since` while a recovery holds a
+  mailbox's sync, which `PUT /v1/accounts/{id}/sync` `{"enabled": true}` lifts, from a personal
+  mailbox's person too; a person's event stream may say `event: notice` (no `id`), and
+  `GET /v1/me/notices` lists their notices ([`console.md`](console.md#routes)). MCP is unchanged:
+  no tool lists or reaches a removed mailbox.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to

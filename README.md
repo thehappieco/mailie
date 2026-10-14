@@ -214,6 +214,12 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   it off deletes their index; a team's mailbox syncs once an owner or an admin turns it on for the
   team, and turning it off deletes its index for everyone. Actions on messages are a second,
   separate permission.
+- Removing a mailbox keeps it 30 days, used by nothing, and then deletes it for good with its
+  index; within them its workspace's owners (a team's owners, never its admins) recover it, its sync
+  paused until someone who may turns it on, or delete it for good sooner, and everyone else who read
+  it is told in the console. A link that never connected is deleted at once. As the operator,
+  `mailserver account purge ID` deletes any removed mailbox for good
+  ([`docs/workspaces.md`](docs/workspaces.md#removed-mailboxes)).
 - `mailserver user disable --email X` ends a person's sessions and revokes the API keys they
   created; `mailserver user delete --email X` deletes them with the mailboxes of their personal
   workspace, credentials, index, sessions, keys and personal workspace, and every team they were

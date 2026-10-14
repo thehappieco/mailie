@@ -40,7 +40,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/lockfile` — the data directory's lock: two daemons on one database corrupt the index.
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
-  `PRAGMA user_version`, FTS5.
+  `PRAGMA user_version`, FTS5. The mailbox journal (`mailboxevents.go`, migration 0020):
+  `mailbox_events` (`removed`, `sync_paused`, `recovered`, `purged`), written in the transaction
+  that does it with who read the mailbox then (`mailbox_event_readers`), never an address (a label
+  and a masked hint, forgotten when it is deleted for good), kept 90 days; and `notices`, a row per
+  reader of a removal or a sync turned off, never for whoever acted (a trigger), until dismissed.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   four purposes, `credential/oauth-token`, `credential/password`, `send/hash-root` and
   `auth/kdf-salt-key`, and a ref, a credential's account id or a meta row, both held to a key
@@ -112,7 +116,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `imapclient` and `go-mail`.
 - `internal/mime` — a lenient parser over go-message; parts ↔ IMAP sections.
 - `internal/account` — accounts, their encrypted credentials, OAuth flows and the registry of
-  token sources.
+  token sources. Removing a mailbox keeps it 30 days (`removal.go`; `removed_at`, `purge_after`):
+  `Get` and `Visibility` leave it out, so nothing finds, dials or refreshes it (`Registry.Mailbox`
+  builds one only through `Get`), and only `GetRemoved`/`ListRemoved` read it; what keys held on
+  it and its consent attempts go at once. A recovery clears the removal and holds its sync
+  (`sync_held_at`) until someone who may turns it on. The hourly sweep, at start too, deletes it
+  for good past its 30 days, never early, a closed team's included (`PurgeExpired`); a link that
+  never connected (no credentials) is deleted at once, and so are the removed mailboxes that go
+  with a person closed, their journal entries with them. Its address stays taken in its workspace
+  meanwhile (`ErrRemovedDuplicate`).
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -240,7 +252,11 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **One tool, one annotation class.** `trash_message` is separate from `move_message`; read tools
   never mutate (`get_message` does not mark a message read).
 - **Events.** Journal and state change in the same transaction; publish only after the commit.
-  Replay always comes from the `events` table — there is no history in memory.
+  Replay always comes from the `events` table — there is no history in memory. The mailbox journal
+  (`mailbox_events`) is written the same way, in the transaction that removes, recovers, deletes for
+  good or turns sync off, and is not a record of `events`, which a deletion for good takes with the
+  mailbox. A notice never goes to whoever acted, and a stream says `event: notice` (no `id`) only
+  after the commit that gave one.
 - **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. What must be
   opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
   credentials, the send-hash root (`meta.send_hash_root`, random, made at the first start, never
@@ -320,7 +336,16 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   access, what a key holds and sync): its mailboxes reach nobody, its owners and keys included
   (`not_found`), and nothing in it changes, by anyone, until it reopens (`conflict`; the schema
   refuses what would give it something); its grants and keys are kept. Only the operator closes a
-  local team; a team from another source closes where it is managed, through an extension.
+  local team; a team from another source closes where it is managed, through an extension. A
+  removed mailbox (kept 30 days, `docs/workspaces.md`, "Removed mailboxes") is `not_found` to
+  everyone, the operator included, but on the removed mailboxes' own paths; it has no reader and
+  protects none (`store.LiveSQL`, inside `ReaderSQL` and `FlagHolderSQL`), and nothing is given on
+  it (the schema refuses). Only its owners remove it — a personal mailbox's person, a team's active
+  owners (an admin, only a link of their own that never connected), the operator for an operator
+  mailbox — and they alone list, recover and delete it for good; the operator also lists and
+  deletes any workspace's for good, and recovers no person's or team's. A recovery brings back the
+  readers who still qualify and nothing a key held; none in a closed team, nor of a team mailbox
+  nobody who could read it is left to read.
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -336,9 +361,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   behalf at the current sync text and any of them withdraws (on the mailbox: `sync_enabled_at`,
   `sync_enabled_by`, `sync_consent_version`); it also needs a reader. Withdrawing deletes the index
   in the same transaction: a person's withdrawal only their personal mailboxes', a team's for every
-  reader. A team consent migration 0011 copied from its linker (`sync_enabled_via = 'migration'`)
-  stays bound to them until confirmed: their withdrawal, disable or deletion stops it and deletes
-  its index (closing them is refused without force while someone else reads it); their suspension
+  reader, telling each of them but whoever turned it off with a notice. A removed mailbox keeps its
+  index for its 30 days, syncing nothing, and loses it when deleted for good, or at once when its
+  person withdraws or a removed team mailbox's owners turn it off. A recovered one syncs nothing,
+  whatever its consent says, until someone who may turns it on (`sync_held_at`): its person, a
+  team's owners and admins at the current sync text, the operator. A team consent migration 0011
+  copied from its linker (`sync_enabled_via = 'migration'`) stays bound to them until confirmed:
+  their withdrawal, disable or deletion stops it and deletes its index, telling its other readers
+  (closing them is refused without force while someone else reads it); their suspension
   pauses it, as it pauses their personal mailboxes, index kept. A closed team's mailboxes sync
   nothing, their index and consent kept, until it reopens. A team mailbox
   nobody can read is never switched on. Closing a person without force is refused for the last

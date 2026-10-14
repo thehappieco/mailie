@@ -421,9 +421,9 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   whether or not they are disabled. Their password, sessions, identities and workspaces stay as
   they were. A server that turns an extension's sign-in on over people who signed up with a
   password therefore either leaves them their passwords (`ExternalSignInOnly` off) or closes their
-  accounts first (`user disable`, then `user delete`, which removes the mailboxes they linked and
-  everything indexed from them), after which they sign in through the provider as new people and
-  link their mailboxes again. A disabled person whose own pair signs in is refused
+  accounts first (`user disable`, then `user delete`, which deletes for good the mailboxes they
+  linked and everything indexed from them), after which they sign in through the provider as new
+  people and link their mailboxes again. A disabled person whose own pair signs in is refused
   (`unauthorized`), as their password sign-in is.
 - **No password.** Such a person's `password_hash` is empty, they have not enrolled in the key
   scheme's password, and `password_changed_at` is 0. No auth key signs them in (it is checked
@@ -916,7 +916,8 @@ chosen, and it signs in with the account's `@icloud.com` address as `login_user`
 refuses the custom address as a user name. It connects with an app-specific password: a refused
 Apple Account password comes back as `400` at the login test, and the console explains what to use
 instead. Changing or resetting the Apple Account password revokes every app-specific password;
-there is no route yet to replace a stored password, so the mailbox is removed and connected again.
+there is no route yet to replace a stored password, so the mailbox is removed, deleted for good and
+connected again.
 
 Gmail in the console connects only with Google sign-in. An app password works from the command line
 (an instance key), never for a person: it is a credential without scope or expiry.

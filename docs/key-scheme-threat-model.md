@@ -378,9 +378,9 @@ who loses both id.'s password and its recovery code, lose their account key. The
 re-keyed, and a reader supplies them the key of a team's again. The reset is refused without force
 while the person is the last reader of a team mailbox, since deleting their grant would leave it
 with no reader, and a team mailbox is never re-keyed; with force (the key is truly lost, and the
-grant opens nothing anyway), such a mailbox can only be removed and linked again. In phase 4 a
-re-keyed mailbox is synced again from the provider; nothing sealed under the old key is
-recovered.
+grant opens nothing anyway), such a mailbox can only be removed, deleted for good and linked
+again. In phase 4 a re-keyed mailbox is synced again from the provider; nothing sealed under the
+old key is recovered.
 
 ### 5.9 Salts
 

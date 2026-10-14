@@ -1028,9 +1028,10 @@ mailbox again from the provider.
 
 A **team** mailbox is never given a new key: an owner or an admin who generated one would hold the
 only grant and could choose who reads, taking the mailbox from its readers. A team mailbox nobody
-can open stays "nobody can read" and can only be removed and linked again, which takes the
-provider's consent (proof of control of the mail account) and makes a new mailbox, namespace and
-key.
+can open stays "nobody can read" and can only be removed, deleted for good and linked again, which
+takes the provider's consent (proof of control of the mail account) and makes a new mailbox,
+namespace and key. A removed one is not recovered while nobody who could read it is left to read
+it (section 12.13).
 
 ### 12.13 Giving and taking "read"
 
@@ -1068,6 +1069,12 @@ key.
   bullet: holding the flag **and** a grant at the current epoch on a mailbox that has a key, the
   flag on one that has none; keys and roles never count. Every path that takes "read" away keeps
   the protection, the reset of section 12.6 included.
+- **Being removed** (`docs/workspaces.md`, "Removed mailboxes") takes nothing either: a removed
+  mailbox keeps its key, its grants and its readers' flags for its 30 days, and nobody reads it,
+  waits for its key, is supplied it or is its last reader meanwhile (the first bullet holds only
+  on a live mailbox); nothing is granted or keyed on it. A recovery by its owners brings back
+  exactly who qualifies by the first bullet then, and gives nobody anything; a team mailbox nobody
+  qualifies for is not recovered. Deleted for good, it goes with its key and its grants.
 
 ### 12.14 Mailboxes without a key
 
@@ -1700,3 +1707,19 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   - **Said before.** The console's recovery and reset forms say, above the button that confirms
     them, that every API key the person created stops; `mailserver user password --bootstrap` says
     so when it prints the link, with how many are live then.
+- Version 1, removed mailboxes (2026-10-13). No byte changed. Removing a mailbox (migration 0020)
+  keeps it 30 days, recoverable by its workspace's owners, and then deletes it for good; section
+  12.13 says what that takes (nothing), and section 12.12 that a team mailbox nobody can open is
+  deleted for good before it is linked again, since its address stays taken while it is kept. What
+  the code had to choose, recorded here:
+  - **The reader rule** (`store.ReaderSQL`, and `store.FlagHolderSQL` beneath `store.WaitingSQL`)
+    holds only on a live mailbox (`store.LiveSQL`), one term inside the rule rather than a gate
+    beside it, unlike a closed team's: a removed mailbox has no reader for access, sync, the
+    last-reader protection, a first key or a supply, and protects none, so its readers may leave,
+    be disabled or be deleted while it is kept.
+  - **Nothing is given on it.** The schema refuses a grant, a key, a sealed grant, a key's access
+    or an instance key's restriction on a removed mailbox, and a flag rising there; what takes
+    something away stays allowed, so that a person leaving or deleted while it is kept loses their
+    grants as section 12.13 says, and is not among the readers a recovery brings back.
+  - **What keys held goes at once** and never comes back: a recovery restores no workspace key's
+    access and no instance key's restriction.

@@ -109,7 +109,10 @@ Delete the restored file as soon as it has served: it is the database in clear.
 
 A restored database is the one in its backup: the database at the time in its name, or a moment
 later. Every change made after that is missing, and deletions made after the backup are not
-re-applied: people deleted and mailboxes removed since come back, with their credentials. Decide
+re-applied: people deleted, and mailboxes removed or deleted for good since, come back, with their
+credentials. A mailbox the backup holds as removed is deleted for good when the daemon first starts
+on the restored database, if its 30 days are over by then
+([`workspaces.md`](workspaces.md#removed-mailboxes)); one the backup holds live stays live. Decide
 what that means for your obligations before putting one into service.
 
 ### Putting a restored database into service
