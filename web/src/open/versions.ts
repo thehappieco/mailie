@@ -8,8 +8,13 @@
  * index of a team mailbox; the third, that a team's mailbox syncs under the
  * team's agreement, which its owners and admins give and withdraw (for
  * everyone who reads it), while a person's covers their personal mailboxes.
+ * The fourth, that a removed mailbox is kept 30 days with its index, synced
+ * and read by nobody, so that whoever may remove it recovers it, held off
+ * until someone who may turns its sync on, or deletes it for good sooner;
+ * that only an owner removes a team's mailbox; and that removing it, or
+ * turning its sync off, tells the others who read it.
  */
-export const SYNC_TEXT_VERSION = '2026-10-open-sync-3'
+export const SYNC_TEXT_VERSION = '2026-10-open-sync-4'
 /**
  * What actions on messages change (ActionsText.vue). The second revision
  * says who may ask for a change: someone allowed to act on the mailbox, not

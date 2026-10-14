@@ -28,7 +28,7 @@ func TestEveryConsentVersionDefaultsToTheOpenConsolesText(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := config.ConsentVersions{
-		Sync: "2026-10-open-sync-3", Actions: "2026-10-open-actions-3", Send: "2026-10-open-sending", Keys: "2026-10-open-api-keys-3",
+		Sync: "2026-10-open-sync-4", Actions: "2026-10-open-actions-3", Send: "2026-10-open-sending", Keys: "2026-10-open-api-keys-3",
 	}
 	if cfg.Consent != want || config.DefaultConsentVersions() != want {
 		t.Fatalf("consent versions %+v, defaults %+v; want %+v", cfg.Consent, config.DefaultConsentVersions(), want)

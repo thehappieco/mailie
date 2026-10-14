@@ -44,7 +44,7 @@ const browser = await playwright[engine].launch({
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 /** The open console's revisions, the daemon's defaults (src/open/versions.ts). */
-const VERSIONS = { sync: '2026-10-open-sync-3', actions: '2026-10-open-actions-3', keys: '2026-10-open-api-keys-3' }
+const VERSIONS = { sync: '2026-10-open-sync-4', actions: '2026-10-open-actions-3', keys: '2026-10-open-api-keys-3' }
 const ANA = 'usr_00000000000000a1'
 const BEA = 'usr_00000000000000c1'
 const CAROL = 'usr_00000000000000c2'

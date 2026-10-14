@@ -10,8 +10,12 @@
 // the team's mailboxes, when connecting it or later (docs/workspaces.md,
 // "Consents"). Turning a person's sync off deletes the index of their
 // personal mailboxes; turning a team mailbox's off, its index for everyone
-// who reads it. Owners and admins see each team mailbox's card, never its
-// mail. Closing a person's account removes their personal mailboxes and the
+// who reads it, and tells the others who read it. Owners and admins see each
+// team mailbox's card, never its mail. A removed mailbox is kept 30 days
+// with its index, read and synced by nobody, recoverable by its workspace's
+// owners (a person's own for their personal workspace) and held off until
+// someone who may turns its sync on; then it is deleted for good (docs/
+// workspaces.md, "Removed mailboxes"). Closing a person's account removes their personal mailboxes and the
 // teams they were the only member of; and a team mailbox the upgrade left
 // syncing under its linker's own agreement stops with it until the team
 // agrees (migration 0011): the text says both, since it is what is agreed to.
@@ -33,7 +37,8 @@ import { t } from '../ui/i18n'
     <p>{{ t('Message bodies and attachments are never stored. When someone who may read the mailbox, or a tool with their key, asks for one, this server fetches it from the mail server and does not keep it.') }}</p>
     <p>{{ t('Sync starts with the last 90 days, newest first, then keeps up with new mail. Every folder is synced except All Mail, Starred and Important in Gmail. The server also keeps a log of recent changes: an entry is deleted once it is 7 days old, unless it is among the 10,000 most recent on this server.') }}</p>
     <p>{{ t('Who can read the index: of a mailbox of your personal workspace, only you. Of a team’s mailbox, the members given read access to it, which only an owner or an admin of the team who reads it can give, and the tools they give a key: they can search its index and have this server fetch its messages. Owners and admins read nothing by their role: they see each mailbox’s address, its state and how far its sync has got, but not its mail.') }}</p>
-    <p>{{ t('The index is kept until sync is turned off, the mailbox is removed, or, for a mailbox of your personal workspace, your account on this server is closed. Turning your sync off deletes the index of your personal workspace’s mailboxes only. Any owner or admin of a team can turn a team mailbox’s sync off, which deletes its index for everyone who reads it, and a team mailbox nobody can read any more stops syncing. Closing your account on this server does not remove the mailboxes of a team other people are in, nor their index; a team you are the only member of is deleted with your account, with its mailboxes and their index.') }}</p>
+    <p>{{ t('The index is kept until sync is turned off, the mailbox is deleted for good, or, for a mailbox of your personal workspace, your account on this server is closed. Turning your sync off deletes the index of your personal workspace’s mailboxes only. Any owner or admin of a team can turn a team mailbox’s sync off, which deletes its index for everyone who reads it and tells the others who read it, and a team mailbox nobody can read any more stops syncing. Closing your account on this server does not remove the mailboxes of a team other people are in, nor their index; a team you are the only member of is deleted with your account, with its mailboxes and their index.') }}</p>
+    <p>{{ t('A removed mailbox is kept for 30 days, with its index, so that it can be recovered; meanwhile it does not sync and nobody can read it. You remove the mailboxes of your personal workspace, and only an owner of a team removes the team’s; the others who read it are told. Within those 30 days, whoever may remove it can recover it, or delete it for good sooner; a recovered mailbox syncs again only once someone who may turns its sync on. After 30 days, this server deletes it for good, with its index. Closing your account deletes the removed mailboxes of your personal workspace at once.') }}</p>
     <p>{{ t('One exception comes from before teams agreed to sync on their own: a team mailbox that still syncs under the agreement you gave for your own mailboxes stays tied to it until an owner or an admin of the team agrees for the team. Until then, turning your sync off, or closing your account, stops it and deletes its index.') }}</p>
     <p>{{ t('Whoever runs this server can read its database, this index included.') }}</p>
   </div>

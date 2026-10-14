@@ -29,7 +29,7 @@ type ConsentVersions struct {
 // revisions that console's texts carry, as the hosted service does for its
 // own app.
 const (
-	DefaultSyncConsentVersion    = "2026-10-open-sync-3"
+	DefaultSyncConsentVersion    = "2026-10-open-sync-4"
 	DefaultActionsConsentVersion = "2026-10-open-actions-3"
 	DefaultSendConsentVersion    = "2026-10-open-sending"
 	DefaultKeyTermsVersion       = "2026-10-open-api-keys-3"

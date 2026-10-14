@@ -989,7 +989,7 @@ Shapes:
 {"account_id": "acc_…", "email": "support@example.org", "provider": "gmail", "state": "active",
  "linked_by": "usr_…", "readers": 2, "no_reader": false, "epoch": 1,
  "sync": {"enabled": true, "enabled_at": 1790000000, "enabled_by": "usr_…",
-          "version": "2026-10-open-sync-3", "current": true},
+          "version": "2026-10-open-sync-4", "current": true},
  "grants": [{"account_id": "acc_…", "user_id": "usr_…", "read": true, "act": true, "send": true,
              "manage": false, "granted_by": "migration", "updated_at": 1790000000, "sealed": true}]}
 // a Grant's manage is the stored flag, which only a member holds; owners and admins manage by

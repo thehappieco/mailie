@@ -1192,7 +1192,7 @@ Each text a person agrees to has a revision, configured on the daemon:
 
 | Variable | Default | The text |
 |---|---|---|
-| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-3` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), and who reads a team mailbox's index (`web/src/open/SyncText.vue`) |
+| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-4` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), who reads a team mailbox's index, and that a removed mailbox is kept 30 days with it, recoverable, its readers told (`web/src/open/SyncText.vue`) |
 | `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-3` | the server changing a mailbox when someone allowed to act on it asks, and a key given Act acting under the key terms, not under this agreement (`web/src/open/ActionsText.vue`) |
 | `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console has no such text) |
 | `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-3` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |

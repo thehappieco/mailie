@@ -45,7 +45,7 @@ const browser = await playwright[engine].launch({
 if (screenshots) await mkdir(screenshots, { recursive: true })
 
 /** The revision of the open console's sync text, the daemon's default (src/open/versions.ts). */
-const SYNC_VERSION = '2026-10-open-sync-3'
+const SYNC_VERSION = '2026-10-open-sync-4'
 /** The one that describes actions on messages. */
 const ACTIONS_VERSION = '2026-10-open-actions-3'
 /** The text a person agrees to by creating an API key. */
