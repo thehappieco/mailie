@@ -422,13 +422,13 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 - **Who removes:** a team mailbox's active owners, an admin no longer; a personal mailbox's person;
   for an operator mailbox, an instance key with the `admin` scope.
 - **Its readers are told.** Everyone who read it then, but whoever removed it, gets a notice in the
-  console (`notices`), which names the mailbox by its address while it is
-  kept and by a masked hint of it (`a…@example.com`) once it is deleted for good, says until when
-  its owners may recover it, and stays until they dismiss it. A team mailbox's sync turned off tells
-  its readers the same way — by an owner or an admin, or by the person a migrated consent was still
-  bound to ([Consents](#consents)) — but whoever turned it off. A recovery withdraws the notices of
-  the removal it undoes. A person's event stream says when they are given one
-  (`Stream.NewNotices`), and a key has none.
+  console (`notices`), which names the mailbox by its address while it is kept and by a masked hint
+  of it (`a…@example.com`) once it is deleted for good, says until when its owners may recover it,
+  and stays until they dismiss it, or until its entry in the journal goes, at 90 days at most
+  (below). A team mailbox's sync turned off tells its readers the same way — by an owner or an
+  admin, or by the person a migrated consent was still bound to ([Consents](#consents)) — but
+  whoever turned it off. A recovery withdraws the notices of the removal it undoes. A person's event
+  stream says when they are given one (`Stream.NewNotices`), and a key has none.
 - **Recovering it**, within its 30 days, is for its workspace's owners — a team's active owners, a
   personal mailbox's person, the operator for an operator mailbox (`RecoverAccount`). It comes back
   with its credentials, index, key, consent, and the readers who still qualify — an active member

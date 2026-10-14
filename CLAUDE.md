@@ -44,7 +44,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `mailbox_events` (`removed`, `sync_paused`, `recovered`, `purged`), written in the transaction
   that does it with who read the mailbox then (`mailbox_event_readers`), never an address (a label
   and a masked hint, forgotten when it is deleted for good), kept 90 days; and `notices`, a row per
-  reader of a removal or a sync turned off, never for whoever acted (a trigger), until dismissed.
+  reader of a removal or a sync turned off, never for whoever acted (a trigger), until dismissed,
+  withdrawn by a recovery, or gone with its journal entry.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   four purposes, `credential/oauth-token`, `credential/password`, `send/hash-root` and
   `auth/kdf-salt-key`, and a ref, a credential's account id or a meta row, both held to a key

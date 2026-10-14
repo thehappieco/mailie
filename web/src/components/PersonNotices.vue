@@ -3,7 +3,8 @@
 // a mailbox they read that someone else removed, or a team mailbox whose sync
 // someone else turned off, deleting its index — in whichever workspace it
 // happened, since they concern the person, not the workspace shown. Each
-// stays until they dismiss it, and is said once through the live region when
+// stays until they dismiss it, a recovery withdraws it or the server's journal
+// lets it go (90 days at most), and is said once through the live region when
 // it is first read. Read when the console starts; the event stream says when
 // there is a new one.
 import { onMounted } from 'vue'

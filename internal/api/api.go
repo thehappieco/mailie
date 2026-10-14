@@ -221,7 +221,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// answers 404.
 	mux.Handle("GET /v1/me/mcp", h.authenticated(auth.ScopeRead, opts(), h.mcpAccess))
 	// The person's notices: a mailbox they read removed, or a team mailbox's
-	// sync turned off, until they dismiss them. The scope admits any
+	// sync turned off, until they dismiss them, a recovery withdraws them or
+	// the journal's 90 days are over. The scope admits any
 	// credential; the service refuses a key, which has none.
 	mux.Handle("GET /v1/me/notices", h.authenticated(auth.ScopeRead, opts(), h.listNotices))
 	mux.Handle("DELETE /v1/me/notices/{id}", h.authenticated(auth.ScopeRead, opts(), h.dismissNotice))

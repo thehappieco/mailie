@@ -13,7 +13,8 @@ import (
 // When a mailbox is removed, or a team mailbox's sync is turned off — by an
 // owner or an admin, or by the person its consent was still bound to — every
 // person who read it then, but whoever did it, is told, with a notice they
-// see in the console until they dismiss it. A notice names the mailbox by its
+// see in the console until they dismiss it, or until its journal entry goes
+// (store.MailboxJournalRetention, 90 days). A notice names the mailbox by its
 // address while it is kept, and by a masked hint of it ("a…@example.com")
 // once it is deleted for good, and says where it stands now: removed, until
 // when it is recovered; deleted; or live again. A recovery withdraws the

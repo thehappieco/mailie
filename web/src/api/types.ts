@@ -681,7 +681,9 @@ export type NoticeKind = 'removed' | 'sync_off'
 export type NoticeStanding = 'removed' | 'deleted' | 'live'
 /**
  * One of a person's notices (GET /v1/me/notices): something someone else
- * did to a mailbox they read, kept until they dismiss it. mailbox is its
+ * did to a mailbox they read, kept until they dismiss it, a recovery
+ * withdraws it, or the journal entry it belongs to goes (90 days at most).
+ * mailbox is its
  * address while it is kept, and a masked hint of it ("a…@example.com"), or
  * its name, once it is deleted for good; workspace_name is a team's, absent
  * for a personal workspace and once the team is gone; recoverable_until,

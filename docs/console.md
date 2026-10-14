@@ -735,7 +735,8 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   a mailbox they read removed, or a team mailbox's sync turned off, by someone else — naming the
   mailbox as the server does (its address while kept, a masked hint once deleted) and where it
   stands now, never who did it. Each is said once through the live region the first time it is
-  read, and stays until dismissed (`DELETE /v1/me/notices/{id}`). They are read when the console
+  read, and stays until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery, or gone
+  with its entry in the server's journal, at 90 days at most. They are read when the console
   starts, on Refresh, when access changes, and when the stream says `event: notice`; a server
   older than notices (`404`) has none, and a failure to read them is shown nowhere: the next read
   tries again.
