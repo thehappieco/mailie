@@ -45,12 +45,26 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/lockfile` — the data directory's lock: two daemons on one database corrupt the index.
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
-  `PRAGMA user_version`, FTS5. The mailbox journal (`mailboxevents.go`, migration 0020):
-  `mailbox_events` (`removed`, `sync_paused`, `recovered`, `purged`), written in the transaction
-  that does it with who read the mailbox then (`mailbox_event_readers`), never an address (a label
-  and a masked hint, forgotten when it is deleted for good), kept 90 days; and `notices`, a row per
-  reader of a removal or a sync turned off, never for whoever acted (a trigger), until dismissed,
-  withdrawn by a recovery, or gone with its journal entry.
+  `PRAGMA user_version`, FTS5. The mailbox journal (`mailboxevents.go`, migrations 0020 and 0021,
+  a rebuild): `mailbox_events` (`removed` with its `purge_after`, `sync_paused` with the `cause`
+  `bound_stopped` when a consent stopped with its person, `recovered`, `purged`, and `stranded`, a
+  team mailbox its one reader lost with no protection asked, with its `cause` and `lost_user`),
+  written in the transaction that does it with who read the mailbox then (`mailbox_event_readers`),
+  never an address (a label, `MailboxLabel`, never one holding the address's local part, and a
+  masked hint, forgotten when it is deleted for good), kept 90 days, read per workspace from a
+  cursor by an extension (`mailbox_events_workspace`); and `notices`, a row per reader of a removal
+  or a sync turned off, never for whoever acted nor of a stranding (a trigger), until dismissed,
+  withdrawn by a recovery, or gone with its journal entry. For an extension that follows an
+  external directory (migrations 0022 and 0023; empty on a self-hosted server): `directories`
+  (generation, confirmation, reset count, cursor, published-through, one row per issuer, going back
+  only with a reset), `directory_people` (what a directory said of a person, keyed by issuer and
+  person, the subject unique among people still here, the revocation marks in microseconds only
+  rising, a version falling only to 0 with a recorded reset, the row kept `gone_at` after the
+  person's deletion until `ReleaseDirectoryPersonTx`), `workspaces.source_version`/`source_reset`,
+  `workspace_members.held_at` (`HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no
+  access), `extension_state` (`extstate.go`, values of a mebibyte at most) and `workspace_changes`
+  (`changes.go`: a mark per workspace from another source, written by triggers in the transaction
+  of every change its snapshot shows, only rising).
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -104,6 +118,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   a session only once they have an account key: a first sign-in asking for the product key gets a
   single-use ticket, and its enrolment writes the public key once and the platform wrap
   (`platformwraps.go`, migration 0015: insert only, deleted with the person or by a reset).
+  Deleting a person marks what an external directory said of them gone (`directory_people.gone_at`),
+  and their name stays in the mailbox journal until an extension releases them; a person nobody
+  follows is forgotten there at once, as actor and as the person a stranding lost.
   `authtest` creates cheap users and keys for tests.
 - `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix. An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
@@ -132,7 +149,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   on. The hourly sweep, at start too, deletes it for good past its 30 days, never early, a closed
   team's included (`PurgeExpired`); a link that never connected (no credentials) is deleted at
   once, and so are the removed mailboxes that go with a person closed, their journal entries with
-  them. Its address stays taken in its workspace meanwhile (`ErrRemovedDuplicate`).
+  them (a never-connected link in a workspace from another source is journaled `purged` instead,
+  its earlier entries kept, for an extension to report). Its address stays taken in its workspace
+  meanwhile (`ErrRemovedDuplicate`).
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -141,7 +160,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `closed_at`, migration 0019), and nothing in it is used meanwhile. Only a local team goes with its only member
   (`GoesWithPersonSQL`, the one rule for deleting it, its mailboxes and the last-reader test); a
   team whose source is not local outlives its people, its last one here included, and has no last
-  owner here. See `docs/workspaces.md`.
+  owner here. A membership of such a team may be held (`held_at`, migration 0022: disabled, its
+  grants kept). `strand.go` defines `Stranding` and journals the mailboxes a change strands
+  (`JournalStrandedTx`). See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
@@ -262,9 +283,11 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **Events.** Journal and state change in the same transaction; publish only after the commit.
   Replay always comes from the `events` table — there is no history in memory. The mailbox journal
   (`mailbox_events`) is written the same way, in the transaction that removes, recovers, deletes for
-  good or turns sync off, and is not a record of `events`, which a deletion for good takes with the
-  mailbox. A notice never goes to whoever acted, and a stream says `event: notice` (no `id`) only
-  after the commit that gave one.
+  good, turns sync off or strands, and is not a record of `events`, which a deletion for good takes
+  with the mailbox. It is an extension's outbox, read per workspace from a cursor; which workspaces
+  from another source changed is marked by triggers in the same transaction (`workspace_changes`).
+  A notice never goes to whoever acted, and a stream says `event: notice` (no `id`) only after the
+  commit that gave one.
 - **Secrets.** Never in plain text in the database, in logs (`obs` redacts) or in URLs. What must be
   opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
   credentials, the send-hash root (`meta.send_hash_root`, random, made at the first start, never

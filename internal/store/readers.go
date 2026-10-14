@@ -17,8 +17,11 @@ package store
 // closed is a gate beside the rule, never part of it (OpenWorkspaceSQL). A
 // removed mailbox (migration 0020) is read by nobody: the rule holds only
 // on a live one (LiveSQL), so it has no reader, nobody waits for its key and
-// nobody is its last reader while it is kept. It lives here because store
-// imports neither of them; a copy elsewhere is a second rule.
+// nobody is its last reader while it is kept. A membership an external
+// directory holds (migration 0022) is disabled, so its holder reads nothing
+// either; HeldReaderSQL only says whom a hold keeps a mailbox for. It lives
+// here because store imports neither of them; a copy elsewhere is a second
+// rule.
 //
 // Each fragment takes the SQL expressions it is about (an alias's column,
 // a bound parameter) and names its own tables reader_*, so it nests inside a
@@ -110,6 +113,28 @@ func KeptSuspendedReaderSQL(alias string) string {
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + alias + `.user_id
 	                 AND reader_m.status = 'active' AND reader_u.suspended_at <> 0)
+	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
+}
+
+// HeldReaderSQL is the condition, over mailbox_access aliased alias, that its
+// holder would read the live mailbox but for a hold (migration 0022): they
+// hold the read flag; their membership of the mailbox's workspace is one an
+// external directory ended while its generation was unconfirmed, kept
+// disabled with its flags and grants (workspace_members.held_at); they are
+// active on the instance or suspended by an extension, never disabled here,
+// which counts for nothing; and, on a mailbox that has a key, they hold a
+// grant at its current epoch, which a hold keeps. A held member reads
+// nothing and waits for nothing (FlagHolderSQL and KeptSuspendedReaderSQL
+// require an active membership), so this decides no access: it only says
+// whom a hold keeps a mailbox for, which a membership's end, once it stops
+// being held, leaves stranded when nobody else reads it.
+func HeldReaderSQL(alias string) string {
+	account, user := alias+".account_id", alias+".user_id"
+	return `(` + LiveSQL(account) + ` AND ` + alias + `.read = 1
+	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
+	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + user + `
+	                 AND reader_m.status = 'disabled' AND reader_m.held_at <> 0
+	                 AND (reader_u.status = 'active' OR reader_u.suspended_at <> 0))
 	  AND (NOT ` + HasKeySQL(account) + ` OR ` + CurrentGrantSQL(account, user) + `))`
 }
 

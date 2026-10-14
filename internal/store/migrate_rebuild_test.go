@@ -864,10 +864,13 @@ func TestOnlyARebuildMayDropAReferencedTable(t *testing.T) {
 			}
 		}
 	}
-	// And the one rebuild so far is marked as one.
+	// And the rebuilds so far are marked as such.
 	for _, m := range migrations {
 		if m.version == 8 && !m.rebuild {
 			t.Error("0008 rebuilds accounts and is not marked as a rebuild")
+		}
+		if m.version == 21 && !m.rebuild {
+			t.Error("0021 rebuilds mailbox_events and is not marked as a rebuild")
 		}
 	}
 }

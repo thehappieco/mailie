@@ -144,9 +144,10 @@ func (s *Store) WithdrawSyncConsent(ctx context.Context, userID string) ([]strin
 // whose consent is still the one migration 0011 copied from userID's own:
 // their sync goes off and everything indexed for them is deleted, as the text
 // that person agreed to promised when they turn sync off, are disabled or are
-// deleted. Each is journaled as a sync turned off by that person, and every
-// other reader is told (JournalMailboxTx). It returns them. Callers compact
-// and scrub once the transaction has committed (and ForgetMoves).
+// deleted. Each is journaled as a sync turned off by that person, whose cause
+// says the consent stopped with them (CauseBoundStopped), and every other
+// reader is told (JournalMailboxTx). It returns them. Callers compact and
+// scrub once the transaction has committed (and ForgetMoves).
 func StopBoundTx(ctx context.Context, tx *sql.Tx, userID string, now int64) ([]string, error) {
 	ids, err := queryIDs(ctx, tx, `UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '',
 		  sync_consent_version = '', sync_enabled_via = '', updated_at = ?
@@ -155,7 +156,7 @@ func StopBoundTx(ctx context.Context, tx *sql.Tx, userID string, now int64) ([]s
 		return nil, fmt.Errorf("store: stop the team mailboxes bound to a person: %w", err)
 	}
 	for _, id := range ids {
-		if _, err := journalSyncPausedTx(ctx, tx, id, userID, now); err != nil {
+		if _, err := journalSyncPausedTx(ctx, tx, id, userID, CauseBoundStopped, now); err != nil {
 			return nil, err
 		}
 	}
@@ -417,7 +418,7 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 		if !wasOn || !team {
 			return nil
 		}
-		out.Told, err = journalSyncPausedTx(ctx, tx, accountID, by, now)
+		out.Told, err = journalSyncPausedTx(ctx, tx, accountID, by, "", now)
 		return err
 	})
 	if err == nil && !on {
@@ -427,15 +428,16 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 }
 
 // journalSyncPausedTx journals, inside the caller's transaction, a mailbox's
-// sync turned off by actor, with who read it then, and tells each of them but
-// the actor; it returns who it told.
-func journalSyncPausedTx(ctx context.Context, tx *sql.Tx, accountID, actor string, now int64) ([]string, error) {
+// sync turned off by actor, for cause ("" or CauseBoundStopped), with who
+// read it then, and tells each of them but the actor; it returns who it
+// told.
+func journalSyncPausedTx(ctx context.Context, tx *sql.Tx, accountID, actor, cause string, now int64) ([]string, error) {
 	readers, err := MailboxReadersTx(ctx, tx, accountID)
 	if err != nil {
 		return nil, err
 	}
 	if _, _, err := JournalMailboxTx(ctx, tx, MailboxEvent{
-		Kind: MailboxSyncPaused, AccountID: accountID, Actor: actor, At: now,
+		Kind: MailboxSyncPaused, AccountID: accountID, Actor: actor, At: now, Cause: cause,
 	}, readers, true); err != nil {
 		return nil, err
 	}

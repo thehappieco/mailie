@@ -1065,10 +1065,29 @@ it (section 12.13).
   suspension: it clears the suspension, and a resume never lifts it (threat model, section 5.13).
   Disabling or deleting them without force is refused where they would be the only reader of a
   team mailbox once resumed, as it is for an active person who reads it now.
+- **Being held.** An external directory that an extension of the daemon follows ends memberships of
+  the teams it sends (`docs/workspaces.md`, "Following an external directory"). One it ends while
+  the generation of its data is not confirmed, and whose end would leave a team mailbox with
+  nobody who reads it, is held instead (`workspace_members.held_at`, migration 0022): disabled,
+  so by the first bullet the person reads nothing there, waits for no key, is supplied none and
+  is sealed none by a first key, and counts as no reader; their flags and their grants persist,
+  sealed to them and unusable, as a suspended person's do. A document that lists the membership
+  again releases it, and they read again where they hold the flag and a grant at the current
+  epoch; a confirmed generation ends it, and then it takes "read" as the bullet above says. Only a
+  team's membership from another source is held (the schema). A hold decides no access: it only
+  says whom a mailbox is kept for (`store.HeldReaderSQL`), so that its end, if nobody else reads
+  the mailbox, would read, or would read but for a hold, records the mailbox as stranded.
+- **Being stranded.** What an external directory says applies without the last-reader protection
+  of the bullet below: its removal of a membership, or of a person, may leave a team mailbox that
+  has a key with nobody who holds a grant at its current epoch, which nobody can read again; the
+  same happens when a person is disabled, deleted or reset here with force. The journal records
+  each such mailbox (`stranded`, migration 0021), naming the person it lost, and the way back is
+  section 12.12's: removing it and linking it again.
 - **The last reader** of a team mailbox is the last active member who reads it by the first
   bullet: holding the flag **and** a grant at the current epoch on a mailbox that has a key, the
   flag on one that has none; keys and roles never count. Every path that takes "read" away keeps
-  the protection, the reset of section 12.6 included.
+  the protection, the reset of section 12.6 included, but with force here or by an external
+  directory's decision ("Being stranded", above).
 - **Being removed** (`docs/workspaces.md`, "Removed mailboxes") takes nothing either: a removed
   mailbox keeps its key, its grants and its readers' flags for its 30 days, and nobody reads it,
   waits for its key, is supplied it or is its last reader meanwhile (the first bullet holds only
@@ -1723,3 +1742,17 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     grants as section 12.13 says, and is not among the readers a recovery brings back.
   - **What keys held goes at once** and never comes back: a recovery restores no workspace key's
     access and no instance key's restriction.
+- Version 1, held memberships (2026-10-14). No byte changed. Section 12.13 gains "Being held" and
+  "Being stranded": a membership an external directory ends while its generation is not confirmed
+  is held when ending it would strand a mailbox, its grants persisting, unusable, until a document
+  lists it again or the generation is confirmed; and what a directory removes, like a forced
+  disable, deletion or reset here, may leave a team mailbox nobody can read, which the journal
+  records. What the code had to choose, recorded here:
+  - **The reader rule is unchanged.** A held membership is a disabled one, which every fragment of
+    the rule already refuses (`store.FlagHolderSQL`, `store.KeptSuspendedReaderSQL`); the hold is a
+    column beside the status, and `store.HeldReaderSQL` says whom it keeps a mailbox for and
+    decides nothing else.
+  - **Only a team from another source.** The schema refuses a hold written at insertion, or on a
+    local team's or a personal workspace's membership, and a held membership that is active.
+  - **The threat model's section 5.13** applies to a hold as to a suspension: whoever controls the
+    directory decides, by listing the membership again, who reads again.

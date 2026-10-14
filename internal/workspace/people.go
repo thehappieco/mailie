@@ -127,8 +127,11 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 // mailboxes they linked and on the team consents to sync they gave, which
 // stay, with their date and revision, the workspace's, on the mailboxes they
 // removed, which stay removed until recovered or deleted for good, and in
-// the journal of what was done to mailboxes, which keeps what they did
-// without saying who. Their memberships of
+// the journal of what was done to mailboxes, which keeps what they did, and
+// the mailboxes stranded from them, without saying who — unless an external
+// directory follows them (store.MarkDirectoryPersonGoneTx), which keeps
+// their name there until an extension releases them
+// (store.ReleaseDirectoryPersonTx). Their memberships of
 // other teams, and their grants there, flags and sealed grants, go with the
 // person (ON DELETE CASCADE), and so does their membership of a team from
 // another source, which stays, with its mailboxes, even when they were its
@@ -150,11 +153,13 @@ func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, e
 		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''
 		   WHERE sync_enabled_by = ?`},
 		{"forget who removed mailboxes", `UPDATE accounts SET removed_by = '' WHERE removed_by = ?`},
-		{"forget who acted on mailboxes", `UPDATE mailbox_events SET actor = '' WHERE actor = ?`},
 	} {
 		if _, err := tx.ExecContext(ctx, step.query, userID); err != nil {
 			return nil, fmt.Errorf("workspace: %s: %w", step.what, err)
 		}
+	}
+	if err := store.ForgetPersonInJournalTx(ctx, tx, userID); err != nil {
+		return nil, err
 	}
 	teams, err := SoleMemberTeamsTx(ctx, tx, userID)
 	if err != nil {

@@ -914,6 +914,28 @@ and one deleted for good since is back. What removing a mailbox does changes
   `GET /v1/me/notices` lists their notices ([`console.md`](console.md#routes)). MCP is unchanged:
   no tool lists or reaches a removed mailbox.
 
+### The journal rebuilt, and room for an extension's directory (migrations 0021 to 0023)
+
+Migration 0021 **rebuilds** the mailbox journal (`mailbox_events`), the second migration to rebuild
+a table: `mailserver migrate --dry-run` says so. It copies every entry, with who read the mailbox
+then and every notice still to read, and adds what an entry may say from now on: a mailbox
+*stranded* (left with nobody who reads it by a person's forced disable, deletion or key reset, or by
+what an external directory decided), why, and a removal's end. Migrations 0022 and 0023 add tables
+and columns that only an extension following an external directory writes, in a binary that embeds
+the daemon; `mailserver serve` has none, so they stay empty and every column 0 on a self-hosted
+server. No row changes. **Back up first**, as above: an older binary refuses schema 23, and going
+back is that copy, which loses nothing a self-hosted server wrote since but the journal's entries
+of that time.
+
+- **The journal names a mailbox less often.** A display name holding the local part of the
+  mailbox's own address (three characters or more, whatever the case: "Support" for
+  `support@example.org`) is no longer kept in the journal or shown in a notice written from now
+  on, which then names the mailbox by its masked address (`s…@example.org`).
+- **Forced closures are journaled.** Disabling, deleting or resetting a person with `--force`, where
+  it leaves a team mailbox with nobody who reads it, records that mailbox as stranded; nobody
+  is told in the console, and deleting the person forgets them there too, as it forgets that they
+  acted.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to

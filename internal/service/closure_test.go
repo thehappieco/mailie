@@ -377,9 +377,11 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	journal(store.MailboxRemoved, removed.ID, ana.UserID, bob.UserID)
+	// The removal is recorded on the mailbox first, which the journal reads
+	// its end from.
 	f.exec(t, `UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ? WHERE id = ?`,
 		now, ana.UserID, now+30*24*60*60, removed.ID)
+	journal(store.MailboxRemoved, removed.ID, ana.UserID, bob.UserID)
 	journal(store.MailboxSyncPaused, teamBox.ID, bob.UserID, ana.UserID, bob.UserID)
 
 	// The identities ana and bob sign in with through a provider, and the
@@ -429,6 +431,11 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	unseeded := map[string]string{
 		"meta":             "instance settings; nothing about anyone",
 		"attachment_blobs": "nothing writes it before phase 2, and then its rows and files need their own deletion",
+		"directories":      "an external directory followed, by its issuer; nothing about anyone",
+		"directory_people": "what an external directory says of the people it follows, nobody here; a followed " +
+			"person's row outlives them, marked gone, until an extension releases them (store's and auth's tests)",
+		"extension_state":   "an extension's own state, which that extension keeps and forgets",
+		"workspace_changes": "marks only workspaces from another source, none of hers here",
 	}
 	for _, name := range f.tables(t) {
 		if _, ok := unseeded[name]; !ok && f.count(t, `SELECT count(*) FROM "`+name+`"`) == 0 {

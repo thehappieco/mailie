@@ -125,22 +125,29 @@ func mapsEqual(a, b map[string][]string) bool {
 	return true
 }
 
-// schemaTwenty is the seed at schema 20, with a way to run one statement and
-// to say what the schema did with it.
-type schemaTwenty struct {
+// seededSchema is seedKeys' seed at a schema, with a way to run one
+// statement and to say what the schema did with it.
+type seededSchema struct {
 	t *testing.T
 	s *Store
 }
 
-func newSchemaTwenty(t *testing.T) schemaTwenty {
+// newSchemaTwenty is the seed at schema 20, where 0020's own rules are held.
+func newSchemaTwenty(t *testing.T) seededSchema { return newSchemaAt(t, 20) }
+
+// newSchemaLatest is the seed at the latest schema, which this package's
+// code writes: what a test of that code runs on.
+func newSchemaLatest(t *testing.T) seededSchema { return newSchemaAt(t, latestVersion(t)) }
+
+func newSchemaAt(t *testing.T, version int) seededSchema {
 	t.Helper()
 	s := openAtVersion(t, 7)
 	seedKeys(t, s)
-	migrateTo(t, s, 20)
-	return schemaTwenty{t: t, s: s}
+	migrateTo(t, s, version)
+	return seededSchema{t: t, s: s}
 }
 
-func (f schemaTwenty) exec(query string, args ...any) error {
+func (f seededSchema) exec(query string, args ...any) error {
 	ctx := context.Background()
 	return f.s.Write(ctx, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, query, args...)
@@ -148,14 +155,14 @@ func (f schemaTwenty) exec(query string, args ...any) error {
 	})
 }
 
-func (f schemaTwenty) refused(what, why string, err error) {
+func (f seededSchema) refused(what, why string, err error) {
 	f.t.Helper()
 	if err == nil || !strings.Contains(err.Error(), why) {
 		f.t.Errorf("%s: %v, want the refusal %q", what, err, why)
 	}
 }
 
-func (f schemaTwenty) accepted(what string, err error) {
+func (f seededSchema) accepted(what string, err error) {
 	f.t.Helper()
 	if err != nil {
 		f.t.Errorf("%s: %v", what, err)
@@ -163,7 +170,7 @@ func (f schemaTwenty) accepted(what string, err error) {
 }
 
 // remove removes a mailbox at at, as the repository does, for 30 days.
-func (f schemaTwenty) remove(accountID, by string, at int64) {
+func (f seededSchema) remove(accountID, by string, at int64) {
 	f.t.Helper()
 	if err := f.exec(`UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ? WHERE id = ? AND removed_at = 0`,
 		at, by, at+thirtyDays, accountID); err != nil {

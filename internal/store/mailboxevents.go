@@ -14,19 +14,23 @@ import (
 )
 
 // The journal of what was done to mailboxes, and the notices it gives their
-// readers (migration 0020; docs/workspaces.md, "Removed mailboxes").
+// readers (migrations 0020 and 0021; docs/workspaces.md, "Removed
+// mailboxes").
 //
-// A removal, a sync turned off, a recovery and a deletion for good are each
-// written in the transaction that makes them, with who read the mailbox
-// then; a removal and a sync turned off tell each of those readers but the
-// person who did it, with a notice they see in the console until they
-// dismiss it. The journal never holds an address: a mailbox is named by its
-// label (its display name, unless that holds an address) and a masked hint
-// of its address. Deleted for good, it loses its label, and its hint once no
-// notice still to be read needs it to name the mailbox. It has no
-// foreign keys, so a row outlives its mailbox and its team, and goes after
-// its retention (SweepMailboxEvents), or with the mailbox when a person is
-// closed or a link that never connected is abandoned (DeleteMailboxEventsTx).
+// A removal, a sync turned off, a recovery, a deletion for good and a
+// stranding are each written in the transaction that makes them, with who
+// read the mailbox then; a removal and a sync turned off tell each of those
+// readers but the person who did it, with a notice they see in the console
+// until they dismiss it. The journal never holds an address: a mailbox is
+// named by its label (its display name, unless that holds an address or its
+// local part, MailboxLabel) and a masked hint of its address. Deleted for
+// good, it loses its label, and its hint once no notice still to be read
+// needs it to name the mailbox. It has no foreign keys, so a row outlives
+// its mailbox and its team, and goes after its retention
+// (SweepMailboxEvents), or with the mailbox when a person is closed or a
+// link that never connected is abandoned in a local workspace
+// (DeleteMailboxEventsTx). It is read per workspace, in order of seq, by an
+// extension that reports it elsewhere (mailbox_events_workspace).
 
 // MailboxEventKind is what was done to a mailbox.
 type MailboxEventKind string
@@ -43,6 +47,32 @@ const (
 	MailboxRecovered MailboxEventKind = "recovered"
 	// MailboxPurged is a mailbox deleted for good.
 	MailboxPurged MailboxEventKind = "purged"
+	// MailboxStranded is a team mailbox left with nobody who reads it, would
+	// read it once resumed, or would read it but for a hold, because the one
+	// person who did lost it (LostUser, Cause). Nobody is told of it in the
+	// console; an extension reads it.
+	MailboxStranded MailboxEventKind = "stranded"
+)
+
+// Why an entry was written: a stranding's cause, always one of the first
+// five, and a sync turned off's, empty but for CauseBoundStopped.
+const (
+	// CauseMembershipEnded is a membership an external directory ended.
+	CauseMembershipEnded = "membership_ended"
+	// CauseForgotten is a person an external directory closed, forgotten
+	// here.
+	CauseForgotten = "forgotten"
+	// CauseDisabled is a person disabled here with force.
+	CauseDisabled = "disabled"
+	// CauseDeleted is a person deleted here with force.
+	CauseDeleted = "deleted"
+	// CauseReset is a person whose account key was reset with force, which
+	// took their sealed grants.
+	CauseReset = "reset"
+	// CauseBoundStopped is a sync turned off because the consent migration
+	// 0011 bound to a person stopped with them (StopBoundTx): a pause the
+	// daemon makes on its own, not one a person chose for the mailbox.
+	CauseBoundStopped = "bound_stopped"
 )
 
 // Notifies reports whether the readers of a mailbox are told when this is
@@ -64,11 +94,22 @@ type MailboxEvent struct {
 	// hint once no notice still to be read needs it.
 	Label string
 	Hint  string
-	// Actor is who did it: "usr_…", "key:<prefix>", "cli" or "sweep"; empty
-	// once that person is deleted.
+	// Actor is who did it: "usr_…", "key:<prefix>", "cli", "sweep" or
+	// "directory"; empty once that person is forgotten.
 	Actor string
 	// At is when, in unix seconds.
 	At int64
+	// Cause is why: a stranding's (CauseMembershipEnded … CauseReset), and
+	// a sync turned off's, empty or CauseBoundStopped; empty on every other
+	// kind.
+	Cause string
+	// LostUser is the person a stranding lost, empty once forgotten: at
+	// their deletion, or, when an external directory follows them, at their
+	// release. Empty on every other kind.
+	LostUser string
+	// PurgeAfter is when a removed mailbox may be deleted for good, as its
+	// removal recorded it, in unix seconds; zero on every other kind.
+	PurgeAfter int64
 }
 
 // MailboxJournalRetention is how long the journal keeps an event, with who
@@ -80,6 +121,10 @@ const MailboxJournalRetention = 90 * 24 * time.Hour
 // mailbox deleted for good once its 30 days are over.
 const ActorSweep = "sweep"
 
+// ActorDirectory is the actor of what an external directory decides through
+// an extension of the daemon: a membership it ended, a person it closed.
+const ActorDirectory = "directory"
+
 // Errors of the journal and the notices.
 var (
 	// ErrNoSuchMailbox is an event journaled for a mailbox whose row is not
@@ -89,6 +134,8 @@ var (
 	ErrNoNotice = errors.New("store: no such notice")
 	// ErrNotNotifying is a notice asked for an event nobody is told of.
 	ErrNotNotifying = errors.New("store: nobody is told of that")
+	// ErrNoLostPerson is a stranding that names no person it lost.
+	ErrNoLostPerson = errors.New("store: a stranding names the person it lost")
 )
 
 // MailboxHint masks an address for the journal: its first character, an
@@ -106,10 +153,21 @@ func MailboxHint(email string) string {
 	return string(first) + "…@" + email[at+1:]
 }
 
-// mailboxLabel is the name the journal keeps of a mailbox: its display
-// name, unless that holds an address, which the journal never does.
-func mailboxLabel(displayName string) string {
+// MailboxLabel is the name the journal, and what an extension reports of a
+// mailbox, keep of it: its display name, unless that holds an address or
+// the local part of the mailbox's own (email up to its last "@", of three
+// characters or more), compared without regard to case, which would say the
+// address all the same. Empty then. An email without "@" counts whole as
+// its local part.
+func MailboxLabel(displayName, email string) string {
 	if strings.Contains(displayName, "@") {
+		return ""
+	}
+	local := email
+	if at := strings.LastIndex(email, "@"); at >= 0 {
+		local = email[:at]
+	}
+	if utf8.RuneCountInString(local) >= 3 && strings.Contains(strings.ToLower(displayName), strings.ToLower(local)) {
 		return ""
 	}
 	return displayName
@@ -129,20 +187,28 @@ func MailboxReadersTx(ctx context.Context, tx *sql.Tx, accountID string) ([]stri
 }
 
 // JournalMailboxTx writes, inside the transaction that does it, what was
-// done to a mailbox: ev names its kind, the mailbox, the actor and the
-// moment (At); the mailbox's workspace, label and hint are read from its
-// row, which must still be there (ErrNoSuchMailbox), and a deletion for
-// good records neither label nor hint, since it forgets them. readers are
-// who read the mailbox then (MailboxReadersTx). With notify, each of them
-// but the actor gets a notice, of a removal or a sync turned off only
-// (ErrNotNotifying). It returns the event's seq and id.
+// done to a mailbox: ev names its kind, the mailbox, the actor, the moment
+// (At), and its cause and the person it lost when it has them; the mailbox's
+// workspace, label (MailboxLabel) and hint are read from its row, which must
+// still be there (ErrNoSuchMailbox), and so is a removal's end
+// (purge_after), so a removal is journaled once the row records it. A
+// deletion for good records neither label nor hint, since it forgets them.
+// A stranding names the person it lost (ErrNoLostPerson), who must still
+// exist: readers name people. readers are who read the mailbox then
+// (MailboxReadersTx). With notify, each of them but the actor gets a notice,
+// of a removal or a sync turned off only (ErrNotNotifying). It returns the
+// event's seq and id.
 func JournalMailboxTx(ctx context.Context, tx *sql.Tx, ev MailboxEvent, readers []string, notify bool) (int64, string, error) {
 	if notify && !ev.Kind.Notifies() {
 		return 0, "", fmt.Errorf("%w: %s", ErrNotNotifying, ev.Kind)
 	}
+	if ev.Kind == MailboxStranded && ev.LostUser == "" {
+		return 0, "", ErrNoLostPerson
+	}
 	var displayName, email string
-	err := tx.QueryRowContext(ctx, `SELECT workspace_id, display_name, email FROM accounts WHERE id = ?`, ev.AccountID).
-		Scan(&ev.WorkspaceID, &displayName, &email)
+	var purgeAfter int64
+	err := tx.QueryRowContext(ctx, `SELECT workspace_id, display_name, email, purge_after FROM accounts WHERE id = ?`,
+		ev.AccountID).Scan(&ev.WorkspaceID, &displayName, &email, &purgeAfter)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return 0, "", fmt.Errorf("%w: %s", ErrNoSuchMailbox, ev.AccountID)
@@ -151,15 +217,20 @@ func JournalMailboxTx(ctx context.Context, tx *sql.Tx, ev MailboxEvent, readers 
 	}
 	ev.Label, ev.Hint = "", ""
 	if ev.Kind != MailboxPurged {
-		ev.Label, ev.Hint = mailboxLabel(displayName), MailboxHint(email)
+		ev.Label, ev.Hint = MailboxLabel(displayName, email), MailboxHint(email)
+	}
+	ev.PurgeAfter = 0
+	if ev.Kind == MailboxRemoved {
+		ev.PurgeAfter = purgeAfter
 	}
 	var raw [8]byte
 	//nolint:errcheck // crypto/rand.Read never returns an error
 	_, _ = rand.Read(raw[:])
 	ev.ID = "mbe_" + hex.EncodeToString(raw[:])
 	if err := tx.QueryRowContext(ctx, `INSERT INTO mailbox_events(id, kind, workspace_id, account_id, label, hint,
-		  actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
-		ev.ID, string(ev.Kind), ev.WorkspaceID, ev.AccountID, ev.Label, ev.Hint, ev.Actor, ev.At).Scan(&ev.Seq); err != nil {
+		  actor, created_at, cause, lost_user, purge_after) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING seq`,
+		ev.ID, string(ev.Kind), ev.WorkspaceID, ev.AccountID, ev.Label, ev.Hint, ev.Actor, ev.At,
+		ev.Cause, ev.LostUser, ev.PurgeAfter).Scan(&ev.Seq); err != nil {
 		return 0, "", fmt.Errorf("store: journal the mailbox: %w", err)
 	}
 	for _, userID := range readers {
@@ -226,7 +297,8 @@ func forgetUnneededHintsTx(ctx context.Context, tx *sql.Tx, seqs []int64) error 
 // DeleteMailboxEventsTx deletes, inside the caller's transaction, every
 // event of these mailboxes, with who read them and the notices they gave:
 // what goes with a person who is closed, and with a link that never
-// connected.
+// connected in a local workspace. In a workspace from another source such a
+// link's deletion is journaled instead, for an extension to report.
 func DeleteMailboxEventsTx(ctx context.Context, tx *sql.Tx, accountIDs []string) error {
 	if len(accountIDs) == 0 {
 		return nil
@@ -264,8 +336,8 @@ type Notice struct {
 // Notices lists a person's notices, newest first.
 func (s *Store) Notices(ctx context.Context, userID string) ([]Notice, error) {
 	rows, err := s.r.QueryContext(ctx, `SELECT e.seq, e.id, e.kind, e.workspace_id, e.account_id, e.label, e.hint,
-		       e.actor, e.created_at, n.created_at, coalesce(w.name, ''), a.id IS NOT NULL, coalesce(a.email, ''),
-		       coalesce(a.removed_at, 0), coalesce(a.purge_after, 0)
+		       e.actor, e.created_at, e.cause, e.lost_user, e.purge_after, n.created_at, coalesce(w.name, ''),
+		       a.id IS NOT NULL, coalesce(a.email, ''), coalesce(a.removed_at, 0), coalesce(a.purge_after, 0)
 		  FROM notices n
 		  JOIN mailbox_events e ON e.seq = n.event_seq
 		  LEFT JOIN workspaces w ON w.id = e.workspace_id
@@ -283,8 +355,8 @@ func (s *Store) Notices(ctx context.Context, userID string) ([]Notice, error) {
 			kind string
 		)
 		if err := rows.Scan(&n.Event.Seq, &n.Event.ID, &kind, &n.Event.WorkspaceID, &n.Event.AccountID, &n.Event.Label,
-			&n.Event.Hint, &n.Event.Actor, &n.Event.At, &n.CreatedAt, &n.WorkspaceName, &n.Kept, &n.Email,
-			&n.RemovedAt, &n.PurgeAfter); err != nil {
+			&n.Event.Hint, &n.Event.Actor, &n.Event.At, &n.Event.Cause, &n.Event.LostUser, &n.Event.PurgeAfter,
+			&n.CreatedAt, &n.WorkspaceName, &n.Kept, &n.Email, &n.RemovedAt, &n.PurgeAfter); err != nil {
 			return nil, fmt.Errorf("store: list the notices: %w", err)
 		}
 		n.Event.Kind = MailboxEventKind(kind)

@@ -461,6 +461,14 @@ again. A disable made on this server is the local override: it deletes the grant
 suspension, and a resume never lifts it. As after any taking of "read", a browser that opened a
 grant before the suspension may keep the mailbox key (section 5.7).
 
+A membership an external directory holds (spec §12.13, "Being held") is the same residual: its
+grants persist, unusable, while the directory's generation is unconfirmed, and a later document
+listing the membership again gives the person back their reading with no act of the workspace's
+owners here, so whoever controls the directory decides who reads again. Ending a held membership,
+like a removal by the directory or a forced disable, deletion or reset here, may leave a team
+mailbox with a key nobody holds a grant to: nobody can read it again, the journal records it as
+stranded, and it is removed and linked again (spec §12.12).
+
 ## 6. Where each defence is tested
 
 | Defence | Vectors | Tests |

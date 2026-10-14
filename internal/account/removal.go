@@ -25,8 +25,11 @@ import (
 // someone who may turns it on; after them it is deleted for good by the
 // hourly sweep (PurgeExpired), or before by whoever may. A mailbox that never
 // connected — nothing was ever stored to authenticate with — is deleted for
-// good at once instead: there is nothing in it to keep. Who may do which is
-// the service's: each takes a check run in its transaction.
+// good at once instead: there is nothing in it to keep. In a local workspace
+// its journal goes with it; in a workspace from another source the deletion
+// is journaled, as a removed mailbox's is, since an extension reports that
+// workspace's journal elsewhere. Who may do which is the service's: each
+// takes a check run in its transaction.
 //
 // The removal, the recovery and the deletion for good are journaled in the
 // transaction that makes them (store.JournalMailboxTx); every reader of a
@@ -64,9 +67,10 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 	at := r.now().UTC().Truncate(time.Second)
 	out := Removal{AccountID: id}
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
-		var neverConnected bool
-		err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id)
-			FROM accounts a WHERE a.id = ? AND a.removed_at = 0`, id).Scan(&neverConnected)
+		var neverConnected, followed bool
+		err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id),
+			  EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.source <> 'local')
+			FROM accounts a WHERE a.id = ? AND a.removed_at = 0`, id).Scan(&neverConnected, &followed)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNotFound
@@ -84,8 +88,11 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 			return fmt.Errorf("account: drop the mailbox's pending flows: %w", err)
 		}
 		if neverConnected {
+			// In a workspace from another source the deletion is journaled,
+			// as one of a mailbox removed first would be, for an extension
+			// to report; in a local one nothing of it is kept.
 			out.Purged = true
-			_, err := purgeTx(ctx, tx, []string{id}, purge{forget: true, at: at})
+			_, err := purgeTx(ctx, tx, []string{id}, purge{forget: !followed, actor: actor, at: at})
 			return err
 		}
 		// Read before the removal: a removed mailbox has no reader.

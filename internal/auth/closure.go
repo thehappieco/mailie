@@ -400,7 +400,9 @@ type Removed struct {
 // people, grants they gave, mailboxes they linked and team consents they gave
 // stay, since each is the record of how someone arrived, got access or what
 // a team agreed to; who did it does not. An invite of theirs still waiting
-// expires first.
+// expires first. What an external directory said of them stays, marked gone
+// (store.MarkDirectoryPersonGoneTx), with their name in the journal of what
+// was done to mailboxes, until an extension releases them.
 //
 // The only active owner is not deleted unless force says so, disabled or not.
 func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool) (Removed, error) {
@@ -459,6 +461,11 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	}
 	if linked > 0 {
 		return Removed{}, ErrOwnsAccounts
+	}
+	// A directory that followed them keeps their row, gone, until an
+	// extension releases them; and with it their name in the journal.
+	if err := store.MarkDirectoryPersonGoneTx(ctx, tx, id, now); err != nil {
+		return Removed{}, err
 	}
 	teams, err := workspace.DeletePersonTx(ctx, tx, id)
 	if err != nil {

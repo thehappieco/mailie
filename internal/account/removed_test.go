@@ -550,3 +550,73 @@ func TestRelinkingARemovedAddressIsAConflict(t *testing.T) {
 		t.Errorf("linking the address once the removed mailbox was deleted for good: %v", err)
 	}
 }
+
+func TestANeverConnectedLinkRemovedInAFollowedWorkspaceIsJournaledPurged(t *testing.T) {
+	// A team from another source, whose journal an extension reports
+	// elsewhere: a link there that never connected is deleted at once all
+	// the same, but its deletion is journaled, and its earlier entries are
+	// kept with its names forgotten, as a removed mailbox's are.
+	repo, db := newRepo(t)
+	ctx := t.Context()
+	registry := account.NewRegistry(ctx, repo, account.RegistryOptions{})
+	t.Cleanup(func() { _ = registry.Close() })
+	ana := authtest.NewUser(t, db, "ana@example.org", auth.RoleMember)
+	const team = "0b4a3c5e-0000-4000-8000-000000000003"
+	exec(t, db, `INSERT INTO workspaces(id, kind, source, name, created_at, updated_at)
+		VALUES (?, 'team', 'platform', 'Elsewhere', 100, 100)`, team)
+	exec(t, db, `INSERT INTO workspace_members(workspace_id, user_id, role, status, created_at, updated_at)
+		VALUES (?, ?, 'owner', 'active', 100, 100)`, team, ana.ID)
+	link := func(id, email string) {
+		t.Helper()
+		if _, err := repo.Create(ctx, account.Account{ID: id, WorkspaceID: team, Email: email, Provider: provider.KindGmail,
+			AuthKind: "oauth2", IMAPHost: "imap.example.com", IMAPPort: 993, SMTPHost: "smtp.example.com", SMTPPort: 587,
+			SMTPTLS: "starttls", LoginUser: email, DisplayName: "Sales desk"}, ana.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const abandoned, deleted = "acc_00000000000000b1", "acc_00000000000000b2"
+	link(abandoned, "orders@example.org")
+	link(deleted, "billing@example.org")
+	if err := db.Write(ctx, func(tx *sql.Tx) error {
+		_, _, err := store.JournalMailboxTx(ctx, tx, store.MailboxEvent{Kind: store.MailboxSyncPaused, AccountID: abandoned,
+			Actor: ana.ID, At: 500}, nil, false)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	removal, err := registry.Remove(ctx, abandoned, ana.ID, nil)
+	if err != nil || !removal.Purged {
+		t.Fatalf("abandoning a link that never connected: %+v, %v, want it deleted at once", removal, err)
+	}
+	if err := repo.Delete(ctx, deleted); err != nil {
+		t.Fatal(err)
+	}
+	if n := countOf(t, db, `SELECT count(*) FROM accounts WHERE id IN (?, ?)`, abandoned, deleted); n != 0 {
+		t.Errorf("%d of the links are still there", n)
+	}
+	rows, err := db.Reader().QueryContext(ctx, `SELECT account_id || '|' || kind || '|' || actor || '|' || label || '|'
+		|| hint || '|' || workspace_id FROM mailbox_events ORDER BY seq`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []string
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, s)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{
+		abandoned + "|sync_paused|" + ana.ID + "|||" + team,
+		abandoned + "|purged|" + ana.ID + "|||" + team,
+		deleted + "|purged||||" + team,
+	}; !slices.Equal(got, want) {
+		t.Errorf("the journal holds\n%v\nwant\n%v", got, want)
+	}
+}

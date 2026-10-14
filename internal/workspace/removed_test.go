@@ -182,8 +182,10 @@ func TestDeletingAPersonForgetsThatTheyRemovedAMailbox(t *testing.T) {
 	}
 	// Ana removed the team's mailbox, which Bob read, and turned the sync
 	// of another off; Bob turned off one Ana read.
-	journal(store.MailboxRemoved, shared.ID, ana.ID, []string{bob.ID})
+	// The removal is recorded on the mailbox first, which the journal reads
+	// its end from.
 	f.remove(shared.ID, ana.ID)
+	journal(store.MailboxRemoved, shared.ID, ana.ID, []string{bob.ID})
 	journal(store.MailboxSyncPaused, orders.ID, ana.ID, []string{ana.ID, bob.ID})
 	journal(store.MailboxSyncPaused, orders.ID, bob.ID, []string{ana.ID, bob.ID})
 

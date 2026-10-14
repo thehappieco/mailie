@@ -725,12 +725,18 @@ func (r *Repository) ListVisible(ctx context.Context, v Visibility) ([]Account, 
 }
 
 // Delete deletes an account for good, at once, live or removed, with
-// everything that hangs off it and its entries in the mailbox journal, as an
-// abandoned link that never connected goes. Removing a mailbox that did
-// connect keeps it instead (Registry.Remove).
+// everything that hangs off it, as an abandoned link that never connected
+// goes: with its entries in the mailbox journal in a local workspace, and
+// journaled, with no actor, in a workspace from another source. Removing a
+// mailbox that did connect keeps it instead (Registry.Remove).
 func (r *Repository) Delete(ctx context.Context, id string) error {
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
-		n, err := purgeTx(ctx, tx, []string{id}, purge{forget: true, at: r.now()})
+		var followed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM accounts a JOIN workspaces w ON w.id = a.workspace_id
+			WHERE a.id = ? AND w.source <> 'local')`, id).Scan(&followed); err != nil {
+			return fmt.Errorf("account: read the mailbox's workspace: %w", err)
+		}
+		n, err := purgeTx(ctx, tx, []string{id}, purge{forget: !followed, at: r.now()})
 		if err != nil {
 			return err
 		}
@@ -860,8 +866,9 @@ func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt,
 // (store.JournalMailboxTx).
 type purge struct {
 	// forget deletes the mailboxes' entries in the journal with them: a
-	// person closed, a link that never connected abandoned. Otherwise the
-	// entries stay, their names forgotten, and the deletion is journaled.
+	// person closed, a link that never connected abandoned in a local
+	// workspace. Otherwise the entries stay, their names forgotten, and the
+	// deletion is journaled.
 	forget bool
 	// actor is who deleted them for good, journaled: "usr_…",
 	// "key:<prefix>", "cli" or store.ActorSweep.

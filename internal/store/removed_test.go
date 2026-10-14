@@ -14,11 +14,11 @@ import (
 // package decides see them (migration 0020).
 
 func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
-	// The seed at schema 20: acc_0000000000000003 is Bea's own, under her
+	// The seed: acc_0000000000000003 is Bea's own, under her
 	// consent; acc_t1 a mailbox of the team wsp_t1, under its consent, which
 	// Bea and Fay read; acc_0000000000000005 an operator mailbox, switched
 	// on here.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	f.accepted("the operator's switched on", f.exec(`UPDATE accounts SET sync_enabled_at = 800, sync_enabled_by = 'cli'
 		WHERE id = 'acc_0000000000000005'`))
@@ -76,9 +76,9 @@ func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
 }
 
 func TestARemovedMailboxHasNoReader(t *testing.T) {
-	// The seed at schema 20: Bea (usr_2) and Fay (usr_6) read acc_t1, with
+	// The seed: Bea (usr_2) and Fay (usr_6) read acc_t1, with
 	// no key; Fay is suspended here, so she would read it once resumed.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	f.accepted("Fay suspended", f.exec(`UPDATE users SET status = 'disabled', suspended_at = 800
 		WHERE id = 'usr_0000000000000006'`))
@@ -133,10 +133,10 @@ func TestARemovedMailboxHasNoReader(t *testing.T) {
 }
 
 func TestWithdrawingConsentDeletesTheIndexOfRemovedMailboxesToo(t *testing.T) {
-	// The seed at schema 20: acc_0000000000000001 is Owner's (usr_1) own,
+	// The seed: acc_0000000000000001 is Owner's (usr_1) own,
 	// with two messages; acc_t2's consent is still the one migration 0011
 	// copied from Eve's (usr_5), and it holds one message.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	f.remove("acc_0000000000000001", "usr_0000000000000001", 900)
 	f.remove("acc_t2", "usr_0000000000000001", 900)
@@ -186,29 +186,16 @@ func TestTheMailboxJournalNeverHoldsAnAddress(t *testing.T) {
 		}
 	}
 
-	// The seed at schema 20: acc_t1 (support@example.org) and acc_t3
+	// The seed: acc_t1 (support@example.org) and acc_t3
 	// (ops@team.example.org), whose display names are "Name of …"; Bea and
 	// Fay read acc_t1, Dan and Bea acc_t3.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	f.accepted("a display name that is the address", f.exec(`UPDATE accounts SET display_name = 'Support <support@example.org>'
 		WHERE id = 'acc_t1'`))
 	journal := func(kind MailboxEventKind, account, actor string, notify bool) string {
 		t.Helper()
-		var id string
-		err := f.s.Write(ctx, func(tx *sql.Tx) error {
-			readers, err := MailboxReadersTx(ctx, tx, account)
-			if err != nil {
-				return err
-			}
-			_, id, err = JournalMailboxTx(ctx, tx, MailboxEvent{Kind: kind, AccountID: account, Actor: actor, At: 900},
-				readers, notify)
-			return err
-		})
-		if err != nil {
-			t.Fatalf("journal %s of %s: %v", kind, account, err)
-		}
-		return id
+		return f.journal(kind, account, actor, 900, notify)
 	}
 	journal(MailboxRemoved, "acc_t1", "usr_0000000000000001", true)
 	journal(MailboxSyncPaused, "acc_t3", "usr_0000000000000004", true)
@@ -272,9 +259,9 @@ func TestTheMailboxJournalNeverHoldsAnAddress(t *testing.T) {
 }
 
 func TestTeamSyncNoticesLeaveRemovedMailboxesOut(t *testing.T) {
-	// The seed at schema 20: acc_t2 is kept stopped, bound to Eve, who is
+	// The seed: acc_t2 is kept stopped, bound to Eve, who is
 	// disabled, and read by Owner; acc_t9, linked here, nobody reads.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	f.accepted("a team mailbox nobody reads", f.exec(`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind,
 		imap_host, imap_port, smtp_host, smtp_port, smtp_tls, login_user, save_sent_copy, state, state_changed_at,
@@ -296,9 +283,9 @@ func TestTeamSyncNoticesLeaveRemovedMailboxesOut(t *testing.T) {
 }
 
 func TestANoticeShowsTheMailboxAsItStandsUntilItsReaderDismissesIt(t *testing.T) {
-	// The seed at schema 20: Bea (usr_2) and Fay (usr_6) read acc_t1
+	// The seed: Bea (usr_2) and Fay (usr_6) read acc_t1
 	// (support@example.org), of the team Support; Owner (usr_1) removes it.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const owner, bea, fay = "usr_0000000000000001", "usr_0000000000000002", "usr_0000000000000006"
 	var eventID string
@@ -369,4 +356,38 @@ func TestANoticeShowsTheMailboxAsItStandsUntilItsReaderDismissesIt(t *testing.T)
 	if len(notices(fay)) != 0 || queryInt(t, f.s, `SELECT count(*) FROM mailbox_event_readers`) != 0 {
 		t.Error("the swept entry left its notices or its readers")
 	}
+}
+
+// journal journals kind, done to account by actor at at, as the repository
+// does: who reads the mailbox is read first, and a removal or a recovery is
+// recorded on the mailbox's row before its entry, which reads a removal's end
+// from there. It returns the entry's id.
+func (f seededSchema) journal(kind MailboxEventKind, account, actor string, at int64, notify bool) string {
+	f.t.Helper()
+	ctx := context.Background()
+	var id string
+	err := f.s.Write(ctx, func(tx *sql.Tx) error {
+		readers, err := MailboxReadersTx(ctx, tx, account)
+		if err != nil {
+			return err
+		}
+		switch kind {
+		case MailboxRemoved:
+			_, err = tx.ExecContext(ctx, `UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ?
+				WHERE id = ? AND removed_at = 0`, at, actor, at+thirtyDays, account)
+		case MailboxRecovered:
+			_, err = tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
+				sync_held_at = ? WHERE id = ? AND removed_at <> 0`, at, account)
+		}
+		if err != nil {
+			return err
+		}
+		_, id, err = JournalMailboxTx(ctx, tx, MailboxEvent{Kind: kind, AccountID: account, Actor: actor, At: at},
+			readers, notify)
+		return err
+	})
+	if err != nil {
+		f.t.Fatalf("journal %s of %s: %v", kind, account, err)
+	}
+	return id
 }

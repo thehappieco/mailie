@@ -417,8 +417,11 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   restricted to nothing would reach every operator mailbox) and what a workspace key held — and the
   consent attempts under way on it, whose redirects then find nothing.
 - **A link that never connected** — nothing was ever stored to authenticate with — is deleted for
-  good at once instead, with nothing kept and nothing journaled; besides its owners, the person who
-  linked it abandons it, an admin included.
+  good at once instead, with nothing kept and, in a local workspace, nothing journaled; besides its
+  owners, the person who linked it abandons it, an admin included. In a workspace from another
+  source its deletion is journaled (`purged`) and its earlier entries are kept, their names
+  forgotten, as a removed mailbox's are, since an extension reports that workspace's journal
+  elsewhere ([Following an external directory](#following-an-external-directory)).
 - **Who removes:** a team mailbox's active owners, an admin no longer; a personal mailbox's person;
   for an operator mailbox, an instance key with the `admin` scope.
 - **Its readers are told.** Everyone who read it then, but whoever removed it, gets a notice in the
@@ -453,11 +456,22 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 - **Closing a person** deletes at once, for good, the removed mailboxes that go with them — of
   their personal workspace and of the local teams they were alone in — with their journal.
 - **The journal** (`mailbox_events`, with who read the mailbox then, `mailbox_event_readers`):
-  removals, syncs turned off, recoveries and deletions for good, each written in the transaction
-  that makes it, never with the address, and kept 90 days. A deletion for good forgets the
-  mailbox's name there, and its masked hint once no notice needs it; closing a person and
-  abandoning a link that never connected delete its entries; deleting a person forgets that they
-  acted, and that they removed a mailbox still kept.
+  removals, with the end they recorded (`purge_after`), syncs turned off, recoveries, deletions for
+  good and strandings (migration 0021), each written in the transaction that makes it, never with
+  the address, and kept 90 days. A mailbox is named by its display name, unless that holds an
+  address or the local part of its own (three characters or more, without regard to case:
+  "Support" for `support@…` is no name), and by a masked hint. A **stranding** is a team mailbox
+  left with nobody who reads it, would read it once resumed, or would read it but for a hold,
+  because the one person who did lost it in a way no protection refuses: a membership or a person
+  an external directory removed, or a person disabled, deleted or reset here with force. It says
+  why (`cause`: `membership_ended`, `forgotten`, `disabled`, `deleted`, `reset`) and whom it lost
+  (`lost_user`), and tells nobody in the console. A sync turned off because a consent bound to a
+  person stopped with them says so too (`cause` `bound_stopped`): a pause the server makes on its
+  own. A deletion for good forgets the mailbox's name there, and its masked hint once no notice
+  needs it; closing a person, and abandoning a link that never connected in a local workspace,
+  delete its entries; deleting a person forgets that they acted, that a stranding lost them, and
+  that they removed a mailbox still kept — at once, unless an external directory follows them, in
+  which case the journal keeps their name until an extension releases them, 90 days at most.
 
 | | Remove | See the removed ones, recover | Delete for good | Turn a recovered one's sync on |
 |---|---|---|---|---|
@@ -1208,6 +1222,66 @@ the database holds, a restored one included, and whichever source the teams came
   that offers teams finds every team as it was. Personal workspaces and the operator's are as they
   were.
 
+## Following an external directory
+
+An extension of the daemon, in a binary that embeds it, may follow an external directory: a service
+elsewhere that says, person by person, whether they are active and which of its workspaces they
+belong to, with which role, and whose workspaces this server mirrors under a source that is not the
+local one ([The workspace source](#the-workspace-source)). What its documents do to people,
+workspaces and memberships is `internal/service`'s, in one write each. What the schema keeps for it
+is here (migrations 0022 and 0023); a server that follows no directory, which is every self-hosted
+one, leaves all of it empty.
+
+- **A directory** (`directories`, one row per issuer, never deleted): the generation of its data
+  the documents applied belong to, whether it confirmed that generation, how many times it was
+  reset here (`reset`: a new generation, or the directory saying it forgot where its feed stood),
+  how far its feed was read (`cursor`) and up to when it says it published every change
+  (`published_through_us`, microseconds). One row, so a generation and its cursor move together;
+  the cursor's write is a compare and set on the generation and the reset
+  (`store.SetDirectoryCursorTx`), so an answer read before a reset never moves the feed, and the
+  schema lets a generation, a cursor, a confirmation and what was published go back only with a
+  reset, which never goes back (`directories_reset`). A reset (`store.ResetDirectoryTx`) starts the
+  directory again at a generation, unconfirmed, its cursor and what it published forgotten.
+- **What it says of a person** (`directory_people`, per issuer and person): their subject there,
+  the generation and version of the document last applied and the reset that version counts
+  under, their status, and the moments it disabled them, revoked their sessions and revoked their
+  credentials, in microseconds, each kept as the highest ever seen, across resets too (the schema
+  lowers none). The row is keyed by the person, not by the subject, and outlives their deletion
+  here, marked `gone_at` in the transaction that deletes them, until an extension releases them
+  (`store.ReleaseDirectoryPersonTx`) or 90 days pass: until then the journal keeps their name, and
+  the same subject signing in again meanwhile is a new person with a row of their own, so a
+  subject is unique only among the rows of people still here
+  ([conflict 29](#conflicts-and-resolutions)).
+- **Versions fall only with a recorded reset.** A person's document version falls only to 0, and
+  only while its `reset` rises to the one its directory recorded; a workspace's version of its name
+  and closure (`workspaces.source_version`) only to 0, and only while its `source_reset` rises to
+  the sum of every directory's resets. A reset writes all of them in its one transaction, and a
+  stray zeroing is refused unless a reset was recorded first. A local workspace has neither column
+  (a CHECK), and a workspace from another source is written at the current sum.
+- **A held membership** (`workspace_members.held_at`): one a directory ended while its generation
+  was not confirmed, and whose end would leave a team mailbox with nobody who reads it, would read
+  it once resumed, or would read it but for another hold. It is disabled, so its person reads
+  nothing there and counts as no reader, and keeps its flags and sealed grants until a document
+  lists it again or the generation is confirmed, which ends it (key scheme, section 12.13, "Being
+  held"). Only a team's membership from another source is held, and never when written (the
+  schema). `store.HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no access.
+- **An extension's own state** (`extension_state`): a few keys and values per extension, a value of
+  a mebibyte at most, kept beside the data it describes so that a restore takes both back together
+  (`store.ExtensionState`, `ExtensionStateKeys`, `WriteExtensionState`).
+- **What changed** (`workspace_changes`, migration 0023): one row per workspace from another
+  source, with the seq of the last change to anything a snapshot of who holds what there shows —
+  its mailboxes (linked, deleted, their state, name, removal, sync consent and hold), the flags,
+  mailbox keys and sealed grants on them, its members (their role, status and hold) and those
+  members' own status, suspension, account key and sync consent, its name and closure, and its
+  journal. The schema's triggers write it in the transaction of the change; a seq is never reused
+  and a workspace's only rises; a deleted workspace's last mark stays, so an extension learns it is
+  gone. An extension reads the marks above the last it saw (`store.WorkspaceChanges`). A local
+  workspace is never marked.
+- **The journal as an outbox.** An extension reads a workspace's journal in order, from a cursor
+  (`mailbox_events_workspace`), and reports it elsewhere: the strandings, with the person each
+  lost, and a link that never connected deleted in such a workspace
+  ([Removed mailboxes](#removed-mailboxes)).
+
 ## Migration 0008
 
 What becomes of a schema-7 database:
@@ -1438,6 +1512,46 @@ refresh already under way records the refresh token the provider rotated, which 
 No row of a schema-19 database changes: every mailbox is live. See
 [Removed mailboxes](#removed-mailboxes). The tests in `internal/store/migrate_twenty_test.go` hold
 every table's rows and every trigger as they were, and each refusal.
+
+## Migration 0021
+
+`0021_stranded_mailboxes.sql`, the second **rebuild** ([Rebuilding a table safely](#rebuilding-a-table-safely)):
+`mailbox_events` gains the kind `stranded` and three columns, `cause`, `lost_user` and
+`purge_after`, each held by a CHECK to the kinds that have it (a stranding always has a cause, a
+sync turned off may say `bound_stopped`, only a stranding loses someone, only a removal has an end,
+and always), and an index by workspace and seq. A CHECK constraint is added only by rebuilding a
+table, so every row is copied with its seq, a removal recorded before taking its moment and 30
+days as its end, exactly what it wrote then; `notices_to_readers`, whose body names the journal, is
+dropped before the rename and written again byte for byte; the journal's AUTOINCREMENT high-water
+mark is carried over as it was, and a journal never written keeps none. The trigger that writes an
+entry once now keeps its cause and end too, and lets its lost person go only to nothing. Every row
+keeps every value, and no other table changes. Back up before upgrading, as before any rebuild.
+The tests in `internal/store/migrate_twentyone_test.go` hold every row, reader, notice and
+high-water mark, the schema but for the journal's table, index and trigger, and each refusal.
+
+## Migration 0022
+
+`0022_directories.sql`, an ordinary migration: the tables `directories`, `directory_people` and
+`extension_state`, the columns `workspaces.source_version` and `source_reset` and
+`workspace_members.held_at`, all 0 on every row there was, and their triggers
+([Following an external directory](#following-an-external-directory)). No row of a schema-21
+database changes. The tests in `internal/store/migrate_twentytwo_test.go` hold every row and every
+object as they were, and each refusal: a hold anywhere but in a team from another source, what a
+directory revoked going down, a version falling without a recorded reset, a local workspace with a
+source version, a directory's generation or cursor going back without a reset; and that a gone row
+and a live one may share a subject.
+
+## Migration 0023
+
+`0023_workspace_changes.sql`, an ordinary migration: the table `workspace_changes` and the
+triggers that mark a workspace from another source in the transaction of every change its snapshot
+shows, each deleting the workspace's row and writing it again (never `INSERT OR REPLACE`, whose
+clause an outer `INSERT OR IGNORE` would override), and marking on an update only when a value it
+watches changes. The migration marks nothing, and no row of a schema-22 database changes. The tests
+in `internal/store/migrate_twentythree_test.go` hold that, every change a snapshot shows marking its
+workspace and only it, a person's deletion marking every workspace they were in through the
+schema's cascade, a local workspace never marked, a mark only rising, and an outer `INSERT OR
+IGNORE` still marking.
 
 ## Going back
 
@@ -1729,6 +1843,30 @@ Test names state the guarantee. At least:
   `TestAnEditionThatWithholdsTeamsNeverStartsATeamMailboxsSync` (the daemon's engine); and
   `TestServeNeverWithholdsTeams`.
 
+- Following an external directory, the storage (`internal/store`): migrations,
+  `TestMigrationTwentyOneRebuildsTheJournalAndChangesNothingElse`,
+  `TestMigrationTwentyOneOnAJournalNeverWrittenChangesNothingElse`,
+  `TestTheRebuiltJournalNeverReusesASeq`, `TestMigrationTwentyTwoAddsTheDirectoryAndChangesNothingElse`
+  and `TestMigrationTwentyThreeAddsTheChangeMarksAndChangesNothingElse`; the journal,
+  `TestTheSchemaRecordsAStrandingWholeAndOnlyAsOne`, `TestTheSchemaNeverGivesANoticeOfAStranding`,
+  `TestAStrandingIsWrittenOnceButItsLostPersonIsReleased`,
+  `TestTheJournalKeepsNoLabelThatHoldsTheAddresssLocalPart` and
+  `TestAConsentStoppedWithItsPersonIsJournaledAsBoundStopped`; holds,
+  `TestAHeldMemberIsNeitherAReaderNorASuspendedReaderButAHeldOne` and
+  `TestTheSchemaHoldsOnlyAMembershipOfATeamFromAnotherSource`; directories,
+  `TestTheSchemaNeverLowersWhatADirectoryRevoked`,
+  `TestTheSchemaLetsAVersionFallOnlyToZeroWithARecordedReset`,
+  `TestTheSchemaGivesALocalWorkspaceNoSourceVersion`,
+  `TestTheSchemaMovesADirectorysGenerationAndCursorBackOnlyWithAReset` and
+  `TestAGoneRowAndALiveRowMayShareASubject`; `TestAnExtensionsStateTakesAMebibyteAndRefusesMore`;
+  the change marks, `TestEveryChangeToWhatASnapshotShowsMarksItsWorkspace`,
+  `TestDeletingAPersonMarksEveryWorkspaceTheyWereIn`, `TestALocalWorkspaceIsNeverMarked`,
+  `TestAWorkspaceMarkOnlyRises` and `TestAnOuterInsertOrIgnoreStillMarks`. Beside them,
+  `TestAStrandingIsJournaledNamingWhomItLostAndTellsNobody` (`internal/workspace`),
+  `TestDeletingAPersonMarksTheirDirectoryRowGone` and
+  `TestDeletingAnUnfollowedPersonForgetsThemAsTheLostReaderToo` (`internal/auth`), and
+  `TestANeverConnectedLinkRemovedInAFollowedWorkspaceIsJournaledPurged` (`internal/account`).
+
 ## Conflicts and resolutions
 
 1. **The linker's consent outlived the linker's membership.** Phase 2 kept a team mailbox syncing
@@ -1937,6 +2075,16 @@ Test names state the guarantee. At least:
     its person asks, and recovers none of a person's or a team's. Its address stays taken until it
     is deleted for good. See [Removed mailboxes](#removed-mailboxes); the open sync text says so
     at `2026-10-open-sync-4`.
+29. **What a directory says of a person, keyed by the person or by the subject.** The first design
+    keyed `directory_people` by the directory's subject. But a person deleted here keeps their row
+    until an extension releases them, which waits for what it still has to report of them, and the
+    same subject may sign in again meanwhile, as a new person who needs a row of their own beside
+    the gone one: keyed by subject, that sign-in would wait for the release or overwrite the row
+    and lose the mapping the pending reports need. *Resolution (recorded for the owner,
+    2026-10-14):* the row is keyed by issuer and person, and the subject is unique only among the
+    rows of people still here (`directory_people_subject … WHERE gone_at = 0`); every lookup by
+    subject reads the live row. See
+    [Following an external directory](#following-an-external-directory).
 
 ## Not in this phase
 
@@ -1970,4 +2118,5 @@ Test names state the guarantee. At least:
 | `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |
 | 0014 (phase 3, step 4) | `internal/store/migrations/0014_mailbox_keys.sql` and `migrate_fourteen_test.go`; `store/readers.go` (the one rule as SQL fragments); `workspace/sealed.go` (keys and grants written and read), `grants.go`, `reader.go`, `members.go` and `people.go` (the rule, grants taken with `read`); `account/store.go` (`Visibility` by the rule; the link's key in its transaction); `auth` (a disable and a reset take the grants; the reset's guard counts mailboxes with a key); `service/mailboxkeys.go` (the use cases and their step-up), `accounts.go`, `workspaces.go`; `api/mailboxkeys.go`; the contract fixtures and the console's types; the console's half (`web/src/crypto/mailbox.ts`, `state/mailboxKeys.ts`, `state/grants.ts`, `state/stepUp.ts`, the link's key, Read with a grant, the sheet's key section; [`console.md`](console.md), "Mailbox keys") |
 | 0020 (removed mailboxes) | `internal/store/migrations/0020_removed_mailboxes.sql` and `migrate_twenty_test.go`; `store/readers.go` (`LiveSQL` in the one rule), `eligibility.go` (a removed or held mailbox syncs nothing), `consent.go` (`SetMailboxSync` lifts the hold; a sync turned off, and `StopBoundTx`, tell the readers), `mailboxevents.go` (the journal and the notices); `account/removal.go` (removing, recovering, deleting for good, the sweep), `store.go` (`Visibility` and `Get` leave a removed mailbox out; `GetRemoved`, `ListRemoved`) and `registry.go` (an address kept removed is a conflict); `workspace/grants.go`, `keys.go`, `sealed.go`, `workspace.go` (nothing finds a removed mailbox) and `people.go` (who removed and who acted forgotten with their person); `auth/keys.go` (no new key restricted to a removed mailbox); `service/removed.go`, `notices.go`, `accounts.go` (only owners remove), `consent.go`, `sync.go` (`held`) and `events.go` (`NewNotices`); `app/sweep.go`; `api/removed.go`, `api/events.go` (`event: notice`) and the fixtures; the command line (`account removed`, `recover`, `purge`); the open sync text `-4`; the console's removed mailboxes, notices and hold ([`console.md`](console.md)) |
+| 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

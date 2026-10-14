@@ -12,10 +12,10 @@ import (
 // rules this package decides (migration 0020).
 
 func TestSwitchingATeamMailboxOffTellsItsOtherReadersAndEitherWayLiftsAHold(t *testing.T) {
-	// The seed at schema 20: acc_t1 is a mailbox of the team wsp_t1, under
+	// The seed: acc_t1 is a mailbox of the team wsp_t1, under
 	// its consent, which Bea (usr_2) and Fay (usr_6) read;
 	// acc_0000000000000005 is an operator mailbox.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const owner, bea, fay = "usr_0000000000000001", "usr_0000000000000002", "usr_0000000000000006"
 	held := func(id string) bool {
@@ -82,9 +82,9 @@ func TestSwitchingATeamMailboxOffTellsItsOtherReadersAndEitherWayLiftsAHold(t *t
 }
 
 func TestOnlyAPersonalMailboxsHoldIsLiftedAlone(t *testing.T) {
-	// The seed at schema 20: acc_0000000000000003 is Bea's own, under her
+	// The seed: acc_0000000000000003 is Bea's own, under her
 	// consent.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const own = "acc_0000000000000003"
 	f.accepted("held", f.exec(`UPDATE accounts SET sync_held_at = 950 WHERE id = ?`, own))
@@ -109,10 +109,10 @@ func TestOnlyAPersonalMailboxsHoldIsLiftedAlone(t *testing.T) {
 }
 
 func TestAConsentStoppedByItsPersonTellsTheMailboxsOtherReaders(t *testing.T) {
-	// The seed at schema 20: Bea (usr_2) and Fay (usr_6) read acc_t1, a
+	// The seed: Bea (usr_2) and Fay (usr_6) read acc_t1, a
 	// mailbox of the team wsp_t1; its consent is bound to Bea here, as
 	// migration 0011 left it.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const bea, fay = "usr_0000000000000002", "usr_0000000000000006"
 	f.accepted("bound to Bea", f.exec(`UPDATE accounts SET sync_enabled_via = 'migration', sync_enabled_by = ?
@@ -138,29 +138,16 @@ func TestAConsentStoppedByItsPersonTellsTheMailboxsOtherReaders(t *testing.T) {
 }
 
 func TestADeletedMailboxIsNamedByItsHintOnlyWhileANoticeNeedsIt(t *testing.T) {
-	// The seed at schema 20: Bea (usr_2) and Fay (usr_6) read acc_t1
+	// The seed: Bea (usr_2) and Fay (usr_6) read acc_t1
 	// (support@example.org), whose display name is "Name of acc_t1"; Owner
 	// (usr_1) removes it, recovers it, removes it again and deletes it for
 	// good.
-	f := newSchemaTwenty(t)
+	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const owner, bea, fay = "usr_0000000000000001", "usr_0000000000000002", "usr_0000000000000006"
 	journal := func(kind MailboxEventKind, notify bool) string {
 		t.Helper()
-		var id string
-		err := f.s.Write(ctx, func(tx *sql.Tx) error {
-			readers, err := MailboxReadersTx(ctx, tx, "acc_t1")
-			if err != nil {
-				return err
-			}
-			_, id, err = JournalMailboxTx(ctx, tx, MailboxEvent{Kind: kind, AccountID: "acc_t1", Actor: owner, At: 900},
-				readers, notify)
-			return err
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return id
+		return f.journal(kind, "acc_t1", owner, 900, notify)
 	}
 	removed := journal(MailboxRemoved, true)
 	journal(MailboxRecovered, false)
@@ -197,8 +184,9 @@ func TestADeletedMailboxIsNamedByItsHintOnlyWhileANoticeNeedsIt(t *testing.T) {
 	}
 
 	// A notice that goes with its person is followed by the next sweep.
-	f.accepted("a mailbox", f.exec(`INSERT INTO mailbox_events(id, kind, workspace_id, account_id, hint, actor, created_at)
-		VALUES ('mbe_00000000000000f1', 'removed', 'wsp_t1', 'acc_gone', 'g…@example.org', ?, 950)`, owner))
+	f.accepted("a mailbox", f.exec(`INSERT INTO mailbox_events(id, kind, workspace_id, account_id, hint, actor, created_at,
+		purge_after) VALUES ('mbe_00000000000000f1', 'removed', 'wsp_t1', 'acc_gone', 'g…@example.org', ?, 950, 950 + ?)`,
+		owner, thirtyDays))
 	seq := queryInt(t, f.s, `SELECT seq FROM mailbox_events WHERE id = 'mbe_00000000000000f1'`)
 	f.accepted("its reader", f.exec(`INSERT INTO mailbox_event_readers(event_seq, user_id) VALUES (?, ?)`, seq, fay))
 	f.accepted("told", f.exec(`INSERT INTO notices(user_id, event_seq, created_at) VALUES (?, ?, 950)`, fay, seq))
