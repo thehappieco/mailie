@@ -8,10 +8,14 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/thehappieco/mailie/internal/api"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/ratelimit"
+	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/service"
 )
 
@@ -19,7 +23,10 @@ import (
 // after the service is built and before anything listens, and mounts its
 // handlers on r. An error stops the daemon from starting, as a route that is
 // refused does. Its context ends when the daemon stops, whatever stops it:
-// anything the extension starts must stop then.
+// anything the extension starts must stop then. Work it does in the
+// background for as long as the daemon runs it asks for with Deps.Go, which
+// the daemon waits for before it closes the database; it never waits for a
+// goroutine the extension starts on its own.
 //
 // Its routes are mounted beside the core's and before the console's
 // catch-all, which they take precedence over. A route is refused when the
@@ -48,7 +55,9 @@ type Extension func(ctx context.Context, r *Router, d Deps) error
 // behind it: an extension decides nothing the service does not, authorization
 // and account ownership included. An extension that signs people in through
 // an identity provider calls Service.SignInExternal, and Service.PinIdentityKey
-// for the keys it pins, under SignInLimits.
+// for the keys it pins, under SignInLimits. Nor does it hold the daemon's
+// sealer: OpenSecret opens an extension's own secrets with it, and nothing
+// else.
 type Deps struct {
 	// Config is the daemon's configuration, as loaded.
 	Config config.Config
@@ -63,6 +72,122 @@ type Deps struct {
 	// buckets the core's spend from: another way to sign in is not another
 	// budget of guesses.
 	SignInLimits *ratelimit.Auth
+	// Metrics is the registry /metrics serves: an extension registers its
+	// own collectors there, beside the core's, whose names it cannot take.
+	Metrics prometheus.Registerer
+
+	// run is what Go and OpenSecret reach. Only Run makes one.
+	run *extensionRun
+}
+
+// ErrNoSealer says OpenSecret was called on Deps that Run did not make, which
+// have no sealer to open with.
+var ErrNoSealer = errors.New("app: no sealer: these Deps were not made by the daemon")
+
+// Go asks the daemon to run fn in a goroutine of its own, on the extensions'
+// context, once every extension has run and every route is mounted: work an
+// extension does in the background for as long as the daemon runs. The
+// daemon cancels that context when it stops, whatever stops it, and waits
+// for fn to return, without a bound, as it waits for the sync engine, before
+// the engine, the account registry and the database close: fn may use the
+// service until it returns, and returns soon once its context ends.
+//
+// Only an extension, while it runs at start, asks for work. A Go once the
+// start has begun (from a handler, from work already running, during the
+// shutdown or after it) is dropped and logged at error, and fn never runs; so
+// is a Go on Deps that Run did not make. name says which work in the logs.
+func (d Deps) Go(name string, fn func(ctx context.Context)) {
+	if d.run == nil {
+		log := d.Log
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Error("background work was asked of Deps the daemon did not make; it never runs", "work", name)
+		return
+	}
+	d.run.ask(name, fn)
+}
+
+// OpenSecret opens an envelope sealed for secrets.ExtensionSecret(ref) with
+// the daemon's own sealer, the one NewSealer built from the configuration,
+// and for nothing else: an envelope sealed for another binding (another ref,
+// a credential, the send-hash root) does not open, and says so
+// (secrets.DoesNotOpen), and a ref no key service would take is
+// secrets.ErrBinding. As for every sealer, any other error, a key service not
+// reached, says nothing about the envelope. Deps that Run did not make have
+// no sealer: ErrNoSealer.
+func (d Deps) OpenSecret(ctx context.Context, ref string, envelope []byte) ([]byte, error) {
+	if d.run == nil || d.run.sealer == nil {
+		return nil, ErrNoSealer
+	}
+	return d.run.sealer.Open(ctx, secrets.ExtensionSecret(ref), envelope)
+}
+
+// extensionRun is the daemon's side of Deps.Go and Deps.OpenSecret: its
+// sealer, and the background work the extensions asked for.
+type extensionRun struct {
+	sealer secrets.Sealer
+	log    *slog.Logger
+
+	mu      sync.Mutex
+	closed  bool // the start has begun: Go drops what it is asked
+	queued  []extensionWork
+	running sync.WaitGroup
+}
+
+// extensionWork is one piece of background work an extension asked for.
+type extensionWork struct {
+	name string
+	fn   func(context.Context)
+}
+
+func newExtensionRun(sealer secrets.Sealer, log *slog.Logger) *extensionRun {
+	return &extensionRun{sealer: sealer, log: log}
+}
+
+// ask queues fn until start, or drops it once the start has begun.
+func (x *extensionRun) ask(name string, fn func(context.Context)) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	switch {
+	case x.closed:
+		x.log.Error("an extension asked for background work once the daemon had started; it never runs", "work", name)
+	case fn == nil:
+		x.log.Error("an extension asked for background work without a function; nothing runs", "work", name)
+	default:
+		x.queued = append(x.queued, extensionWork{name: name, fn: fn})
+	}
+}
+
+// start runs every queued work on ctx, each in a goroutine of its own, and
+// drops whatever is asked from then on.
+func (x *extensionRun) start(ctx context.Context) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if x.closed {
+		return
+	}
+	x.closed = true
+	for _, w := range x.queued {
+		x.running.Add(1)
+		go func() {
+			defer x.running.Done()
+			w.fn(ctx)
+			x.log.Debug("an extension's background work returned", "work", w.name)
+		}()
+	}
+	x.queued = nil
+}
+
+// wait drops the work a start that failed never ran, and whatever is asked
+// from then on, and waits, without a bound, for the work that runs to
+// return. The caller has ended its context first.
+func (x *extensionRun) wait() {
+	x.mu.Lock()
+	x.closed = true
+	x.queued = nil
+	x.mu.Unlock()
+	x.running.Wait()
 }
 
 // Router collects an extension's routes, in http.ServeMux's patterns. They

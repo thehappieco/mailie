@@ -29,7 +29,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`MarkExternalStepUp`/`ExternalStepUp`, the product key compared with the pin, read only),
   suspends and resumes a person (`SuspendPerson`/`ResumePerson`), closes and reopens a team
   (`CloseTeam`/`ReopenTeam`) and stops the keys a person created before a moment
-  (`RevokeKeysCreatedBefore`); `Options.ExternalSignInOnly` (never set by `serve`) has the service
+  (`RevokeKeysCreatedBefore`). Its `Deps` also run its background work (`Go`: started once every
+  route is mounted, its context ended at the stop and awaited without a bound before the engine,
+  the registry and the database close; a `Go` once the start has begun is dropped, logged at
+  error), open its own secrets with the daemon's sealer (`OpenSecret`, only
+  `secrets.ExtensionSecret(ref)`) and register its metrics beside the core's (`Metrics`).
+  `Options.ExternalSignInOnly` (never set by `serve`) has the service
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
   an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
   listed `withheld`, their mailboxes listed nowhere and synced by none (the store's rule), nothing

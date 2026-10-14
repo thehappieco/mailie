@@ -130,7 +130,9 @@ func (m *Metrics) Handler() http.Handler {
 	return promhttp.HandlerFor(m.reg, promhttp.HandlerOpts{})
 }
 
-// Registry exposes the registry so tests can gather it.
+// Registry is the registry /metrics serves: tests gather it, and an
+// extension of the daemon registers its own collectors on it
+// (app.Deps.Metrics).
 func (m *Metrics) Registry() *prometheus.Registry { return m.reg }
 
 const namespace = "mailserver"

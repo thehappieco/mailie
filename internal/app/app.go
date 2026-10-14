@@ -2,16 +2,18 @@
 // data directory's lock, the store, the sealer and the send-hash root, the
 // account registry and the sync engine, the service, REST, MCP over
 // Streamable HTTP and stdio, the console, metrics, the listeners, the startup
-// hints, the sweeps that enforce retention, and a bounded shutdown.
+// hints, the sweeps that enforce retention, and a shutdown that gives the
+// listeners fifteen seconds and waits for the rest.
 //
 // `mailserver serve` is a thin caller of Run. Another binary that must run
 // exactly the same server calls Run too, and adds what is its own through
 // Options: routes beside the core's (Extension), which can never take a
-// request a core route answers; for a binary whose people sign in through
-// such a route (service.SignInExternal), the switch that turns the core's
-// passwords and invitations off (ExternalSignInOnly); and, for an edition
-// that does not offer team workspaces yet, the one that withholds them
-// (TeamsWithheld). Nothing else of
+// request a core route answers, with the background work an extension asks
+// for (Deps.Go), awaited before the database closes; for a binary whose
+// people sign in through such a route (service.SignInExternal), the switch
+// that turns the core's passwords and invitations off (ExternalSignInOnly);
+// and, for an edition that does not offer team workspaces yet, the one that
+// withholds them (TeamsWithheld). Nothing else of
 // the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
 // implementation of it.
@@ -88,7 +90,9 @@ type Options struct {
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
-// hangs up, and then shuts it down within fifteen seconds.
+// hangs up, and then shuts it down: its listeners within fifteen seconds,
+// then, each waited for, the background work of its extensions, the sync
+// engine, and the database.
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
 	if opts.MCPStdio {
 		// Standard output is the MCP client's: one stray line there and the
@@ -349,11 +353,18 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 
 	// What extensions add is collected now and mounted with the core's
 	// routes, from none of which it may take a request. Their context ends
-	// when the daemon stops, whatever stops it.
+	// when the daemon stops, whatever stops it. The background work they ask
+	// for starts once every route is mounted, and is waited for, without a
+	// bound, before the engine, the registry and the database close.
 	extensionCtx, stopExtensions := context.WithCancel(ctx)
-	defer stopExtensions()
+	extensions := newExtensionRun(sealer, logger)
+	defer func() {
+		stopExtensions()
+		extensions.wait()
+	}()
 	extra, err := collect(extensionCtx, opts.Extensions, Deps{
 		Config: cfg, Service: svc, Log: logger, Limits: limits, SignInLimits: signInLimits,
+		Metrics: metrics.Registry(), run: extensions,
 	})
 	if err != nil {
 		return err
@@ -362,6 +373,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	if err != nil {
 		return err
 	}
+	extensions.start(extensionCtx)
 
 	srv := &http.Server{
 		Addr:    cfg.HTTPAddr,

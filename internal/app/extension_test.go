@@ -84,36 +84,67 @@ func runDaemon(t *testing.T, cfg config.Config, opts Options) string {
 // and above.
 func runDaemonLogged(t *testing.T, cfg config.Config, opts Options) (string, *lockedBuffer) {
 	t.Helper()
-	logs := &lockedBuffer{}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- Run(ctx, cfg, obs.NewLoggerTo(logs, "info", "text"), opts) }()
+	d := startDaemon(t, cfg, opts)
 	t.Cleanup(func() {
-		cancel()
-		if err := <-done; err != nil {
+		d.stop()
+		if err := d.wait(); err != nil {
 			t.Errorf("Run: %v", err)
 		}
 	})
-	base := "http://" + cfg.HTTPAddr
+	return d.base, d.logs
+}
+
+// daemon is a daemon a test started: its base URL and what it logs at info
+// and above.
+type daemon struct {
+	base string
+	logs *lockedBuffer
+	// stop ends the daemon's context.
+	stop context.CancelFunc
+	// returned is closed once Run has returned, err.
+	returned chan struct{}
+	err      error
+}
+
+// wait waits for Run to return, and returns what it returned.
+func (d *daemon) wait() error {
+	<-d.returned
+	return d.err
+}
+
+// startDaemon runs the daemon with opts until the test stops it, or ends,
+// and returns once it answers.
+func startDaemon(t *testing.T, cfg config.Config, opts Options) *daemon {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	d := &daemon{base: "http://" + cfg.HTTPAddr, logs: &lockedBuffer{}, stop: cancel, returned: make(chan struct{})}
+	go func() {
+		defer close(d.returned)
+		d.err = Run(ctx, cfg, obs.NewLoggerTo(d.logs, "info", "text"), opts)
+	}()
+	t.Cleanup(func() {
+		d.stop()
+		<-d.returned
+	})
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/healthz", nil)
+		req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, d.base+"/v1/healthz", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
-				return base, logs
+				return d
 			}
 		}
 		select {
-		case err := <-done:
-			t.Fatalf("Run returned before answering: %v\n%s", err, logs)
+		case <-d.returned:
+			t.Fatalf("Run returned before answering: %v\n%s", d.err, d.logs)
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the daemon did not answer within 10s:\n%s", logs)
+			t.Fatalf("the daemon did not answer within 10s:\n%s", d.logs)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -171,7 +202,7 @@ func TestAnExtensionRouteIsServedBesideTheCoreRoutesWhichAnswerAsBefore(t *testi
 
 	g := <-seen
 	got, hookCtx := g.deps, g.ctx
-	if got.Service == nil || got.Log == nil || got.Limits == nil || got.SignInLimits == nil ||
+	if got.Service == nil || got.Log == nil || got.Limits == nil || got.SignInLimits == nil || got.Metrics == nil ||
 		got.Config.DataDir != cfg.DataDir || got.Config.HTTPAddr != cfg.HTTPAddr {
 		t.Errorf("the extension was given %+v", got)
 	}
