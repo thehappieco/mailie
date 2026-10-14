@@ -48,6 +48,15 @@ func (f *fixture) notices(t *testing.T, p service.Principal) []service.PersonNot
 	return got
 }
 
+// noticeKinds lists the kinds of a person's notices, in their order.
+func noticeKinds(notices []service.PersonNotice) []string {
+	out := []string{}
+	for _, n := range notices {
+		out = append(out, n.Kind)
+	}
+	return out
+}
+
 // stream opens p's event stream, for its notices.
 func (f *fixture) stream(t *testing.T, p service.Principal) *service.Stream {
 	t.Helper()
@@ -231,7 +240,21 @@ func TestRecoveringIsAnOwnersWithinThirtyDays(t *testing.T) {
 	ctx := t.Context()
 	f.connect(t, tm.shared)
 	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	// Ana turned its sync on and off before removing it: Bea, who reads it,
+	// was told both times.
+	on, off := true, false
+	if _, err := f.svc.SetMailboxSync(ctx, tm.ana, tm.shared,
+		service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, service.MailboxSyncRequest{Enabled: &off}); err != nil {
+		t.Fatal(err)
+	}
 	f.removed(t, tm.ana, tm.shared)
+	if got := noticeKinds(f.notices(t, tm.bea)); !slices.Equal(got, []string{"removed", "sync_off"}) &&
+		!slices.Equal(got, []string{"sync_off", "removed"}) {
+		t.Fatalf("Bea's notices before the recovery: %v", got)
+	}
 	created, err := f.svc.CreateWorkspaceKey(ctx, tm.ana, tm.id, keyRequest("assistant", "read"))
 	if err != nil {
 		t.Fatal(err)
@@ -283,6 +306,11 @@ func TestRecoveringIsAnOwnersWithinThirtyDays(t *testing.T) {
 	}
 	if _, err := f.svc.GetAccount(ctx, tm.bea, tm.shared); err != nil {
 		t.Errorf("Bea does not see the recovered mailbox: %v", err)
+	}
+	// The recovery withdraws the notice of the removal it undoes, and only
+	// that one: the sync turned off before stays said.
+	if got := noticeKinds(f.notices(t, tm.bea)); !slices.Equal(got, []string{"sync_off"}) {
+		t.Errorf("Bea's notices after the recovery: %v, want the sync turned off alone", got)
 	}
 	_, err = f.svc.RecoverAccount(ctx, tm.ana, tm.shared)
 	wantCode(t, "recovering it twice", err, service.CodeNotFound)
