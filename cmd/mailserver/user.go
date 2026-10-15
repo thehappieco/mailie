@@ -557,9 +557,10 @@ var googleRevokeURL = account.GoogleRevokeEndpoint
 //
 // Whoever can open the database file and hold its lock administers the
 // instance already, so the use case runs as an unrestricted instance admin
-// key. It is the very method the REST route calls, lookup, rules and
-// transaction included: --bootstrap must not be a second implementation that
-// could drift from the first.
+// key, which no key authenticated: it has no prefix, and what it does is
+// recorded as the command line's ("cli"). It is the very method the REST
+// route calls, lookup, rules and transaction included: --bootstrap must not
+// be a second implementation that could drift from the first.
 func asOperator(ctx context.Context, cfg config.Config, run func(*service.Service, service.Principal) error) error {
 	sealer, err := app.NewSealer(ctx, cfg)
 	if err != nil {

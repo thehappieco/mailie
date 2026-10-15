@@ -214,6 +214,62 @@ func TestClosingTheLastReaderOfATeamMailboxWithBootstrapNeedsForce(t *testing.T)
 	}
 }
 
+func TestAForcedClosureWithBootstrapJournalsTheCommandLineAsItsActor(t *testing.T) {
+	// Ana alone reads the team's mailbox, which Bea owns beside her: closing
+	// her with --force strands it, journaled as the command line's doing.
+	for name, run := range map[string]func(context.Context, config.Config, []string) error{
+		"disabled": userDisable, "deleted": userDelete,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := localConfig(t)
+			db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+			authtest.NewUser(t, db, "owner@example.com", auth.RoleOwner)
+			ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+			bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+			ws := workspace.NewRepository(db, nil)
+			team, err := ws.CreateTeam(t.Context(), "Support", ana.ID, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+				return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleOwner, time.Now())
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := account.NewRepository(db, nil).Create(t.Context(), account.Account{
+				ID: "acc_00000000000000a1", Email: "support@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
+				IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
+				LoginUser: "support", WorkspaceID: team.ID, State: account.StateActive,
+			}, ana.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := run(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap", "--force"}); err != nil {
+				t.Fatalf("user %s --bootstrap --force: %v", name, err)
+			}
+			rows, err := db.Reader().QueryContext(t.Context(), `SELECT kind || ' ' || cause || ' ' || actor
+				FROM mailbox_events WHERE account_id = 'acc_00000000000000a1' ORDER BY seq`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = rows.Close() }()
+			var journal []string
+			for rows.Next() {
+				var entry string
+				if err := rows.Scan(&entry); err != nil {
+					t.Fatal(err)
+				}
+				journal = append(journal, entry)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if want := "stranded " + name + " cli"; len(journal) != 1 || journal[0] != want {
+				t.Errorf("the journal holds %q, want %q", journal, want)
+			}
+		})
+	}
+}
+
 func TestClosingTheLastReaderOfATeamThatOutlivesThemWithBootstrapNeedsForce(t *testing.T) {
 	// Bea is the team's other member, her membership disabled: the team
 	// outlives Ana, and nobody could read its mailbox again.

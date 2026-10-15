@@ -544,3 +544,20 @@ func TestKeyChecksAreBoundedAndAFullQueueIsRefusedAtOnce(t *testing.T) {
 		t.Fatalf("at most %d checks ran at once, want exactly %d", got, running)
 	}
 }
+
+func TestAnAuditColumnNamesEachCallerByWhatAuthenticatedThem(t *testing.T) {
+	for _, c := range []struct {
+		who  string
+		p    auth.Principal
+		want string
+	}{
+		{"a person", auth.Principal{Kind: auth.KindSession, UserID: "usr_0000000000000001"}, "usr_0000000000000001"},
+		{"a key", auth.Principal{Kind: auth.KindKey, KeyPrefix: "abcd0001", WorkspaceID: workspace.OperatorID}, "key:abcd0001"},
+		// The command line acting on the database itself: no key, no prefix.
+		{"the command line", auth.Principal{Kind: auth.KindKey, Scope: auth.ScopeAdmin, WorkspaceID: workspace.OperatorID}, "cli"},
+	} {
+		if got := c.p.Actor(); got != c.want {
+			t.Errorf("%s is recorded as %q, want %q", c.who, got, c.want)
+		}
+	}
+}

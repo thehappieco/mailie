@@ -96,10 +96,15 @@ func (p Principal) IsInstance() bool { return !p.IsSession() && p.WorkspaceID ==
 func (p Principal) IsWorkspaceKey() bool { return !p.IsSession() && !p.IsInstance() }
 
 // Actor names the caller for audit columns: "usr_…" for a person, "key:<prefix>"
-// for a key.
+// for a key, and "cli" for the command line acting on the database itself
+// (`--bootstrap`), the one caller with no prefix: every key presented has
+// one.
 func (p Principal) Actor() string {
-	if p.IsSession() {
+	switch {
+	case p.IsSession():
 		return p.UserID
+	case p.KeyPrefix == "":
+		return "cli"
 	}
 	return "key:" + p.KeyPrefix
 }

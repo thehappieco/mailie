@@ -932,9 +932,9 @@ of that time.
   `support@example.org`) is no longer kept in the journal or shown in a notice written from now
   on, which then names the mailbox by its masked address (`s…@example.org`).
 - **Forced closures are journaled.** Disabling, deleting or resetting a person with `--force`, where
-  it leaves a team mailbox with nobody who reads it, records that mailbox as stranded; nobody
-  is told in the console, and deleting the person forgets them there too, as it forgets that they
-  acted.
+  it leaves a team mailbox with nobody who reads it, records that mailbox as stranded, by whoever
+  closed them (`cli` for `mailserver user disable|delete --bootstrap`); nobody is told in the
+  console, and deleting the person forgets them there too, as it forgets that they acted.
 - **A Google mailbox deleted for good has its grant revoked at Google.** When the sweep deletes a
   removed Gmail mailbox after its 30 days, when its owners or the operator delete it before, and
   when the person it goes with is deleted (over the API or with `mailserver user delete
