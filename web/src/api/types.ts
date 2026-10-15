@@ -562,7 +562,12 @@ export interface Member {
    */
   person_suspended?: boolean
   last_owner: boolean
-  /** The team's mailboxes this person alone can read. Absent from a daemon older than the rule. */
+  /**
+   * The team's mailboxes this person alone can read, and any removed one they
+   * alone would read once recovered, until it is deleted for good: by its id
+   * alone, not in the person's own list (the team's owners find it among its
+   * removed mailboxes). Absent from a daemon older than the rule.
+   */
   last_reader_of?: string[]
   /**
    * What a grant to the person is bound by and sealed to: their seal id, and

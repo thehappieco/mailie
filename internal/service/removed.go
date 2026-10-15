@@ -24,7 +24,10 @@ import (
 //   - a team mailbox: an active owner of the team, never an admin or a
 //     member, who are told it does not exist; nothing is recovered in a
 //     closed team, nor while nobody who could read it is left (someone
-//     suspended on the server, who would read it once resumed, counts);
+//     suspended on the server, who would read it once resumed, counts).
+//     Its id alone shows to the team's admins, in the last_reader_of of a
+//     member it keeps protecting (ListMembers), so that the protection is
+//     said before it refuses a change of their people;
 //   - an operator mailbox: the operator, an unrestricted instance admin key.
 //
 // The operator also lists and deletes for good any workspace's removed

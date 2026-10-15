@@ -33,7 +33,10 @@ type Blocks struct {
 	// copied from theirs, and nobody has confirmed for the team since, that
 	// someone else reads: closing them stops each and deletes its index for
 	// that reader (store.StopBoundTx), until an owner or an admin of the
-	// team confirms its sync.
+	// team confirms its sync. A removed one counts, until it is deleted for
+	// good, when someone else would read it once recovered
+	// (store.KeptReaderSQL): closing them would delete the index it keeps
+	// for that recovery.
 	BoundTo []string
 }
 
@@ -81,7 +84,7 @@ func blocksOn(ctx context.Context, tx querier, userID string) (Blocks, error) {
 	b.BoundTo, err = listIDs(ctx, tx, `SELECT a.id FROM accounts a
 		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
 		 WHERE a.sync_enabled_via = 'migration' AND a.sync_enabled_by = ?1
-		   AND EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = a.id AND o.user_id <> ?1 AND `+store.ReaderSQL("o")+`)
+		   AND EXISTS (SELECT 1 FROM mailbox_access o WHERE o.account_id = a.id AND o.user_id <> ?1 AND `+protectedSQL("o")+`)
 		 ORDER BY a.created_at, a.rowid`, userID)
 	if err != nil {
 		return Blocks{}, err

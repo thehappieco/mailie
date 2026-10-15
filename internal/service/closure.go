@@ -476,9 +476,9 @@ func fromClosure(err error, what string) error {
 	switch {
 	case errors.As(err, &blocked):
 		// The ids, so whoever is closing the account can see to each first:
-		// make another member an owner, give another member read (on a
-		// removed mailbox, once it is recovered), delete a removed one for
-		// good, or insist.
+		// make another member an owner, give another member read or confirm
+		// the team's sync (on a removed mailbox, once it is recovered),
+		// delete a removed one for good, or insist.
 		var parts []string
 		if len(blocked.LastOwnerOf) > 0 {
 			parts = append(parts, "the last active owner of the teams "+strings.Join(blocked.LastOwnerOf, ", "))
@@ -489,12 +489,13 @@ func fromClosure(err error, what string) error {
 		}
 		if len(blocked.BoundTo) > 0 {
 			parts = append(parts, "the person under whose own consent the team mailboxes "+strings.Join(blocked.BoundTo, ", ")+
-				" still sync since the upgrade, which closing them stops, deleting their index for everyone who reads them")
+				" still sync since the upgrade, which closing them stops, deleting their index for everyone who reads them"+
+				" (a removed one counts until it is deleted for good)")
 		}
 		return E(CodeConflict, "that person is "+strings.Join(parts, ", and ")+
-			"; make another member an owner, give another member read (an owner recovers a removed mailbox first, "+
-			"or deletes it for good), or have an owner or an admin of the team "+
-			"turn the mailbox's sync on for the team, first, or pass force to do it anyway", err)
+			"; make another member an owner, give another member read, or have an owner or an admin of the team "+
+			"turn the mailbox's sync on for the team, first (an owner recovers a removed mailbox first, "+
+			"or deletes it for good), or pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people "+
 			"from the console. Pass force to do it anyway", err)

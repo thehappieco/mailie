@@ -770,7 +770,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   server works those marks out across the team, so the members are read again whole after any
   change of role, status or membership, and whenever one of the team's mailboxes leaves or joins
   the person's list, and so are the pending invitations when they were read, since any such change
-  ends the ones its person made; the person's own role follows their row as listed. Disabling and removing ask
+  ends the ones its person made; the person's own role follows their row as listed. The members
+  are read again too when one of the team's removed mailboxes is deleted for good from this
+  console, which ends the protection it kept. Disabling and removing ask
   first, saying what goes (the person's grants in the team, its invitations still waiting for
   them, the invitations they made there). Owners and admins rename the team and invite (an admin,
   members only): the link is shown once, in a dialog that only its own buttons close, copied on

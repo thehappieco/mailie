@@ -415,11 +415,14 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   active member holding `read` and, on a mailbox that has a key, a grant at its current epoch
   (`store.KeptReaderSQL`, the one rule on it as if it were live) — counts in every protection as a
   reader of a live mailbox does ([Protections](#protections)): the last of them keeps `read`, is not
-  disabled or removed from the team, does not leave, is not closed or reset without `force`, and a
-  change no protection refuses (a forced closure or reset, an external directory) strands it
-  (below), so that a recovery within its 30 days brings back a mailbox someone can still read. It
-  still reaches nobody meanwhile: protected, they read nothing of it. Deleting it for good ends the
-  protection with it, and with its grants.
+  disabled or removed from the team, does not leave, is not closed without `force` (nor reset
+  without it, on a mailbox that has a key), the linker a migrated consent is bound to is not closed
+  without `force` while one of them would read it, and a change no protection refuses (a forced
+  closure or reset, an external directory) strands it (below), so that a recovery within its 30
+  days brings back a mailbox someone can still read. It still reaches nobody meanwhile: protected,
+  they read nothing of it. The team's admins, who change its people, see its id in that member's
+  `last_reader_of`, and nothing else of it. Deleting it for good ends the protection with it, and
+  with its grants.
 - **What goes at once**, and never comes back: what keys held on it — an instance key's
   restriction to it (one restricted to it alone is revoked, `restriction_emptied`, since a key
   restricted to nothing would reach every operator mailbox) and what a workspace key held — and the
@@ -463,7 +466,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   them or by the sweep, ends the protection the mailbox kept.
 - **Its sync, removed:** a removed team mailbox's owners turn its sync off, which deletes the index
   it kept; nobody turns it on. Withdrawing a person's own sync consent deletes the index of their
-  removed mailboxes too.
+  removed mailboxes too, and so does a team consent migration 0011 bound to its linker when it
+  stops with them (closing them is refused without `force` while someone else would read the
+  removed mailbox once recovered, as for a live one).
 - **Closing a person** deletes at once, for good, the removed mailboxes that go with them — of
   their personal workspace and of the local teams they were alone in — with their journal.
 - **Its grant at the provider, revoked.** A Google mailbox deleted for good — by the sweep, by its
@@ -706,7 +711,9 @@ team that outlives them, a removed one they alone would read once recovered incl
 deleted for good — every team but a local one whose only member they are: a team another
 member remains in, whatever their status, or a team whose source is not local, which never goes
 with anyone here — since nobody could read the mailbox again; or the linker a migrated team consent
-is still bound to while someone else reads that mailbox. A team whose source is not local has no
+is still bound to while someone else reads that mailbox, or would read it once recovered while it is
+removed (closing the linker stops the consent and deletes the index the removed mailbox keeps for a
+recovery). A team whose source is not local has no
 last owner here: its owners are decided where it comes from, so no count of its members here marks
 one (`last_owner`) or holds back closing one. The instance's own last-owner rule stays as
 it is. With `force`, a team can be left without an owner (the operator assigns one with `mailserver
@@ -1894,6 +1901,8 @@ Test names state the guarantee. At least:
   `TestThePurgeEndsARemovedMailboxsProtection` (the repository and the service, by its owners and
   by the sweep), `TestARemovedMailboxStillReachesNobody`,
   `TestClosingTheLastKeptReaderOfARemovedTeamMailboxNeedsForceAndStrandsIt`,
+  `TestClosingTheLinkerOfARemovedBoundTeamMailboxNeedsForce`,
+  `TestATeamsAdminSeesOnlyTheIdOfARemovedMailboxThatProtectsSomeone`,
   `TestClosingASuspendedPersonIsAskedAboutARemovedMailboxTheyWouldRead`,
   `TestAResetOfARemovedTeamMailboxsLastKeptReaderNeedsForceUntilItsPurge`,
   `TestEndingTheMembershipOfARemovedMailboxsLastKeptReaderIsHeldOrStrandsIt`;
@@ -2165,13 +2174,12 @@ Test names state the guarantee. At least:
 - Following an external directory, what it reads and asks: the pause (`internal/store`),
   `TestAPauseIsEmptyExactlyWhenTheMailboxMaySync` and `TestThePauseTableIsOneOrderForEveryCause`;
   the snapshot (`internal/workspace`), `TestASnapshotListsLiveAndRemovedMailboxesWithTheirState`,
-  `TestASnapshotsPeopleFollowTheReaderRule`, `TestARemovedMailboxIsReportedAsLiveByDefaultInASnapshot`,
-  `TestARemovedMailboxProtectsNobodyAndHoldsNoKeyInASnapshot` (the switch's two ways),
+  `TestASnapshotsPeopleFollowTheReaderRule`, `TestARemovedMailboxIsReportedAsLiveInASnapshotUntilItsPurge`,
   `TestASuspendedHolderHoldsTheKeyButNeitherReadsNorWaitsNorIsProtected`,
   `TestASnapshotReadsIgnoreTheTeamsClosure`, `TestASnapshotNeverHoldsAnAddress`,
   `TestASnapshotRefusesMoreThanItsLimits` and `TestASnapshotIsOneConsistentRead`; the service,
   `TestAnAccessSnapshotIsOnlyOfAWorkspaceFromTheDirectorysSource`,
-  `TestOneSwitchSaysWhatASnapshotReportsOfARemovedMailbox`,
+  `TestASnapshotReportsARemovedMailboxAsLiveUntilItsPurge`,
   `TestTheJournalIsReadPerWorkspaceFromACursor`, `TestTheJournalNamesAKeysCreatorAsItsActor`,
   `TestTheJournalsReadersAreWhoReadTheMailboxThen` and
   `TestAnExtensionListsTheFollowedWorkspacesAndWhichChanged`; freshness,
@@ -2188,7 +2196,8 @@ Test names state the guarantee. At least:
   `TestAFailedRevocationNeverStopsTheDeletionNorLogsTheToken`, with
   `TestForgettingAPersonRevokesTheGoogleGrantsOfTheMailboxesThatGoWithThem` (`internal/service`);
   the daemon (`internal/app`), `TestAnExtensionsStateSurvivesARestartAndRollsBackWithTheDatabase`,
-  `TestAnExtensionsStateIsTheDaemonsAndNamedWithinBounds` and
+  `TestAnExtensionsStateIsTheDaemonsAndNamedWithinBounds`,
+  `TestADaemonsSnapshotReportsARemovedMailboxAsLiveUntilItsPurge` and
   `TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotReplace`; the console
   (vitest), `a failure keeps the server’s Retry-After` and `a workspace that vanished under a live
   session falls back to the personal one`.

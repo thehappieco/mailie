@@ -276,10 +276,10 @@ function isAccessChange(value: unknown): value is AccessChange {
 
 /**
  * Reads the list again, storage if it was read, what was read of the team
- * shown (a mailbox removed leaves its directory, and its last reader's
- * protection may go), the workspace's removed mailboxes and the person's
- * notices if they were read (a mailbox removed or recovered elsewhere), once
- * however many access changes arrive together.
+ * shown (a mailbox removed leaves its directory, and keeps protecting its
+ * last reader until it is deleted for good), the workspace's removed
+ * mailboxes and the person's notices if they were read (a mailbox removed or
+ * recovered elsewhere), once however many access changes arrive together.
  */
 function scheduleAccess(): void {
   if (accessTimer) return

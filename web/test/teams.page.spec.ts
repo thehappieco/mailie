@@ -26,7 +26,7 @@ import WorkspaceSwitcher from '../src/components/WorkspaceSwitcher.vue'
 import OpenConsole from '../src/open/OpenConsole.vue'
 import OpenMembers from '../src/open/OpenMembers.vue'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
-import { accounts, loadAccounts, loadProviders } from '../src/state/accounts'
+import { accounts, loadAccounts, loadProviders, purgeRemoved } from '../src/state/accounts'
 import { holdInvitation, invitation } from '../src/state/invitation'
 import { session, adoptSession, signOut } from '../src/state/session'
 import { loadConsent } from '../src/state/sync'
@@ -648,6 +648,34 @@ describe('the people of a team', () => {
     ])
     expect(sent('GET', `/v1/workspaces/${TEAM}/removed-mailboxes`)).toEqual([])
     expect(words(row(DAN))).toContain('The only person who can read 1 of its mailboxes: give someone else Read before disabling or removing them. A removed mailbox keeps them until an owner recovers it and gives someone else Read, or deletes it for good.')
+  })
+
+  it('frees someone a removed mailbox kept once an owner deletes it for good', async () => {
+    // Dan alone would read Old, removed and kept; deleted for good, it protects him no more, and his row says so.
+    const DAN = 'usr_00000000000000d4'
+    const old: RemovedMailbox = { id: 'acc_old', workspace_id: TEAM, email: 'old@example.test', provider: 'imap', removed_at: 1_790_000_000, purge_after: 1_792_592_000, index_kept: true, readers: 1, no_reader: false }
+    let kept = [old]
+    await membersOf('owner', ({ path, method, body }) => {
+      if (path === `/v1/workspaces/${TEAM}/removed-mailboxes` && method === 'GET') return json(kept)
+      if (path === `/v1/accounts/${old.id}/purge` && method === 'POST' && (body as { confirm?: string }).confirm === old.id) {
+        kept = []
+        members = members.map(item => item.user_id === DAN ? { ...item, last_reader_of: [] } : item)
+        return new Response(null, { status: 204 })
+      }
+      return failure('not_found', 404)
+    }, undefined, [member(DAN, { name: 'Dan Reis', last_reader_of: [old.id] })])
+    await vi.waitFor(() => expect(sent('GET', `/v1/workspaces/${TEAM}/removed-mailboxes`)).toHaveLength(1))
+    await flush()
+    expect(words(row(DAN))).not.toMatch(/Remove…|Disable…/)
+    expect(words(row(DAN))).toContain('old@example.test (removed)')
+    const read = sent('GET', `/v1/workspaces/${TEAM}/members`).length
+
+    expect(await purgeRemoved(old.id)).toBe(true)
+    await vi.waitFor(() => expect(sent('GET', `/v1/workspaces/${TEAM}/members`)).toHaveLength(read + 1))
+    await flush()
+    expect(words(row(DAN))).toContain('Remove…')
+    expect(words(row(DAN))).toContain('Disable…')
+    expect(words(row(DAN))).not.toContain('A removed mailbox')
   })
 
   it('says the last reader’s refusal in the console’s words when the server finds one the page did not know of', async () => {

@@ -820,3 +820,88 @@ func TestARemovedMailboxStillReachesNobody(t *testing.T) {
 		}
 	}
 }
+
+func TestClosingTheLinkerOfARemovedBoundTeamMailboxNeedsForce(t *testing.T) {
+	// The team's mailbox Ana linked still syncs under her own consent,
+	// copied by the upgrade, and Bea reads it too. Removed, it keeps its
+	// index for a recovery, which closing Ana would delete: it is asked
+	// about as a live one is, until it is deleted for good.
+	m := newMailFixture(t)
+	tm := newSupportTeam(t, m.fixture)
+	shared, box := m.ownedBoxIn(t, tm.ana, tm.id, "support@mail.example", providertest.FakeOptions{Caps: providertest.GmailCaps()})
+	box.Deliver("INBOX", message("a", "Refund for order 4471"))
+	m.index(t, shared, box)
+	tm.grant(t, shared, workspace.Flags{Read: true})
+	m.person(t, "keeper@example.com", auth.RoleOwner)
+	ctx := t.Context()
+	if _, err := m.svc.SetMember(ctx, tm.ana, tm.id, tm.bea.UserID, service.MemberRequest{Role: ptr("owner")}); err != nil {
+		t.Fatal(err)
+	}
+	migrated(t, m.fixture, shared, tm.ana.UserID)
+	m.connect(t, shared)
+	m.removed(t, tm.bea, shared)
+	kept := indexed(t, m.fixture, shared)
+	if kept == 0 {
+		t.Fatal("the removed mailbox kept no index to begin with")
+	}
+
+	for _, how := range []string{"disabling", "deleting"} {
+		var err error
+		if how == "disabling" {
+			_, err = m.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com"})
+		} else {
+			_, err = m.svc.DeleteUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com"})
+		}
+		wantCode(t, how+" Ana without force", err, service.CodeConflict)
+		if msg := service.MessageOf(err); !strings.Contains(msg, shared) || !strings.Contains(msg, "consent") {
+			t.Errorf("%s Ana is refused with %q, want the bound mailbox named", how, msg)
+		}
+	}
+	if n := indexed(t, m.fixture, shared); n != kept {
+		t.Errorf("a refused closure left %d of the %d messages the removed mailbox kept", n, kept)
+	}
+	if n := m.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_via = 'migration'
+		AND sync_enabled_by = ?`, shared, tm.ana.UserID); n != 1 {
+		t.Error("a refused closure stopped the removed mailbox's consent")
+	}
+
+	disabled, err := m.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com", Force: true})
+	if err != nil || !slices.Equal(disabled.TeamSyncsStopped, []string{shared}) {
+		t.Fatalf("disabling Ana with force: %+v, %v", disabled, err)
+	}
+	if n := indexed(t, m.fixture, shared); n != 0 {
+		t.Errorf("the removed mailbox keeps %d messages once its consent stopped with Ana", n)
+	}
+}
+
+func TestATeamsAdminSeesOnlyTheIdOfARemovedMailboxThatProtectsSomeone(t *testing.T) {
+	// Carol, an admin, disables and removes the team's members, so its
+	// listing says beforehand that Bea is the last who would read the
+	// removed mailbox, by its id alone: nothing else of it reaches her.
+	f := newFixture(t)
+	tm := lastKeptReader(t, f)
+	ctx := t.Context()
+
+	members, err := f.svc.ListMembers(ctx, tm.carol, tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		want := []string{}
+		if m.UserID == tm.bea.UserID {
+			want = []string{tm.shared}
+		}
+		if !slices.Equal(m.LastReaderOf, want) {
+			t.Errorf("Carol is told %s is the last reader of %v, want %v", m.Email, m.LastReaderOf, want)
+		}
+	}
+	_, err = f.svc.GetAccount(ctx, tm.carol, tm.shared)
+	wantCode(t, "Carol reading the removed mailbox's card", err, service.CodeNotFound)
+	_, err = f.svc.ListRemovedMailboxes(ctx, tm.carol, tm.id)
+	wantCode(t, "Carol listing the team's removed mailboxes", err, service.CodeNotAuthorized)
+	_, err = f.svc.RecoverAccount(ctx, tm.carol, tm.shared)
+	wantCode(t, "Carol recovering it", err, service.CodeNotFound)
+	if slices.Contains(ids(t, f, tm.carol), tm.shared) {
+		t.Error("Carol lists the removed mailbox")
+	}
+}

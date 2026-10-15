@@ -25,7 +25,7 @@ import { ApiError } from '../api/http'
 import type { GrantFlags, MailboxAccess, Member, MemberChange, TeamInvite, WorkspaceRole } from '../api/types'
 import { edition } from '../edition'
 import { flagsOf, grantChange } from '../ui/access'
-import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount } from './accounts'
+import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount, removed } from './accounts'
 import { failure, type Failure, type Operation } from './failure'
 import { requireAccountKeyHere, sealFromOwn } from './grants'
 import { authorized, identity, session } from './session'
@@ -139,11 +139,21 @@ export function refreshTeam(): void {
 }
 
 // The team's mailboxes in the person's own list came or went: one linked
-// (whoever linked it reads it, and is its last reader), or removed (it
-// leaves the directory, and its last reader's protection goes). Not the
-// first read of the list, nor another workspace's.
+// (whoever linked it reads it, and is its last reader), removed (it leaves
+// the directory, and keeps protecting its last reader until it is deleted
+// for good) or recovered. Not the first read of the list, nor another
+// workspace's.
 watch(() => accounts.loaded && team.workspace && accounts.workspace === team.workspace ? accounts.list.map(item => item.id).sort().join(' ') : null, (now, before) => {
   if (now !== null && before !== null && now !== before) refreshTeam()
+})
+
+// A removed mailbox of the team left its removed mailboxes without coming
+// back to the person's own list: deleted for good, which ends the protection
+// it kept for its last reader, who the people of the team no longer mark.
+// A recovery comes back to the list, which the watch above follows.
+watch(() => removed.loaded && team.workspace && removed.workspace === team.workspace ? removed.list.map(item => item.id) : null, (now, before) => {
+  if (!now || !before) return
+  if (before.some(id => !now.includes(id) && !accounts.list.some(item => item.id === id))) refreshTeam()
 })
 
 /** A member of the team shown, by id, as last listed. */

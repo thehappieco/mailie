@@ -416,8 +416,9 @@ and holds a grant at its current epoch — booleans, never a grant, a key, a sea
 and, in a team, the people it cannot lose, each the only one who reads it. The journal of what was
 done to those mailboxes carries the same name and masked address, who did it (a person's id, a key's
 prefix and its creator, or the server's own), why, the person a stranding lost, and who read the
-mailbox then. A removed mailbox is reported, by default, as it would be once recovered, until it is
-deleted for good. The directory decides who belongs; it learns nothing it could open.
+mailbox then. A removed mailbox is reported as it would be once recovered (its kept last readers
+protected, as they are in what the server refuses), until it is deleted for good. The directory
+decides who belongs; it learns nothing it could open.
 
 ### 5.11 Best effort in the page
 

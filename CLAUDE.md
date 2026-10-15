@@ -431,7 +431,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   recovered (`store.KeptReaderSQL` and the other `Kept` fragments, `workspace/reader.go`) counts in
   the last-reader protection, the refusals of closing a person and of a reset, and what a change
   strands, as a reader of a live one does; deleting it for good (the sweep, its owners, the
-  operator, a person's closure) ends that with its grants. Only its owners remove it — a personal mailbox's person, a team's active
+  operator, a person's closure) ends that with its grants. The one trace of it outside its own
+  paths is its id in a team member's `last_reader_of`, which the team's admins read too, so the
+  protection is said before it refuses: nothing else of it reaches them. Only its owners remove it — a personal mailbox's person, a team's active
   owners (an admin, only a link of their own that never connected), the operator for an operator
   mailbox — and they alone list, recover and delete it for good; the operator also lists and
   deletes any workspace's for good, and recovers no person's or team's. A recovery brings back the
@@ -465,12 +467,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   in the same transaction: a person's withdrawal only their personal mailboxes', a team's for every
   reader, telling each of them but whoever turned it off with a notice. A removed mailbox keeps its
   index for its 30 days, syncing nothing, and loses it when deleted for good, or at once when its
-  person withdraws or a removed team mailbox's owners turn it off. A recovered one syncs nothing,
+  person withdraws, a removed team mailbox's owners turn it off or the consent still bound to its
+  linker stops. A recovered one syncs nothing,
   whatever its consent says, until someone who may turns it on (`sync_held_at`): its person, a
   team's owners and admins at the current sync text, the operator. A team consent migration 0011
   copied from its linker (`sync_enabled_via = 'migration'`) stays bound to them until confirmed:
   their withdrawal, disable or deletion stops it and deletes its index, telling its other readers
-  (closing them is refused without force while someone else reads it); their suspension
+  (closing them is refused without force while someone else reads it, or would once it is
+  recovered); their suspension
   pauses it, as it pauses their personal mailboxes, index kept. A closed team's mailboxes sync
   nothing, their index and consent kept, until it reopens. A team mailbox
   nobody can read is never switched on. Closing a person without force is refused for the last
