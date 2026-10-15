@@ -17,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
@@ -111,6 +113,60 @@ func TestDeletingAPersonWithBootstrapRemovesThemAndTheirMailboxes(t *testing.T) 
 	}
 	if err := userDelete(t.Context(), cfg, []string{"--email", "owner@example.com", "--bootstrap", "--force"}); err != nil {
 		t.Errorf("deleting the last owner with --force: %v", err)
+	}
+}
+
+func TestDeletingAPersonWithBootstrapRevokesTheGoogleGrantsOfTheirMailboxes(t *testing.T) {
+	// The same deletion for good as over REST: Ana's Gmail mailbox goes with
+	// her, and its grant is revoked at Google once that commits.
+	var (
+		mu      sync.Mutex
+		revoked []string
+	)
+	google := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err == nil {
+			mu.Lock()
+			revoked = append(revoked, r.PostForm.Get("token"))
+			mu.Unlock()
+		}
+	}))
+	t.Cleanup(google.Close)
+	was := googleRevokeURL
+	googleRevokeURL = google.URL
+	t.Cleanup(func() { googleRevokeURL = was })
+
+	cfg := localConfig(t)
+	// The test's endpoint is on loopback.
+	cfg.AccountAllowPrivate = true
+	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	keyring, err := secrets.NewKeyring(cfg.Credentials.ActiveKeyID, cfg.Credentials.Keys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := account.NewRepository(db, keyring)
+	if _, err := repo.Create(t.Context(), account.Account{
+		ID: "acc_00000000000000b1", Email: "ana@gmail.com", Provider: provider.KindGmail, AuthKind: "oauth2",
+		IMAPHost: "imap.gmail.com", IMAPPort: 993, SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "implicit",
+		LoginUser: "ana@gmail.com",
+	}, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SaveGrant(t.Context(), "acc_00000000000000b1", &oauth2.Token{AccessToken: "a",
+		RefreshToken: "refresh-ana", Expiry: time.Now().Add(time.Hour)}, account.ClientInstalled); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := userDelete(t.Context(), cfg, []string{"--email", "ana@example.com", "--bootstrap"}); err != nil {
+		t.Fatalf("user delete --bootstrap: %v", err)
+	}
+	if _, err := repo.Get(t.Context(), "acc_00000000000000b1"); !errors.Is(err, account.ErrNotFound) {
+		t.Errorf("her mailbox is still there: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(revoked) != 1 || revoked[0] != "refresh-ana" {
+		t.Errorf("revoked %q, want her mailbox's grant", revoked)
 	}
 }
 

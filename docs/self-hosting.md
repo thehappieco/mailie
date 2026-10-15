@@ -937,7 +937,8 @@ of that time.
   acted.
 - **A Google mailbox deleted for good has its grant revoked at Google.** When the sweep deletes a
   removed Gmail mailbox after its 30 days, when its owners or the operator delete it before, and
-  when the person it goes with is deleted, the daemon sends its refresh token to Google's
+  when the person it goes with is deleted (over the API or with `mailserver user delete
+  --bootstrap`, which needs the same egress), its refresh token is sent to Google's
   revocation endpoint (`https://oauth2.googleapis.com/revoke`) once the deletion has committed, so
   the grant no longer appears among the person's connected apps. It is best effort: a failure is
   logged (without the token) and never stops the deletion; a server whose egress cannot reach that

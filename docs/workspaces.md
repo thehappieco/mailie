@@ -458,7 +458,8 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 - **Its grant at the provider, revoked.** A Google mailbox deleted for good — by the sweep, by its
   owners or the operator before, or with the person it goes with, deleted here or forgotten by a
   directory — has its grant revoked at Google's revocation endpoint (RFC 7009, the refresh token;
-  `account.GoogleRevokeEndpoint`, which the daemon sets and nothing else does). The token is opened
+  `account.GoogleRevokeEndpoint`, which the daemon sets, and `mailserver user delete --bootstrap`,
+  which deletes a person through the same method; nothing else does). The token is opened
   inside the transaction that deletes it and handed on in memory only; the revocation is sent once
   that commits, best effort, bounded (10 s), through a connection held to
   `MAIL_ACCOUNT_ALLOW_PRIVATE` as a mailbox's are, and logged without the token. A failure never

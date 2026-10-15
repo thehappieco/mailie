@@ -549,6 +549,10 @@ func readTerminalLine(r io.Reader) ([]byte, error) {
 	}
 }
 
+// googleRevokeURL is where a mailbox deleted for good has its Google grant
+// revoked: the daemon's endpoint, which a test points at its own.
+var googleRevokeURL = account.GoogleRevokeEndpoint
+
 // asOperator runs a use case straight against the database, as the operator.
 //
 // Whoever can open the database file and hold its lock administers the
@@ -567,8 +571,11 @@ func asOperator(ctx context.Context, cfg config.Config, run func(*service.Servic
 	}
 	defer release()
 
+	// A person deleted here takes their mailboxes with them for good, as
+	// over REST: their Google grants are revoked as the daemon revokes them.
 	registry := account.NewRegistry(ctx, account.NewRepository(db, sealer), account.RegistryOptions{
-		SpoolDir: cfg.SpoolDir(),
+		AllowPrivate: cfg.AccountAllowPrivate, GoogleRevokeURL: googleRevokeURL, SpoolDir: cfg.SpoolDir(),
+		Log: obs.LoggerFrom(ctx),
 	})
 	//nolint:contextcheck // shutdown makes its own bounded context
 	defer func() {
