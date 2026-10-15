@@ -1,15 +1,19 @@
 package app
 
 import (
+	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
+	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -162,5 +166,81 @@ func TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotRe
 	if len(said) != 1 || !strings.Contains(said[0], ana.ID) || !strings.Contains(said[0], personal) ||
 		!strings.Contains(said[0], "accounts=1") || strings.Contains(said[0], "ana@") {
 		t.Errorf("the start line under a directory's source: %q", said)
+	}
+}
+
+func TestAnEmbeddingBinaryChoosesWhatASnapshotSaysOfARemovedMailbox(t *testing.T) {
+	// A team a directory sends, whose one mailbox Bea alone reads, removed
+	// since: a daemon reports her as its reader, and protected, until it is
+	// deleted for good, unless the binary that embeds it says otherwise.
+	cfg := localConfig(t)
+	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	const team, box = "team-support", "acc_supp0000000001"
+	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
+		now := time.Unix(800, 0)
+		if _, _, _, err := workspace.MirrorWorkspaceTx(t.Context(), tx, workspace.Mirrored{
+			ID: team, Kind: workspace.KindTeam, Name: "Support", Version: 1,
+		}, now); err != nil {
+			return err
+		}
+		if _, err := workspace.MirrorMemberTx(t.Context(), tx, team, bea.ID, workspace.RoleMember, now); err != nil {
+			return err
+		}
+		for _, q := range []string{
+			`INSERT INTO accounts(id, workspace_id, email, provider, auth_kind, imap_host, imap_port, smtp_host,
+				smtp_port, smtp_tls, login_user, save_sent_copy, state, state_changed_at, created_at, updated_at)
+				VALUES ('` + box + `', '` + team + `', 'support@mail.example.com', 'imap', 'password',
+				'imap.example.com', 993, 'smtp.example.com', 587, 'starttls', 'support', 1, 'active', 800, 800, 800)`,
+			`INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, granted_by, created_at, updated_at)
+				VALUES ('` + box + `', '` + team + `', '` + bea.ID + `', 1, 'directory', 800, 800)`,
+			// Removed now: the sweep at start deletes for good only past
+			// the 30 days.
+			fmt.Sprintf(`UPDATE accounts SET removed_at = %[1]d, removed_by = '%[2]s', purge_after = %[1]d + 2592000
+				WHERE id = '%[3]s'`, time.Now().Unix(), bea.ID, box),
+		} {
+			if _, err := tx.ExecContext(t.Context(), q); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, c := range []struct {
+		what  string
+		rule  service.RemovedInSnapshot
+		reads bool
+	}{
+		{"by default", service.RemovedAsKept, true},
+		{"the other way", service.RemovedAsNobody, false},
+	} {
+		var snapshot service.AccessSnapshot
+		read := func(ctx context.Context, _ *Router, d Deps) error {
+			var err error
+			snapshot, err = d.Service.AccessSnapshot(ctx, team)
+			return err
+		}
+		d := startDaemon(t, cfg, Options{
+			WorkspaceSource: workspace.Platform(), RemovedInSnapshot: c.rule, Extensions: []Extension{read},
+		})
+		d.stop()
+		if err := d.wait(); err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if len(snapshot.Mailboxes) != 1 || !snapshot.Mailboxes[0].Removed || len(snapshot.Mailboxes[0].People) != 1 {
+			t.Fatalf("%s: the snapshot %+v", c.what, snapshot)
+		}
+		mb := snapshot.Mailboxes[0]
+		if mb.People[0].UserID != bea.ID || mb.People[0].Reads != c.reads || (len(mb.Protected) == 1) != c.reads {
+			t.Errorf("%s: Bea %+v, protected %v", c.what, mb.People[0], mb.Protected)
+		}
 	}
 }

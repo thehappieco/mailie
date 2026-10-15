@@ -37,7 +37,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   own small state in the database it describes (`State(name)`, `extension_state`: restored with it,
   never ahead of it). `Options.Freshness` (never set by `serve`) is asked, outside every write,
   before a person's act that widens access or touches a team's shared data
-  (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
+  (`service.Freshness`, below); `Options.RemovedInSnapshot` (never set by `serve`) is what a
+  followed workspace's snapshot says of a removed mailbox's people (`RemovedAsKept` unless set).
+  Under a source that mirrors a directory the daemon names at start
   the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
   `Options.ExternalSignInOnly` (never set by `serve`) has the service
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
@@ -213,7 +215,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `snapshot.go` are what it reports: the journal as its outbox (`MailboxJournal`), the followed
   workspaces and their change marks, its own state, and a snapshot of a followed workspace
   (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
-  recovered, `RemovedAsKept`, unless `Deps.RemovedInSnapshot` says otherwise). `freshness.go`: the
+  recovered, `RemovedAsKept`, unless `Deps.RemovedInSnapshot`, from `app.Options`, says otherwise). `freshness.go`: the
   hook (`Deps.Freshness`) asked before eleven acts of a person signed in — a key sealed to someone,
   flags raised for a person or a key, a key created, a link into a team, a team mailbox's consent
   started again, its sync switched, an action on it or a send from it — after the read-only
