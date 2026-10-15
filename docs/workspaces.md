@@ -408,10 +408,18 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   answers `404`, but for what its owners do to a removed mailbox below. It is never dialled nor
   refreshed (`Registry.Mailbox` builds a mailbox only through `Repository.Get`, which leaves it out,
   and builds again, never caching, one it was building while the removal let go of it), syncs
-  nothing, and has no reader (`store.LiveSQL` in the one rule), so it protects none: its readers may
-  leave the team, be disabled or be deleted meanwhile. Nothing is granted, keyed or given on it (the
-  schema's triggers). Its address stays taken in its workspace: linking it again is `409`, which
+  nothing, and has no reader (`store.LiveSQL` in the one rule). Nothing is granted, keyed or given
+  on it (the schema's triggers). Its address stays taken in its workspace: linking it again is `409`, which
   says until when it is kept; an owner recovers it, or deletes it for good to link it again.
+- **It keeps protecting until it is deleted for good.** Whoever would read it once recovered — an
+  active member holding `read` and, on a mailbox that has a key, a grant at its current epoch
+  (`store.KeptReaderSQL`, the one rule on it as if it were live) — counts in every protection as a
+  reader of a live mailbox does ([Protections](#protections)): the last of them keeps `read`, is not
+  disabled or removed from the team, does not leave, is not closed or reset without `force`, and a
+  change no protection refuses (a forced closure or reset, an external directory) strands it
+  (below), so that a recovery within its 30 days brings back a mailbox someone can still read. It
+  still reaches nobody meanwhile: protected, they read nothing of it. Deleting it for good ends the
+  protection with it, and with its grants.
 - **What goes at once**, and never comes back: what keys held on it — an instance key's
   restriction to it (one restricted to it alone is revoked, `restriction_emptied`, since a key
   restricted to nothing would reach every operator mailbox) and what a workspace key held — and the
@@ -444,12 +452,15 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   (`409`): it is deleted for good and linked again, which gives the linker `read`. One that only a
   person suspended by an extension would read, once resumed, waits for them as a live one does
   (`no_reader` false in the list): it is recovered, its sync held, and turned on only once someone
-  reads it. Nothing is recovered in a closed team (`409`), nor once its 30 days are over (`409`).
+  reads it. Since a removed mailbox keeps protecting its last reader, only a change no protection
+  refuses leaves one with nobody. Nothing is recovered in a closed team (`409`), nor once its 30
+  days are over (`409`).
 - **Deleting it for good** before its 30 days are over is for the same owners, repeating its id
   (`confirm`), and for the operator, any workspace's removed mailbox, to erase one when its person
   asks them to: the operator lists every workspace's removed mailboxes and never recovers a
   person's or a team's. A live mailbox is removed first (`409`). A closed team's removed mailboxes
-  are deleted on time all the same, and its owners delete none meanwhile.
+  are deleted on time all the same, and its owners delete none meanwhile. A deletion for good, by
+  them or by the sweep, ends the protection the mailbox kept.
 - **Its sync, removed:** a removed team mailbox's owners turn its sync off, which deletes the index
   it kept; nobody turns it on. Withdrawing a person's own sync consent deletes the index of their
   removed mailboxes too.
@@ -473,8 +484,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   good and strandings (migration 0021), each written in the transaction that makes it, never with
   the address, and kept 90 days. A mailbox is named by its display name, unless that holds an
   address or the local part of its own (three characters or more, without regard to case:
-  "Support" for `support@…` is no name), and by a masked hint. A **stranding** is a team mailbox
-  left with nobody who reads it, would read it once resumed, or would read it but for a hold,
+  "Support" for `support@…` is no name), and by a masked hint. A **stranding** is a team mailbox,
+  live or removed and kept (as once it is recovered), left with nobody who reads it, would read it
+  once resumed, or would read it but for a hold,
   because the one person who did lost it in a way no protection refuses: a membership or a person
   an external directory removed, or a person disabled, deleted or reset here with force. It says
   why (`cause`: `membership_ended`, `forgotten`, `disabled`, `deleted`, `reset`) and whom it lost
@@ -664,7 +676,7 @@ tries, as Wappie's directory does; the mutation enforces them regardless.
 | | Refused | The way out |
 |---|---|---|
 | **Last owner** | demoting, disabling or removing the last active owner of a local team, or that owner leaving | promote another member first |
-| **Last reader** | taking `read` from the last person who can read a team mailbox — revoking it, disabling or removing their membership, leaving, closing their account without `force` | give another member `read` first (an owner or an admin who reads it can), or remove the mailbox |
+| **Last reader** | taking `read` from the last person who can read a team mailbox — revoking it, disabling or removing their membership, leaving, closing their account without `force` — or who would read a removed one once recovered, until it is deleted for good | give another member `read` first (an owner or an admin who reads it can; a removed one is recovered first), or delete the mailbox for good (removing it is not enough) |
 | **Personal** | any change to a personal workspace's membership; an invite into one; a grant change on one of its mailboxes | |
 | **Operator** | a membership, grant or invite in the operator workspace | |
 
@@ -676,15 +688,22 @@ its own never count ("ownership is not a recovery path"), and taking a waiting m
 person's account key (`mailserver user password --bootstrap`) deletes their grants and keeps their
 flags, so it refuses, without `--force`, only where they are the last reader of a team mailbox
 **that has a key**; on one without, they keep reading by the flag. After a forced reset, a team
-mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role change; a removed
-mailbox has no reader while it is kept, and protects none. The database has one
-writer, so two changes that would each leave one reader are ordered, and the second is refused.
-The refusal says: "that is the last person who can read a mailbox of the workspace; give another
-member read on it first, or remove the mailbox".
+mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role
+change. A removed mailbox has no reader while it is kept, but keeps protecting until it is deleted
+for good: who would read it once recovered (`store.KeptReaderSQL`, and the other `Kept` fragments
+for whom it waits or is held for) counts in every refusal here, in the strandings and in what the
+listings mark (`last_reader_of`) as a reader of a live one does, so that a recovery within its 30
+days brings back a mailbox someone can still read; nothing about it is reachable meanwhile, and
+nothing is given or taken on it, so the way out is recovering it and giving another member `read`,
+or deleting it for good. The database has one writer, so two changes that would each leave one
+reader are ordered, and the second is refused. The refusal says: "that is the last person who can
+read a mailbox of the workspace, a removed one included until it is deleted for good; give another
+member read on it first (an owner recovers a removed one first), or delete the mailbox for good".
 
 On the instance, `user disable` and `user delete` also refuse, unless `force`, a person who is the
 last active owner of a local team with other active members; the last reader of a team mailbox of a
-team that outlives them — every team but a local one whose only member they are: a team another
+team that outlives them, a removed one they alone would read once recovered included until it is
+deleted for good — every team but a local one whose only member they are: a team another
 member remains in, whatever their status, or a team whose source is not local, which never goes
 with anyone here — since nobody could read the mailbox again; or the linker a migrated team consent
 is still bound to while someone else reads that mailbox. A team whose source is not local has no
@@ -1038,7 +1057,8 @@ Shapes:
 
 // Member ("person_disabled": true only for a person switched off on the instance, disabled here or
 // suspended; "person_suspended": true only for a suspended one; last_reader_of
-// lists the team mailboxes they alone read, always present; seal_id and public_key are what a
+// lists the team mailboxes they alone read, a removed one they alone would read once recovered
+// included until it is deleted for good, always present; seal_id and public_key are what a
 // grant to them is bound by and sealed to, public_key absent until they enrol)
 {"user_id": "usr_…", "email": "bea@example.org", "name": "Bea Lima", "role": "member",
  "status": "active", "last_owner": false, "last_reader_of": ["acc_…"],
@@ -1310,12 +1330,14 @@ one, leaves all of it empty.
   stray zeroing is refused unless a reset was recorded first. A local workspace has neither column
   (a CHECK), and a workspace from another source is written at the current sum.
 - **A held membership** (`workspace_members.held_at`): one a directory ended while its generation
-  was not confirmed, and whose end would leave a team mailbox with nobody who reads it, would read
-  it once resumed, or would read it but for another hold. It is disabled, so its person reads
+  was not confirmed, and whose end would leave a team mailbox (live, or removed and kept, as once
+  it is recovered) with nobody who reads it, would read it once resumed, or would read it but for
+  another hold. It is disabled, so its person reads
   nothing there and counts as no reader, and keeps its flags and sealed grants until a document
   lists it again or the generation is confirmed, which ends it (key scheme, section 12.13, "Being
   held"). Only a team's membership from another source is held, and never when written (the
-  schema). `store.HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no access.
+  schema). `store.HeldReaderSQL` (`KeptHeldReaderSQL` on a removed mailbox) says whom a hold keeps
+  a mailbox for; it decides no access.
 - **An extension's own state** (`extension_state`): a few keys and values per extension, a value of
   a mebibyte at most, kept beside the data it describes so that a restore takes both back together
   (`store.ExtensionState`, `ExtensionStateKeys`, `WriteExtensionState`).
@@ -1468,16 +1490,12 @@ nothing, and one question it asks. No transport calls any of them, and none take
   `consent_off`, `person_off` (a consent bound to someone not active) or `no_reader` for a team's;
   each person who holds a flag or a sealed grant on it, with their stored flags, whether they read
   it now (computed without the team's closure: the pause carries it), wait for its key, have an
-  account key, and hold a grant at its current epoch (`holds_key`: `store.LiveSQL` and
-  `store.CurrentGrantSQL`, a suspended holder included); and, in a team, the people it cannot lose,
-  each the only one who reads it. A removed mailbox is reported, by default, as it would be once
-  recovered — who would read it, wait for its key and hold its key, and its kept last readers as
-  protected — until it is deleted for good, as the directory asks of every product
-  (`service.RemovedAsKept`); the other way (`RemovedAsNobody`, one switch, `Deps.RemovedInSnapshot`,
-  which a binary that embeds the daemon sets through `app.Options.RemovedInSnapshot`, never `serve`)
-  reports nobody. Either way a removed mailbox has no reader here and protects nobody in what this
-  server refuses: only what the snapshot says follows the directory's rule
-  ([conflict 31](#conflicts-and-resolutions)).
+  account key, and hold a grant at its current epoch (`holds_key`: `store.CurrentGrantSQL`, a
+  suspended holder included); and, in a team, the people it cannot lose,
+  each the only one who reads it (the last reader, as the protections ask it). A removed mailbox is
+  reported as it would be once recovered — who would read it, wait for its key and hold its key, and
+  its kept last readers as protected, which they are in what this server refuses too — until it is
+  deleted for good, when it leaves the snapshot ([conflict 31](#conflicts-and-resolutions)).
 - **Its own state** (`app.Deps.State(name)`, over `extension_state`): a few keys of at most 256
   bytes and values of a mebibyte at most, per extension name (1 to 64 of `a-z`, `0-9`, `_`, `-`),
   written in one transaction each, kept in the database it describes, so that a restore takes it
@@ -1872,7 +1890,13 @@ Test names state the guarantee. At least:
   `TestDeletingForGoodIsForAnOwnerOrTheOperatorAndOnlyOfARemovedMailbox`;
   `TestTheSweepPurgesOnlyPastThirtyDays`, `TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays`;
   `TestClosingAPersonPurgesTheirRemovedMailboxesAtOnce`; `TestAPurgedMailboxLeavesNothingOnDisk`;
-  `TestARemovedMailboxNeverProtectsItsLastReader`;
+  `TestARemovedMailboxKeepsProtectingItsLastReaderUntilItsPurge` and
+  `TestThePurgeEndsARemovedMailboxsProtection` (the repository and the service, by its owners and
+  by the sweep), `TestARemovedMailboxStillReachesNobody`,
+  `TestClosingTheLastKeptReaderOfARemovedTeamMailboxNeedsForceAndStrandsIt`,
+  `TestClosingASuspendedPersonIsAskedAboutARemovedMailboxTheyWouldRead`,
+  `TestAResetOfARemovedTeamMailboxsLastKeptReaderNeedsForceUntilItsPurge`,
+  `TestEndingTheMembershipOfARemovedMailboxsLastKeptReaderIsHeldOrStrandsIt`;
   `TestADeletedMailboxIsNamedByItsHintOnlyWhileANoticeNeedsIt`.
 - Consents: `TestATeamMailboxSyncsUnderItsWorkspacesConsent`;
   `TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange`;
@@ -2372,8 +2396,9 @@ Test names state the guarantee. At least:
     2026-10-13):* a removed mailbox is kept 30 days, used by nothing, recoverable by its
     workspace's owners, and then deleted for good; only owners remove a team's mailbox (an admin
     still abandons a link of their own that never connected, which holds nothing); its readers are
-    told. It protects no last reader meanwhile, so a team mailbox nobody who could read it is left
-    to read is not recovered. The operator deletes any removed mailbox for good, to erase one when
+    told. It protected no last reader meanwhile at first, which [conflict 31](#conflicts-and-resolutions)
+    changed: it now does until it is deleted for good. A team mailbox nobody who could read it is
+    left to read is not recovered. The operator deletes any removed mailbox for good, to erase one when
     its person asks, and recovers none of a person's or a team's. Its address stays taken until it
     is deleted for good. See [Removed mailboxes](#removed-mailboxes); the open sync text says so
     at `2026-10-open-sync-4`.
@@ -2401,14 +2426,19 @@ Test names state the guarantee. At least:
     revoked; a personal workspace is replaced only while it holds no mailbox and no live key. What a
     disable here decides stays: a directory never resumes a person disabled here, nor one whose
     disable its document does not know of.
-31. **A removed mailbox in what a directory is told.** Here a removed mailbox has no reader and
-    protects nobody: its readers may leave while it is kept, and a recovery brings back only those
-    who still qualify. A directory that protects people on every product's word asks one rule for
-    all of them, and another product keeps protecting a deleted item until its purge. *Resolution
-    (pending the owner, 2026-10-14):* the snapshot reports a removed mailbox's people as they would
-    be once it is recovered — who would read it and hold its key at its epoch, its kept last readers
-    protected — until it is deleted for good, behind one switch (`service.RemovedInSnapshot`) whose
-    other way reports nobody; both are tested. This server's own refusals are unchanged either way.
+31. **Whether a removed mailbox protects its readers.** A removed mailbox has no reader while it is
+    kept, and at first protected nobody: its last reader could leave, be removed or be closed
+    without force meanwhile, and a recovery within its 30 days would then bring back a mailbox
+    nobody could read, whose key nobody holds. A directory that protects people on every product's
+    word also asks one rule for all of them. *Resolution (the owner, 2026-10-15):* a removed mailbox
+    keeps protecting until it is deleted for good, as it did live. Whoever would read it once
+    recovered (`store.KeptReaderSQL` and the other `Kept` fragments) counts in the last-reader
+    protection, the refusals of closing a person and of a reset, the strandings and the holds of an
+    external directory, and what the listings and the snapshot report; it still reaches nobody and
+    syncs nothing, and nothing is given on it. Deleting it for good — the sweep, its owners, the
+    operator, a person's closure — ends the protection with it. The snapshot's switch that reported a
+    removed mailbox either way (`service.RemovedInSnapshot`, from 2026-10-14) is gone: there is one
+    rule. See [Removed mailboxes](#removed-mailboxes) and [Protections](#protections).
 32. **A provider's grant outliving its mailbox.** A mailbox deleted for good takes its stored
     token, but the grant behind it stays at the provider until its person removes it there.
     *Resolution:* Google's grant is revoked at its revocation endpoint once the deletion commits,
@@ -2456,8 +2486,8 @@ Test names state the guarantee. At least:
 | docs | `console.md` (ownership becomes workspaces, routes, storage, events, the current workspace), `architecture.md` and `CLAUDE.md` (the ownership rule), `mcp.md` (instance keys), `self-hosting.md` and the README (the first owner) |
 | `web/` | the types and the contract spec; the workspace switcher, every list narrowed with `?workspace=`, the `access` events, each mailbox's grant and access panel, accepting a team invitation signed in, and the open edition's Members section ([`console.md`](console.md), "Workspaces in the console") |
 | 0014 (phase 3, step 4) | `internal/store/migrations/0014_mailbox_keys.sql` and `migrate_fourteen_test.go`; `store/readers.go` (the one rule as SQL fragments); `workspace/sealed.go` (keys and grants written and read), `grants.go`, `reader.go`, `members.go` and `people.go` (the rule, grants taken with `read`); `account/store.go` (`Visibility` by the rule; the link's key in its transaction); `auth` (a disable and a reset take the grants; the reset's guard counts mailboxes with a key); `service/mailboxkeys.go` (the use cases and their step-up), `accounts.go`, `workspaces.go`; `api/mailboxkeys.go`; the contract fixtures and the console's types; the console's half (`web/src/crypto/mailbox.ts`, `state/mailboxKeys.ts`, `state/grants.ts`, `state/stepUp.ts`, the link's key, Read with a grant, the sheet's key section; [`console.md`](console.md), "Mailbox keys") |
-| 0020 (removed mailboxes) | `internal/store/migrations/0020_removed_mailboxes.sql` and `migrate_twenty_test.go`; `store/readers.go` (`LiveSQL` in the one rule), `eligibility.go` (a removed or held mailbox syncs nothing), `consent.go` (`SetMailboxSync` lifts the hold; a sync turned off, and `StopBoundTx`, tell the readers), `mailboxevents.go` (the journal and the notices); `account/removal.go` (removing, recovering, deleting for good, the sweep), `store.go` (`Visibility` and `Get` leave a removed mailbox out; `GetRemoved`, `ListRemoved`) and `registry.go` (an address kept removed is a conflict); `workspace/grants.go`, `keys.go`, `sealed.go`, `workspace.go` (nothing finds a removed mailbox) and `people.go` (who removed and who acted forgotten with their person); `auth/keys.go` (no new key restricted to a removed mailbox); `service/removed.go`, `notices.go`, `accounts.go` (only owners remove), `consent.go`, `sync.go` (`held`) and `events.go` (`NewNotices`); `app/sweep.go`; `api/removed.go`, `api/events.go` (`event: notice`) and the fixtures; the command line (`account removed`, `recover`, `purge`); the open sync text `-4`; the console's removed mailboxes, notices and hold ([`console.md`](console.md)) |
+| 0020 (removed mailboxes) | `internal/store/migrations/0020_removed_mailboxes.sql` and `migrate_twenty_test.go`; `store/readers.go` (`LiveSQL` in the one rule; the `Kept` fragments, which the protections, the strandings and the snapshot count on a removed mailbox until it is deleted for good, `workspace/reader.go`), `eligibility.go` (a removed or held mailbox syncs nothing), `consent.go` (`SetMailboxSync` lifts the hold; a sync turned off, and `StopBoundTx`, tell the readers), `mailboxevents.go` (the journal and the notices); `account/removal.go` (removing, recovering, deleting for good, the sweep), `store.go` (`Visibility` and `Get` leave a removed mailbox out; `GetRemoved`, `ListRemoved`) and `registry.go` (an address kept removed is a conflict); `workspace/grants.go`, `keys.go`, `sealed.go`, `workspace.go` (nothing finds a removed mailbox) and `people.go` (who removed and who acted forgotten with their person); `auth/keys.go` (no new key restricted to a removed mailbox); `service/removed.go`, `notices.go`, `accounts.go` (only owners remove), `consent.go`, `sync.go` (`held`) and `events.go` (`NewNotices`); `app/sweep.go`; `api/removed.go`, `api/events.go` (`event: notice`) and the fixtures; the command line (`account removed`, `recover`, `purge`); the open sync text `-4`; the console's removed mailboxes, notices and hold ([`console.md`](console.md)) |
 | 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
 | Following an external directory, its documents | `internal/workspace/mirror.go` (`ValidExternalID`, `MirrorWorkspaceTx`, `ReplacePersonalTx`, `MirrorMemberTx`, `EndMembershipTx` and its holds, `HeldMembershipsTx`, `PersonalReplacementBlocks`), `reader.go` (`StrandCandidatesTx`), `members.go` (`Member.Held`), `source.go` (`Platform` made real); `auth` (`ExternalSignIn.PersonCreatedTx`, `IdentityUser`, `ResumeTx`, `RevokeSessionsStartedBeforeTx`, `Keys.RevokeCreatedBeforeTx`; a disable, `DisableBy` naming its actor, and a forced reset journal what they strand); `store/directory.go` (the listings and the sweep); `service/directory.go` (the documents, the directory's calls, a closed person forgotten and released), `external.go` (the document at sign-in), `closure.go` (`removePerson`: a deletion journals what it strands); `app/sweep.go` (`SweepDirectory`) |
-| Following an external directory, what it reads | `internal/store` (`ReadTx`, `PauseSQL` beside the sync rule, `KeptWaitingSQL`, `journalreads.go`: the journal per workspace with its readers and a key's creator, its head, the followed workspaces); `workspace/snapshot.go` (`SnapshotTx`); `service/snapshot.go` (`AccessSnapshot`, `RemovedInSnapshot`), `journal.go` (`MailboxJournal`, `MailboxJournalHead`, `FollowedWorkspaces`, `WorkspaceChanges`, the extension state), `freshness.go` (`Freshness` and its eleven call sites in `workspaces.go`, `mailboxkeys.go`, `workspacekeys.go`, `accounts.go`, `consent.go`, `actions.go`, `send.go`); `app` (`Options.Freshness`, `Options.RemovedInSnapshot`, `Deps.State`, the start line of personal workspaces a document would not replace); `account/revoke.go` (a Google grant revoked once its mailbox is deleted for good) and `registry.go`, `removal.go`, `store.go` (the token opened in the deleting transaction); `web/src/state/failure.ts` (`Failure.retryAfter`), `workspaces.ts` (`workspaceVanished`), `accounts.ts` and `storage.ts` |
+| Following an external directory, what it reads | `internal/store` (`ReadTx`, `PauseSQL` beside the sync rule, `KeptWaitingSQL`, `journalreads.go`: the journal per workspace with its readers and a key's creator, its head, the followed workspaces); `workspace/snapshot.go` (`SnapshotTx`); `service/snapshot.go` (`AccessSnapshot`), `journal.go` (`MailboxJournal`, `MailboxJournalHead`, `FollowedWorkspaces`, `WorkspaceChanges`, the extension state), `freshness.go` (`Freshness` and its eleven call sites in `workspaces.go`, `mailboxkeys.go`, `workspacekeys.go`, `accounts.go`, `consent.go`, `actions.go`, `send.go`); `app` (`Options.Freshness`, `Deps.State`, the start line of personal workspaces a document would not replace); `account/revoke.go` (a Google grant revoked once its mailbox is deleted for good) and `registry.go`, `removal.go`, `store.go` (the token opened in the deleting transaction); `web/src/state/failure.ts` (`Failure.retryAfter`), `workspaces.ts` (`workspaceVanished`), `accounts.ts` and `storage.ts` |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

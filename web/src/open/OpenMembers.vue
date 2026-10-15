@@ -14,20 +14,23 @@
 // What a person's role allows is offered, and what the team's protections
 // refuse is said beside it beforehand (ui/access.ts memberPermissions): the
 // last active owner keeps the team, and the last person who can read one of
-// its mailboxes stays while they are. The server decides every change, in
+// its mailboxes stays while they are — a removed mailbox they alone would
+// read once recovered included, until it is deleted for good, which this
+// names as removed (from the team's removed mailboxes, which only its owners
+// read) and says how to free them of. The server decides every change, in
 // the transaction that makes it, and says no to whatever this gets wrong.
 import { computed, onMounted, ref, useId, watch } from 'vue'
 import type { Member, TeamInvite, WorkspaceRole } from '../api/types'
 import AppIcon from '../components/AppIcon.vue'
 import ConsoleDialog from '../components/ConsoleDialog.vue'
 import UnusableWorkspace from '../components/UnusableWorkspace.vue'
-import { accounts } from '../state/accounts'
+import { accounts, loadRemoved, removed } from '../state/accounts'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
 import { changeMember, directoryEntry, leaveTeam, loadDirectory, loadInvites, loadMembers, removeMember, revokeInvite, team } from '../state/team'
 import { createTeam, currentWorkspace, loadWorkspaces, renameTeam, selectWorkspace, workspaces } from '../state/workspaces'
 import {
-  administers, changeableTeam, lastReaderOf, memberPermissions, seesInvitations, teamsCreatedHere, unusableLabel, workspaceName,
+  administers, changeableTeam, lastReaderOf, memberPermissions, owns, seesInvitations, teamsCreatedHere, unusableLabel, workspaceName,
   workspaceRoleLabel, workspaceUnusable, type MemberPermissions,
 } from '../ui/access'
 import { announce } from '../ui/announce'
@@ -153,11 +156,32 @@ async function confirm() {
   else if (target.kind === 'remove') say(t('{name} was removed from {team}.', { name, team: teamName.value }))
 }
 
-/** The addresses of the team's mailboxes a member alone can read, as far as this page knows them. */
+/** The address of a live mailbox of the team, as this page knows it: the person's own list, or the directory. */
+function liveEmail(id: string): string {
+  return accounts.list.find(item => item.id === id)?.email ?? directoryEntry(id)?.email ?? ''
+}
+/** A removed mailbox of the team shown, when its removed mailboxes were read: only its owners read them. */
+function removedMailbox(id: string) {
+  return removed.workspace === workspaces.currentID ? removed.list.find(item => item.id === id) : undefined
+}
+/**
+ * Whether a mailbox a member alone can read is removed and kept, which protects them until it is
+ * deleted for good: listed among the team's removed mailboxes, or, once the directory of its live
+ * ones is read, in neither it nor the person's own list.
+ */
+function isRemoved(id: string): boolean {
+  return !!removedMailbox(id) || (team.directory.loaded && !liveEmail(id))
+}
+
+/** The addresses of the team's mailboxes a member alone can read, a removed one marked so; empty unless this page knows each. */
 function onlyReads(member: Member): string {
-  return lastReaderOf(member)
-    .map(id => accounts.list.find(item => item.id === id)?.email ?? directoryEntry(id)?.email ?? '')
-    .filter(Boolean).join(', ')
+  const names = lastReaderOf(member).map(id => {
+    const live = liveEmail(id)
+    if (live) return live
+    const kept = removedMailbox(id)
+    return kept ? t('{email} (removed)', { email: kept.email }) : ''
+  })
+  return names.length && names.every(Boolean) ? names.join(', ') : ''
 }
 
 /** Why a member's place cannot be disabled or removed, said beside them. */
@@ -169,11 +193,23 @@ function protectionText(member: Member, permissions: MemberPermissions): string 
   }
   if (permissions.protection === 'last-reader') {
     const mailboxes = onlyReads(member) || t('{count} of its mailboxes', { count: count(lastReaderOf(member).length) })
+    if (lastReaderOf(member).some(isRemoved)) {
+      return self ? t('You are the only person who can read {mailboxes}: give someone else Read before you leave. A removed mailbox keeps you until an owner recovers it and gives someone else Read, or deletes it for good.', { mailboxes })
+        : t('The only person who can read {mailboxes}: give someone else Read before disabling or removing them. A removed mailbox keeps them until an owner recovers it and gives someone else Read, or deletes it for good.', { mailboxes })
+    }
     return self ? t('You are the only person who can read {mailboxes}: give someone else Read before you leave.', { mailboxes })
       : t('The only person who can read {mailboxes}: give someone else Read before disabling or removing them.', { mailboxes })
   }
   return ''
 }
+
+// The team's removed mailboxes, read for its owners when a member alone would read one the page
+// does not know: the only way to name it.
+watch(() => [team.members.loaded, team.directory.loaded, removed.workspace, removed.loading] as const, () => {
+  if (!inTeam.value || !owns(shown.value) || !team.members.loaded || !team.directory.loaded) return
+  if (removed.loading || removed.failure || (removed.loaded && removed.workspace === workspaces.currentID)) return
+  if (team.members.list.some(member => lastReaderOf(member).some(id => !liveEmail(id)))) void loadRemoved()
+}, { immediate: true })
 
 // Creating and renaming a team.
 const naming = ref<'' | 'create' | 'rename'>('')

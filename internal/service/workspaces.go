@@ -107,7 +107,8 @@ type Member struct {
 	// LastReaderOf are the team mailboxes this member is the only reader
 	// of: their read is not revoked, nor their membership disabled or
 	// removed, nor their account closed without force, until someone else
-	// reads them.
+	// reads them. A removed mailbox they alone would read once recovered is
+	// listed too, until it is deleted for good.
 	LastReaderOf []string `json:"last_reader_of"`
 	// SealID and PublicKey are what a grant to the person is bound by and
 	// sealed to (docs/key-scheme.md sections 3.1 and 9.1), for an owner or

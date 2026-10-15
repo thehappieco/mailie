@@ -31,40 +31,91 @@ func (f *fixture) exec(query string, args ...any) {
 	}
 }
 
-func TestARemovedMailboxNeverProtectsItsLastReader(t *testing.T) {
-	f := newFixture(t)
-	ctx := t.Context()
-	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
-	support := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
-	shared := f.link(support.ID, ana.ID, "support@example.org")
-	f.grant(shared.ID, bea.ID, readOnly())
-	// Ana stops reading it: Bea is its last reader.
-	if _, err := f.ws.Revoke(ctx, shared.ID, ana.ID, workspace.Flags{Read: true}, nil); err != nil {
+// lastKeptReader is a team whose mailbox Bea alone reads, Ana its owner
+// reading nothing, removed by Ana since: Bea would read it once recovered.
+func lastKeptReader(t *testing.T, f *fixture) (ana, bea auth.User, support workspace.Workspace, shared string) {
+	t.Helper()
+	ana, bea = f.person("ana@example.org"), f.person("bea@example.org")
+	support = f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
+	shared = f.link(support.ID, ana.ID, "support@example.org").ID
+	f.grant(shared, bea.ID, readOnly())
+	if _, err := f.ws.Revoke(t.Context(), shared, ana.ID, workspace.Flags{Read: true}, nil); err != nil {
 		t.Fatal(err)
 	}
-	want(t, "Bea, its last reader, leaving", f.ws.RemoveMember(ctx, support.ID, bea.ID, nil), workspace.ErrLastReader)
-	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || !slices.Equal(b.LastReaderOf, []string{shared.ID}) {
-		t.Fatalf("what closing Bea would break: %+v, %v", b, err)
-	}
+	f.remove(shared, ana.ID)
+	return ana, bea, support, shared
+}
 
-	f.remove(shared.ID, ana.ID)
+func TestARemovedMailboxKeepsProtectingItsLastReaderUntilItsPurge(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	_, bea, support, shared := lastKeptReader(t, f)
+
+	// Kept, it protects Bea as it did live: she neither leaves, is removed
+	// nor is disabled, and closing her is asked about it.
+	want(t, "Bea, its last reader, leaving", f.ws.RemoveMember(ctx, support.ID, bea.ID, nil), workspace.ErrLastReader)
+	_, err := f.ws.SetMember(ctx, support.ID, bea.ID, workspace.MemberChange{Status: status(workspace.StatusDisabled)}, nil)
+	want(t, "Bea, its last reader, disabled", err, workspace.ErrLastReader)
+	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || !slices.Equal(b.LastReaderOf, []string{shared}) {
+		t.Errorf("what closing Bea would break: %+v (%v), want the removed mailbox", b, err)
+	}
+	// Listed in advance, as for a live one.
+	if last, err := f.ws.LastReaders(ctx, support.ID); err != nil || !slices.Equal(last[bea.ID], []string{shared}) {
+		t.Errorf("the team's last readers: %v (%v)", last, err)
+	}
+	if m, err := f.ws.Member(ctx, support.ID, bea.ID); err != nil || !slices.Equal(m.LastReaderOf, []string{shared}) {
+		t.Errorf("Bea's membership: %+v (%v)", m, err)
+	}
+	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND read = 1`,
+		shared, bea.ID); n != 1 {
+		t.Error("a refused change took Bea's flag on the removed mailbox")
+	}
+}
+
+func TestThePurgeEndsARemovedMailboxsProtection(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	_, bea, support, shared := lastKeptReader(t, f)
+
+	// Deleted for good, as the sweep or an owner does: its grants go with
+	// it, and so does what they protected.
+	f.exec(`DELETE FROM accounts WHERE id = ?`, shared)
 
 	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || b.Any() {
-		t.Errorf("closing Bea is blocked by %+v (%v): a removed mailbox protects nobody", b, err)
+		t.Errorf("closing Bea is blocked by %+v (%v) once the mailbox is deleted for good", b, err)
 	}
 	if last, err := f.ws.LastReaders(ctx, support.ID); err != nil || len(last) != 0 {
-		t.Errorf("the team's last readers are %v (%v)", last, err)
+		t.Errorf("the team's last readers: %v (%v)", last, err)
 	}
 	if err := f.ws.RemoveMember(ctx, support.ID, bea.ID, nil); err != nil {
-		t.Errorf("Bea leaving once the mailbox is removed: %v", err)
+		t.Errorf("Bea leaving once the mailbox is deleted for good: %v", err)
 	}
-	// Her grant goes with her membership; the mailbox stays removed.
-	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE account_id = ? AND read = 1`, shared.ID); n != 0 {
-		t.Errorf("%d read flags are left on the removed mailbox", n)
+}
+
+func TestARemovedMailboxStillReachesNobody(t *testing.T) {
+	// Bea is protected as the removed mailbox's last reader, and reads
+	// nothing of it: no access, no reader, nothing given or taken on it.
+	f := newFixture(t)
+	ctx := t.Context()
+	ana, bea, support, shared := lastKeptReader(t, f)
+
+	held, err := f.ws.Access(ctx, bea.ID, []string{shared})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if n := f.count(`SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, shared.ID); n != 1 {
-		t.Error("the mailbox is no longer removed")
+	if _, ok := held[shared]; ok {
+		t.Errorf("Bea holds %+v on the removed mailbox", held[shared])
 	}
+	if f.reads(shared, bea.ID) || f.hasReader(shared) {
+		t.Error("the removed mailbox has a reader")
+	}
+	if directory, err := f.ws.Directory(ctx, support.ID); err != nil || len(directory) != 0 {
+		t.Errorf("the directory lists %+v (%v)", directory, err)
+	}
+	_, err = f.ws.Revoke(ctx, shared, bea.ID, workspace.Flags{}, nil)
+	want(t, "Bea's read revoked", err, workspace.ErrNoMailbox)
+	_, err = f.ws.SetGrant(ctx, shared, ana.ID, readOnly(), ana.ID, nil)
+	want(t, "Ana given read again", err, workspace.ErrNoMailbox)
 }
 
 func TestTheDirectoryAndCountsLeaveRemovedMailboxesOut(t *testing.T) {
@@ -117,15 +168,6 @@ func TestTheDirectoryAndCountsLeaveRemovedMailboxesOut(t *testing.T) {
 	}
 	if _, ok := held[shared.ID]; ok || !held[sales.ID].Read {
 		t.Errorf("the key holds %+v, want only the live mailbox", held)
-	}
-	last, err := f.ws.LastReaders(ctx, support.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for who, ids := range last {
-		if slices.Contains(ids, shared.ID) {
-			t.Errorf("%s is listed as the removed mailbox's last reader", who)
-		}
 	}
 }
 
@@ -239,4 +281,27 @@ func queryAll(t *testing.T, f *fixture, query string, args ...any) []string {
 		t.Fatal(err)
 	}
 	return out
+}
+
+func TestClosingASuspendedPersonIsAskedAboutARemovedMailboxTheyWouldRead(t *testing.T) {
+	// Bea, suspended, would read the removed mailbox once resumed and it is
+	// recovered: closing her is asked about it, as about a live one, and
+	// what that would strand includes it.
+	f := newFixture(t)
+	ctx := t.Context()
+	_, bea, _, shared := lastKeptReader(t, f)
+	f.suspend(bea.ID)
+
+	if b, err := f.ws.Blocks(ctx, bea.ID); err != nil || !slices.Equal(b.LastReaderOf, []string{shared}) {
+		t.Errorf("what closing Bea, suspended, would break: %+v (%v), want the removed mailbox", b, err)
+	}
+	var strands []string
+	f.write(func(tx *sql.Tx) error {
+		var err error
+		strands, err = workspace.StrandCandidatesTx(ctx, tx, bea.ID, workspace.StrandScope{Outlived: true})
+		return err
+	})
+	if !slices.Equal(strands, []string{shared}) {
+		t.Errorf("closing Bea would strand %v, want the removed mailbox", strands)
+	}
 }

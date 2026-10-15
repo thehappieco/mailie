@@ -37,9 +37,11 @@ type Member struct {
 	// personal workspace. Never anyone in a team from another source, whose
 	// owners are decided where it comes from.
 	LastOwner bool
-	// LastReaderOf are the team mailboxes this member is the only reader of:
-	// their read cannot be revoked, nor their membership disabled or removed,
-	// until someone else reads them (ErrLastReader).
+	// LastReaderOf are the team mailboxes this member is the only reader of,
+	// a removed one they alone would read once recovered included until it
+	// is deleted for good: their read cannot be revoked, nor their
+	// membership disabled or removed, until someone else reads them
+	// (ErrLastReader).
 	LastReaderOf []string
 	// SealID and PublicKey are what a grant to the person is sealed to and
 	// bound by (docs/key-scheme.md sections 3.1 and 9.1): their seal id,

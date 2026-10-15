@@ -952,6 +952,29 @@ upgrade, as any restore does; the older version needs nothing this release adds.
   when the workspace it shows is no longer the person's under a session still open, reads their
   workspaces again once and shows their own.
 
+### A removed mailbox keeps protecting until it is deleted for good
+
+No migration: the schema stays 23 and no row changes, so going back is the binary (and console)
+you kept. What the server refuses changes
+([`workspaces.md`](workspaces.md#removed-mailboxes)):
+
+- **The last reader of a removed team mailbox stays protected.** A team mailbox removed and kept
+  for its 30 days protected nobody until now: the one person who would read it again once
+  recovered could leave the team, be removed or disabled there, or be closed or reset without
+  `--force`, and a recovery then brought back a mailbox nobody could read. It now protects them as
+  a live mailbox does, until it is deleted for good: removing them from the team or disabling them
+  there is refused (`409`), and so are `mailserver user disable|delete` and `user password
+  --bootstrap` without `--force`, naming the mailbox; with `--force` the mailbox is journaled
+  stranded, as a live one is. Removing a mailbox no longer frees its last reader: recover it and
+  give someone else read, or delete it for good (its owners in the console, or `mailserver account
+  purge ID`), which ends the protection with it, as the hourly sweep does after its 30 days.
+- **Nothing else of it changes.** It still syncs nothing, nobody reads it, its card is found by
+  nobody but its owners on the removed mailboxes' own paths, and nothing is given on it.
+- **For scripts:** a team member's `last_reader_of` (`GET /v1/workspaces/{id}/members`, and the
+  `NOTE` of `mailserver member list`) may name a removed mailbox, which `GET /v1/accounts` does not
+  list; the team's owners find it in `GET /v1/workspaces/{id}/removed-mailboxes`. The console names
+  it as removed, and says how to free its last reader.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to

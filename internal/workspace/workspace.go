@@ -156,8 +156,10 @@ var (
 	ErrLastOwner = errors.New("workspace: that is the last active owner of the team")
 	// ErrLastReader is a change that would leave a team mailbox someone can
 	// read with nobody who can: revoking the read of its last reader,
-	// disabling or removing their membership, or closing their account.
-	// Keys never count as readers, and neither does a role.
+	// disabling or removing their membership, or closing their account. A
+	// removed mailbox counts, until it is deleted for good, by who would read
+	// it once recovered. Keys never count as readers, and neither does a
+	// role.
 	ErrLastReader = errors.New("workspace: that is the last person who can read a mailbox of the workspace")
 	// ErrManageByRole is manage stored for an owner or an admin, who manage
 	// every mailbox of their workspace by their role.

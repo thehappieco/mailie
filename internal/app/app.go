@@ -96,13 +96,6 @@ type Options struct {
 	// gates, never authorizes. Only a binary that embeds the daemon sets it:
 	// there is no environment variable, and `serve` never does.
 	Freshness service.Freshness
-	// RemovedInSnapshot is what a snapshot of a followed workspace says of
-	// a removed mailbox's people (service.AccessSnapshot): the zero value,
-	// service.RemovedAsKept, as for a live one until it is deleted for good;
-	// service.RemovedAsNobody, as the rules here see it. What this server
-	// refuses is the same either way. Only a binary that embeds the daemon
-	// sets it: there is no environment variable, and `serve` never does.
-	RemovedInSnapshot service.RemovedInSnapshot
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -318,7 +311,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
-		Freshness: opts.Freshness, RemovedInSnapshot: opts.RemovedInSnapshot,
+		Freshness: opts.Freshness,
 	})
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err

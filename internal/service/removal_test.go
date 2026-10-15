@@ -11,6 +11,7 @@ import (
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/provider/providertest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -442,7 +443,8 @@ func TestRecoveryRestoresQualifyingReadersButNoKeyAccess(t *testing.T) {
 	}
 
 	f.removed(t, tm.ana, tm.shared)
-	// Removed, it protects no reader: Dan leaves the team meanwhile.
+	// Dan, one of the three who would read it once recovered, leaves the
+	// team meanwhile.
 	if err := f.svc.RemoveMember(ctx, tm.ana, tm.id, dan.UserID); err != nil {
 		t.Fatalf("removing Dan while the mailbox is removed: %v", err)
 	}
@@ -462,15 +464,18 @@ func TestRecoveryRestoresQualifyingReadersButNoKeyAccess(t *testing.T) {
 	}
 
 	// A team mailbox nobody who could read it is left to read is not
-	// recovered: it is deleted for good and linked again.
+	// recovered: it is deleted for good and linked again. Kept, it protects
+	// Bea, its last reader, so only closing her with force leaves it so.
 	alone := "acc_00000000000000dd"
 	tm.link(t, f, alone, "alone@mail.example")
 	f.connect(t, alone)
 	tm.grant(t, alone, workspace.Flags{Read: true})
 	f.exec(t, `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, alone, tm.ana.UserID)
 	f.removed(t, tm.ana, alone)
-	if err := f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.bea.UserID); err != nil {
-		t.Fatalf("removing Bea, its last reader, while it is removed: %v", err)
+	err = f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.bea.UserID)
+	wantCode(t, "removing Bea, its last reader, while it is removed", err, service.CodeConflict)
+	if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com", Force: true}); err != nil {
+		t.Fatalf("disabling Bea, its last reader, with force: %v", err)
 	}
 	listed, err := f.svc.ListRemovedMailboxes(ctx, tm.ana, tm.id)
 	if err != nil || len(listed) != 1 || listed[0].Readers != 0 || !listed[0].NoReader {
@@ -675,4 +680,143 @@ func authPersonal(t *testing.T, f *fixture, p service.Principal) string {
 		t.Fatal(err)
 	}
 	return w.ID
+}
+
+// lastKeptReader is the support team's mailbox Bea alone reads, Ana its
+// linker reading nothing of it, removed by Ana since: Bea would read it
+// once it is recovered.
+func lastKeptReader(t *testing.T, f *fixture) keysTeam {
+	t.Helper()
+	tm := newKeysTeam(t, f)
+	f.connect(t, tm.shared)
+	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	f.exec(t, `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.ana.UserID)
+	f.removed(t, tm.ana, tm.shared)
+	return tm
+}
+
+// refusesClosingBea checks what protects Bea while she is the last person
+// who would read the removed mailbox: her place in the team, and closing
+// her account without force.
+func refusesClosingBea(t *testing.T, f *fixture, tm keysTeam) {
+	t.Helper()
+	ctx := t.Context()
+	disabled := "disabled"
+	_, err := f.svc.SetMember(ctx, tm.ana, tm.id, tm.bea.UserID, service.MemberRequest{Status: &disabled})
+	wantCode(t, "Ana disabling Bea", err, service.CodeConflict)
+	wantCode(t, "Ana removing Bea", f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.bea.UserID), service.CodeConflict)
+	_, err = f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	wantCode(t, "disabling Bea without force", err, service.CodeConflict)
+	_, err = f.svc.DeleteUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	wantCode(t, "deleting Bea without force", err, service.CodeConflict)
+	members, err := f.svc.ListMembers(ctx, tm.ana, tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range members {
+		if m.UserID == tm.bea.UserID && !slices.Equal(m.LastReaderOf, []string{tm.shared}) {
+			t.Errorf("Bea is listed as the last reader of %v, want the removed mailbox", m.LastReaderOf)
+		}
+	}
+}
+
+func TestARemovedMailboxKeepsProtectingItsLastReaderUntilItsPurge(t *testing.T) {
+	f := newFixture(t)
+	tm := lastKeptReader(t, f)
+	ctx := t.Context()
+
+	refusesClosingBea(t, f, tm)
+	if n := f.count(t, `SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND read = 1`,
+		tm.shared, tm.bea.UserID); n != 1 {
+		t.Fatal("a refused change took Bea's flag on the removed mailbox")
+	}
+	// Recovered, she reads it again: what the protection kept it for.
+	if _, err := f.svc.RecoverAccount(ctx, tm.ana, tm.shared); err != nil {
+		t.Fatal(err)
+	}
+	if a := accessOf(t, f, tm.bea, tm.shared); !a.Access.Read {
+		t.Errorf("Bea holds %+v on the recovered mailbox", a.Access)
+	}
+
+	// Removed again and deleted for good by its owner, it protects nobody.
+	f.removed(t, tm.ana, tm.shared)
+	if err := f.svc.PurgeAccount(ctx, tm.ana, tm.shared, service.PurgeAccountRequest{Confirm: tm.shared}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.bea.UserID); err != nil {
+		t.Errorf("removing Bea once the mailbox is deleted for good: %v", err)
+	}
+}
+
+func TestThePurgeEndsARemovedMailboxsProtection(t *testing.T) {
+	// Removed more than 30 days ago, the mailbox Bea alone would read
+	// protects her until the sweep deletes it for good.
+	f := newFixture(t)
+	tm := newKeysTeam(t, f)
+	ctx := t.Context()
+	f.connect(t, tm.shared)
+	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	f.exec(t, `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.ana.UserID)
+	f.exec(t, `UPDATE accounts SET removed_at = 900, removed_by = ?, purge_after = 900 + 2592000 WHERE id = ?`,
+		tm.ana.UserID, tm.shared)
+
+	refusesClosingBea(t, f, tm)
+	if purged, _, err := f.svc.SweepRemovedMailboxes(ctx, time.Hour); err != nil || purged != 1 {
+		t.Fatalf("the sweep deleted %d mailboxes (%v), want the one past its 30 days", purged, err)
+	}
+	if err := f.svc.RemoveMember(ctx, tm.ana, tm.id, tm.bea.UserID); err != nil {
+		t.Errorf("removing Bea once the sweep deleted the mailbox for good: %v", err)
+	}
+}
+
+func TestClosingTheLastKeptReaderOfARemovedTeamMailboxNeedsForceAndStrandsIt(t *testing.T) {
+	f := newFixture(t)
+	tm := lastKeptReader(t, f)
+	ctx := t.Context()
+
+	_, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com"})
+	wantCode(t, "disabling Bea without force", err, service.CodeConflict)
+	if !strings.Contains(err.Error(), tm.shared) {
+		t.Errorf("the refusal %q does not name the removed mailbox", err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE kind = 'stranded'`); n != 0 {
+		t.Fatalf("a refused closure journaled %d strandings", n)
+	}
+	if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "bea@example.com", Force: true}); err != nil {
+		t.Fatalf("disabling Bea with force: %v", err)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE kind = 'stranded' AND account_id = ? AND cause = ?
+		AND lost_user = ?`, tm.shared, store.CauseDisabled, tm.bea.UserID); n != 1 {
+		t.Errorf("%d strandings of the removed mailbox name Bea, want one", n)
+	}
+	// Nobody who could read it is left: it is not recovered.
+	_, err = f.svc.RecoverAccount(ctx, tm.ana, tm.shared)
+	wantCode(t, "recovering the mailbox nobody can read", err, service.CodeConflict)
+}
+
+func TestARemovedMailboxStillReachesNobody(t *testing.T) {
+	// Bea is protected as the removed mailbox's last reader, and reaches
+	// nothing of it: not in her list, not found, given and taken nothing.
+	f := newFixture(t)
+	tm := lastKeptReader(t, f)
+	ctx := t.Context()
+
+	if slices.Contains(ids(t, f, tm.bea), tm.shared) {
+		t.Error("Bea lists the removed mailbox")
+	}
+	_, err := f.svc.GetAccount(ctx, tm.bea, tm.shared)
+	wantCode(t, "Bea reading the removed mailbox's card", err, service.CodeNotFound)
+	_, err = f.svc.SetAccess(ctx, tm.ana, tm.shared, tm.carol.UserID, grantRequest(true, false, false, false))
+	wantCode(t, "Ana giving Carol read on it", err, service.CodeNotFound)
+	err = f.svc.RevokeAccess(ctx, tm.ana, tm.shared, tm.bea.UserID, workspace.Flags{})
+	wantCode(t, "Ana taking Bea's read", err, service.CodeNotFound)
+	directory, err := f.svc.AccessDirectory(ctx, tm.ana, tm.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mb := range directory {
+		if mb.AccountID == tm.shared {
+			t.Error("the access directory lists the removed mailbox")
+		}
+	}
 }

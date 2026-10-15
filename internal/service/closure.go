@@ -30,10 +30,11 @@ import (
 // request that arrived by email and was verified — and for an owner of the
 // instance signed in to the console, who administers its people, never on
 // themselves. A person their teams depend on — a local team's last active
-// owner, the last person who can read a mailbox of a team that outlives them, or the
-// person whose consent a team mailbox someone else reads still syncs under —
-// is refused unless the caller insists (force), as the last owner of the
-// instance is.
+// owner, the last person who can read a mailbox of a team that outlives them
+// (a removed one they would read once recovered included, until it is
+// deleted for good), or the person whose consent a team mailbox someone else
+// reads still syncs under — is refused unless the caller insists (force), as
+// the last owner of the instance is.
 
 // CloseUserRequest names the person whose account is being closed. Their
 // address travels in the body, never in the URL, where every proxy on the way
@@ -475,20 +476,24 @@ func fromClosure(err error, what string) error {
 	switch {
 	case errors.As(err, &blocked):
 		// The ids, so whoever is closing the account can see to each first:
-		// make another member an owner, give another member read, or insist.
+		// make another member an owner, give another member read (on a
+		// removed mailbox, once it is recovered), delete a removed one for
+		// good, or insist.
 		var parts []string
 		if len(blocked.LastOwnerOf) > 0 {
 			parts = append(parts, "the last active owner of the teams "+strings.Join(blocked.LastOwnerOf, ", "))
 		}
 		if len(blocked.LastReaderOf) > 0 {
-			parts = append(parts, "the last person who can read the team mailboxes "+strings.Join(blocked.LastReaderOf, ", "))
+			parts = append(parts, "the last person who can read the team mailboxes "+strings.Join(blocked.LastReaderOf, ", ")+
+				" (a removed one counts until it is deleted for good)")
 		}
 		if len(blocked.BoundTo) > 0 {
 			parts = append(parts, "the person under whose own consent the team mailboxes "+strings.Join(blocked.BoundTo, ", ")+
 				" still sync since the upgrade, which closing them stops, deleting their index for everyone who reads them")
 		}
 		return E(CodeConflict, "that person is "+strings.Join(parts, ", and ")+
-			"; make another member an owner, give another member read, or have an owner or an admin of the team "+
+			"; make another member an owner, give another member read (an owner recovers a removed mailbox first, "+
+			"or deletes it for good), or have an owner or an admin of the team "+
 			"turn the mailbox's sync on for the team, first, or pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people "+

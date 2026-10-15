@@ -13,8 +13,12 @@ import (
 // extension that reports it to the directory its workspaces come from
 // (docs/workspaces.md, "Following an external directory"). It decides
 // nothing: each answer is the one reading rule's (store.ReaderSQL and its
-// fragments) and the one sync rule's (store.PauseSQL), read in one
-// transaction. No transport calls it.
+// fragments), the last reader's and the one sync rule's (store.PauseSQL),
+// read in one transaction. A removed mailbox is reported as for a live one
+// until it is deleted for good: who would read it, wait for its key and
+// hold its key once it is recovered, and its kept last readers as
+// protected, which they are in what this server refuses too. No transport
+// calls it.
 
 // SnapshotPause is why a live mailbox does not sync, the first that holds;
 // empty when it syncs, and on a removed mailbox.
@@ -37,23 +41,6 @@ const (
 const (
 	SnapshotMaxMailboxes = workspace.SnapshotMaxMailboxes
 	SnapshotMaxPeople    = workspace.SnapshotMaxPeople
-)
-
-// RemovedInSnapshot is what a snapshot says of a removed mailbox's people:
-// the one switch between the two rules a directory may ask for.
-type RemovedInSnapshot int
-
-const (
-	// RemovedAsKept, the default, reports a removed mailbox's people as for
-	// a live one: who would read it, wait for its key and hold its key once
-	// it is recovered, and its kept last readers as protected, until it is
-	// deleted for good. A removed mailbox here still has no reader and
-	// protects nobody in what this server refuses: only what the snapshot
-	// says follows the directory's rule.
-	RemovedAsKept RemovedInSnapshot = iota
-	// RemovedAsNobody reports a removed mailbox as the rules here see it:
-	// nobody reads it, waits for its key, holds its key or is protected.
-	RemovedAsNobody
 )
 
 // AccessSnapshot is a followed workspace's mailboxes and who holds what on
@@ -83,7 +70,8 @@ type SnapshotMailbox struct {
 	// People hold a flag on it or a sealed grant.
 	People []SnapshotPerson
 	// Protected are the people a team mailbox cannot lose: each the only
-	// one who reads it. None in a personal workspace.
+	// one who reads it, or on a removed one would read it once recovered.
+	// None in a personal workspace.
 	Protected []string
 }
 
@@ -95,7 +83,8 @@ type SnapshotPerson struct {
 	Flags workspace.Flags
 	// Reads: they read it now. Waiting: they hold read without its key yet.
 	// Enrolled: they have an account key. HoldsKey: they hold a sealed grant
-	// at its current epoch, read or not, a suspended person included.
+	// at its current epoch, read or not, a suspended person included. On a
+	// removed mailbox, each as once it is recovered.
 	Reads, Waiting, Enrolled, HoldsKey bool
 }
 
@@ -130,9 +119,7 @@ func (s *Service) AccessSnapshot(ctx context.Context, workspaceID string) (Acces
 	//nolint:errcheck // a read-only transaction: rolling back loses nothing
 	defer func() { _ = tx.Rollback() }()
 	measured := s.now()
-	read, err := workspace.SnapshotTx(ctx, tx, workspaceID, workspace.SnapshotOptions{
-		RemovedAsLive: s.removedInSnapshot == RemovedAsKept, Withheld: s.teamsWithheld,
-	})
+	read, err := workspace.SnapshotTx(ctx, tx, workspaceID, workspace.SnapshotOptions{Withheld: s.teamsWithheld})
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		return AccessSnapshot{}, errNoSnapshotWorkspace

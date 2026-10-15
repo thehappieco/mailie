@@ -31,10 +31,16 @@ import (
 // force (the reset deletes their grants, so it takes read only on a mailbox
 // that has a key). Not guarded: removing the mailbox itself, and role
 // changes, which change no read. A removed mailbox has no reader while it is
-// kept (store.LiveSQL), so it protects nobody: its readers may leave while
-// it is kept. Each check runs inside the transaction that
-// would break the rule; the database has one writer, so two changes that
-// would each leave one reader are ordered, and the second is refused.
+// kept (store.LiveSQL), but it keeps protecting until it is deleted for
+// good: who would read it once recovered (store.KeptReaderSQL, and the
+// other Kept fragments for whom it waits or is held for) counts here as who
+// reads a live one does, so that a recovery within its 30 days brings back
+// a mailbox someone can still read. Its last such reader is refused what
+// the last reader of a live one is, and a change no protection refuses
+// strands it as it would a live one; deleting it for good ends that, with
+// its grants. Each check runs inside the transaction that would break the
+// rule; the database has one writer, so two changes that would each leave
+// one reader are ordered, and the second is refused.
 
 // lastReaders narrows lastReaderOf.
 type lastReaders struct {
@@ -57,7 +63,7 @@ type lastReaders struct {
 	// person's grants, and nothing else, takes read from.
 	keyed bool
 	// orSuspended counts, for the person asked about, the mailboxes they
-	// would read once resumed (store.SuspendedReaderSQL) as well as those
+	// would read once resumed (store.KeptSuspendedReaderSQL) as well as those
 	// they read now: what closing a suspended person takes from them for
 	// good, since a disable here deletes their grants and a deletion
 	// everything of theirs. Only the person's own closure asks it
@@ -73,23 +79,35 @@ type lastReaders struct {
 	strand bool
 }
 
-// anyReaderSQL is the condition, over mailbox_access aliased alias, that its
-// holder reads the mailbox, would read it once resumed, or would read it but
-// for a hold: whom a mailbox is kept for.
-func anyReaderSQL(alias string) string {
-	return `(` + store.ReaderSQL(alias) + ` OR ` + store.SuspendedReaderSQL(alias) + ` OR ` +
-		store.HeldReaderSQL(alias) + `)`
+// protectedSQL is the condition, over mailbox_access aliased alias, that the
+// last-reader protection counts its holder as a reader: they read the
+// mailbox, or, on a removed one, would read it once recovered
+// (store.KeptReaderSQL). On a live mailbox it is the one rule
+// (store.ReaderSQL); a removed one keeps protecting until it is deleted for
+// good, which takes its grants with it.
+func protectedSQL(alias string) string {
+	return store.KeptReaderSQL(alias)
 }
 
-// lastReaderOf lists the team mailboxes userID is the only reader of, oldest
-// first, among those in narrows to.
+// anyReaderSQL is the condition, over mailbox_access aliased alias, that its
+// holder reads the mailbox, would read it once resumed, or would read it but
+// for a hold, on a removed mailbox as once it is recovered: whom a mailbox is
+// kept for.
+func anyReaderSQL(alias string) string {
+	return `(` + protectedSQL(alias) + ` OR ` + store.KeptSuspendedReaderSQL(alias) + ` OR ` +
+		store.KeptHeldReaderSQL(alias) + `)`
+}
+
+// lastReaderOf lists the team mailboxes userID is the only reader of, live
+// or removed and kept (protectedSQL), oldest first, among those in narrows
+// to.
 func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders) ([]string, error) {
-	reads, others := store.ReaderSQL("g"), store.ReaderSQL("o")
+	reads, others := protectedSQL("g"), protectedSQL("o")
 	switch {
 	case in.strand:
 		reads, others = anyReaderSQL("g"), anyReaderSQL("o")
 	case in.orSuspended:
-		reads = `(` + reads + ` OR ` + store.SuspendedReaderSQL("g") + `)`
+		reads = `(` + reads + ` OR ` + store.KeptSuspendedReaderSQL("g") + `)`
 	}
 	query := `SELECT a.id FROM accounts a
 		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
@@ -132,14 +150,15 @@ type StrandScope struct {
 }
 
 // StrandCandidatesTx lists, inside the caller's transaction and before the
-// change, the live team mailboxes a change that takes userID's reading would
+// change, the team mailboxes a change that takes userID's reading would
 // leave stranded (docs/workspaces.md, "Removed mailboxes"): those they read,
 // would read once resumed (store.SuspendedReaderSQL) or would read but for a
-// hold (store.HeldReaderSQL), where no other person is any of the three. A
-// mailbox another person's hold keeps strands once, when the last of those
-// holds ends, naming that person. Oldest first. It refuses nothing: the
-// caller journals what it returns (JournalStrandedTx) once the change is
-// decided, while the person still exists.
+// hold (store.HeldReaderSQL), where no other person is any of the three — a
+// removed mailbox, until it is deleted for good, as once it is recovered
+// (the Kept fragments). A mailbox another person's hold keeps strands once,
+// when the last of those holds ends, naming that person. Oldest first. It
+// refuses nothing: the caller journals what it returns (JournalStrandedTx)
+// once the change is decided, while the person still exists.
 func StrandCandidatesTx(ctx context.Context, tx *sql.Tx, userID string, in StrandScope) ([]string, error) {
 	return lastReaderOf(ctx, tx, userID, lastReaders{
 		workspaceID: in.WorkspaceID, outlived: in.Outlived, keyed: in.Keyed, strand: true,
@@ -148,8 +167,9 @@ func StrandCandidatesTx(ctx context.Context, tx *sql.Tx, userID string, in Stran
 
 // LastReaderOfKeyedTx lists, inside the caller's transaction, the team
 // mailboxes that have a key and that userID is the only reader of, in every
-// team: what deleting the person's grants while they stay, in teams that stay
-// with them, must not leave behind (the reset of their account key,
+// team, a removed one they alone would read once recovered included: what
+// deleting the person's grants while they stay, in teams that stay with
+// them, must not leave behind (the reset of their account key,
 // docs/key-scheme.md section 12.6). A mailbox without a key is left out: they
 // keep reading it by the flag, which the reset does not take. Unlike
 // BlocksTx's LastReaderOf, a local team whose only member is the person
@@ -204,7 +224,8 @@ func readsNow(ctx context.Context, q querier, accountID, userID string) (bool, e
 
 // requireAnotherReaderTx refuses, inside the caller's transaction, a change
 // that takes read on accountIDs from userID when they are the last reader of
-// one of them (ErrLastReader).
+// one of them (ErrLastReader). Only a live mailbox's grant changes: nothing
+// is given or taken on a removed one.
 func requireAnotherReaderTx(ctx context.Context, tx *sql.Tx, userID string, accountIDs []string) error {
 	if len(accountIDs) == 0 {
 		return nil
@@ -221,8 +242,8 @@ func requireAnotherReaderTx(ctx context.Context, tx *sql.Tx, userID string, acco
 
 // requireNotLastReaderInTx refuses, inside the caller's transaction, a change
 // that takes userID's place in a workspace — disabling or removing their
-// membership — while they are the last reader of one of its team mailboxes
-// (ErrLastReader).
+// membership — while they are the last reader of one of its team mailboxes,
+// live or removed and kept (ErrLastReader).
 func requireNotLastReaderInTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error {
 	last, err := lastReaderOf(ctx, tx, userID, lastReaders{workspaceID: workspaceID})
 	if err != nil {
@@ -235,8 +256,8 @@ func requireNotLastReaderInTx(ctx context.Context, tx *sql.Tx, workspaceID, user
 }
 
 // LastReaders maps each person to the team mailboxes of a workspace they are
-// the only reader of: what a listing marks in advance, so a console can
-// explain before anyone tries.
+// the only reader of, live or removed and kept (protectedSQL): what a
+// listing marks in advance, so a console can explain before anyone tries.
 func (r *Repository) LastReaders(ctx context.Context, workspaceID string) (map[string][]string, error) {
 	return lastReadersIn(ctx, r.store.Reader(), workspaceID)
 }
@@ -245,9 +266,9 @@ func lastReadersIn(ctx context.Context, q querier, workspaceID string) (map[stri
 	rows, err := q.QueryContext(ctx, `SELECT g.user_id, a.id FROM accounts a
 		  JOIN workspaces w ON w.id = a.workspace_id AND w.kind = 'team'
 		  JOIN mailbox_access g ON g.account_id = a.id
-		 WHERE a.workspace_id = ?1 AND `+store.ReaderSQL("g")+`
+		 WHERE a.workspace_id = ?1 AND `+protectedSQL("g")+`
 		   AND NOT EXISTS (SELECT 1 FROM mailbox_access o
-		                    WHERE o.account_id = a.id AND o.user_id <> g.user_id AND `+store.ReaderSQL("o")+`)
+		                    WHERE o.account_id = a.id AND o.user_id <> g.user_id AND `+protectedSQL("o")+`)
 		 ORDER BY a.created_at, a.rowid`, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("workspace: read the last readers: %w", err)

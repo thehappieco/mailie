@@ -510,3 +510,23 @@ func TestEndingTheLastOfTwoHeldMembershipsStrandsTheMailboxOnceNamingThatPerson(
 		t.Errorf("the journal holds %v, want one stranding naming Cy", got)
 	}
 }
+
+func TestEndingTheMembershipOfARemovedMailboxsLastKeptReaderIsHeldOrStrandsIt(t *testing.T) {
+	// A removed mailbox Bea alone would read once recovered is kept for her
+	// as a live one is: her end is held while the directory's generation is
+	// unconfirmed, and strands it, journaled, once it ends.
+	f := newFixture(t)
+	ana, bea, box := heldTeam(t, f)
+	f.remove(box, ana.ID)
+
+	if res := f.end(mirroredTeam, bea.ID, true); !res.Held || len(res.Stranded) != 0 {
+		t.Fatalf("ending Bea's membership while it would strand the removed mailbox: %+v, want it held", res)
+	}
+	res := f.end(mirroredTeam, bea.ID, false)
+	if res.Held || len(res.Stranded) != 1 || res.Stranded[0].AccountID != box {
+		t.Errorf("ending her held membership: %+v, want the removed mailbox stranded", res)
+	}
+	if got := f.stranded(); !slices.Equal(got, []string{box + " " + store.CauseMembershipEnded + " directory " + bea.ID}) {
+		t.Errorf("the journal holds %v, want one stranding naming Bea", got)
+	}
+}

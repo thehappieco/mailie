@@ -1090,10 +1090,14 @@ it (section 12.13).
   directory's decision ("Being stranded", above).
 - **Being removed** (`docs/workspaces.md`, "Removed mailboxes") takes nothing either: a removed
   mailbox keeps its key, its grants and its readers' flags for its 30 days, and nobody reads it,
-  waits for its key, is supplied it or is its last reader meanwhile (the first bullet holds only
-  on a live mailbox); nothing is granted or keyed on it. A recovery by its owners brings back
-  exactly who qualifies by the first bullet then, and gives nobody anything; a team mailbox nobody
-  qualifies for is not recovered. Deleted for good, it goes with its key and its grants.
+  waits for its key or is supplied it meanwhile (the first bullet holds only on a live mailbox);
+  nothing is granted or keyed on it. It keeps its last reader all the same: who would read it once
+  recovered, by the first bullet on it as if it were live, is protected as the last reader of a
+  live one is, so that a recovery within its 30 days brings back a mailbox someone can still open.
+  A recovery by its owners brings back exactly who qualifies by the first bullet then, and gives
+  nobody anything; a team mailbox nobody qualifies for (only a forced change or an external
+  directory leaves one so) is not recovered. Deleted for good, it goes with its key and its
+  grants, and its protection ends.
 
 ### 12.14 Mailboxes without a key
 
@@ -1735,7 +1739,7 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     holds only on a live mailbox (`store.LiveSQL`), one term inside the rule rather than a gate
     beside it, unlike a closed team's: a removed mailbox has no reader for access, sync, the
     last-reader protection, a first key or a supply, and protects none, so its readers may leave,
-    be disabled or be deleted while it is kept.
+    be disabled or be deleted while it is kept (changed on 2026-10-15, below: it keeps protecting).
   - **Nothing is given on it.** The schema refuses a grant, a key, a sealed grant, a key's access
     or an instance key's restriction on a removed mailbox, and a flag rising there; what takes
     something away stays allowed, so that a person leaving or deleted while it is kept loses their
@@ -1756,3 +1760,16 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     local team's or a personal workspace's membership, and a held membership that is active.
   - **The threat model's section 5.13** applies to a hold as to a suspension: whoever controls the
     directory decides, by listing the membership again, who reads again.
+- Version 1, removed mailboxes keep protecting (2026-10-15). No byte changed. Section 12.13's
+  "Being removed" now keeps a removed mailbox's last reader until it is deleted for good: a
+  recovery within its 30 days must bring back a mailbox someone can still open, and a key nobody
+  holds cannot be given again. What the code had to choose, recorded here:
+  - **The reader rule is unchanged for every use.** A removed mailbox still has no reader for
+    access, sync, a first key or a supply (`store.LiveSQL` inside `store.ReaderSQL`); the
+    protections count who would read it once recovered instead (`store.KeptReaderSQL`, with
+    `store.KeptSuspendedReaderSQL` and `store.KeptHeldReaderSQL` for whom it waits or is held
+    for), in one place (`workspace/reader.go`): the last reader's refusals, closing a person and a
+    reset without force, what a forced change or an external directory strands and holds, and what
+    the listings and the snapshot report.
+  - **Deleting it for good ends it** with the grants, whoever deletes it: the sweep, its owners,
+    the operator, or a person's closure that takes it.

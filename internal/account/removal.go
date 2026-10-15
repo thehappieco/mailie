@@ -18,7 +18,9 @@ import (
 // sends, key, grants and consent, for RemovedKeptFor, used by nothing
 // meanwhile: it is not found by anyone (Get, Visibility), dials nothing and
 // refreshes nothing (Registry.Mailbox), syncs nothing and has no reader
-// (store.LiveSQL). What keys held on it goes at once — what an instance key
+// (store.LiveSQL), though whoever would read it once recovered stays
+// protected as its last reader until it is deleted for good (workspace's
+// last reader). What keys held on it goes at once — what an instance key
 // was restricted to and what a workspace key held — and so do the consent
 // attempts under way on it; nothing of that comes back. Within those days it
 // may be recovered, which clears the removal and holds its sync until

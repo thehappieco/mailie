@@ -63,10 +63,11 @@ var (
 
 // BlockedError is a person whose teams depend on them: the last active owner
 // of a team other active members remain in, the last person who can read a
-// team mailbox of a team that outlives them, or the person a team mailbox
-// someone else reads still syncs under the consent of (migration 0011).
-// Disabling or deleting them is refused unless the caller insists; Blocks
-// says which teams and mailboxes.
+// team mailbox of a team that outlives them (a removed one they would read
+// once recovered included, until it is deleted for good), or the person a
+// team mailbox someone else reads still syncs under the consent of
+// (migration 0011). Disabling or deleting them is refused unless the caller
+// insists; Blocks says which teams and mailboxes.
 type BlockedError struct {
 	workspace.Blocks
 }

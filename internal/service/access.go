@@ -237,8 +237,9 @@ func fromWorkspace(err error, what string) error {
 	case errors.Is(err, workspace.ErrLastOwner):
 		return E(CodeConflict, "that is the last active owner of the team; make another member an owner first", err)
 	case errors.Is(err, workspace.ErrLastReader):
-		return E(CodeConflict, "that is the last person who can read a mailbox of the workspace; "+
-			"give another member read on it first, or remove the mailbox", err)
+		return E(CodeConflict, "that is the last person who can read a mailbox of the workspace, a removed one "+
+			"included until it is deleted for good; give another member read on it first (an owner recovers a "+
+			"removed one first), or delete the mailbox for good", err)
 	case errors.Is(err, workspace.ErrHoldsMailboxes):
 		return E(CodeConflict, "the workspace still holds mailboxes", err)
 	case errors.Is(err, workspace.ErrClosed):

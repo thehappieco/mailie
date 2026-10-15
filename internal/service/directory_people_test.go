@@ -449,7 +449,10 @@ func TestAPendingDeletionKeepsItsActorAfterThePersonIsForgotten(t *testing.T) {
 	f := newDirectoryFixture(t)
 	bea, removed, _ := removedByBea(t, f)
 	f.forget(t, "bea@example.com", 2)
-	if got := f.journalOf(t, removed); !slices.Equal(got, []string{"removed " + bea.UserID + " "}) {
+	// She alone would read it once recovered: forgetting her strands it, as
+	// it would a live one, naming her too.
+	if got := f.journalOf(t, removed); !slices.Equal(got,
+		[]string{"removed " + bea.UserID + " ", "stranded directory " + bea.UserID}) {
 		t.Errorf("the removal Bea made says %v once she is forgotten, want her name kept until released", got)
 	}
 }
@@ -469,7 +472,7 @@ func TestReleasingAPersonBlanksTheirActorAndLostUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := append(f.journalOf(t, removed), f.journalOf(t, read)...); !slices.Equal(got,
-		[]string{"removed  ", "stranded directory "}) {
+		[]string{"removed  ", "stranded directory ", "stranded directory "}) {
 		t.Errorf("once Bea is released the journal says %v", got)
 	}
 	if people, err := f.svc.DirectoryPeople(ctx, dirIssuer); err != nil || len(people) != 0 {

@@ -15,25 +15,24 @@ import (
 // A snapshot of who holds what on a workspace's mailboxes (snapshot.go): what
 // an extension reports elsewhere, read by the one rule, at one moment.
 
-// snapshot reads a workspace's snapshot in a read of its own, removed
-// mailboxes reported as live when asLive says so.
-func (f *fixture) snapshot(workspaceID string, asLive bool) workspace.Snapshot {
+// snapshot reads a workspace's snapshot in a read of its own.
+func (f *fixture) snapshot(workspaceID string) workspace.Snapshot {
 	f.t.Helper()
-	s, err := f.trySnapshot(workspaceID, asLive)
+	s, err := f.trySnapshot(workspaceID)
 	if err != nil {
 		f.t.Fatalf("the snapshot of %s: %v", workspaceID, err)
 	}
 	return s
 }
 
-func (f *fixture) trySnapshot(workspaceID string, asLive bool) (workspace.Snapshot, error) {
+func (f *fixture) trySnapshot(workspaceID string) (workspace.Snapshot, error) {
 	f.t.Helper()
 	tx, err := f.db.ReadTx(f.t.Context())
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	return workspace.SnapshotTx(f.t.Context(), tx, workspaceID, workspace.SnapshotOptions{RemovedAsLive: asLive})
+	return workspace.SnapshotTx(f.t.Context(), tx, workspaceID, workspace.SnapshotOptions{})
 }
 
 // mailboxOf is a mailbox of a snapshot.
@@ -84,7 +83,7 @@ func TestASnapshotListsLiveAndRemovedMailboxesWithTheirState(t *testing.T) {
 	purged := f.link(support.ID, ana.ID, "purged@example.org")
 	f.exec(`DELETE FROM accounts WHERE id = ?`, purged.ID)
 
-	s := f.snapshot(support.ID, true)
+	s := f.snapshot(support.ID)
 	if s.WorkspaceID != support.ID || s.Kind != workspace.KindTeam || s.Closed {
 		t.Fatalf("the snapshot's workspace: %+v", s)
 	}
@@ -106,15 +105,15 @@ func TestASnapshotListsLiveAndRemovedMailboxesWithTheirState(t *testing.T) {
 	personal := f.personal(ana.ID)
 	own := f.link(personal, ana.ID, "ana@mail.example.org")
 	f.exec(`UPDATE accounts SET state = 'active' WHERE id = ?`, own.ID)
-	ps := f.snapshot(personal, true)
+	ps := f.snapshot(personal)
 	if ps.Kind != workspace.KindPersonal || len(ps.Mailboxes) != 1 || ps.Mailboxes[0].Pause != store.PauseConsentOff {
 		t.Errorf("Ana's personal snapshot: %+v", ps)
 	}
 	f.exec(`UPDATE users SET sync_consent_at = 900, sync_consent_version = 'sync-1' WHERE id = ?`, ana.ID)
-	if ps := f.snapshot(personal, true); ps.Mailboxes[0].Pause != "" {
+	if ps := f.snapshot(personal); ps.Mailboxes[0].Pause != "" {
 		t.Errorf("Ana's own mailbox under her consent: pause %q", ps.Mailboxes[0].Pause)
 	}
-	if _, err := f.trySnapshot("wsp_nobodyknows", true); !errors.Is(err, workspace.ErrNotFound) {
+	if _, err := f.trySnapshot("wsp_nobodyknows"); !errors.Is(err, workspace.ErrNotFound) {
 		t.Errorf("the snapshot of a workspace nobody knows: %v", err)
 	}
 }
@@ -147,7 +146,7 @@ func TestASnapshotsPeopleFollowTheReaderRule(t *testing.T) {
 	f.exec(`UPDATE workspace_members SET status = 'disabled', held_at = 950 WHERE workspace_id = ? AND user_id = ?`,
 		team.ID, fay.ID)
 
-	mb := mailboxOf(t, f.snapshot(team.ID, true), box.ID)
+	mb := mailboxOf(t, f.snapshot(team.ID), box.ID)
 	type row struct {
 		read, manage, reads, waiting, enrolled, holds bool
 	}
@@ -182,12 +181,12 @@ func TestASnapshotsPeopleFollowTheReaderRule(t *testing.T) {
 	}
 }
 
-func TestARemovedMailboxIsReportedAsLiveByDefaultInASnapshot(t *testing.T) {
+func TestARemovedMailboxIsReportedAsLiveInASnapshotUntilItsPurge(t *testing.T) {
 	// Ana alone reads a keyed team mailbox, which is removed: reported as
 	// live, she reads it, holds its key and is protected, as she would be
-	// once it is recovered; Bea, waiting for its key, still waits. Nothing
-	// here changes: she reads nothing, and protects nothing in what this
-	// server refuses.
+	// once it is recovered, and as the protection here counts her; Bea,
+	// waiting for its key, still waits. She reads nothing here meanwhile.
+	// Deleted for good, it leaves the snapshot.
 	f := newFixture(t)
 	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
 	support := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
@@ -198,7 +197,7 @@ func TestARemovedMailboxIsReportedAsLiveByDefaultInASnapshot(t *testing.T) {
 	f.exec(`DELETE FROM mailbox_grants WHERE account_id = ? AND user_id = ?`, box.ID, bea.ID)
 	f.remove(box.ID, ana.ID)
 
-	mb := mailboxOf(t, f.snapshot(support.ID, true), box.ID)
+	mb := mailboxOf(t, f.snapshot(support.ID), box.ID)
 	if a, _ := personOf(mb, ana.ID); !a.Reads || !a.HoldsKey || a.Waiting {
 		t.Errorf("Ana on the removed mailbox, reported as live: %+v", a)
 	}
@@ -211,32 +210,13 @@ func TestARemovedMailboxIsReportedAsLiveByDefaultInASnapshot(t *testing.T) {
 	if f.reads(box.ID, ana.ID) || f.hasReader(box.ID) {
 		t.Error("a snapshot made Ana a reader of a removed mailbox here")
 	}
-}
-
-func TestARemovedMailboxProtectsNobodyAndHoldsNoKeyInASnapshot(t *testing.T) {
-	// The other way of the one switch: a removed mailbox as the rules here
-	// see it.
-	f := newFixture(t)
-	ana, bea := f.person("ana@example.org"), f.person("bea@example.org")
-	support := f.team("Support", ana, map[string]workspace.Role{bea.ID: workspace.RoleMember})
-	box := f.link(support.ID, ana.ID, "support@example.org")
-	f.activate(box.ID)
-	f.grant(box.ID, bea.ID, readOnly())
-	authtest.KeyMailbox(t, f.db, box.ID, ana.ID)
-	f.exec(`DELETE FROM mailbox_grants WHERE account_id = ? AND user_id = ?`, box.ID, bea.ID)
-	f.remove(box.ID, ana.ID)
-
-	mb := mailboxOf(t, f.snapshot(support.ID, false), box.ID)
-	if !mb.Removed || mb.Pause != "" || len(mb.Protected) != 0 {
-		t.Errorf("the removed mailbox: removed %v, pause %q, protected %v", mb.Removed, mb.Pause, mb.Protected)
+	if last, err := f.ws.LastReaders(f.t.Context(), support.ID); err != nil || !slices.Equal(last[ana.ID], []string{box.ID}) {
+		t.Errorf("the last readers here: %v (%v), want Ana's, as the snapshot says", last, err)
 	}
-	if len(mb.People) != 2 {
-		t.Errorf("%d people listed on the removed mailbox, want the two who hold something", len(mb.People))
-	}
-	for _, p := range mb.People {
-		if p.Reads || p.Waiting || p.HoldsKey {
-			t.Errorf("%s on a removed mailbox: %+v, want nothing read, waited for or held", p.UserID, p)
-		}
+
+	f.exec(`DELETE FROM accounts WHERE id = ?`, box.ID)
+	if s := f.snapshot(support.ID); len(s.Mailboxes) != 0 {
+		t.Errorf("the snapshot once it is deleted for good: %+v", s.Mailboxes)
 	}
 }
 
@@ -251,7 +231,7 @@ func TestASuspendedHolderHoldsTheKeyButNeitherReadsNorWaitsNorIsProtected(t *tes
 	f.exec(`DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, box.ID, ana.ID)
 	f.suspend(bea.ID)
 
-	mb := mailboxOf(t, f.snapshot(support.ID, true), box.ID)
+	mb := mailboxOf(t, f.snapshot(support.ID), box.ID)
 	b, ok := personOf(mb, bea.ID)
 	if !ok || !b.HoldsKey || b.Reads || b.Waiting || !b.Flags.Read {
 		t.Errorf("Bea, suspended, holding the key: %+v (listed %v)", b, ok)
@@ -271,10 +251,10 @@ func TestASnapshotReadsIgnoreTheTeamsClosure(t *testing.T) {
 	box := f.link(support.ID, ana.ID, "support@example.org")
 	f.activate(box.ID)
 	f.grant(box.ID, bea.ID, readOnly())
-	open := mailboxOf(t, f.snapshot(support.ID, true), box.ID)
+	open := mailboxOf(t, f.snapshot(support.ID), box.ID)
 	f.exec(`UPDATE workspaces SET closed_at = 990 WHERE id = ?`, support.ID)
 
-	s := f.snapshot(support.ID, true)
+	s := f.snapshot(support.ID)
 	closed := mailboxOf(t, s, box.ID)
 	if !s.Closed || closed.Pause != store.PauseTeamClosed {
 		t.Errorf("the closed team: closed %v, pause %q", s.Closed, closed.Pause)
@@ -303,7 +283,7 @@ func TestASnapshotNeverHoldsAnAddress(t *testing.T) {
 	cased := f.link(support.ID, ana.ID, "orders@corp.example.org")
 	f.exec(`UPDATE accounts SET display_name = 'ORDERS desk' WHERE id = ?`, cased.ID)
 
-	s := f.snapshot(support.ID, true)
+	s := f.snapshot(support.ID)
 	labels := map[string]string{}
 	for _, mb := range s.Mailboxes {
 		labels[mb.ID] = mb.Label + " | " + mb.Hint
@@ -347,12 +327,12 @@ func TestASnapshotRefusesMoreThanItsLimits(t *testing.T) {
 		created_at, updated_at)
 		SELECT ?, ?, id, 0, 0, 0, 1, 'cli', 1, 1 FROM users WHERE id GLOB 'usr_crowd*' AND id <> 'usr_crowd0000001'`,
 		box.ID, support.ID)
-	if s, err := f.trySnapshot(support.ID, true); err != nil || len(mailboxOf(t, s, box.ID).People) != workspace.SnapshotMaxPeople {
+	if s, err := f.trySnapshot(support.ID); err != nil || len(mailboxOf(t, s, box.ID).People) != workspace.SnapshotMaxPeople {
 		t.Fatalf("a mailbox with as many people as a snapshot holds: %v", err)
 	}
 	f.exec(`INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage, granted_by,
 		created_at, updated_at) VALUES (?, ?, 'usr_crowd0000001', 0, 0, 0, 1, 'cli', 1, 1)`, box.ID, support.ID)
-	if _, err := f.trySnapshot(support.ID, true); !errors.Is(err, workspace.ErrSnapshotTooLarge) {
+	if _, err := f.trySnapshot(support.ID); !errors.Is(err, workspace.ErrSnapshotTooLarge) {
 		t.Errorf("one person too many: %v, want ErrSnapshotTooLarge", err)
 	}
 
@@ -364,11 +344,11 @@ func TestASnapshotRefusesMoreThanItsLimits(t *testing.T) {
 		SELECT printf('acc_many%07d', i), ?, printf('m%d@ops.example.org', i), 'imap', 'password', 'imap.example.org',
 		  993, 'smtp.example.org', 587, 'starttls', 'm', 1, 'active', 1, 1, 1 FROM n`,
 		workspace.SnapshotMaxMailboxes, other.ID)
-	if s, err := f.trySnapshot(other.ID, true); err != nil || len(s.Mailboxes) != workspace.SnapshotMaxMailboxes {
+	if s, err := f.trySnapshot(other.ID); err != nil || len(s.Mailboxes) != workspace.SnapshotMaxMailboxes {
 		t.Fatalf("a workspace with as many mailboxes as a snapshot holds: %v", err)
 	}
 	f.link(other.ID, ana.ID, "one-more@ops.example.org")
-	if _, err := f.trySnapshot(other.ID, true); !errors.Is(err, workspace.ErrSnapshotTooLarge) {
+	if _, err := f.trySnapshot(other.ID); !errors.Is(err, workspace.ErrSnapshotTooLarge) {
 		t.Errorf("one mailbox too many: %v, want ErrSnapshotTooLarge", err)
 	}
 }
@@ -395,7 +375,7 @@ func TestASnapshotIsOneConsistentRead(t *testing.T) {
 	f.grant(box.ID, bea.ID, readOnly())
 	f.link(support.ID, ana.ID, "later@example.org")
 
-	before, err := workspace.SnapshotTx(t.Context(), tx, support.ID, workspace.SnapshotOptions{RemovedAsLive: true})
+	before, err := workspace.SnapshotTx(t.Context(), tx, support.ID, workspace.SnapshotOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,7 +385,7 @@ func TestASnapshotIsOneConsistentRead(t *testing.T) {
 	if _, ok := personOf(mailboxOf(t, before, box.ID), bea.ID); ok {
 		t.Error("the read begun before sees Bea's read")
 	}
-	after := f.snapshot(support.ID, true)
+	after := f.snapshot(support.ID)
 	if b, ok := personOf(mailboxOf(t, after, box.ID), bea.ID); len(after.Mailboxes) != 2 || !ok || !b.Reads {
 		t.Errorf("the next read: %d mailboxes, Bea %+v (listed %v)", len(after.Mailboxes), b, ok)
 	}

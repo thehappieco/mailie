@@ -1211,6 +1211,57 @@ func TestAResetOfTheOnlyMemberOfATeamWhoReadsItsMailboxNeedsForce(t *testing.T) 
 	}
 }
 
+func TestAResetOfARemovedTeamMailboxsLastKeptReaderNeedsForceUntilItsPurge(t *testing.T) {
+	// Removed and kept, a mailbox with a key Ana alone would read once
+	// recovered protects her as a live one does: a reset, which takes her
+	// grant, needs force, and strands it; deleted for good, it protects
+	// nobody.
+	cheapKDF(t)
+	users, db, _ := newUsers(t)
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	team := teamOf(t, db, ana.ID)
+	addMember(t, db, team.ID, bea.ID)
+	mailbox := teamMailbox(t, db, team.ID, ana.ID)
+	authtest.KeyMailbox(t, db, mailbox, ana.ID)
+	removeMailbox := func(id string) {
+		t.Helper()
+		if _, err := db.Writer().ExecContext(t.Context(), `UPDATE accounts SET removed_at = 900, removed_by = ?,
+			purge_after = 900 + 2592000 WHERE id = ?`, ana.ID, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removeMailbox(mailbox)
+
+	var blocked *auth.BlockedError
+	if _, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli"); !errors.As(err, &blocked) ||
+		len(blocked.LastReaderOf) != 1 || blocked.LastReaderOf[0] != mailbox {
+		t.Fatalf("a reset of the removed mailbox's last reader: %v", err)
+	}
+	code, _, err := users.CreateReset(t.Context(), ana.ID, true, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := users.CompleteReset(t.Context(), code, "ana@example.com", authtest.Enrolment(t), "test"); err != nil {
+		t.Fatalf("a forced reset: %v", err)
+	}
+	if n := count(t, db, `SELECT count(*) FROM mailbox_events WHERE kind = 'stranded' AND account_id = ? AND cause = 'reset'
+		AND lost_user = ? AND actor = 'cli'`, mailbox, ana.ID); n != 1 {
+		t.Errorf("%d strandings of the removed mailbox name Ana, want one", n)
+	}
+
+	// Another, deleted for good: nothing of it is left to protect.
+	other := teamMailbox(t, db, team.ID, ana.ID)
+	authtest.KeyMailbox(t, db, other, ana.ID)
+	removeMailbox(other)
+	if _, err := db.Writer().ExecContext(t.Context(), `DELETE FROM accounts WHERE id = ?`, other); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := users.CreateReset(t.Context(), ana.ID, false, "cli"); err != nil {
+		t.Errorf("a reset once the mailbox is deleted for good: %v", err)
+	}
+}
+
 func TestAResetLinkAnswersTheTargetItsResetStores(t *testing.T) {
 	cheapKDF(t)
 	_, db, clock := newUsers(t)

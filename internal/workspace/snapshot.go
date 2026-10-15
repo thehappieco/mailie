@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/thehappieco/mailie/internal/store"
 )
@@ -14,8 +15,12 @@ import (
 // directory"): every mailbox, live and removed until it is deleted for good,
 // with why it does not sync, its label and masked hint (never its address),
 // and every person who holds a flag on it or a sealed grant, with what the
-// one reading rule says of them. It decides nothing: the rules are
-// internal/store's fragments, read in one transaction.
+// one reading rule says of them. A removed mailbox is reported as for a
+// live one until it is deleted for good: who would read it, wait for its
+// key and hold its key once recovered, and its kept last readers as
+// protected, which they are here too (the last reader, reader.go). It
+// decides nothing: the rules are internal/store's fragments and the last
+// reader's, read in one transaction.
 
 // The bounds of a snapshot: more mailboxes in the workspace, or more people
 // on one mailbox, is ErrSnapshotTooLarge.
@@ -30,14 +35,6 @@ var ErrSnapshotTooLarge = errors.New("workspace: the workspace is larger than a 
 
 // SnapshotOptions say how a snapshot reads.
 type SnapshotOptions struct {
-	// RemovedAsLive reports a removed mailbox's people as for a live one:
-	// who would read it, wait for its key and hold its key once recovered
-	// (store.KeptReaderSQL, KeptWaitingSQL, a grant at its current epoch),
-	// and its kept last readers as protected. Off, a removed mailbox has
-	// nobody reading, waiting, holding its key or protected, as the rules
-	// here decide (store.LiveSQL). Either way nothing here changes: a
-	// removed mailbox protects nobody in what this server refuses.
-	RemovedAsLive bool
 	// Withheld is the edition withholding teams (store.PauseSQL).
 	Withheld bool
 }
@@ -67,7 +64,8 @@ type SnapshotMailbox struct {
 	// People hold a flag on it or a sealed grant, by id.
 	People []SnapshotPerson
 	// Protected are the people a team mailbox cannot lose: each the only
-	// one who reads it. None in a personal workspace.
+	// one who reads it, or on a removed one would read it once recovered
+	// (the last reader). None in a personal workspace.
 	Protected []string
 }
 
@@ -80,7 +78,8 @@ type SnapshotPerson struct {
 	// Reads is reading it now (store.ReaderSQL); Waiting, holding read
 	// without its key yet (store.WaitingSQL); Enrolled, having an account
 	// key; HoldsKey, holding a sealed grant at its current epoch, whether or
-	// not they read it, a suspended person included.
+	// not they read it, a suspended person included. On a removed mailbox,
+	// each as once it is recovered (store.KeptReaderSQL, KeptWaitingSQL).
 	Reads, Waiting, Enrolled, HoldsKey bool
 }
 
@@ -106,11 +105,11 @@ func SnapshotTx(ctx context.Context, tx *sql.Tx, workspaceID string, o SnapshotO
 	for i, mb := range out.Mailboxes {
 		index[mb.ID] = i
 	}
-	if err := snapshotPeople(ctx, tx, workspaceID, o, out.Mailboxes, index); err != nil {
+	if err := snapshotPeople(ctx, tx, workspaceID, out.Mailboxes, index); err != nil {
 		return Snapshot{}, err
 	}
 	if out.Kind == KindTeam {
-		if err := snapshotProtected(ctx, tx, workspaceID, o, out.Mailboxes, index); err != nil {
+		if err := snapshotProtected(ctx, tx, workspaceID, out.Mailboxes, index); err != nil {
 			return Snapshot{}, err
 		}
 	}
@@ -156,30 +155,27 @@ func snapshotMailboxes(ctx context.Context, tx *sql.Tx, workspaceID string, o Sn
 }
 
 // snapshotPeople reads who holds a flag or a sealed grant on each mailbox of
-// the workspace, into mailboxes.
-func snapshotPeople(ctx context.Context, tx *sql.Tx, workspaceID string, o SnapshotOptions, mailboxes []SnapshotMailbox,
+// the workspace, into mailboxes: by the one rule on a live mailbox, and on a
+// removed one as once it is recovered (the Kept fragments, which are the
+// rule itself on a live one).
+func snapshotPeople(ctx context.Context, tx *sql.Tx, workspaceID string, mailboxes []SnapshotMailbox,
 	index map[string]int,
 ) error {
-	holds := store.CurrentGrantSQL("p.account_id", "p.user_id")
 	//nolint:gosec // G202: built from the rule's fragments alone; every value is bound
 	rows, err := tx.QueryContext(ctx, `WITH p(account_id, user_id) AS (
 		    SELECT account_id, user_id FROM mailbox_access WHERE workspace_id = ?1
 		    UNION SELECT account_id, user_id FROM mailbox_grants WHERE workspace_id = ?1)
 		SELECT p.account_id, p.user_id,
 		       coalesce(g.read, 0), coalesce(g.act, 0), coalesce(g.send, 0), coalesce(g.manage, 0),
-		       CASE WHEN g.account_id IS NULL THEN 0
-		            WHEN a.removed_at = 0 THEN `+store.ReaderSQL("g")+`
-		            WHEN ?2 THEN `+store.KeptReaderSQL("g")+` ELSE 0 END,
-		       CASE WHEN g.account_id IS NULL THEN 0
-		            WHEN a.removed_at = 0 THEN `+store.WaitingSQL("g")+`
-		            WHEN ?2 THEN `+store.KeptWaitingSQL("g")+` ELSE 0 END,
+		       CASE WHEN g.account_id IS NULL THEN 0 ELSE `+store.KeptReaderSQL("g")+` END,
+		       CASE WHEN g.account_id IS NULL THEN 0 ELSE `+store.KeptWaitingSQL("g")+` END,
 		       u.public_key IS NOT NULL,
-		       CASE WHEN a.removed_at = 0 OR ?2 THEN `+holds+` ELSE 0 END
+		       `+store.CurrentGrantSQL("p.account_id", "p.user_id")+`
 		  FROM p
 		  JOIN accounts a ON a.id = p.account_id
 		  JOIN users u ON u.id = p.user_id
 		  LEFT JOIN mailbox_access g ON g.account_id = p.account_id AND g.user_id = p.user_id
-		 ORDER BY a.created_at, a.rowid, p.user_id`, workspaceID, o.RemovedAsLive)
+		 ORDER BY a.created_at, a.rowid, p.user_id`, workspaceID)
 	if err != nil {
 		return fmt.Errorf("workspace: read the snapshot's people: %w", err)
 	}
@@ -211,41 +207,25 @@ func snapshotPeople(ctx context.Context, tx *sql.Tx, workspaceID string, o Snaps
 	return nil
 }
 
-// snapshotProtected reads, for each mailbox of a team, the people who are
-// the only one reading it, into mailboxes: by the one rule on a live
-// mailbox, and, on a removed one reported as live, by the readers it would
-// have once recovered.
-func snapshotProtected(ctx context.Context, tx *sql.Tx, workspaceID string, o SnapshotOptions, mailboxes []SnapshotMailbox,
+// snapshotProtected reads, for each mailbox of a team, the person who is the
+// only one reading it, into mailboxes: the last reader, which the protection
+// asks (lastReadersIn), live or removed and kept.
+func snapshotProtected(ctx context.Context, tx *sql.Tx, workspaceID string, mailboxes []SnapshotMailbox,
 	index map[string]int,
 ) error {
-	//nolint:gosec // G202: built from the rule's fragments alone; every value is bound
-	rows, err := tx.QueryContext(ctx, `SELECT a.id, g.user_id FROM accounts a
-		  JOIN mailbox_access g ON g.account_id = a.id
-		 WHERE a.workspace_id = ?1 AND CASE
-		   WHEN a.removed_at = 0 THEN `+store.ReaderSQL("g")+`
-		     AND NOT EXISTS (SELECT 1 FROM mailbox_access o
-		                      WHERE o.account_id = a.id AND o.user_id <> g.user_id AND `+store.ReaderSQL("o")+`)
-		   WHEN ?2 THEN `+store.KeptReaderSQL("g")+`
-		     AND NOT EXISTS (SELECT 1 FROM mailbox_access o
-		                      WHERE o.account_id = a.id AND o.user_id <> g.user_id AND `+store.KeptReaderSQL("o")+`)
-		   ELSE 0 END
-		 ORDER BY a.created_at, a.rowid, g.user_id`, workspaceID, o.RemovedAsLive)
+	last, err := lastReadersIn(ctx, tx, workspaceID)
 	if err != nil {
-		return fmt.Errorf("workspace: read the snapshot's last readers: %w", err)
+		return err
 	}
-	//nolint:errcheck // read to the end below
-	defer func() { _ = rows.Close() }()
-	for rows.Next() {
-		var accountID, userID string
-		if err := rows.Scan(&accountID, &userID); err != nil {
-			return fmt.Errorf("workspace: read the snapshot's last readers: %w", err)
-		}
-		if i, ok := index[accountID]; ok {
-			mailboxes[i].Protected = append(mailboxes[i].Protected, userID)
+	for userID, accountIDs := range last {
+		for _, accountID := range accountIDs {
+			if i, ok := index[accountID]; ok {
+				mailboxes[i].Protected = append(mailboxes[i].Protected, userID)
+			}
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("workspace: read the snapshot's last readers: %w", err)
+	for i := range mailboxes {
+		slices.Sort(mailboxes[i].Protected)
 	}
 	return nil
 }

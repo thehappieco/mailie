@@ -211,7 +211,8 @@ func printInvite(link, email, role string, expires time.Time) {
 // or of a team from another source, is the team's, and stays. Disabling or
 // deleting the last active owner needs --force: nobody would be left to
 // invite people from the console. So does someone their teams depend on — a
-// team's last active owner, the last person who can read a team mailbox, or
+// team's last active owner, the last person who can read a team mailbox (or
+// would read a removed one once recovered, until it is deleted for good), or
 // the person whose own consent a team mailbox someone else reads still syncs
 // under since the upgrade — and the daemon's refusal names those teams and
 // mailboxes.
@@ -329,13 +330,14 @@ func closeBody(req service.CloseUserRequest) map[string]any {
 // their public key, deletes every grant sealed to the old one, ends their
 // sessions and stops every API key they created, which the command says
 // before anyone uses the link. It is refused, naming the mailboxes, while the
-// person is the last reader of a team mailbox, unless --force, which the
-// invitation records.
+// person is the last reader of a team mailbox, a removed one kept for a
+// recovery included, unless --force, which the invitation records.
 
 func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("user password", flag.ContinueOnError)
 	emailFlag := fs.String("email", "", "the address the person signs in with"+emailFlagUsage)
-	force := fs.Bool("force", false, "go ahead even if the person is the last who can read a team mailbox: "+
+	force := fs.Bool("force", false, "go ahead even if the person is the last who can read a team mailbox, "+
+		"or would read a removed one once recovered: "+
 		"the reset takes read from them on every mailbox that has a key, and nobody can be given it again "+
 		"on such a team mailbox (give another member read first, if the old key is not truly lost)")
 	bootstrap := fs.Bool("bootstrap", false, "write directly to the database, when no daemon is running "+
@@ -389,8 +391,9 @@ func userPassword(ctx context.Context, cfg config.Config, args []string) error {
 	code, reset, err := users.CreateReset(ctx, user.ID, *force, "cli")
 	var blocked *auth.BlockedError
 	if errors.As(err, &blocked) {
-		return fmt.Errorf("user password: %s is the last person who can read the team mailboxes %s: "+
-			"a reset takes read from them; have another member given read first, or pass --force; "+
+		return fmt.Errorf("user password: %s is the last person who can read the team mailboxes %s, a removed "+
+			"one included until it is deleted for good: a reset takes read from them; have another member given "+
+			"read first (a removed mailbox recovered first, or deleted for good), or pass --force; "+
 			"nothing was made", user.Email, strings.Join(blocked.LastReaderOf, ", "))
 	}
 	if err != nil {

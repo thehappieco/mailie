@@ -16,7 +16,7 @@ import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { check, click, fill, find, fire, flush, keydown, page, submit, words } from './dom'
 import { mount, type Mounted } from './mount'
-import type { MailboxAccess, MailboxKey, Member, Workspace } from '../src/api/types'
+import type { MailboxAccess, MailboxKey, Member, RemovedMailbox, Workspace } from '../src/api/types'
 import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import AddAccountDialog from '../src/components/AddAccountDialog.vue'
@@ -624,6 +624,30 @@ describe('the people of a team', () => {
     // The only person who reads a mailbox of the team is offered neither, and the mailbox is named.
     expect(words(row(BEA))).not.toMatch(/Remove…|Disable…/)
     expect(words(row(BEA))).toContain('The only person who can read suporte@example.test: give someone else Read before disabling or removing them.')
+  })
+
+  it('names a removed mailbox someone alone would read once recovered, and says how to free them, to an owner', async () => {
+    // Dan alone would read Old, removed and kept, and Support, live: only the team's owners read its removed mailboxes.
+    const DAN = 'usr_00000000000000d4'
+    const old: RemovedMailbox = { id: 'acc_old', workspace_id: TEAM, email: 'old@example.test', provider: 'imap', removed_at: 1_790_000_000, purge_after: 1_792_592_000, index_kept: true, readers: 1, no_reader: false }
+    await membersOf('owner', ({ path, method }) => path === `/v1/workspaces/${TEAM}/removed-mailboxes` && method === 'GET' ? json([old]) : failure('not_found', 404),
+      undefined, [member(DAN, { name: 'Dan Reis', last_reader_of: [shared.id, old.id] })])
+    await vi.waitFor(() => expect(sent('GET', `/v1/workspaces/${TEAM}/removed-mailboxes`)).toHaveLength(1))
+    await flush()
+    expect(words(row(DAN))).not.toMatch(/Remove…|Disable…/)
+    expect(words(row(DAN))).toContain('The only person who can read suporte@example.test, old@example.test (removed): give someone else Read before disabling or removing them. A removed mailbox keeps them until an owner recovers it and gives someone else Read, or deletes it for good.')
+    // Bea alone reads a live one: said as before, and nothing more is read for her.
+    expect(words(row(BEA))).toContain('The only person who can read suporte@example.test: give someone else Read before disabling or removing them.')
+    expect(words(row(BEA))).not.toContain('A removed mailbox')
+  })
+
+  it('says an admin how to free someone a removed mailbox keeps, without naming what it cannot read', async () => {
+    const DAN = 'usr_00000000000000d4'
+    await membersOf('admin', () => failure('not_found', 404), undefined, [
+      member(DAN, { name: 'Dan Reis', last_reader_of: ['acc_old'] }), member('usr_00000000000000e5', { name: 'Eve', role: 'owner', last_owner: true }),
+    ])
+    expect(sent('GET', `/v1/workspaces/${TEAM}/removed-mailboxes`)).toEqual([])
+    expect(words(row(DAN))).toContain('The only person who can read 1 of its mailboxes: give someone else Read before disabling or removing them. A removed mailbox keeps them until an owner recovers it and gives someone else Read, or deletes it for good.')
   })
 
   it('says the last reader’s refusal in the console’s words when the server finds one the page did not know of', async () => {

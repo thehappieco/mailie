@@ -169,10 +169,10 @@ func TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotRe
 	}
 }
 
-func TestAnEmbeddingBinaryChoosesWhatASnapshotSaysOfARemovedMailbox(t *testing.T) {
+func TestADaemonsSnapshotReportsARemovedMailboxAsLiveUntilItsPurge(t *testing.T) {
 	// A team a directory sends, whose one mailbox Bea alone reads, removed
-	// since: a daemon reports her as its reader, and protected, until it is
-	// deleted for good, unless the binary that embeds it says otherwise.
+	// since: the daemon reports her as its reader, and protected, until it
+	// is deleted for good, with nothing an embedding binary chooses.
 	cfg := localConfig(t)
 	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
 	if err != nil {
@@ -214,33 +214,22 @@ func TestAnEmbeddingBinaryChoosesWhatASnapshotSaysOfARemovedMailbox(t *testing.T
 		t.Fatal(err)
 	}
 
-	for _, c := range []struct {
-		what  string
-		rule  service.RemovedInSnapshot
-		reads bool
-	}{
-		{"by default", service.RemovedAsKept, true},
-		{"the other way", service.RemovedAsNobody, false},
-	} {
-		var snapshot service.AccessSnapshot
-		read := func(ctx context.Context, _ *Router, d Deps) error {
-			var err error
-			snapshot, err = d.Service.AccessSnapshot(ctx, team)
-			return err
-		}
-		d := startDaemon(t, cfg, Options{
-			WorkspaceSource: workspace.Platform(), RemovedInSnapshot: c.rule, Extensions: []Extension{read},
-		})
-		d.stop()
-		if err := d.wait(); err != nil {
-			t.Fatalf("%s: %v", c.what, err)
-		}
-		if len(snapshot.Mailboxes) != 1 || !snapshot.Mailboxes[0].Removed || len(snapshot.Mailboxes[0].People) != 1 {
-			t.Fatalf("%s: the snapshot %+v", c.what, snapshot)
-		}
-		mb := snapshot.Mailboxes[0]
-		if mb.People[0].UserID != bea.ID || mb.People[0].Reads != c.reads || (len(mb.Protected) == 1) != c.reads {
-			t.Errorf("%s: Bea %+v, protected %v", c.what, mb.People[0], mb.Protected)
-		}
+	var snapshot service.AccessSnapshot
+	read := func(ctx context.Context, _ *Router, d Deps) error {
+		var err error
+		snapshot, err = d.Service.AccessSnapshot(ctx, team)
+		return err
+	}
+	d := startDaemon(t, cfg, Options{WorkspaceSource: workspace.Platform(), Extensions: []Extension{read}})
+	d.stop()
+	if err := d.wait(); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Mailboxes) != 1 || !snapshot.Mailboxes[0].Removed || len(snapshot.Mailboxes[0].People) != 1 {
+		t.Fatalf("the snapshot %+v", snapshot)
+	}
+	mb := snapshot.Mailboxes[0]
+	if mb.People[0].UserID != bea.ID || !mb.People[0].Reads || len(mb.Protected) != 1 || mb.Protected[0] != bea.ID {
+		t.Errorf("Bea %+v, protected %v", mb.People[0], mb.Protected)
 	}
 }

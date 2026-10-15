@@ -579,7 +579,9 @@ Protections, each `409` and marked in advance in the listings (`last_owner` and 
 on members, `readers` and `no_reader` on the directory): a team keeps an active owner, and a team
 mailbox someone reads keeps a **reader** — the last person who can read it (the flag, and on a
 mailbox that has a key a grant at its current epoch) keeps `read`, and is not disabled, removed,
-reset, or closed without `force`. A team mailbox nobody can read (a forced closure)
+reset, or closed without `force`. A removed mailbox keeps its last reader the same way until it is
+deleted for good: whoever would read it once recovered is listed in `last_reader_of` and protected,
+though they read nothing of it meanwhile. A team mailbox nobody can read (a forced closure)
 syncs nothing, is never switched on again (`409`), and is marked `no_reader`; its owners remove it,
 and delete it for good to link it again, and its owners and admins turn its sync off to delete what
 is still indexed. A team mailbox syncs under its **workspace's consent** ([Sync and consent](#sync-and-consent)).
@@ -758,7 +760,13 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   and the section is not shown for it. A team's people with their roles: an owner changes anyone's
   role and status, removes anyone, and leaves while another owner remains; an admin disables,
   enables and removes members only. The last active owner and the last reader of a mailbox
-  (`last_reader_of`) are marked, and the actions their protection refuses are not offered. The
+  (`last_reader_of`) are marked, and the actions their protection refuses are not offered. A
+  mailbox someone is the last reader of is named by its address when the page knows it: a live
+  one from the person's own list or the directory, a removed one, for the team's owners, from its
+  removed mailboxes (read for that, once, when a mailbox there is not live), marked "(removed)";
+  otherwise by how many there are. When one of them is removed (in the removed list, or, once the
+  directory is read, in neither it nor the person's list) the note adds that a removed mailbox
+  keeps them until an owner recovers it and gives someone else Read, or deletes it for good. The
   server works those marks out across the team, so the members are read again whole after any
   change of role, status or membership, and whenever one of the team's mailboxes leaves or joins
   the person's list, and so are the pending invitations when they were read, since any such change

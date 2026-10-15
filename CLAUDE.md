@@ -37,9 +37,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   own small state in the database it describes (`State(name)`, `extension_state`: restored with it,
   never ahead of it). `Options.Freshness` (never set by `serve`) is asked, outside every write,
   before a person's act that widens access or touches a team's shared data
-  (`service.Freshness`, below); `Options.RemovedInSnapshot` (never set by `serve`) is what a
-  followed workspace's snapshot says of a removed mailbox's people (`RemovedAsKept` unless set).
-  Under a source that mirrors a directory the daemon names at start
+  (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
   the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
   `Options.ExternalSignInOnly` (never set by `serve`) has the service
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
@@ -196,7 +194,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   flags and grants kept) while the directory's generation is unconfirmed and the end would strand a
   mailbox. `strand.go` defines `Stranding` and journals the mailboxes a change strands
   (`JournalStrandedTx`); `StrandCandidatesTx` says which, before the change: the ones the person
-  reads, would read once resumed or would read but for a hold, and nobody else does or would.
+  reads, would read once resumed or would read but for a hold, and nobody else does or would, a
+  removed one as once it is recovered, until it is deleted for good.
   `snapshot.go` reads who holds what on a workspace's mailboxes for an extension (`SnapshotTx`, in
   one read transaction): every mailbox, live and removed until deleted for good, its pause, label
   and masked hint, never its address; each person with a flag or a sealed grant, whether they read,
@@ -216,7 +215,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `snapshot.go` are what it reports: the journal as its outbox (`MailboxJournal`), the followed
   workspaces and their change marks, its own state, and a snapshot of a followed workspace
   (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
-  recovered, `RemovedAsKept`, unless `Deps.RemovedInSnapshot`, from `app.Options`, says otherwise). `freshness.go`: the
+  recovered, its kept last readers protected, until it is deleted for good). `freshness.go`: the
   hook (`Deps.Freshness`) asked before eleven acts of a person signed in — a key sealed to someone,
   flags raised for a person or a key, a key created, a link into a team, a team mailbox's consent
   started again, its sync switched, an action on it or a send from it — after the read-only
@@ -426,9 +425,13 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   refuses what would give it something); its grants and keys are kept. Only the operator closes a
   local team; a team from another source closes where it is managed, through an extension. A
   removed mailbox (kept 30 days, `docs/workspaces.md`, "Removed mailboxes") is `not_found` to
-  everyone, the operator included, but on the removed mailboxes' own paths; it has no reader and
-  protects none (`store.LiveSQL`, inside `ReaderSQL` and `FlagHolderSQL`), and nothing is given on
-  it (the schema refuses). Only its owners remove it — a personal mailbox's person, a team's active
+  everyone, the operator included, but on the removed mailboxes' own paths; it has no reader for
+  any use (`store.LiveSQL`, inside `ReaderSQL` and `FlagHolderSQL`) and nothing is given on it (the
+  schema refuses), but it keeps protecting until it is deleted for good: whoever would read it once
+  recovered (`store.KeptReaderSQL` and the other `Kept` fragments, `workspace/reader.go`) counts in
+  the last-reader protection, the refusals of closing a person and of a reset, and what a change
+  strands, as a reader of a live one does; deleting it for good (the sweep, its owners, the
+  operator, a person's closure) ends that with its grants. Only its owners remove it — a personal mailbox's person, a team's active
   owners (an admin, only a link of their own that never connected), the operator for an operator
   mailbox — and they alone list, recover and delete it for good; the operator also lists and
   deletes any workspace's for good, and recovers no person's or team's. A recovery brings back the
@@ -437,8 +440,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mirrors an external directory (`docs/workspaces.md`, "Following an external directory"): what
   the directory says applies in a closed team too (memberships change while it is closed); its
   end of a membership, or of a person (`ForgetExternalPerson`), takes no refusal for the last
-  owner, the last reader or a person who is not active, and may leave a team mailbox with no
-  reader, journaled `stranded`; a membership it ends while its generation is unconfirmed, and
+  owner, the last reader or a person who is not active, and may leave a team mailbox, live or
+  removed and kept, with no reader, journaled `stranded`; a membership it ends while its generation is unconfirmed, and
   whose end would strand a mailbox, is held (disabled, reading nothing, its flags and grants kept)
   until a document lists it again or the generation is confirmed; and a document whose workspace
   part is refused still applies what it revoked. A disable here stands over a directory: its

@@ -88,9 +88,6 @@ type fixtureOptions struct {
 	// freshness is asked before an act that widens access; nil asks
 	// nothing.
 	freshness service.Freshness
-	// removedInSnapshot is what a snapshot says of a removed mailbox's
-	// people.
-	removedInSnapshot service.RemovedInSnapshot
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -176,7 +173,6 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		KeysActUnderCreatorConsent: f.opts.keysActUnderCreator,
 		TeamsWithheld:              f.opts.teamsWithheld,
 		Freshness:                  f.opts.freshness,
-		RemovedInSnapshot:          f.opts.removedInSnapshot,
 	}), registry
 }
 

@@ -16,12 +16,16 @@ package store
 // reader, access and directory, and account's visibility. Whether a team is
 // closed is a gate beside the rule, never part of it (OpenWorkspaceSQL). A
 // removed mailbox (migration 0020) is read by nobody: the rule holds only
-// on a live one (LiveSQL), so it has no reader, nobody waits for its key and
-// nobody is its last reader while it is kept. A membership an external
-// directory holds (migration 0022) is disabled, so its holder reads nothing
-// either; HeldReaderSQL only says whom a hold keeps a mailbox for. It lives
-// here because store imports neither of them; a copy elsewhere is a second
-// rule.
+// on a live one (LiveSQL), so it has no reader and nobody waits for its key
+// while it is kept. It keeps protecting all the same, until it is deleted
+// for good: the Kept fragments are the rule on it as if it were live, from
+// the flags and the grants it keeps, and the last-reader protection and
+// what a change strands count them on every mailbox (workspace's last
+// reader), so whoever would read it once recovered is protected as a
+// reader of a live one is. A membership an external directory holds
+// (migration 0022) is disabled, so its holder reads nothing either;
+// HeldReaderSQL only says whom a hold keeps a mailbox for. It lives here
+// because store imports neither of them; a copy elsewhere is a second rule.
 //
 // Each fragment takes the SQL expressions it is about (an alias's column,
 // a bound parameter) and names its own tables reader_*, so it nests inside a
@@ -50,8 +54,9 @@ func CurrentGrantSQL(account, user string) string {
 // LiveSQL is the condition that the mailbox whose id is the expression
 // account is not removed (migration 0020): a removed mailbox is kept, with
 // its grants and its key, for a recovery, and is read by nobody meanwhile.
-// Every fragment of the rule holds only on a live mailbox. A mailbox nobody
-// knows is live: what it is about is for the query to have found.
+// Every fragment of the rule holds only on a live mailbox, but the Kept
+// ones, which say who would read it once recovered. A mailbox nobody knows
+// is live: what it is about is for the query to have found.
 func LiveSQL(account string) string {
 	return `NOT EXISTS (SELECT 1 FROM accounts reader_a WHERE reader_a.id = ` + account + ` AND reader_a.removed_at <> 0)`
 }
@@ -81,10 +86,12 @@ func ReaderSQL(alias string) string {
 }
 
 // KeptReaderSQL is the condition, over mailbox_access aliased alias, that its
-// holder would read a removed mailbox once it is recovered: the rule above,
-// on the mailbox as if it were live, from the flags and the grants it keeps.
-// Nobody reads a removed mailbox, so this decides nothing: it only says, to
-// whoever may recover one, who would read it again.
+// holder reads the mailbox, or would read it once recovered when it is
+// removed: the rule above, on the mailbox as if it were live, from the flags
+// and the grants it keeps. On a live mailbox it is ReaderSQL. Nobody reads a
+// removed mailbox, so this decides no access: it says who would read it
+// again, which the last-reader protection counts until the mailbox is
+// deleted for good, and, to whoever may recover one, who would come back.
 func KeptReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
 	return `(` + flagHolderSQL(alias) + `
@@ -105,8 +112,9 @@ func SuspendedReaderSQL(alias string) string {
 
 // KeptSuspendedReaderSQL is SuspendedReaderSQL on a removed mailbox as if it
 // were live: who would read it once it is recovered and they are resumed.
-// Like KeptReaderSQL, it decides nothing but that a removed team mailbox
-// waits for them rather than being one nobody could read again.
+// Like KeptReaderSQL, it decides no access: a removed team mailbox waits for
+// them rather than being one nobody could read again, and closing them is
+// asked about it as about a live one.
 func KeptSuspendedReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
 	return `(` + alias + `.read = 1
@@ -129,8 +137,16 @@ func KeptSuspendedReaderSQL(alias string) string {
 // whom a hold keeps a mailbox for, which a membership's end, once it stops
 // being held, leaves stranded when nobody else reads it.
 func HeldReaderSQL(alias string) string {
+	return `(` + LiveSQL(alias+`.account_id`) + ` AND ` + KeptHeldReaderSQL(alias) + `)`
+}
+
+// KeptHeldReaderSQL is HeldReaderSQL on a removed mailbox as if it were
+// live: who would read it once it is recovered but for a hold. Like
+// KeptReaderSQL, it decides no access: it only says whom a hold keeps a
+// removed mailbox for, until it is deleted for good.
+func KeptHeldReaderSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
-	return `(` + LiveSQL(account) + ` AND ` + alias + `.read = 1
+	return `(` + alias + `.read = 1
 	  AND EXISTS (SELECT 1 FROM workspace_members reader_m JOIN users reader_u ON reader_u.id = reader_m.user_id
 	               WHERE reader_m.workspace_id = ` + alias + `.workspace_id AND reader_m.user_id = ` + user + `
 	                 AND reader_m.status = 'disabled' AND reader_m.held_at <> 0

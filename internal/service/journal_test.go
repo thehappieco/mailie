@@ -224,41 +224,39 @@ func TestAnAccessSnapshotIsOnlyOfAWorkspaceFromTheDirectorysSource(t *testing.T)
 	}
 }
 
-func TestOneSwitchSaysWhatASnapshotReportsOfARemovedMailbox(t *testing.T) {
-	// Bea alone reads the team's mailbox, which Ana removes. By default it is
-	// reported as it would be once recovered, until it is deleted for good;
-	// the other way, as the rules here see it.
-	for _, c := range []struct {
-		what  string
-		rule  service.RemovedInSnapshot
-		reads bool
-	}{
-		{"by default", service.RemovedAsKept, true},
-		{"the other way", service.RemovedAsNobody, false},
-	} {
-		d := newDirectoryTeam(t, fixtureOptions{removedInSnapshot: c.rule})
-		ctx := t.Context()
-		d.takeRead(t, d.box, d.ana.UserID)
-		removed, err := d.svc.RemoveAccount(ctx, d.ana, d.box, service.RemoveAccountRequest{Confirm: d.box})
-		if err != nil {
-			t.Fatal(err)
+func TestASnapshotReportsARemovedMailboxAsLiveUntilItsPurge(t *testing.T) {
+	// Bea alone reads the team's mailbox, which Ana removes: it is reported
+	// as it would be once recovered, Bea its reader and protected, until it
+	// is deleted for good, which takes it out of the snapshot.
+	d := newDirectoryTeam(t, fixtureOptions{})
+	ctx := t.Context()
+	d.takeRead(t, d.box, d.ana.UserID)
+	removed, err := d.svc.RemoveAccount(ctx, d.ana, d.box, service.RemoveAccountRequest{Confirm: d.box})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := d.svc.AccessSnapshot(ctx, dirTeamID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb := s.Mailboxes[0]
+	if !mb.Removed || mb.PurgeAfter.Unix() != removed.PurgeAfter || mb.Pause != "" {
+		t.Errorf("the removed mailbox %+v", mb)
+	}
+	var bea service.SnapshotPerson
+	for _, p := range mb.People {
+		if p.UserID == d.bea.UserID {
+			bea = p
 		}
-		s, err := d.svc.AccessSnapshot(ctx, dirTeamID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mb := s.Mailboxes[0]
-		if !mb.Removed || mb.PurgeAfter.Unix() != removed.PurgeAfter || mb.Pause != "" {
-			t.Errorf("%s: the removed mailbox %+v", c.what, mb)
-		}
-		var bea service.SnapshotPerson
-		for _, p := range mb.People {
-			if p.UserID == d.bea.UserID {
-				bea = p
-			}
-		}
-		if bea.Reads != c.reads || (len(mb.Protected) == 1) != c.reads {
-			t.Errorf("%s: Bea %+v, protected %v", c.what, bea, mb.Protected)
-		}
+	}
+	if !bea.Reads || len(mb.Protected) != 1 || mb.Protected[0] != d.bea.UserID {
+		t.Errorf("Bea %+v, protected %v", bea, mb.Protected)
+	}
+
+	if err := d.svc.PurgeAccount(ctx, d.ana, d.box, service.PurgeAccountRequest{Confirm: d.box}); err != nil {
+		t.Fatal(err)
+	}
+	if s, err = d.svc.AccessSnapshot(ctx, dirTeamID); err != nil || len(s.Mailboxes) != 0 {
+		t.Errorf("the snapshot once it is deleted for good: %+v (%v)", s, err)
 	}
 }
