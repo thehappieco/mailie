@@ -1,7 +1,8 @@
 // A real browser over the open console's workspaces and teams (docs/workspaces.md),
 // with every /v1 call answered by the core's fake daemon (fakeDaemon.mjs)
 // and, through its extend hook, an in-memory model of workspaces, members,
-// grants, each team mailbox's own agreement to sync, and team invitations.
+// grants, each team mailbox's own agreement to sync, team invitations, and
+// removed team mailboxes, kept with their grants until deleted for good.
 // Optional QA, not part of `npm test`:
 //
 //   npm run build && npx vite preview --port 4174 &
@@ -21,9 +22,19 @@
 // she holds a grant on, seen without their folders, messages, access or sync
 // switch, with a line saying who manages the team's people, access and keys,
 // and no Members or API keys. On desktop and phone, light and dark, then in Portuguese
-// and German. It fails on a page error, a CSP violation, horizontal
-// scrolling and any server message drawn on a screen.
+// and German.
 //
+// Then a removed mailbox's protection (docs/workspaces.md, "Removed
+// mailboxes"): Ana removes a team mailbox only Carol reads, which keeps her
+// protected until it is deleted for good. Ana, an owner, sees it named as
+// removed, from the team's removed mailboxes, read once; Bea, an admin, sees
+// it as a count and never asks for them; and once Ana deletes it for good,
+// Carol's marks clear. On desktop and at 320 px, in English and Portuguese.
+//
+// Every pass fails on a page error, a CSP violation, horizontal scrolling
+// and any server message drawn on a screen.
+//
+// QA_ONLY (teams: the passes above; removed: the removed mailbox's), and
 // QA_ORIGIN, QA_SCREENSHOTS, QA_PLAYWRIGHT_MODULE, QA_BROWSER,
 // QA_BROWSER_EXECUTABLE and QA_BROWSER_CHANNEL as for console.mjs.
 import { mkdir, readdir, readFile } from 'node:fs/promises'
@@ -36,6 +47,8 @@ const playwright = await import(process.env.QA_PLAYWRIGHT_MODULE || 'playwright'
 const engine = process.env.QA_BROWSER || 'chromium'
 const origin = (process.env.QA_ORIGIN || 'http://localhost:5174').replace(/\/$/, '')
 const screenshots = process.env.QA_SCREENSHOTS ? resolve(process.env.QA_SCREENSHOTS) : ''
+const only = process.env.QA_ONLY || ''
+if (!['', 'teams', 'removed'].includes(only)) throw new Error(`teams.mjs: QA_ONLY is teams or removed, not ${only}`)
 const browser = await playwright[engine].launch({
   headless: true,
   ...(process.env.QA_BROWSER_EXECUTABLE ? { executablePath: process.env.QA_BROWSER_EXECUTABLE } : {}),
@@ -56,6 +69,8 @@ const TEAM_INVITE = 'SyntheticTeamInvite_0123456789abcdefghijklmn'
 const SUPPORT = 'acc_000000000000f001'
 const SALES = 'acc_000000000000f002'
 const FINANCE = 'acc_000000000000f003'
+/** The removed mailbox's pass: a team mailbox only Carol reads. */
+const ARCHIVE = 'acc_000000000000f004'
 const none = () => ({ read: false, act: false, send: false, manage: false })
 const flags = fields => ({ ...none(), ...fields })
 
@@ -84,21 +99,22 @@ function say(language, key, values = {}) {
  * Carol only sends), one Ana linked with sync off (only Ana reads it), and
  * one only Bea reads, under the agreement the upgrade carried over from her
  * (Carol manages it, Ana holds nothing on it); and the team Financeiro,
- * whose invitation waits for Ana.
+ * whose invitation waits for Ana. archive: a fourth mailbox of the team's,
+ * synced for it, which only Carol reads, for the removed mailbox's pass.
  */
-function daemon() {
+function daemon({ archive = false } = {}) {
   let team = null
   const instance = coreDaemon({
     origin, versions: VERSIONS, consented: true,
     extend: core => {
-      team = teamModel(core)
+      team = teamModel(core, { archive })
       return { methods: { team }, route: request => team.route(request), keyWorkspace: (user, id) => team.keyWorkspace(user, id) }
     },
   })
   return instance
 }
 
-function teamModel({ users, accountsByUser, present, calls, keys }) {
+function teamModel({ users, accountsByUser, present, calls, keys }, { archive }) {
   const at = now() - 86400 * 20
   users.set('bea@example.test', { id: BEA, email: 'bea@example.test', name: 'Bea Lima', role: 'member', created_at: at, password: PASSWORD, consent: 0 })
   users.set('carol@example.test', { id: CAROL, email: 'carol@example.test', name: 'Carol Dias', role: 'member', created_at: at, password: PASSWORD, consent: 0 })
@@ -125,17 +141,30 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
     teamMailbox(SUPPORT, 'suporte@atendimento.example', TEAM, BEA, { enabled_at: at, enabled_by: BEA, version: VERSIONS.sync }),
     teamMailbox(SALES, 'vendas@atendimento.example', TEAM, ANA, null),
     teamMailbox(FINANCE, 'financeiro@atendimento.example', TEAM, BEA, { enabled_at: at - 86400, enabled_by: BEA, version: '2026-10-open-sync-2', migrated: true }),
+    ...(archive ? [teamMailbox(ARCHIVE, 'arquivo@atendimento.example', TEAM, ANA, { enabled_at: at, enabled_by: ANA, version: VERSIONS.sync })] : []),
   ]
   const grants = new Map([
     [SUPPORT, new Map([[BEA, flags({ read: true, act: true, send: true })], [ANA, flags({ read: true, send: true })], [CAROL, flags({ send: true })]])],
     [SALES, new Map([[ANA, flags({ read: true, act: true, send: true })]])],
     [FINANCE, new Map([[BEA, flags({ read: true, act: true, send: true })], [CAROL, flags({ manage: true })]])],
+    ...(archive ? [[ARCHIVE, new Map([[CAROL, flags({ read: true, act: true })]])]] : []),
   ])
+  /**
+   * The team mailboxes removed and kept 30 days (service.RemovedMailbox),
+   * with their grants: used by nothing and listed nowhere but among the
+   * team's removed mailboxes, they keep protecting whoever alone would read
+   * one once recovered until it is deleted for good.
+   */
+  const removedAccounts = []
   calls.access = []
   calls.members = []
   calls.invites = []
   calls.teamSync = []
   calls.teamRemoved = []
+  /** Every listing of a workspace's removed mailboxes asked for, every deletion for good, and every read of a team's people. */
+  calls.removedLists = []
+  calls.purged = []
+  calls.memberLists = []
   /** Every folder listing asked of a team mailbox, by whom. */
   calls.folders = []
   const membership = (workspaceID, userID) => (members.get(workspaceID) ?? []).find(item => item.user_id === userID && item.status === 'active')
@@ -152,6 +181,13 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
   /** Sync runs under the team's agreement, while someone can read the mailbox. */
   const syncing = account => !!account.consent?.enabled_at && readersOf(account).length > 0
   const teamOf = id => teamAccounts.find(account => account.id === id)
+  /** The team's mailboxes that keep their last reader: its live ones, and its removed ones until they are deleted for good. */
+  const protecting = workspaceID => [...teamAccounts, ...removedAccounts.map(entry => entry.account)].filter(account => account.workspace_id === workspaceID)
+  /** A removed mailbox as its workspace's owners list it (GET /v1/workspaces/{id}/removed-mailboxes). */
+  const presentRemoved = ({ account, removedAt, removedBy, purgeAfter }) => {
+    const readers = readersOf(account).length
+    return { id: account.id, workspace_id: account.workspace_id, email: account.email, provider: account.provider, removed_at: removedAt, removed_by: removedBy, purge_after: purgeAfter, index_kept: !!account.consent?.enabled_at, readers, no_reader: readers === 0 }
+  }
   const visibleTeam = (user, workspaceID) => teamAccounts.filter(account => (!workspaceID || account.workspace_id === workspaceID) && any(grantOf(account, user.id)))
   const presentTeam = (account, user) => {
     const held = grantOf(account, user.id)
@@ -168,7 +204,8 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
   const presentMember = (workspaceID, item) => {
     const person = [...users.values()].find(user => user.id === item.user_id)
     const owners = (members.get(workspaceID) ?? []).filter(other => other.role === 'owner' && other.status === 'active')
-    const lastReaderOf = teamAccounts.filter(account => account.workspace_id === workspaceID && item.status === 'active')
+    // A removed mailbox by its id alone, whoever asks: the team's owners find it among its removed mailboxes.
+    const lastReaderOf = protecting(workspaceID).filter(account => item.status === 'active')
       .filter(account => { const readers = readersOf(account); return readers.length === 1 && readers[0] === item.user_id }).map(account => account.id)
     return { user_id: item.user_id, email: person.email, name: person.name, role: item.role, status: item.status, last_owner: item.role === 'owner' && item.status === 'active' && owners.length === 1, last_reader_of: lastReaderOf, joined_at: item.joined_at }
   }
@@ -179,8 +216,8 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
   }
   /** The invitations a person made in a team stop working when their role, status or place there changes. */
   const endInvites = (workspaceID, userID) => { for (const invite of invites) if (invite.workspace_id === workspaceID && invite.created_by === userID) invite.used = true }
-  /** Who would be left reading each mailbox of a team without this person: a mailbox someone reads keeps a reader. */
-  const lastReaderAnywhere = (workspaceID, userID) => teamAccounts.some(account => account.workspace_id === workspaceID && readersOf(account).length === 1 && readersOf(account)[0] === userID)
+  /** Who would be left reading each mailbox of a team without this person: a mailbox someone reads, or would once recovered, keeps a reader. */
+  const lastReaderAnywhere = (workspaceID, userID) => protecting(workspaceID).some(account => readersOf(account).length === 1 && readersOf(account)[0] === userID)
   /** The live API keys holding something on a team mailbox, as its access directory lists them (service.MailboxKey). */
   const keysOn = account => keys.filter(key => key.workspace_id === account.workspace_id && !key.revoked_at && key.expires_at > now())
     .flatMap(key => key.mailboxes.filter(item => item.account_id === account.id).map(item => ({
@@ -188,7 +225,7 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
       created_by: key.created_by, granted_by: item.granted_by, updated_at: item.updated_at,
     })))
   return {
-    grants, members, invites, workspaces, teamAccounts,
+    grants, members, invites, workspaces, teamAccounts, removedAccounts,
     /** A workspace whose API keys the core's key routes keep: its owners and admins administer them; Read is given where they read. */
     keyWorkspace(user, id) {
       const me = membership(id, user.id)
@@ -220,7 +257,7 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
         members.get(invite.workspace_id).push({ user_id: user.id, role: invite.role, status: 'active', joined_at: now() })
         return json(listWorkspace(workspaces.get(invite.workspace_id), user))
       }
-      const workspaceMatch = path.match(/^\/v1\/workspaces\/([^/]+)(?:\/(members|invites|access)(?:\/([^/]+))?)?$/)
+      const workspaceMatch = path.match(/^\/v1\/workspaces\/([^/]+)(?:\/(members|invites|access|removed-mailboxes)(?:\/([^/]+))?)?$/)
       if (workspaceMatch) {
         const [, id, part, item] = workspaceMatch
         const me = membership(id, user.id)
@@ -232,9 +269,18 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
           workspace.name = String(body().name ?? '').trim()
           return json(listWorkspace(workspace, user))
         }
+        // Its removed mailboxes are its owners' alone: an admin or a member is refused (service.ListRemoved).
+        if (part === 'removed-mailboxes' && !item && method === 'GET') {
+          calls.removedLists.push({ user: user.id, workspace: id })
+          if (me.role !== 'owner') return fail(403, 'not_authorized')
+          return json(removedAccounts.filter(entry => entry.account.workspace_id === id).sort((a, b) => a.removedAt - b.removedAt).map(presentRemoved))
+        }
         // A team's people, its access directory and its invitations are its owners' and admins'.
         if (part && !admin) return fail(403, 'not_authorized')
-        if (part === 'members' && !item) return json(members.get(id).map(entry => presentMember(id, entry)))
+        if (part === 'members' && !item) {
+          calls.memberLists.push({ user: user.id, workspace: id })
+          return json(members.get(id).map(entry => presentMember(id, entry)))
+        }
         if (part === 'members' && item) {
           const list = members.get(id)
           const target = list.find(entry => entry.user_id === item)
@@ -368,6 +414,18 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
         grants.set(id, new Map([[user.id, flags({ read: true, act: true, send: true })]]))
         return json({ account: presentTeam(account, user) }, 201)
       }
+      // Deleting a removed team mailbox for good: its owners' alone, anyone else told it does not exist.
+      // Its grants go with it, and with them the protection it kept for its last reader.
+      const purge = path.match(/^\/v1\/accounts\/([^/]+)\/purge$/)
+      const removedEntry = purge && removedAccounts.find(entry => entry.account.id === purge[1])
+      if (removedEntry && method === 'POST') {
+        if (membership(removedEntry.account.workspace_id, user.id)?.role !== 'owner') return fail(404, 'not_found')
+        calls.purged.push({ user: user.id, account: removedEntry.account.id, confirm: body().confirm })
+        if (body().confirm !== removedEntry.account.id) return fail(400, 'bad_request')
+        removedAccounts.splice(removedAccounts.indexOf(removedEntry), 1)
+        grants.delete(removedEntry.account.id)
+        return route.fulfill({ status: 204 })
+      }
       // A team mailbox: its card, its folders, and removing it.
       const one = path.match(/^\/v1\/accounts\/([^/]+)(\/folders)?$/)
       if (one && teamOf(one[1])) {
@@ -376,11 +434,21 @@ function teamModel({ users, accountsByUser, present, calls, keys }) {
         if (!any(held)) return fail(404, 'not_found')
         if (!one[2] && method === 'DELETE') {
           calls.teamRemoved.push({ account: account.id, confirm: query.get('confirm') ?? '' })
-          if (!managesByRole(account.workspace_id, user.id)) return fail(403, 'not_authorized')
+          // Its owners remove it; an admin only a link of their own that never connected.
+          const role = membership(account.workspace_id, user.id)?.role
+          if (role !== 'owner' && !(role === 'admin' && !account.connected && account.linked_by === user.id)) return fail(403, 'not_authorized')
           if (query.get('confirm') !== account.id) return fail(400, 'bad_request')
           teamAccounts.splice(teamAccounts.indexOf(account), 1)
-          grants.delete(account.id)
-          return route.fulfill({ status: 204 })
+          // What keys held on it goes at once (service.Removal).
+          for (const key of keys) key.mailboxes = key.mailboxes.filter(item => item.account_id !== account.id)
+          if (!account.connected) {
+            grants.delete(account.id)
+            return json({ account_id: account.id, purged: true })
+          }
+          // Kept 30 days with its grants, recoverable by the team's owners.
+          const entry = { account, removedAt: now(), removedBy: user.id, purgeAfter: now() + 30 * 86400 }
+          removedAccounts.push(entry)
+          return json({ account_id: account.id, purged: false, purge_after: entry.purgeAfter })
         }
         if (!one[2]) return json(presentTeam(account, user))
         calls.folders.push({ user: user.id, account: account.id })
@@ -414,25 +482,21 @@ const WORDS = {
 }
 
 const failures = []
-const passes = [
-  { language: 'en-US', mobile: false, scheme: 'light', full: true },
-  { language: 'en-US', mobile: true, scheme: 'dark', full: true },
-  { language: 'en-US', mobile: false, scheme: 'dark', full: false },
-  { language: 'en-US', mobile: true, scheme: 'light', full: false },
-  { language: 'pt-BR', mobile: false, scheme: 'light', full: false },
-  { language: 'de-DE', mobile: true, scheme: 'light', full: false },
-]
-for (const { language, mobile, scheme, full: everything } of passes) {
+
+/**
+ * A pass's browser context, its own fake daemon, and what every pass does
+ * with the page: screenshots that fail on horizontal scrolling or a server
+ * message drawn, the menu, sections, the switcher, mailbox cards and their
+ * sheet, and signing in and out.
+ */
+async function begin({ language, mobile, scheme, viewport, label, options }) {
   const words = WORDS[language]
-  const tr = (key, values) => say(language, key, values)
-  const team = 'Atendimento'
-  const label = `${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}`
   const context = await browser.newContext({
     serviceWorkers: 'block', locale: language, colorScheme: scheme, reducedMotion: 'reduce',
-    viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
+    viewport, isMobile: mobile, hasTouch: mobile,
     permissions: ['clipboard-read', 'clipboard-write'],
   })
-  const fake = daemon()
+  const fake = daemon(options)
   const errors = []
   await context.route('**/v1/**', route => fake.handle(route))
   const page = await context.newPage()
@@ -474,6 +538,38 @@ for (const { language, mobile, scheme, full: everything } of passes) {
     await page.keyboard.press('Escape')
     await sheet.waitFor({ state: 'detached' })
   }
+  /** Signs in from the sign-in form, and waits for the workspace switcher. */
+  const signIn = async email => {
+    await page.locator('input[name=username]').fill(email)
+    await page.locator('input[name=password]').fill(PASSWORD)
+    await page.locator('form[name=mailie-login] button[type=submit]').click()
+    if (mobile) await openMenu()
+    await page.locator('select[name=workspace]:visible').waitFor()
+    if (mobile) await page.keyboard.press('Escape')
+  }
+  const signOut = async () => {
+    if (mobile) await openMenu()
+    await page.locator('button:visible').filter({ hasText: new RegExp(`^\\s*${words.signOut}\\s*$`) }).first().click()
+    await page.locator('form[name=mailie-login]').waitFor()
+  }
+  return { context, page, fake, errors, shot, openMenu, navItems, openSection, chooseWorkspace, plain, card, sheet, openSheet, closeSheet, signIn, signOut }
+}
+
+const passes = [
+  { language: 'en-US', mobile: false, scheme: 'light', full: true },
+  { language: 'en-US', mobile: true, scheme: 'dark', full: true },
+  { language: 'en-US', mobile: false, scheme: 'dark', full: false },
+  { language: 'en-US', mobile: true, scheme: 'light', full: false },
+  { language: 'pt-BR', mobile: false, scheme: 'light', full: false },
+  { language: 'de-DE', mobile: true, scheme: 'light', full: false },
+]
+for (const { language, mobile, scheme, full: everything } of only === 'removed' ? [] : passes) {
+  const words = WORDS[language]
+  const tr = (key, values) => say(language, key, values)
+  const team = 'Atendimento'
+  const label = `${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}`
+  const viewport = mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }
+  const { context, page, fake, errors, shot, openMenu, navItems, openSection, chooseWorkspace, plain, card, sheet, openSheet, closeSheet } = await begin({ language, mobile, scheme, viewport, label })
   try {
     await page.goto(origin + '/')
     await page.locator('input[name=username]').fill('ana@example.test')
@@ -764,6 +860,130 @@ for (const { language, mobile, scheme, full: everything } of passes) {
     failures.push(`teams ${label}: ${error.message}`)
     console.log(`FAIL teams ${label}: ${error.stack}`)
     if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-teams-${label}.png`) }).catch(() => {})
+  } finally {
+    fake.close()
+    await context.close()
+  }
+}
+
+// --- a removed mailbox keeps its last reader, until it is deleted for good ------
+// Carol alone reads arquivo@. Ana, an owner, removes it: Carol stays kept,
+// the mailbox named as removed from the team's removed mailboxes, which the
+// Members section does not ask for again; Bea, an admin, sees the same
+// protection with the mailbox as a count, and never asks for them; and once
+// Ana deletes it for good, Carol is offered for disabling and removal again.
+const removedPasses = [
+  { language: 'en-US', mobile: false, scheme: 'light' },
+  { language: 'en-US', mobile: true, scheme: 'dark' },
+  { language: 'pt-BR', mobile: false, scheme: 'dark' },
+  { language: 'pt-BR', mobile: true, scheme: 'light' },
+]
+for (const { language, mobile, scheme } of only === 'teams' ? [] : removedPasses) {
+  const tr = (key, values) => say(language, key, values)
+  const team = 'Atendimento'
+  const archive = 'arquivo@atendimento.example'
+  const label = `${language}-${mobile ? '320' : 'desktop'}-${scheme}`
+  const viewport = mobile ? { width: 320, height: 720 } : { width: 1360, height: 900 }
+  const { context, page, fake, errors, shot, openSection, chooseWorkspace, plain, card, sheet, openSheet, signIn, signOut } = await begin({ language, mobile, scheme, viewport, label, options: { archive: true } })
+  const row = id => page.locator(`li[data-user="${id}"]`)
+  const carol = row(CAROL)
+  const text = async locator => plain(await locator.innerText())
+  /** What a member's row says when they alone read a mailbox, live, and when a removed one keeps them. */
+  const reads = mailboxes => tr('The only person who can read {mailboxes}: give someone else Read before disabling or removing them.', { mailboxes })
+  const keeps = mailboxes => tr('The only person who can read {mailboxes}: give someone else Read before disabling or removing them. A removed mailbox keeps them until an owner recovers it and gives someone else Read, or deletes it for good.', { mailboxes })
+  const named = tr('{email} (removed)', { email: archive })
+  const pill = tr('Only reader: {count}', { count: 1 })
+  const asked = user => fake.calls.removedLists.filter(call => call.user === user && call.workspace === TEAM).length
+  const removedItem = page.locator('.removed-mailboxes .removed-item').filter({ hasText: archive })
+  const offered = async name => carol.getByRole('button', { name: tr(name) }).count()
+  /** A long address wraps inside its element, which clips it otherwise: what the overflow check, on boxes alone, does not see. */
+  const fits = async (locator, what) => assert.ok(await locator.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${label}: ${what} fits its box`)
+  try {
+    await page.goto(origin + '/')
+    await signIn('ana@example.test')
+    await chooseWorkspace(TEAM)
+    await card(archive).waitFor()
+
+    // Before: Carol alone reads arquivo@, live, and is kept for it as for any live mailbox.
+    await openSection(tr('Members'))
+    await until(async () => (await text(carol)).includes(reads(archive)), 'Carol kept as the last reader of a live mailbox')
+    assert.ok(!(await text(carol)).includes(keeps(archive)), 'nothing removed keeps her yet')
+
+    // Ana removes it: kept 30 days, listed among the team's removed mailboxes.
+    await openSection(tr('Mailboxes'))
+    await openSheet(archive)
+    await sheet.locator('.danger-zone').getByRole('button', { name: tr('Remove account…') }).click()
+    await sheet.locator('.danger-zone input').fill(archive)
+    await sheet.locator('.danger-zone').scrollIntoViewIfNeeded()
+    await shot('removed-confirm')
+    await sheet.locator('.sheet-footer').getByRole('button', { name: tr('Remove'), exact: true }).click()
+    await sheet.waitFor({ state: 'detached' })
+    await removedItem.waitFor()
+    assert.deepEqual(fake.calls.teamRemoved, [{ account: ARCHIVE, confirm: ARCHIVE }], 'removed with its id repeated')
+    assert.equal(await card(archive).count(), 0, 'its card is gone')
+    assert.ok((await text(removedItem)).includes(tr('People in {team} who read it again once it is recovered: {count}.', { team, count: 1 })), 'Carol would read it again once recovered')
+    await removedItem.scrollIntoViewIfNeeded()
+    await shot('removed-list')
+
+    // The owner's view: Carol still kept, the mailbox named as removed, from the list already read.
+    const before = asked(ANA)
+    await openSection(tr('Members'))
+    await until(async () => (await text(carol)).includes(keeps(named)), 'Carol kept by the removed mailbox, named as removed')
+    assert.ok((await text(carol)).includes(pill), 'still marked as the only reader')
+    assert.equal(await offered('Remove…'), 0, 'not offered for removal')
+    assert.equal(await offered('Disable…'), 0, 'nor for disabling')
+    const bea = await text(row(BEA))
+    assert.ok(bea.includes(reads('financeiro@atendimento.example')) && !bea.includes(keeps('financeiro@atendimento.example')), 'Bea, kept by a live mailbox, is said as before')
+    assert.equal(asked(ANA), before, 'the removed mailboxes, already read, are not asked for again')
+    await carol.scrollIntoViewIfNeeded()
+    await shot('removed-owner')
+
+    // The admin's view: the same protection, the removed mailbox a count; the removed mailboxes are never asked for.
+    await signOut()
+    await signIn('bea@example.test')
+    await chooseWorkspace(TEAM)
+    await page.getByRole('heading', { name: tr('Mailboxes in {team}', { team }) }).waitFor()
+    await openSection(tr('Members'))
+    await until(async () => (await text(carol)).includes(keeps(tr('{count} of its mailboxes', { count: 1 }))), 'Carol kept, the removed mailbox counted')
+    assert.ok((await text(carol)).includes(pill), 'marked as the only reader')
+    assert.ok(!(await text(carol)).includes(archive), 'the removed mailbox is not named to an admin')
+    assert.equal(await offered('Remove…'), 0, 'an admin is not offered removing her')
+    assert.equal(await offered('Disable…'), 0, 'nor disabling her')
+    assert.equal(asked(BEA), 0, 'an admin never asks for the team’s removed mailboxes')
+    await carol.scrollIntoViewIfNeeded()
+    await shot('removed-admin')
+
+    // Deleted for good by an owner: its grants go, and Carol's marks with them, without opening Members again.
+    await signOut()
+    await signIn('ana@example.test')
+    await chooseWorkspace(TEAM)
+    await openSection(tr('Members'))
+    await until(async () => (await text(carol)).includes(keeps(named)), 'Carol still kept, after signing in again')
+    await openSection(tr('Mailboxes'))
+    await removedItem.getByRole('button', { name: tr('Delete for good…') }).click()
+    const purge = page.getByRole('dialog', { name: tr('Delete {email} for good?', { email: archive }) })
+    await purge.locator('input[name=purge-confirm]').fill(archive)
+    await fits(purge.locator('h2'), 'the title naming the address')
+    await shot('removed-purge')
+    const read = fake.calls.memberLists.length
+    await purge.getByRole('button', { name: tr('Delete for good'), exact: true }).click()
+    await purge.waitFor({ state: 'detached' })
+    await removedItem.waitFor({ state: 'detached' })
+    assert.deepEqual(fake.calls.purged, [{ user: ANA, account: ARCHIVE, confirm: ARCHIVE }], 'deleted for good with its id repeated')
+    await until(() => fake.calls.memberLists.length > read, 'the team’s people to be read again')
+    await openSection(tr('Members'))
+    await until(async () => await offered('Remove…') === 1, 'Carol offered for removal again')
+    assert.equal(await offered('Disable…'), 1, 'and for disabling')
+    assert.ok(!(await text(carol)).includes(pill), 'no longer marked as the only reader')
+    assert.equal(await carol.locator('.hint.lock').count(), 0, 'nothing keeps her')
+    await carol.scrollIntoViewIfNeeded()
+    await shot('removed-purged')
+    assert.deepEqual(errors, [], 'no page, script or CSP errors')
+    console.log(`ok teams removed ${label}`)
+  } catch (error) {
+    failures.push(`teams removed ${label}: ${error.message}`)
+    console.log(`FAIL teams removed ${label}: ${error.stack}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-teams-removed-${label}.png`) }).catch(() => {})
   } finally {
     fake.close()
     await context.close()

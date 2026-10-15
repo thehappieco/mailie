@@ -121,7 +121,12 @@ she does not, where she cannot give Read; the key in that mailbox's access, take
 and then Carol, a member: her cards without folders, messages, access, sync switch or removal, a
 line saying who manages the team's people, access and API keys, and no Members or API keys. On desktop and phone,
 light and dark, then in Portuguese and German, with the words each language expects read from the
-console's catalogs. It takes the same `QA_*` variables as `console.mjs`.
+console's catalogs. Then a removed mailbox's protection: Ana removes a team mailbox only Carol reads
+(kept 30 days, among the team's removed mailboxes), which keeps Carol protected, the mailbox named as
+removed for an owner, from the removed mailboxes already read, and counted for Bea, an admin, who
+never asks for them; once Ana deletes it for good the team's people are read again and Carol is
+offered for disabling and removal. On desktop and at 320 px, in English and Portuguese.
+`QA_ONLY=teams|removed` runs one group; it takes the other `QA_*` variables of `console.mjs`.
 
 ```sh
 npm run build && npx vite preview --port 4174 &     # or npm run dev, with QA_ORIGIN=http://localhost:5174
