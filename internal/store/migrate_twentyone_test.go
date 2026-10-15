@@ -442,6 +442,17 @@ func TestTheJournalKeepsNoLabelThatHoldsTheAddresssLocalPart(t *testing.T) {
 		{"Nobody's", "nobody", ""},
 		{"Inbox", "", "Inbox"},
 		{"", "support@example.org", ""},
+		// A character nobody sees, a decomposed accent or a fullwidth at sign
+		// never hides the address.
+		{"Queue john\u200b.smith", "john.smith@example.com", ""},
+		{"jo\u2060hn.smith desk", "john.smith@example.com", ""},
+		{"jo\u00adhn.smith", "john.smith@example.com", ""},
+		{"Jose\u0301 inbox", "jos\u00e9@example.com", ""},
+		{"Jos\u00e9 inbox", "jose\u0301@example.com", ""},
+		{"john  \t smith", "john smith@example.com", ""},
+		{"me\uff20home", "ana@example.org", ""},
+		{"me\ufe6bhome", "ana@example.org", ""},
+		{"Caf\u00e9 desk", "ana@example.org", "Caf\u00e9 desk"},
 	} {
 		if got := MailboxLabel(c.name, c.email); got != c.want {
 			t.Errorf("MailboxLabel(%q, %q) = %q, want %q", c.name, c.email, got, c.want)

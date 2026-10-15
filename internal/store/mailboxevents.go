@@ -10,7 +10,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // The journal of what was done to mailboxes, and the notices it gives their
@@ -158,19 +161,47 @@ func MailboxHint(email string) string {
 // the local part of the mailbox's own (email up to its last "@", of three
 // characters or more), compared without regard to case, which would say the
 // address all the same. Empty then. An email without "@" counts whole as
-// its local part.
+// its local part. Both are compared in a normal form (labelForm), so a
+// character nobody sees, a decomposed accent or a fullwidth at sign never
+// hides the address; what is kept is the display name as written.
 func MailboxLabel(displayName, email string) string {
-	if strings.Contains(displayName, "@") {
+	name := labelForm(displayName)
+	if strings.ContainsAny(name, "@\uff20\ufe6b") {
 		return ""
 	}
 	local := email
 	if at := strings.LastIndex(email, "@"); at >= 0 {
 		local = email[:at]
 	}
-	if utf8.RuneCountInString(local) >= 3 && strings.Contains(strings.ToLower(displayName), strings.ToLower(local)) {
+	local = labelForm(local)
+	if utf8.RuneCountInString(local) >= 3 && strings.Contains(strings.ToLower(name), strings.ToLower(local)) {
 		return ""
 	}
 	return displayName
+}
+
+// labelForm is s as MailboxLabel compares it: in NFC, without control
+// characters, format characters (zero-width ones, the soft hyphen, the word
+// joiner, bidirectional controls) or the combining grapheme joiner, and with
+// every run of white space one space, trimmed.
+func labelForm(s string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range norm.NFC.String(s) {
+		switch {
+		case unicode.IsControl(r), unicode.Is(unicode.Cf, r), r == '\u034f':
+			continue
+		case unicode.IsSpace(r):
+			space = b.Len() > 0
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 // MailboxReadersTx lists, inside the caller's transaction, who reads a
