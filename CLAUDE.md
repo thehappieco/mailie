@@ -120,8 +120,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`platformwraps.go`, migration 0015: insert only, deleted with the person or by a reset).
   Deleting a person marks what an external directory said of them gone (`directory_people.gone_at`),
   and their name stays in the mailbox journal until an extension releases them; a person nobody
-  follows is forgotten there at once, as actor and as the person a stranding lost.
-  `authtest` creates cheap users and keys for tests.
+  follows is forgotten there at once, as actor and as the person a stranding lost. A disable, a
+  deletion or a reset that leaves a team mailbox with nobody who reads it, would read it once
+  resumed or would read it but for a hold journals it stranded (`disabled`, `deleted`, `reset`, by
+  whoever did it). For applying a directory's document in one write, Tx forms that open no write
+  of their own: `SuspendTx`, `ResumeTx` (`Resume` is a write around it),
+  `RevokeSessionsStartedBeforeTx` (at microseconds; a session started in the moment's second ends
+  too), `Keys.RevokeCreatedBeforeTx`; and `ExternalSignIn.PersonCreatedTx`, run in the transaction
+  that creates a new person, right after their identity is linked, which rolls it all back on an
+  error. `authtest` creates cheap users and keys for tests.
 - `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix. An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
   is never charged to the whole address, which would refuse valid credentials behind the same NAT.
@@ -155,18 +162,35 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
-  and the workspace `Source` (local; the platform's is a stub). A workspace's kind, source and
+  and the workspace `Source` (local, or `Platform`, which mirrors an external directory: nothing of
+  workspaces or memberships changes here, a person created gets no workspace from it, and the
+  directory's documents send every one through `mirror.go`). A workspace's kind, source and
   person never change (migration 0016's trigger); a team closes and reopens (`SetClosed`,
   `closed_at`, migration 0019), and nothing in it is used meanwhile. Only a local team goes with its only member
   (`GoesWithPersonSQL`, the one rule for deleting it, its mailboxes and the last-reader test); a
   team whose source is not local outlives its people, its last one here included, and has no last
-  owner here. A membership of such a team may be held (`held_at`, migration 0022: disabled, its
-  grants kept). `strand.go` defines `Stranding` and journals the mailboxes a change strands
-  (`JournalStrandedTx`). See `docs/workspaces.md`.
+  owner here. `mirror.go` writes what a directory's document says: a team by the directory's id
+  (`ValidExternalID`, never `wsp_…`), its name and closure taken only from a higher version than
+  the one it took last (`source_version`); the person's personal workspace, replacing a local one
+  only while it holds no mailbox, live or removed, and no live key (`ReplacePersonalTx`); the
+  memberships it lists (`MirrorMemberTx`) and the end of the ones it omits (`EndMembershipTx`),
+  without the refusals of a local change, held instead (`held_at`, migration 0022: disabled, its
+  flags and grants kept) while the directory's generation is unconfirmed and the end would strand a
+  mailbox. `strand.go` defines `Stranding` and journals the mailboxes a change strands
+  (`JournalStrandedTx`); `StrandCandidatesTx` says which, before the change: the ones the person
+  reads, would read once resumed or would read but for a hold, and nobody else does or would. See
+  `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
-  concrete struct, not an interface.
+  concrete struct, not an interface. `directory.go` is what an extension that follows an external
+  directory calls, with no principal and from no transport: a person's document applied in one
+  write (`ApplyDirectoryDocument`, and at a first sign-in in the transaction that creates them,
+  `ExternalSignIn.Directory`; a new person under the directory's source without one is not
+  created), the directory's generation, resets, confirmation (which ends the held memberships) and
+  feed cursor (a compare and set), a closed person forgotten (`ForgetExternalPerson`, a forced
+  deletion refused by nothing) and released (`ReleaseDirectoryPerson`, or the 90-day
+  `SweepDirectory`), and the listings it maps people and subjects with.
 - `internal/api` — REST `/v1/...`, SSE and the long poll. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
   `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
@@ -376,7 +400,16 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mailbox — and they alone list, recover and delete it for good; the operator also lists and
   deletes any workspace's for good, and recovers no person's or team's. A recovery brings back the
   readers who still qualify and nothing a key held; none in a closed team, nor of a team mailbox
-  nobody who could read it is left to read.
+  nobody who could read it is left to read. **The directory exceptions**, under a source that
+  mirrors an external directory (`docs/workspaces.md`, "Following an external directory"): what
+  the directory says applies in a closed team too (memberships change while it is closed); its
+  end of a membership, or of a person (`ForgetExternalPerson`), takes no refusal for the last
+  owner, the last reader or a person who is not active, and may leave a team mailbox with no
+  reader, journaled `stranded`; a membership it ends while its generation is unconfirmed, and
+  whose end would strand a mailbox, is held (disabled, reading nothing, its flags and grants kept)
+  until a document lists it again or the generation is confirmed; and a document whose workspace
+  part is refused still applies what it revoked. A disable here stands over a directory: its
+  documents never resume a person disabled here, nor one whose disable they do not know of.
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -412,7 +445,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts
   (`web/src/open/versions.ts`).
 - **Errors.** Sentinels `errors.New("pkg: ...")`, always `errors.Is`/`errors.As`. The API answers
-  `{code, message}` with seven fixed codes and never says which credential failed.
+  `{code, message}` with seven fixed codes and never says which credential failed. What an
+  extension calls keeps the cause of each refusal for `errors.Is` (`service.ErrNotFollowing`,
+  `ErrDirectoryGeneration`, `ErrKindChanged`…); a new person under a directory's source without
+  their document is `internal`, "upstream: …", with a `Retry` of 10 s.
 - **Backup: the host only encrypts and uploads.** It generates data keys with the context exactly
   `{service: mailie, env: MAIL_ENV, purpose: db-backup, ref: <object key>}`
   (`backup.EncryptionContext`) and creates new objects under `db/` (`If-None-Match: *`, SSE-S3,

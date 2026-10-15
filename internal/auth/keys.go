@@ -887,16 +887,32 @@ func (k *Keys) RevokeCreatedBefore(ctx context.Context, userID string, before ti
 	var n int
 	err := k.store.Write(ctx, func(tx *sql.Tx) error {
 		var err error
-		n, err = execCount(ctx, tx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
-			WHERE created_by = ? AND created_at < ? AND revoked_at = 0`,
-			k.now().Unix(), string(reason), userID, before.Unix())
-		if err != nil {
-			return fmt.Errorf("auth: revoke the keys the person created: %w", err)
-		}
-		return nil
+		n, err = k.RevokeCreatedBeforeTx(ctx, tx, userID, before, reason)
+		return err
 	})
 	if err != nil {
 		return 0, err
+	}
+	return n, nil
+}
+
+// RevokeCreatedBeforeTx is RevokeCreatedBefore inside the caller's
+// transaction, opening no write of its own: what applying an external
+// directory's document stops a person's keys in.
+func (k *Keys) RevokeCreatedBeforeTx(ctx context.Context, tx *sql.Tx, userID string, before time.Time,
+	reason KeyStopReason,
+) (int, error) {
+	if !reason.Valid() {
+		return 0, ErrStopReason
+	}
+	if userID == "" {
+		return 0, nil
+	}
+	n, err := execCount(ctx, tx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
+		WHERE created_by = ? AND created_at < ? AND revoked_at = 0`,
+		k.now().Unix(), string(reason), userID, before.Unix())
+	if err != nil {
+		return 0, fmt.Errorf("auth: revoke the keys the person created: %w", err)
 	}
 	return n, nil
 }

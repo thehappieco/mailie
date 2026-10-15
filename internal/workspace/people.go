@@ -194,7 +194,7 @@ func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, e
 // 0008 run on a migrated database, which only a binary rolled back alone does
 // (store.ErrSchemaTooNew stops that from 0008 on, but not a binary older than
 // the guard). The daemon calls it once at start. Under any source but the
-// local one it makes nothing: the platform's workspaces are its to send.
+// local one it makes nothing: a directory's documents send every workspace.
 func (r *Repository) RepairPersonal(ctx context.Context) (int, error) {
 	if r.source.Name() != SourceLocal {
 		return 0, nil

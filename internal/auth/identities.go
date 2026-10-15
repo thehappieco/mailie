@@ -121,6 +121,15 @@ type ExternalSignIn struct {
 	// identity (ErrProductKeyNotPinned).
 	WantsKey     bool
 	ProductKeyID string
+	// PersonCreatedTx, when set, runs inside SignInExternal's transaction
+	// right after a new person is created for an identity seen for the first
+	// time and the identity is linked to them, before anything else is read
+	// of them: what an extension that follows an external directory applies
+	// the person's document in, so that the person, their personal workspace
+	// and their memberships come to be in one commit, or not at all. An error
+	// rolls the whole sign-in back, the person included. It must not open a
+	// write of its own: the store has one writer, held by this transaction.
+	PersonCreatedTx func(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error
 }
 
 // ExternalSignedIn is what a sign-in through an identity provider answers:
@@ -275,7 +284,39 @@ func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, e
 		issuer, subject, userID, now.Unix()); err != nil {
 		return "", fmt.Errorf("auth: link identity: %w", err)
 	}
+	if in.PersonCreatedTx != nil {
+		if err := in.PersonCreatedTx(ctx, tx, userID, now); err != nil {
+			return "", err
+		}
+	}
 	return userID, nil
+}
+
+// IdentityUserTx reads, inside the caller's transaction, the person an
+// identity (issuer, subject) signs in; false when it is linked to nobody.
+func IdentityUserTx(ctx context.Context, tx *sql.Tx, issuer, subject string) (string, bool, error) {
+	return identityUserOn(ctx, tx, issuer, subject)
+}
+
+// IdentityUser is IdentityUserTx outside a transaction.
+func (u *Users) IdentityUser(ctx context.Context, issuer, subject string) (string, bool, error) {
+	return identityUserOn(ctx, u.store.Reader(), issuer, subject)
+}
+
+func identityUserOn(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, issuer, subject string,
+) (string, bool, error) {
+	var userID string
+	err := q.QueryRowContext(ctx, `SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?`,
+		issuer, subject).Scan(&userID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("auth: look up identity: %w", err)
+	}
+	return userID, true, nil
 }
 
 // createPasswordlessTx creates a person who signs in through an identity

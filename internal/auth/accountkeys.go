@@ -16,6 +16,7 @@ import (
 	"github.com/thehappieco/kit/profiles/platform"
 
 	"github.com/thehappieco/mailie/internal/keyscheme"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -1102,11 +1103,11 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
 		now := u.now()
 		var (
-			userID, invited, status string
-			forced                  bool
+			userID, invited, status, createdBy string
+			forced                             bool
 		)
 		err := tx.QueryRowContext(ctx, `DELETE FROM reset_invites WHERE code_hash = ? AND expires_at > ?
-			RETURNING user_id, forced`, codeHash, now.Unix()).Scan(&userID, &forced)
+			RETURNING user_id, forced, created_by`, codeHash, now.Unix()).Scan(&userID, &forced, &createdBy)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrResetInvalid
@@ -1127,6 +1128,14 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 				return err
 			}
 		}
+		// Before the grants go: the team mailboxes that have a key and that
+		// nobody else reads, would read once resumed or would read but for a
+		// hold — one they alone read, with force, or one their own held
+		// membership kept — which nobody can read again once they do.
+		strands, err := workspace.StrandCandidatesTx(ctx, tx, userID, workspace.StrandScope{Keyed: true})
+		if err != nil {
+			return err
+		}
 		// Every grant sealed to the old key goes here, in this transaction:
 		// their flags stay, and on every mailbox that has a key they wait for
 		// it again (a new key for their own, a reader's for a team's). Every
@@ -1134,6 +1143,11 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 		// 0015): each wraps the old key, which their page would refuse to
 		// open as theirs once the new public key below is written.
 		if err := workspace.DropSealedGrantsOfTx(ctx, tx, userID); err != nil {
+			return err
+		}
+		// Journaled by whoever issued the invitation ("cli", or the
+		// caller who asked for it).
+		if _, err := workspace.JournalStrandedTx(ctx, tx, strands, userID, store.CauseReset, createdBy, now); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM platform_wraps WHERE user_id = ?`, userID); err != nil {

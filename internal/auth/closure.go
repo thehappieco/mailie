@@ -123,6 +123,12 @@ type Ended struct {
 	// to theirs (migration 0011), stopped with their index deleted. A
 	// suspension stops none.
 	Stopped []string
+	// Stranded are the team mailboxes a disable left with nobody who reads
+	// them, would read them once resumed or would read them but for a hold,
+	// as the journal recorded them (cause disabled): with force, or kept for
+	// them by a hold, which no protection asks about. A suspension strands
+	// nothing.
+	Stranded []workspace.Stranding
 }
 
 // Disable switches a person off and ends every way they had in: their status
@@ -151,7 +157,20 @@ type Ended struct {
 // error: a team mailbox migration 0011 found bound to them, stopped with its
 // index kept, keeps it. The only active owner is not switched off unless
 // force says so, nor somebody their teams depend on (BlockedError).
+//
+// Each team mailbox of a team that outlives them that the disable leaves
+// with nobody who reads it, would read it once resumed or would read it but
+// for a hold (workspace.StrandCandidatesTx) — one they alone read, with
+// force, or one their own held membership kept, which no protection asks
+// about — is journaled stranded (cause disabled), by the command line: a
+// caller who acts for someone else names them with DisableBy.
 func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, error) {
+	return u.DisableBy(ctx, id, force, "cli")
+}
+
+// DisableBy is Disable by actor, as the journal names whoever strands a
+// mailbox: "usr_…", "key:<prefix>" or "cli".
+func (u *Users) DisableBy(ctx context.Context, id string, force bool, actor string) (Ended, error) {
 	var out Ended
 	now := u.now().Unix()
 	err := u.store.Write(ctx, func(tx *sql.Tx) error {
@@ -174,8 +193,14 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 				return err
 			}
 		}
+		var strands []string
 		if !disabledHere {
 			if err := u.RequireNoBlocksTx(ctx, tx, id, force); err != nil {
+				return err
+			}
+			// Before the change: what they read, would read once resumed or
+			// would read but for a hold, and nobody else does.
+			if strands, err = workspace.StrandCandidatesTx(ctx, tx, id, workspace.StrandScope{Outlived: true}); err != nil {
 				return err
 			}
 		}
@@ -191,6 +216,10 @@ func (u *Users) Disable(ctx context.Context, id string, force bool) (Ended, erro
 			return err
 		}
 		if out, err = endWaysInTx(ctx, tx, id, now, workspace.KeyStopCreatorDisabled); err != nil {
+			return err
+		}
+		if out.Stranded, err = workspace.JournalStrandedTx(ctx, tx, strands, id, store.CauseDisabled, actor,
+			time.Unix(now, 0)); err != nil {
 			return err
 		}
 		if disabledHere {
@@ -281,36 +310,44 @@ func (u *Users) SuspendTx(ctx context.Context, tx *sql.Tx, id string) (Suspensio
 }
 
 // Resume lifts a person's suspension, for the extension that suspended
-// them: they are active again, and read again every mailbox they hold the
-// read flag and, on one that has a key, a grant at its current epoch on, by
-// the one reader rule; their personal mailboxes catch up. No session and no
-// key comes back: they sign in again, and create keys again.
-//
-// It acts only on a suspended person, and reports whether the person is
-// active now: false for one disabled here, which a resume never lifts.
-// Resuming someone active changes nothing.
+// them: ResumeTx in a transaction of its own.
 func (u *Users) Resume(ctx context.Context, id string) (bool, error) {
 	var active bool
 	err := u.store.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET status = ?, suspended_at = 0, updated_at = ? WHERE id = ? AND suspended_at <> 0`,
-			userActive, u.now().Unix(), id); err != nil {
-			return fmt.Errorf("auth: resume user: %w", err)
-		}
-		var status string
-		switch err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id = ?`, id).Scan(&status); {
-		case errors.Is(err, sql.ErrNoRows):
-			return ErrUserNotFound
-		case err != nil:
-			return fmt.Errorf("auth: resume user: %w", err)
-		}
-		active = status == userActive
-		return nil
+		var err error
+		active, err = u.ResumeTx(ctx, tx, id)
+		return err
 	})
 	if err != nil {
 		return false, err
 	}
 	return active, nil
+}
+
+// ResumeTx lifts a person's suspension inside the caller's transaction: they
+// are active again, and read again every mailbox they hold the read flag and,
+// on one that has a key, a grant at its current epoch on, by the one reader
+// rule; their personal mailboxes catch up. No session and no key comes back:
+// they sign in again, and create keys again.
+//
+// It acts only on a suspended person, and reports whether the person is
+// active now: false for one disabled here, which a resume never lifts.
+// Resuming someone active changes nothing. It opens no write of its own, so
+// a write that applies an external directory's document resumes in it.
+func (u *Users) ResumeTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET status = ?, suspended_at = 0, updated_at = ? WHERE id = ? AND suspended_at <> 0`,
+		userActive, u.now().Unix(), id); err != nil {
+		return false, fmt.Errorf("auth: resume user: %w", err)
+	}
+	var status string
+	switch err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id = ?`, id).Scan(&status); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, ErrUserNotFound
+	case err != nil:
+		return false, fmt.Errorf("auth: resume user: %w", err)
+	}
+	return status == userActive, nil
 }
 
 // endWaysInTx ends, inside the caller's transaction, every way a person who

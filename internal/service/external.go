@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -76,6 +77,21 @@ type ExternalSignIn struct {
 	// only with WantsKey, and must be pinned for the identity.
 	WantsKey     bool
 	ProductKeyID string
+	// Directory, on a server that follows an external directory
+	// (workspace.Platform), is what the directory says of the person now,
+	// as the extension read it: its Issuer and Subject must be the
+	// sign-in's (bad_request otherwise). For a person who exists it is
+	// applied first, in a write of its own (ApplyDirectoryDocument), so a
+	// person it suspends is refused as any disabled person is; for a new
+	// person it is applied in the transaction that creates them, which it
+	// rolls back when it refuses them or does not apply. Without it, a new
+	// person is not created there (internal, ErrDirectoryNeeded): nobody
+	// is created without the personal workspace the directory names. On a
+	// server whose workspaces are local it is refused (conflict,
+	// ErrNotFollowing); nil changes nothing there.
+	Directory *DirectoryDocument
+	// DirectoryApply tunes how Directory applies.
+	DirectoryApply ApplyOptions
 }
 
 // ExternalSignedIn is what SignInExternal answers: a session, or, for a
@@ -131,13 +147,21 @@ type ExternalEnrolmentTicket struct {
 // with auth.ErrEmailTaken for an address somebody here has. What an
 // extension of internal/app uses; no transport calls it.
 func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (ExternalSignedIn, error) {
+	created, applied, err := s.directoryAtSignIn(ctx, in)
+	if err != nil {
+		return ExternalSignedIn{}, err
+	}
 	signed, err := s.users.SignInExternal(ctx, auth.ExternalSignIn{
 		Issuer: in.Issuer, Subject: in.Subject, Email: in.Email, EmailVerified: in.EmailVerified,
 		Name: in.Name, UserAgent: in.UserAgent, TTL: in.TTL, AuthTime: in.AuthTime,
-		WantsKey: in.WantsKey, ProductKeyID: in.ProductKeyID,
+		WantsKey: in.WantsKey, ProductKeyID: in.ProductKeyID, PersonCreatedTx: created,
 	})
 	if err != nil {
 		return ExternalSignedIn{}, fromExternal(err, "signing in failed")
+	}
+	if applied != nil && applied.applied.UserID != "" {
+		// The new person's document committed with them.
+		s.directoryApplied(ctx, *applied)
 	}
 	if signed.Token == "" {
 		return ExternalSignedIn{Enrolment: &ExternalEnrolmentTicket{
@@ -150,6 +174,59 @@ func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (Extern
 		out.PlatformWrap = b64(signed.PlatformWrap)
 	}
 	return out, nil
+}
+
+// directoryAtSignIn prepares what a sign-in does with the person's document:
+// for a person who exists, it applies it now, in a write of its own; for a
+// new one, it returns the step that applies it in the transaction that
+// creates them, and where what it applied is left for after the commit. On a
+// server that follows a directory, a new person without a document gets a
+// step that refuses them (ErrDirectoryNeeded).
+func (s *Service) directoryAtSignIn(ctx context.Context, in ExternalSignIn) (
+	func(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error, *directoryApply, error,
+) {
+	followed := s.following() == nil
+	if in.Directory == nil {
+		if !followed {
+			return nil, nil, nil
+		}
+		return func(context.Context, *sql.Tx, string, time.Time) error { return errDirectoryNeeded }, nil, nil
+	}
+	doc, opts := *in.Directory, in.DirectoryApply
+	if doc.Issuer != in.Issuer || doc.Subject != in.Subject {
+		return nil, nil, E(CodeBadRequest, "the directory's document is of another identity than the sign-in's", nil)
+	}
+	if !followed {
+		return nil, nil, errNotFollowing
+	}
+	if err := checkDocument(doc); err != nil {
+		return nil, nil, err
+	}
+	if _, linked, err := s.IdentityUser(ctx, in.Issuer, in.Subject); err != nil {
+		return nil, nil, err
+	} else if linked {
+		if _, err := s.ApplyDirectoryDocument(ctx, doc, opts); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, nil
+	}
+	var applied directoryApply
+	created := func(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error {
+		res, err := s.applyDirectoryTx(ctx, tx, userID, doc, opts, now)
+		if err != nil {
+			return err
+		}
+		if res.invalid != nil {
+			// Nobody is created without the workspaces the document names.
+			return res.invalid
+		}
+		if !res.applied.Applied {
+			return errDirectoryMoved
+		}
+		applied = res
+		return nil
+	}
+	return created, &applied, nil
 }
 
 // ExternalEnrolment is what the page of a person without an account key
@@ -319,7 +396,11 @@ func (s *Service) passwordsInUse() error {
 // an external step-up onto the transport vocabulary. Each keeps the auth
 // sentinel as its cause, which is what an extension tells refusals apart by.
 func fromExternal(err error, what string) error {
+	var already *Error
 	switch {
+	case errors.As(err, &already):
+		// A refusal of the directory's document, as it was given.
+		return already
 	case errors.Is(err, auth.ErrAccountKeyNeeded):
 		return E(CodeConflict, "this person has no account key yet: sign in again asking for the product key, "+
 			"which makes one", err)

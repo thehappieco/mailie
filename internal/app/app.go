@@ -464,7 +464,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	housekeeping := make(chan struct{})
 	go func() {
 		defer close(housekeeping)
-		housekeep(houseCtx, users, db.SweepSends, svc.SweepRemovedMailboxes, db.Scrub, logger, housekeepingInterval)
+		housekeep(houseCtx, users, db.SweepSends, svc.SweepRemovedMailboxes, svc.SweepDirectory, db.Scrub, logger,
+			housekeepingInterval)
 	}()
 	defer func() {
 		stopHousekeeping()

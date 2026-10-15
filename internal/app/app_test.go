@@ -201,7 +201,7 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			housekeep(ctx, users, db.SweepSends, noMailboxes, db.Scrub, slog.New(slog.DiscardHandler), every)
+			housekeep(ctx, users, db.SweepSends, noMailboxes, nil, db.Scrub, slog.New(slog.DiscardHandler), every)
 		}()
 		return func() {
 			t.Helper()
@@ -320,7 +320,7 @@ func TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, db.Scrub, logger, time.Hour)
+		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, nil, db.Scrub, logger, time.Hour)
 	}()
 	select {
 	case <-swept:

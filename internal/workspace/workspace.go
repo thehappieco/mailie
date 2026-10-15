@@ -105,7 +105,8 @@ type Workspace struct {
 	// Kind is personal, team or operator.
 	Kind Kind
 	// Source is SourceLocal or SourcePlatform: where the workspace and its
-	// memberships come from. A platform workspace is never changed here.
+	// memberships come from. A workspace from another source is never
+	// changed here, but by the directory it mirrors (mirror.go).
 	Source string
 	// Name is a team's; empty for the others, which a client names itself.
 	Name string
@@ -148,7 +149,7 @@ var (
 	// workspace, which has none.
 	ErrOperator = errors.New("workspace: the operator workspace has no members, grants or invites")
 	// ErrManagedElsewhere is a local change to workspaces whose source is
-	// the platform: they mirror what the platform sends.
+	// another source: they mirror what an external directory sends.
 	ErrManagedElsewhere = errors.New("workspace: workspaces are managed in the account console")
 	// ErrLastOwner is a change that would leave a team without an active
 	// owner.
@@ -362,8 +363,8 @@ func (r *Repository) All(ctx context.Context) ([]Workspace, error) {
 }
 
 // changeable refuses a change to the memberships or the name of w: a personal
-// or the operator workspace, or one the platform sends, or any while the
-// configured source is the platform.
+// or the operator workspace, or one from another source, or any while the
+// configured source is not the local one.
 func (r *Repository) changeable(w Workspace) error {
 	switch w.Kind {
 	case KindPersonal:

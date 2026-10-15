@@ -83,6 +83,8 @@ type fixtureOptions struct {
 	keysActUnderCreator bool
 	// teamsWithheld is an edition that does not offer team workspaces.
 	teamsWithheld bool
+	// source is where workspaces come from; nil is the local source.
+	source workspace.Source
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -110,7 +112,7 @@ func newFixtureWith(t *testing.T, o fixtureOptions) *fixture {
 	}
 	f := &fixture{
 		repo: account.NewRepository(db, keyring), db: db,
-		users: auth.NewUsers(db).WithSaltKey(authtest.SaltKey), keys: auth.NewKeys(db), opts: o,
+		users: auth.NewUsers(db).WithSaltKey(authtest.SaltKey).WithWorkspaceSource(o.source), keys: auth.NewKeys(db), opts: o,
 		bus:  events.NewBus(events.NewJournal(db)),
 		logs: &logBuffer{},
 	}
@@ -147,14 +149,15 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 	registry := account.NewRegistry(t.Context(), f.repo, opts)
 	t.Cleanup(func() { _ = registry.Close() })
 	return service.New(service.Deps{
-		Accounts:  registry,
-		Keys:      f.keys,
-		Users:     f.users,
-		Store:     f.db,
-		Bus:       f.bus,
-		Sync:      f.opts.sync,
-		Log:       logger,
-		PublicURL: f.opts.publicURL,
+		Accounts:   registry,
+		Keys:       f.keys,
+		Users:      f.users,
+		Workspaces: workspace.NewRepository(f.db, f.opts.source),
+		Store:      f.db,
+		Bus:        f.bus,
+		Sync:       f.opts.sync,
+		Log:        logger,
+		PublicURL:  f.opts.publicURL,
 
 		DownloadSpoolBytes:         f.opts.downloadSpool,
 		DownloadsPerCaller:         f.opts.downloadsPerCaller,

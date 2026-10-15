@@ -173,6 +173,29 @@ func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 	})
 }
 
+// RevokeSessionsStartedBeforeTx ends, inside the caller's transaction, every
+// live session of a person that started at or before a moment, given in unix
+// microseconds, as an external directory states when it revoked their
+// sessions, and deletes the tickets of their ceremonies under way. A session
+// starts at a whole second (startSessionTx), so one that started within the
+// moment's second is ended too: this may end a session started just after
+// the moment, never spare one started before it. Sessions started in a later
+// second stay. It reports how many it ended, and opens no write of its own.
+func (u *Users) RevokeSessionsStartedBeforeTx(ctx context.Context, tx *sql.Tx, userID string, beforeUS int64) (int, error) {
+	if beforeUS <= 0 {
+		return 0, nil
+	}
+	n, err := execCount(ctx, tx, `UPDATE sessions SET revoked_at = ?
+		WHERE user_id = ? AND revoked_at = 0 AND created_at <= ?`, u.now().Unix(), userID, beforeUS/1_000_000)
+	if err != nil {
+		return 0, fmt.Errorf("auth: end the sessions started before a moment: %w", err)
+	}
+	if err := dropTicketsTx(ctx, tx, userID); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
 // startSessionTx issues a token inside the caller's transaction, so a session
 // is created in the same commit as whatever justified it: a sign-up, a
 // password change. It expires ttl after it starts, and nothing extends it.

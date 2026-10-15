@@ -8,6 +8,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/store"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 // Closing a person's account, on their request, is two steps, as the privacy
@@ -101,7 +102,7 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 		return DisabledUser{}, err
 	}
 	read := s.readBy(ctx, user.ID)
-	ended, err := s.users.Disable(ctx, user.ID, req.Force)
+	ended, err := s.users.DisableBy(ctx, user.ID, req.Force, p.Actor())
 	if err != nil {
 		return DisabledUser{}, fromClosure(err, "disabling the user failed")
 	}
@@ -166,39 +167,94 @@ func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequ
 		return DeletedUser{}, err
 	}
 
-	var removed auth.Removed
-	read := s.readBy(ctx, user.ID)
-	// Their teams are asked about before anything of theirs goes.
-	blocks := func(tx *sql.Tx) error { return s.users.RequireNoBlocksTx(ctx, tx, user.ID, req.Force) }
-	accounts, err := s.accounts.RemoveOwner(ctx, user.ID, blocks, func(tx *sql.Tx) error {
-		// The records of what they sent from a mailbox nobody owns stay
-		// with that mailbox, without saying who asked.
-		if err := store.ForgetSenderTx(ctx, tx, user.ID); err != nil {
-			return err
-		}
-		var err error
-		removed, err = s.users.DeleteTx(ctx, tx, user.ID, req.Force)
-		return err
-	})
+	done, err := s.removePerson(ctx, user.ID, removeOpts{force: req.Force, actor: p.Actor(), cause: store.CauseDeleted})
 	if err != nil {
 		return DeletedUser{}, fromClosure(err, "deleting the user failed")
 	}
-	s.accessChanged()
-	if len(removed.Stopped) > 0 {
-		s.noticesChanged()
-	}
-	s.reconcile(removed.Stopped...)
-	s.reconcile(read...)
-	s.forgetMoves(removed.Stopped)
-	s.compact(ctx)
+	removed, accounts := done.removed, done.accounts
 	s.log.Info("user deleted", "user", user.ID, "accounts", accounts,
 		"sessions", removed.Sessions, "keys", removed.Keys, "invites", removed.Invites, "teams", removed.Teams,
-		"identities", removed.Identities, "team_syncs_stopped", len(removed.Stopped))
+		"identities", removed.Identities, "team_syncs_stopped", len(removed.Stopped), "stranded", len(done.stranded))
 	return DeletedUser{
 		ID: user.ID, Email: user.Email, AccountsRemoved: accounts,
 		SessionsDeleted: removed.Sessions, KeysDeleted: removed.Keys, InvitesDeleted: removed.Invites,
 		TeamsDeleted: removed.Teams, TeamSyncsStopped: removed.Stopped,
 	}, nil
+}
+
+// removeOpts says how removePerson deletes a person.
+type removeOpts struct {
+	// force skips the refusals: the last owner of the instance, and a
+	// person their teams depend on (auth.BlockedError).
+	force bool
+	// actor and cause are what the journal says of each mailbox the
+	// deletion strands: who ("usr_…", "key:<prefix>", "cli" or
+	// store.ActorDirectory) and why (store.CauseDeleted, or
+	// store.CauseForgotten for a person a directory closed).
+	actor, cause string
+	// check, when set, runs first in the deletion's transaction: a refusal
+	// rolls it back and is returned as it is.
+	check func(tx *sql.Tx) error
+}
+
+// personRemoved is what removePerson deleted.
+type personRemoved struct {
+	accounts int
+	removed  auth.Removed
+	stranded []Stranding
+}
+
+// removePerson deletes a person and everything kept about them, in one
+// transaction, as DeleteUser describes: what their teams depend on is asked
+// first unless force; each team mailbox of a team that outlives them that
+// they alone read, would read once resumed or would read but for a hold
+// (workspace.StrandCandidatesTx) is journaled stranded, by actor for cause,
+// while they still exist; then the mailboxes that go with them, and the
+// person. Once it commits, whatever answers for their mailboxes is told.
+func (s *Service) removePerson(ctx context.Context, userID string, o removeOpts) (personRemoved, error) {
+	var out personRemoved
+	read := s.readBy(ctx, userID)
+	// Their teams are asked about before anything of theirs goes, and what
+	// the deletion strands is journaled while they exist.
+	before := func(tx *sql.Tx) error {
+		if o.check != nil {
+			if err := o.check(tx); err != nil {
+				return err
+			}
+		}
+		if err := s.users.RequireNoBlocksTx(ctx, tx, userID, o.force); err != nil {
+			return err
+		}
+		strands, err := workspace.StrandCandidatesTx(ctx, tx, userID, workspace.StrandScope{Outlived: true})
+		if err != nil {
+			return err
+		}
+		out.stranded, err = workspace.JournalStrandedTx(ctx, tx, strands, userID, o.cause, o.actor, s.now())
+		return err
+	}
+	accounts, err := s.accounts.RemoveOwner(ctx, userID, before, func(tx *sql.Tx) error {
+		// The records of what they sent from a mailbox nobody owns stay
+		// with that mailbox, without saying who asked.
+		if err := store.ForgetSenderTx(ctx, tx, userID); err != nil {
+			return err
+		}
+		var err error
+		out.removed, err = s.users.DeleteTx(ctx, tx, userID, o.force)
+		return err
+	})
+	if err != nil {
+		return personRemoved{}, err
+	}
+	out.accounts = accounts
+	s.accessChanged()
+	if len(out.removed.Stopped) > 0 {
+		s.noticesChanged()
+	}
+	s.reconcile(out.removed.Stopped...)
+	s.reconcile(read...)
+	s.forgetMoves(out.removed.Stopped)
+	s.compact(ctx)
+	return out, nil
 }
 
 // Suspending a person is for an extension of the daemon (internal/app's

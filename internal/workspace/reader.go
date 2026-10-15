@@ -65,13 +65,30 @@ type lastReaders struct {
 	// suspended person as reading nothing, so they are nobody's other
 	// reader.
 	orSuspended bool
+	// strand asks what a change would strand rather than what it must not
+	// break (StrandCandidatesTx): the mailboxes the person reads, would read
+	// once resumed or would read but for a hold, where nobody else is any of
+	// the three. A mailbox another person waits for, resumed or released, is
+	// not stranded: it waits for them.
+	strand bool
+}
+
+// anyReaderSQL is the condition, over mailbox_access aliased alias, that its
+// holder reads the mailbox, would read it once resumed, or would read it but
+// for a hold: whom a mailbox is kept for.
+func anyReaderSQL(alias string) string {
+	return `(` + store.ReaderSQL(alias) + ` OR ` + store.SuspendedReaderSQL(alias) + ` OR ` +
+		store.HeldReaderSQL(alias) + `)`
 }
 
 // lastReaderOf lists the team mailboxes userID is the only reader of, oldest
 // first, among those in narrows to.
 func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders) ([]string, error) {
-	reads := store.ReaderSQL("g")
-	if in.orSuspended {
+	reads, others := store.ReaderSQL("g"), store.ReaderSQL("o")
+	switch {
+	case in.strand:
+		reads, others = anyReaderSQL("g"), anyReaderSQL("o")
+	case in.orSuspended:
 		reads = `(` + reads + ` OR ` + store.SuspendedReaderSQL("g") + `)`
 	}
 	query := `SELECT a.id FROM accounts a
@@ -79,7 +96,7 @@ func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders)
 		  JOIN mailbox_access g ON g.account_id = a.id AND g.user_id = ?1
 		 WHERE ` + reads + `
 		   AND NOT EXISTS (SELECT 1 FROM mailbox_access o
-		                    WHERE o.account_id = a.id AND o.user_id <> ?1 AND ` + store.ReaderSQL("o") + `)
+		                    WHERE o.account_id = a.id AND o.user_id <> ?1 AND ` + others + `)
 		   AND (?2 = '' OR a.workspace_id = ?2)`
 	if in.outlived {
 		query += ` AND NOT ` + GoesWithPersonSQL("w", "?1")
@@ -97,6 +114,36 @@ func lastReaderOf(ctx context.Context, q querier, userID string, in lastReaders)
 		args = append(args, string(list))
 	}
 	return listIDs(ctx, q, query+` ORDER BY a.created_at, a.rowid`, args...)
+}
+
+// StrandScope narrows StrandCandidatesTx.
+type StrandScope struct {
+	// WorkspaceID, when not empty, keeps the mailboxes of that workspace:
+	// what ending a membership there strands.
+	WorkspaceID string
+	// Outlived keeps the mailboxes of teams that outlive the person
+	// (GoesWithPersonSQL): what closing them strands, since a local team
+	// they are alone in goes with them at their deletion, mailboxes and all.
+	Outlived bool
+	// Keyed keeps the mailboxes that have a key: what deleting the person's
+	// sealed grants, and nothing else, strands (a reset of their account
+	// key).
+	Keyed bool
+}
+
+// StrandCandidatesTx lists, inside the caller's transaction and before the
+// change, the live team mailboxes a change that takes userID's reading would
+// leave stranded (docs/workspaces.md, "Removed mailboxes"): those they read,
+// would read once resumed (store.SuspendedReaderSQL) or would read but for a
+// hold (store.HeldReaderSQL), where no other person is any of the three. A
+// mailbox another person's hold keeps strands once, when the last of those
+// holds ends, naming that person. Oldest first. It refuses nothing: the
+// caller journals what it returns (JournalStrandedTx) once the change is
+// decided, while the person still exists.
+func StrandCandidatesTx(ctx context.Context, tx *sql.Tx, userID string, in StrandScope) ([]string, error) {
+	return lastReaderOf(ctx, tx, userID, lastReaders{
+		workspaceID: in.WorkspaceID, outlived: in.Outlived, keyed: in.Keyed, strand: true,
+	})
 }
 
 // LastReaderOfKeyedTx lists, inside the caller's transaction, the team

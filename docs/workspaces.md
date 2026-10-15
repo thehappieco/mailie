@@ -694,6 +694,21 @@ was its last member here. One rule decides which teams go with a person, for the
 workspaces and of their mailboxes and for the last-reader test alike
 (`workspace.GoesWithPersonSQL`).
 
+**What strands a mailbox.** A change no protection refuses may leave a team mailbox with nobody who
+reads it, would read it once resumed, or would read it but for a hold
+(`workspace.StrandCandidatesTx`, asked before the change): a person disabled or deleted with `force`,
+or reset with `--force` on a mailbox that has a key, or one whose own held membership kept a mailbox
+nobody else reads, which no protection asks about; and, under a source that mirrors an external
+directory, a membership it ends, the generation confirmed with memberships held, and a person it
+closes, forgotten ([Following an external directory](#following-an-external-directory)). Each is
+journaled stranded in the same transaction, naming the person it lost and why (`disabled`,
+`deleted`, `reset`, `membership_ended`, `forgotten`), by whoever did it, and tells nobody in the
+console. Never: a suspension (what the person reads waits for them), a role change, closing a team,
+removing a mailbox, or putting a membership on hold. What an external directory decides is refused
+by none of the protections above: it applies in a closed team too, to a person who is not active,
+and to the last owner and the last reader, whom only its hold, while its generation is not
+confirmed, keeps for a while.
+
 ### Taking over a link
 
 Gone with the linker. Phase 2 kept a team mailbox syncing under its linker's consent, so the linker
@@ -710,6 +725,16 @@ The seven codes do not change.
 | a mailbox the caller sees, without the flag the operation needs (a member waiting for the key reads nothing); a role that may not do this (a member listing members, leaving, granting, creating a key); a key on an administration, key or mailbox-key route; a key's send where keys may not send; a giver of `read` or of the key, or a first key's writer, who does not read the mailbox now; a step-up more than ten minutes old; a team mailbox's new key; a team, or a team mailbox the caller would otherwise see, in an edition that withholds teams | `403 not_authorized` |
 | a protection; a platform-sourced workspace changed locally, or closed by the operator; a closed team used or changed (its members, invites, keys, grants, name, a mailbox linked into it); a missing actions or send consent; a grant at another epoch than the mailbox key's current one, or a new key at another than the next; a grant that already exists; a grant that names another account public key than its recipient's now (they were reset since the console read them); a first key for a mailbox that has one, or whose grants are not exactly its readers' with an account key; a namespace another mailbox uses; a grant for a person without an account key, or the key for one who holds no `read`; a person without an account key linking a mailbox | `409 conflict` |
 | a personal or the operator workspace as the target of a member, grant or invite operation, or closed; an `act` without `read`; `manage` for an owner or an admin; a removal without its id repeated; a consent to another revision than the current one; a key's flag its scope does not allow; `POST /v1/me/apikeys`; a public key, namespace, grant or epoch outside its shape, or a grant at odds with the epoch its request names; a grant without the `public_key` it was sealed to, or a `public_key` without a grant; a person's link without its key, or an instance key's with one; `read` on a mailbox that has a key, to a person with an account key, without their grant; a grant with a change that gives no `read` | `400 bad_request` |
+
+What an extension that follows an external directory calls answers in the same seven codes, each
+keeping its cause for `errors.Is`: `409` for a server whose workspaces are local
+(`ErrNotFollowing`), a document or a confirmation of another generation (`ErrDirectoryGeneration`),
+a cursor or a closing older than what was applied (`ErrDirectoryMoved`), a workspace whose kind
+changed (`ErrKindChanged`) or that is this server's own or another person's (`ErrRepointed`), a
+person released while here (`ErrPersonStillHere`) and a person forgotten on a document that does not
+close them (`ErrNotClosed`); `404` for an identity that signs in nobody (`ErrNoSuchPerson`); `400`
+for a document outside its shape; and `500`, "upstream: …", with `Retry-After: 10`, for a new person
+signing in without their document (`ErrDirectoryNeeded`).
 
 ## API keys
 
@@ -1159,19 +1184,24 @@ type Source interface {
 	Name() string
 	// Changeable reports whether workspaces and memberships may be created and changed here,
 	// from the console and the command line: nil for the local source; ErrManagedElsewhere
-	// for the platform source, which mirrors what the platform sends and creates nothing.
+	// for the source that mirrors an external directory, which creates nothing of its own.
 	Changeable() error
 	// PersonCreatedTx runs inside the transaction that creates a person. The local source
-	// creates their personal workspace and its membership there; the platform source does
-	// nothing, since the platform's document creates it.
+	// creates their personal workspace and its membership there; the other source does
+	// nothing, since the directory's document, applied in that transaction, does.
 	PersonCreatedTx(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error
 }
 ```
 
 - **Local** implements everything in this document.
-- **Platform** is a stub in this phase: `Changeable` refuses (the service answers `409`, "workspaces
-  are managed in the account console"), and `PersonCreatedTx` creates nothing. A row's own `source`
-  is checked too: a `platform` workspace is never changed locally, whatever the configured source.
+- **Platform** (`workspace.Platform()`, stored as `platform`) mirrors an external directory that an
+  extension of the daemon follows ([Following an external directory](#following-an-external-directory)):
+  `Changeable` refuses (the service answers `409`, "workspaces are managed in the account console"),
+  `PersonCreatedTx` creates nothing, and the directory's documents create and change every
+  workspace and membership, the person's personal workspace included, through the mirror
+  (`internal/workspace/mirror.go`). A person signing in for the first time is created only with
+  their document, which names that workspace. A row's own `source` is checked too: a `platform`
+  workspace is never changed locally, whatever the configured source.
 - **Selection** is `app.Options.WorkspaceSource`, set only by a binary that embeds `internal/app`;
   `nil` is local. There is no environment variable, and `serve` never sets it: nothing hosted is in
   the core.
@@ -1281,6 +1311,112 @@ one, leaves all of it empty.
   (`mailbox_events_workspace`), and reports it elsewhere: the strandings, with the person each
   lost, and a link that never connected deleted in such a workspace
   ([Removed mailboxes](#removed-mailboxes)).
+
+### What a document does
+
+A document is what the directory says of one person now: its issuer and subject (the identity that
+signs them in here), the generation of its data it belongs to, a version, a status (`active`,
+`disabled` or `closed`), the moments it last disabled them and revoked their sessions and their
+credentials (microseconds; none for never), and the workspaces they belong to: their personal
+workspace first, as its owner, and the teams, each with their role there and the team's own
+version of its name and closure. The service applies it in one write
+(`service.ApplyDirectoryDocument`), only under the source that mirrors a directory (`409`
+otherwise), and for no transport:
+
+1. **Whose.** The person the identity signs in (`404` for nobody). A document never creates a
+   person but at a first sign-in (below).
+2. **Which generation.** The directory is followed at the generation of the first document applied
+   for it; a document of another generation is refused (`409`): the extension resets the
+   directory first.
+3. **Only newer.** A version no higher than the last one applied for the person changes nothing.
+4. **What it revoked, when it rose** past what was kept, at microseconds: a disable rising, or a
+   status `disabled` or `closed` for a person not suspended, suspends them (a person disabled here
+   stays as they are: a disable here stands over a directory); a session revocation ends every
+   session that started at or before it (a session starts at a whole second, so one started within
+   that second ends too, never one started before it spared); a credentials revocation stops every
+   key they created before it and the extension's margin, in every workspace
+   (`account_recovered`). The same moment again ends nothing.
+5. **A closed person** stops there, suspended: their memberships and their deletion wait for an
+   answer from the directory that confirms it (`ForgetExternalPerson`, below).
+6. **The workspaces are checked before anything of them is written**: one personal workspace,
+   first, its person its owner, never closed; every id one a directory may send — 1 to 64 of
+   letters, digits, `_`, `.` and `-`, never `wsp_…`, so never one of this server's — once; each
+   team's role and name; an id already mirrored keeps its kind (`409`, `ErrKindChanged`), its
+   source and, personal, its person (`409`, `ErrRepointed`). A refusal still commits what step 4
+   revoked and the person's status, never the version, and is returned after the commit.
+7. **The personal workspace** is the directory's: one a person already has under another id — the
+   local one signing up made, before the directory was followed — is replaced while it holds no
+   mailbox, live or removed, and no live key (its stopped keys and its membership go with it), and
+   kept otherwise, the replacement waiting for a later document and the rest applying; the daemon
+   names, at start, the people a document would not replace this way
+   (`service.PersonalReplacementBlocks`).
+8. **Each team** is mirrored with the directory's id, the source's name and its name and closure;
+   one already there takes them only from a higher version than the one it took last, so an older
+   document never undoes a newer one, and from any after a reset. A team the directory closes is
+   closed as the operator closes a local one ([Closed teams](#closed-teams)).
+9. **Each membership listed** is written: a new one whatever its person's standing (a suspended
+   person is a member, reading nothing until resumed) and in a closed team too; a role changed as
+   it is changed here (a demotion to member ends the consent attempts they started on the team's
+   mailboxes, any change expires the invites they made there, and a key they created stays, the
+   workspace's); a held one made active again, its flags and grants counting again. **Each
+   membership the document omits**, of a team from another source, ends, refused by nothing — not
+   the last owner, not the last reader, not a closed team: it takes the person's grants there,
+   their consent attempts, the team's invites for their address, the invites they made there and
+   the keys they created there (`creator_left`), and journals stranded each mailbox it leaves with
+   nobody who reads it, would read it once resumed or would read it but for a hold
+   (`membership_ended`, by `directory`). While the directory's generation is not confirmed, a
+   membership whose end would strand a mailbox is **held** instead: disabled, its flags and sealed
+   grants kept, unusable, what a disable ends ended; a document that lists it again releases it,
+   and confirming the generation ends it.
+10. **A resume** only by an active document that knows of the disable that suspended them: its
+    disable no older than the one kept. One that does not (a reset let an older document apply)
+    keeps the suspension, and says so. A disable and an enable both missed are a suspension and a
+    resume in the same write: what the disable ends ends.
+11. **What it said** is recorded: its version, generation and status, and the highest of each
+    revocation.
+
+Once the write commits, event streams read access again, the sync engine hears of the mailboxes of
+every team it changed and of the person's own, and a suspended person's consent attempts stop.
+
+**A first sign-in** (`service.ExternalSignIn.Directory`): for a person who exists the document is
+applied first, in a write of its own, so one it suspends is refused as any disabled person is; for a
+new person it is applied in the transaction that creates them (`auth.ExternalSignIn.PersonCreatedTx`,
+right after their identity is linked), which it rolls back when it suspends them or does not apply:
+nobody is created without the personal workspace the directory names, nor disabled. Without a
+document, a new person under the source that mirrors a directory is not created (`internal`,
+"upstream: …", `Retry-After: 10`): the extension asks the directory and tries again. Under the
+local source a document is refused (`409`).
+
+### Generations, resets and holds
+
+- **A reset** (`service.ResetDirectory`) starts the directory again at a generation, in one
+  transaction: unconfirmed, its cursor and what it published forgotten, every person's version and
+  every team's version set back to 0 under the reset it records, what it revoked kept. An extension
+  resets when the directory says it forgot where its feed stood, whatever the generation, and on a
+  new generation; a directory never followed is created by it. The next document of each person
+  then applies whatever its version, and the next state of each team is taken from it.
+- **The feed's cursor** (`service.SetDirectoryCursor`) is a compare and set on the generation and
+  the reset it was read under, never created by it, never going back.
+- **Confirming the generation** (`service.ConfirmDirectoryGeneration`), when the directory says it
+  is final, ends every held membership, one after another in the transaction, each journaling the
+  mailboxes its hold kept that nobody else reads, would read once resumed or would read but for
+  another hold: a mailbox two holds kept strands once, when the last of them ends, naming that
+  person. Confirming again changes nothing.
+
+### A person the directory closed
+
+A closed document suspends the person (step 5). On an answer that confirms it — the document of
+the directory's generation, closed, no older than the one applied — the extension forgets them
+(`service.ForgetExternalPerson`): a deletion with force, refused by nothing, the instance's last
+owner included, which takes everything `DeleteUser` takes — their personal workspace and its
+mailboxes, their sessions, their identities, their memberships — and journals stranded
+(`forgotten`, by `directory`), while they still exist, each team mailbox they alone read, would read
+once resumed or would read but for a hold. Their directory row stays, gone, and with it their name
+in the journal, until the extension has delivered what names them and releases them
+(`service.ReleaseDirectoryPerson`, refused while they exist), or 90 days pass
+(`service.SweepDirectory`, the daemon's housekeeping). The listings it maps them with:
+`DirectoryPeople` (every person an identity of the issuer signs in now, with what was applied, and
+every gone row), `DirectorySubjects` and `IdentityUser`.
 
 ## Migration 0008
 
@@ -1866,6 +2002,55 @@ Test names state the guarantee. At least:
   `TestDeletingAPersonMarksTheirDirectoryRowGone` and
   `TestDeletingAnUnfollowedPersonForgetsThemAsTheLostReaderToo` (`internal/auth`), and
   `TestANeverConnectedLinkRemovedInAFollowedWorkspaceIsJournaledPurged` (`internal/account`).
+- Following an external directory, its documents: the mirror (`internal/workspace`),
+  `TestADocumentCreatesAWorkspaceWithTheDirectorysIDAndTheSourcesName`,
+  `TestADirectoryIDNeverLooksLikeALocalOne`, `TestAPersonalWorkspaceFromADocumentReplacesAnEmptyLocalOne`,
+  `TestAPersonalWorkspaceHoldingOnlyStoppedKeysIsReplaced`,
+  `TestAPersonalWorkspaceHoldingAMailboxOrALiveKeyIsNotReplaced`, `TestADocumentNeverRepointsAWorkspace`,
+  `TestAMembershipFromADocumentIsWrittenForASuspendedPersonAndInAClosedTeam`,
+  `TestAMembershipEndedFromADocumentTakesGrantsInvitesAndKeysWithoutRefusingTheLastReaderOrOwner`,
+  `TestAMembershipEndedFromADocumentStrandsWhatItsPersonAloneReadOrWouldRead`,
+  `TestTheLastMemberLeavingATeamFromAnotherSourceLeavesTheTeamAndItsMailboxes`,
+  `TestAHeldMembershipReadsNothingAndKeepsItsGrants`, `TestAMembershipListedAgainReleasesItsHold` and
+  `TestEndingTheLastOfTwoHeldMembershipsStrandsTheMailboxOnceNamingThatPerson`; people
+  (`internal/auth`), `TestRevokingSessionsStartedBeforeAMomentSparesLaterSeconds`,
+  `TestANewPersonsCallbackRunsInTheTransactionThatCreatesThem`,
+  `TestAForcedDisableJournalsEveryMailboxItStrands`,
+  `TestAForcedResetJournalsEveryKeyedMailboxItStrandsWithItsIssuer`, `TestASuspensionStrandsNothing`
+  and `TestAResumeInsideAnotherWriteNeverNestsOne`; the documents (`internal/service`),
+  `TestADirectoryIsAppliedOnlyUnderTheSourceThatMirrorsIt`,
+  `TestARisingDisableSuspendsEvenWhenTheAccountIsActiveAgain`, `TestALocalDisableStandsOverADocument`,
+  `TestADocumentThatDoesNotKnowTheDisableNeverResumes`, `TestAnActiveDocumentResumesOnlyASuspension`,
+  `TestADocumentThatResumesAndRevokesRunsInOneWrite`,
+  `TestADemotionFromADocumentDropsPendingConsentsAndInvitesAndKeepsKeys`,
+  `TestTheSameDocumentTwiceWithASubSecondTimeEndsNothingTheSecondTime`,
+  `TestRisingSessionRevocationEndsOnlySessionsStartedBefore`,
+  `TestRisingCredentialRevocationStopsKeysCreatedBeforeItAndItsMarginOnly`,
+  `TestATeamIsRenamedOrClosedOnlyByAHigherWorkspaceVersion`,
+  `TestATeamClosedByADocumentStopsEverythingAndKeepsItsData`,
+  `TestATeamClosedOrReopenedAcrossAResetTakesItsStateFromTheNextDocument`,
+  `TestAnOlderOrEqualDocumentChangesNothing`, `TestADocumentOfAnotherGenerationIsRefused`,
+  `TestADocumentThatChangesAWorkspacesKindIsRefusedButItsRevocationsApply` and
+  `TestAClosedDocumentEndsSessionsAndKeysAndSuspendsBeforeItsConfirmation`; generations, resets and
+  holds, `TestAResetForgetsVersionsAndCursorAndKeepsTheHighestMarks`,
+  `TestAResetWithTheSameGenerationLetsALowerVersionApply`, `TestAResetIsOneTransaction`,
+  `TestACursorWrittenAgainstAnOlderResetIsRefused`, `TestACursorIsNeverWrittenForADirectoryWithoutARow`,
+  `TestAResetCreatesAnAbsentDirectoryAtItsGeneration`,
+  `TestAStrandingRemovalIsHeldUntilTheGenerationIsConfirmed`,
+  `TestConfirmingTheGenerationEndsEveryHeldMembershipAndStrands` and `TestConfirmingTwiceChangesNothing`;
+  sign-in, `TestANewPersonsDocumentIsAppliedInTheTransactionThatCreatesThem`,
+  `TestANewPersonIsNotCreatedWithoutADocumentWhereTheSourceCreatesNoPersonalWorkspace`,
+  `TestANewPersonWhoseDocumentSaysDisabledIsNotCreated` and
+  `TestAReturningPersonsDocumentIsAppliedBeforeTheirSession`; people closed,
+  `TestForgettingAClosedPersonDeletesThemAndTheirPersonalWorkspaceWithoutRefusals`,
+  `TestForgettingTheLastReaderOfATeamMailboxStrandsItAndKeepsTheTeam`,
+  `TestForgettingASuspendedPersonStrandsWhatWaitedForThem`,
+  `TestForgettingAPersonWhoseMembershipIsHeldStrandsWhatTheHoldKept`,
+  `TestAForgottenPersonsSubjectIsKeptUntilReleasedOrSwept`,
+  `TestAPendingDeletionKeepsItsActorAfterThePersonIsForgotten`,
+  `TestReleasingAPersonBlanksTheirActorAndLostUser` and `TestAForcedDeleteJournalsEveryMailboxItStrands`;
+  `TestTheStartLineListsWhatWouldKeepAPersonalWorkspace`, `TestNoTransportCallsWhatOnlyAnExtensionMay`;
+  and `TestThePlatformSourceCreatesNoPersonalWorkspaceAndRefusesEveryChange` (`internal/app`).
 
 ## Conflicts and resolutions
 
@@ -2085,6 +2270,20 @@ Test names state the guarantee. At least:
     rows of people still here (`directory_people_subject … WHERE gone_at = 0`); every lookup by
     subject reads the live row. See
     [Following an external directory](#following-an-external-directory).
+30. **What an external directory decides, against the protections.** The protections keep a team
+    an owner and a mailbox a reader, refuse changes to a closed team and to people who are not
+    active, and a disable here stands over a suspension. A directory that owns workspaces and
+    memberships decides who belongs, and a refusal here would leave this server serving someone the
+    directory removed. *Resolution:* the directory exceptions. What it says applies in a closed
+    team too, to any person, without the last-owner or the last-reader refusal; a mailbox its end of
+    a membership or a person leaves with nobody who reads it is journaled stranded; a membership it
+    ends while its generation is unconfirmed, and whose end would strand a mailbox, is held
+    (disabled, reading nothing, its flags and grants kept) until a document lists it again or the
+    generation is confirmed, so a directory restored from an older copy cannot strand a mailbox
+    before it says its data is final; a document whose workspaces are refused still applies what it
+    revoked; a personal workspace is replaced only while it holds no mailbox and no live key. What a
+    disable here decides stays: a directory never resumes a person disabled here, nor one whose
+    disable its document does not know of.
 
 ## Not in this phase
 
@@ -2093,8 +2292,9 @@ Test names state the guarantee. At least:
   again instead).
 - Closing a team from the console, or by its owners: the operator closes a local team, and a
   team from another source closes where it is managed.
-- The platform source beyond its stub, a later step; with it, an edition's own screens for teams
-  (the open edition's Members section is for the local source only).
+- An edition's own screens for teams from a directory (the open edition's Members section is for
+  the local source only); what an extension that follows a directory does with the seams above is
+  that edition's.
 - Selecting a workspace per MCP session; an MCP tool for workspaces.
 - Whole-workspace usage for owners.
 
@@ -2119,4 +2319,5 @@ Test names state the guarantee. At least:
 | 0014 (phase 3, step 4) | `internal/store/migrations/0014_mailbox_keys.sql` and `migrate_fourteen_test.go`; `store/readers.go` (the one rule as SQL fragments); `workspace/sealed.go` (keys and grants written and read), `grants.go`, `reader.go`, `members.go` and `people.go` (the rule, grants taken with `read`); `account/store.go` (`Visibility` by the rule; the link's key in its transaction); `auth` (a disable and a reset take the grants; the reset's guard counts mailboxes with a key); `service/mailboxkeys.go` (the use cases and their step-up), `accounts.go`, `workspaces.go`; `api/mailboxkeys.go`; the contract fixtures and the console's types; the console's half (`web/src/crypto/mailbox.ts`, `state/mailboxKeys.ts`, `state/grants.ts`, `state/stepUp.ts`, the link's key, Read with a grant, the sheet's key section; [`console.md`](console.md), "Mailbox keys") |
 | 0020 (removed mailboxes) | `internal/store/migrations/0020_removed_mailboxes.sql` and `migrate_twenty_test.go`; `store/readers.go` (`LiveSQL` in the one rule), `eligibility.go` (a removed or held mailbox syncs nothing), `consent.go` (`SetMailboxSync` lifts the hold; a sync turned off, and `StopBoundTx`, tell the readers), `mailboxevents.go` (the journal and the notices); `account/removal.go` (removing, recovering, deleting for good, the sweep), `store.go` (`Visibility` and `Get` leave a removed mailbox out; `GetRemoved`, `ListRemoved`) and `registry.go` (an address kept removed is a conflict); `workspace/grants.go`, `keys.go`, `sealed.go`, `workspace.go` (nothing finds a removed mailbox) and `people.go` (who removed and who acted forgotten with their person); `auth/keys.go` (no new key restricted to a removed mailbox); `service/removed.go`, `notices.go`, `accounts.go` (only owners remove), `consent.go`, `sync.go` (`held`) and `events.go` (`NewNotices`); `app/sweep.go`; `api/removed.go`, `api/events.go` (`event: notice`) and the fixtures; the command line (`account removed`, `recover`, `purge`); the open sync text `-4`; the console's removed mailboxes, notices and hold ([`console.md`](console.md)) |
 | 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
+| Following an external directory, its documents | `internal/workspace/mirror.go` (`ValidExternalID`, `MirrorWorkspaceTx`, `ReplacePersonalTx`, `MirrorMemberTx`, `EndMembershipTx` and its holds, `HeldMembershipsTx`, `PersonalReplacementBlocks`), `reader.go` (`StrandCandidatesTx`), `members.go` (`Member.Held`), `source.go` (`Platform` made real); `auth` (`ExternalSignIn.PersonCreatedTx`, `IdentityUser`, `ResumeTx`, `RevokeSessionsStartedBeforeTx`, `Keys.RevokeCreatedBeforeTx`; a disable, `DisableBy` naming its actor, and a forced reset journal what they strand); `store/directory.go` (the listings and the sweep); `service/directory.go` (the documents, the directory's calls, a closed person forgotten and released), `external.go` (the document at sign-in), `closure.go` (`removePerson`: a deletion journals what it strands); `app/sweep.go` (`SweepDirectory`) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

@@ -27,6 +27,11 @@ type Member struct {
 	// (PersonDisabled too): their grants are kept, and count again once they
 	// are resumed.
 	PersonSuspended bool
+	// Held is a membership an external directory ended while its generation
+	// was not confirmed, kept disabled with its flags and sealed grants
+	// (EndMembershipTx): it counts for nothing until a document lists it
+	// again or the generation is confirmed, which ends it.
+	Held bool
 	// LastOwner is the only active owner of a local team, who cannot be
 	// demoted, disabled or removed (ErrLastOwner); and the person of a
 	// personal workspace. Never anyone in a team from another source, whose
@@ -50,7 +55,7 @@ type Member struct {
 func (m Member) Active() bool { return m.Status == StatusActive && !m.PersonDisabled }
 
 const memberColumns = `m.workspace_id, m.user_id, u.email, u.name, m.role, m.status, u.status <> 'active',
-	u.suspended_at <> 0, u.seal_id, u.public_key, m.created_at, m.updated_at`
+	u.suspended_at <> 0, m.held_at <> 0, u.seal_id, u.public_key, m.created_at, m.updated_at`
 
 // scanMember reads memberColumns, then extra, the columns a query adds after
 // them.
@@ -60,7 +65,7 @@ func scanMember(row rowScanner, extra ...any) (Member, error) {
 		created, updated int64
 	)
 	dest := append([]any{&m.WorkspaceID, &m.UserID, &m.Email, &m.Name, &m.Role, &m.Status, &m.PersonDisabled,
-		&m.PersonSuspended, &m.SealID, &m.PublicKey, &created, &updated}, extra...)
+		&m.PersonSuspended, &m.Held, &m.SealID, &m.PublicKey, &created, &updated}, extra...)
 	err := row.Scan(dest...)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {

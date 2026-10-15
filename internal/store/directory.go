@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -333,4 +334,138 @@ func ForgetPersonInJournalTx(ctx context.Context, tx *sql.Tx, userID string) err
 		}
 	}
 	return nil
+}
+
+// DirectoryListed is a person of a directory as an extension lists them: one
+// an identity of the directory's issuer signs in now (Held), with or without
+// a document applied for them, or one deleted here whose row the directory
+// keeps until it releases them (GoneAt).
+type DirectoryListed struct {
+	Subject string
+	UserID  string
+	// Held is a person an identity of the issuer links now.
+	Held bool
+	// GoneAt is when a person no longer here was deleted, unix seconds; 0
+	// for one held.
+	GoneAt int64
+	// Generation, Version and Status are the document last applied for
+	// them; empty, 0 and empty when none was.
+	Generation string
+	Version    int64
+	Status     string
+}
+
+// DirectoryPeople lists, for an issuer, every person one of its identities
+// signs in now, with what its directory last said of them if anything, and
+// every person deleted here whose row it keeps, gone: held people first, each
+// group by subject.
+func (s *Store) DirectoryPeople(ctx context.Context, issuer string) ([]DirectoryListed, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT i.subject, i.user_id, 1, 0, coalesce(p.generation, ''),
+		  coalesce(p.version, 0), coalesce(p.status, '')
+		  FROM user_identities i LEFT JOIN directory_people p ON p.issuer = i.issuer AND p.user_id = i.user_id
+		 WHERE i.issuer = ?1
+		UNION ALL
+		SELECT p.subject, p.user_id, 0, p.gone_at, p.generation, p.version, p.status
+		  FROM directory_people p
+		 WHERE p.issuer = ?1 AND p.gone_at <> 0
+		 ORDER BY 3 DESC, 1, 2`, issuer)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the directory's people: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	var out []DirectoryListed
+	for rows.Next() {
+		var p DirectoryListed
+		if err := rows.Scan(&p.Subject, &p.UserID, &p.Held, &p.GoneAt, &p.Generation, &p.Version, &p.Status); err != nil {
+			return nil, fmt.Errorf("store: list the directory's people: %w", err)
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list the directory's people: %w", err)
+	}
+	return out, nil
+}
+
+// DirectorySubjects maps each of userIDs to their subject at an issuer: the
+// identity that signs them in now, or, for a person deleted here, the row
+// their directory keeps until it releases them. A person neither names is
+// left out.
+func (s *Store) DirectorySubjects(ctx context.Context, issuer string, userIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(userIDs))
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	list, err := json.Marshal(userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: encode ids: %w", err)
+	}
+	rows, err := s.r.QueryContext(ctx, `SELECT i.user_id, i.subject FROM user_identities i
+		 WHERE i.issuer = ?1 AND i.user_id IN (SELECT value FROM json_each(?2))
+		UNION ALL
+		SELECT p.user_id, p.subject FROM directory_people p
+		 WHERE p.issuer = ?1 AND p.user_id IN (SELECT value FROM json_each(?2))
+		   AND NOT EXISTS (SELECT 1 FROM user_identities i WHERE i.issuer = ?1 AND i.user_id = p.user_id)`,
+		issuer, string(list))
+	if err != nil {
+		return nil, fmt.Errorf("store: map people to their subjects: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var userID, subject string
+		if err := rows.Scan(&userID, &subject); err != nil {
+			return nil, fmt.Errorf("store: map people to their subjects: %w", err)
+		}
+		out[userID] = subject
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: map people to their subjects: %w", err)
+	}
+	return out, nil
+}
+
+// SweepDirectoryPeopleTx releases, inside the caller's transaction, every
+// person deleted here whose directory row was marked gone at or before
+// cutoff (unix seconds), as ReleaseDirectoryPersonTx does, and reports how
+// many rows it released: an extension that never released them is not kept
+// waiting on longer than the journal that names them.
+func SweepDirectoryPeopleTx(ctx context.Context, tx *sql.Tx, cutoff int64) (int, error) {
+	all, err := goneBeforeTx(ctx, tx, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	for _, g := range all {
+		if err := ReleaseDirectoryPersonTx(ctx, tx, g.issuer, g.userID); err != nil {
+			return 0, err
+		}
+	}
+	return len(all), nil
+}
+
+type gonePerson struct{ issuer, userID string }
+
+// goneBeforeTx lists the rows of people gone at or before cutoff, every row
+// read and the statement finished before anything is released.
+func goneBeforeTx(ctx context.Context, tx *sql.Tx, cutoff int64) ([]gonePerson, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT issuer, user_id FROM directory_people
+		WHERE gone_at <> 0 AND gone_at <= ? ORDER BY gone_at, issuer, user_id`, cutoff)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the people gone: %w", err)
+	}
+	//nolint:errcheck // read to the end below; a close failure changes nothing
+	defer func() { _ = rows.Close() }()
+	var all []gonePerson
+	for rows.Next() {
+		var g gonePerson
+		if err := rows.Scan(&g.issuer, &g.userID); err != nil {
+			return nil, fmt.Errorf("store: list the people gone: %w", err)
+		}
+		all = append(all, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: list the people gone: %w", err)
+	}
+	return all, nil
 }

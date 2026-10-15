@@ -68,12 +68,15 @@ const housekeepingInterval = time.Hour
 // store.SendRetention after their last change; and the removed mailboxes,
 // deleted for good once their 30 days are over, never before, with the
 // mailbox journal's entries older than store.MailboxJournalRetention
-// (sweepMailboxes, service.SweepRemovedMailboxes). The sweep at start is
-// what deletes at once a removed mailbox a restored backup brought back past
-// its 30 days. scrub then takes the deleted rows out of the write-ahead log
-// too.
+// (sweepMailboxes, service.SweepRemovedMailboxes); and the people deleted here
+// whom an external directory followed, released once their rows are that old
+// too, if an extension has not released them (sweepDirectory,
+// service.SweepDirectory; nil sweeps none). The sweep at start is what deletes
+// at once a removed mailbox a restored backup brought back past its 30 days.
+// scrub then takes the deleted rows out of the write-ahead log too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	sweepMailboxes func(context.Context, time.Duration) (int, int, error),
+	sweepDirectory func(context.Context, time.Time) (int, error),
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
 	sweep := func() {
@@ -124,6 +127,17 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 				"mailboxes", mailboxes, "entries", entries)
 		}
 		deleted += mailboxes + entries
+		if sweepDirectory != nil {
+			// Told when the next sweep is, as the others are.
+			released, err := sweepDirectory(ctx, time.Now().Add(every))
+			switch {
+			case err != nil && ctx.Err() == nil:
+				logger.Warn("releasing the people a directory followed, deleted 90 days ago, failed", "err", err)
+			case released > 0:
+				logger.Info("released the people a directory followed, deleted 90 days ago", "count", released)
+				deleted += released
+			}
+		}
 		if deleted > 0 {
 			if err := scrub(ctx); err != nil && ctx.Err() == nil {
 				logger.Warn("emptying the write-ahead log after the sweep failed; a later checkpoint will", "err", err)
