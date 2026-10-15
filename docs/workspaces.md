@@ -1402,7 +1402,10 @@ every team it changed and of the person's own, and a suspended person's consent 
 applied first, in a write of its own, so one it suspends is refused as any disabled person is; for a
 new person it is applied in the transaction that creates them (`auth.ExternalSignIn.PersonCreatedTx`,
 right after their identity is linked), which it rolls back when it suspends them or does not apply:
-nobody is created without the personal workspace the directory names, nor disabled. Without a
+nobody is created without the personal workspace the directory names, nor disabled. That step goes
+with every sign-in that carries a document, the person's existing or not: one deleted or forgotten
+after the first write, whose identity a second sign-in pinned again meanwhile, is a new person to the
+sign-in's own write, and is created with the document or not at all. Without a
 document, a new person under the source that mirrors a directory is not created (`internal`,
 "upstream: …", `Retry-After: 10`): the extension asks the directory and tries again. Under the
 local source a document is refused (`409`).

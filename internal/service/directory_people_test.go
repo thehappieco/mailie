@@ -180,6 +180,65 @@ func TestAReturningPersonsDocumentIsAppliedBeforeTheirSession(t *testing.T) {
 	wantCode(t, "a sign-in with another person's document", err, service.CodeBadRequest)
 }
 
+func TestAPersonDeletedWhileSigningInIsCreatedAgainOnlyWithTheirDocument(t *testing.T) {
+	// Bea's sign-in applies her document to her; meanwhile, before its own
+	// write, the directory has her forgotten, and a second sign-in of hers
+	// pins her key again. The first sign-in's write finds her identity
+	// linked to nobody and creates her anew: with the personal workspace
+	// her document names, or, a document that closes her, not at all.
+	for _, c := range []struct {
+		what   string
+		doc    service.DirectoryDocument
+		forget int64
+	}{
+		{"an active document", document("bea@example.com", 2), 3},
+		{"a document that closes her", closing("bea@example.com", 2), 2},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			f := newDirectoryFixture(t)
+			ctx := t.Context()
+			bea := f.followed(t, "bea@example.com")
+			f.apply(t, document("bea@example.com", 1))
+			in := vouched(subjectOf("bea@example.com"), "bea@example.com")
+			doc := c.doc
+			in.Issuer, in.Directory, in.DirectoryApply = dirIssuer, &doc, service.ApplyOptions{CredentialsMargin: dirMargin}
+			in = f.pinned(t, in)
+			signed, err := service.SignInExternalMeanwhileForTest(ctx, f.svc, in, func() {
+				f.forget(t, "bea@example.com", c.forget)
+				f.pinned(t, in)
+			})
+
+			userID, linked, lookErr := f.svc.IdentityUser(ctx, dirIssuer, subjectOf("bea@example.com"))
+			if lookErr != nil {
+				t.Fatal(lookErr)
+			}
+			if c.doc.Status == service.DirectoryClosed {
+				wantIs(t, "her sign-in once her document closes her", err, service.CodeUnauthorized, auth.ErrUserDisabled)
+				if linked || f.count(t, `SELECT count(*) FROM users WHERE email = 'bea@example.com'`) != 0 {
+					t.Errorf("a person was created with a document that closes her: %s", userID)
+				}
+				return
+			}
+			if err != nil || signed.Enrolment == nil {
+				t.Fatalf("her sign-in: %+v, %v", signed, err)
+			}
+			if !linked || userID == bea.UserID {
+				t.Fatalf("her identity signs in %q (%v), want a new person", userID, linked)
+			}
+			personal, err := workspace.NewRepository(f.db, nil).PersonalOf(ctx, userID)
+			if err != nil || personal.ID != personalOf("bea@example.com") || personal.Source != workspace.SourcePlatform {
+				t.Errorf("the new person's personal workspace: %+v (%v), want her document's", personal, err)
+			}
+			people, err := f.svc.DirectoryPeople(ctx, dirIssuer)
+			if err != nil || !slices.ContainsFunc(people, func(p service.DirectoryPerson) bool {
+				return p.UserID == userID && p.Version == 2
+			}) {
+				t.Errorf("the directory's people %+v (%v) do not hold the new person's document", people, err)
+			}
+		})
+	}
+}
+
 func TestForgettingAClosedPersonDeletesThemAndTheirPersonalWorkspaceWithoutRefusals(t *testing.T) {
 	// Bea is the instance's only owner, and the only reader of the team's
 	// mailbox: closing her here would be refused without force. A

@@ -83,12 +83,12 @@ type ExternalSignIn struct {
 	// sign-in's (bad_request otherwise). For a person who exists it is
 	// applied first, in a write of its own (ApplyDirectoryDocument), so a
 	// person it suspends is refused as any disabled person is; for a new
-	// person it is applied in the transaction that creates them, which it
-	// rolls back when it refuses them or does not apply. Without it, a new
-	// person is not created there (internal, ErrDirectoryNeeded): nobody
-	// is created without the personal workspace the directory names. On a
-	// server whose workspaces are local it is refused (conflict,
-	// ErrNotFollowing); nil changes nothing there.
+	// person, one deleted after that write included, it is applied in the
+	// transaction that creates them, which it rolls back when it refuses
+	// them or does not apply. Without it, a new person is not created there
+	// (internal, ErrDirectoryNeeded): nobody is created without the personal
+	// workspace the directory names. On a server whose workspaces are local
+	// it is refused (conflict, ErrNotFollowing); nil changes nothing there.
 	Directory *DirectoryDocument
 	// DirectoryApply tunes how Directory applies.
 	DirectoryApply ApplyOptions
@@ -147,9 +147,19 @@ type ExternalEnrolmentTicket struct {
 // with auth.ErrEmailTaken for an address somebody here has. What an
 // extension of internal/app uses; no transport calls it.
 func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (ExternalSignedIn, error) {
+	return s.signInExternal(ctx, in, nil)
+}
+
+// signInExternal is SignInExternal, with meanwhile, when set, run between
+// the write that applies an existing person's document and the sign-in's
+// own: only a test of what can happen there sets it.
+func (s *Service) signInExternal(ctx context.Context, in ExternalSignIn, meanwhile func()) (ExternalSignedIn, error) {
 	created, applied, err := s.directoryAtSignIn(ctx, in)
 	if err != nil {
 		return ExternalSignedIn{}, err
+	}
+	if meanwhile != nil {
+		meanwhile()
 	}
 	signed, err := s.users.SignInExternal(ctx, auth.ExternalSignIn{
 		Issuer: in.Issuer, Subject: in.Subject, Email: in.Email, EmailVerified: in.EmailVerified,
@@ -177,11 +187,15 @@ func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (Extern
 }
 
 // directoryAtSignIn prepares what a sign-in does with the person's document:
-// for a person who exists, it applies it now, in a write of its own; for a
-// new one, it returns the step that applies it in the transaction that
-// creates them, and where what it applied is left for after the commit. On a
-// server that follows a directory, a new person without a document gets a
-// step that refuses them (ErrDirectoryNeeded).
+// for a person who exists, it applies it now, in a write of its own; and,
+// whether or not the identity signed anybody in then, it returns the step
+// that applies it in the transaction that creates a person, and where what
+// it applied is left for after the commit. The sign-in's write creates one
+// when the identity is linked to nobody by then: a person deleted or
+// forgotten since this write, and signed in again meanwhile, is created
+// with the document all the same, or not at all. On a server that follows a
+// directory, a new person without a document gets a step that refuses them
+// (ErrDirectoryNeeded).
 func (s *Service) directoryAtSignIn(ctx context.Context, in ExternalSignIn) (
 	func(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error, *directoryApply, error,
 ) {
@@ -202,13 +216,11 @@ func (s *Service) directoryAtSignIn(ctx context.Context, in ExternalSignIn) (
 	if err := checkDocument(doc); err != nil {
 		return nil, nil, err
 	}
-	if _, linked, err := s.IdentityUser(ctx, in.Issuer, in.Subject); err != nil {
+	// A person the identity signs in: the document applies now, so one it
+	// suspends is refused as any disabled person is. Nobody signed in by it
+	// is no refusal: the sign-in creates them, with the step below.
+	if _, err := s.ApplyDirectoryDocument(ctx, doc, opts); err != nil && !errors.Is(err, ErrNoSuchPerson) {
 		return nil, nil, err
-	} else if linked {
-		if _, err := s.ApplyDirectoryDocument(ctx, doc, opts); err != nil {
-			return nil, nil, err
-		}
-		return nil, nil, nil
 	}
 	var applied directoryApply
 	created := func(ctx context.Context, tx *sql.Tx, userID string, now time.Time) error {
