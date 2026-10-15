@@ -924,8 +924,8 @@ what an external directory decided), why, and a removal's end. Migrations 0022 a
 and columns that only an extension following an external directory writes, in a binary that embeds
 the daemon; `mailserver serve` has none, so they stay empty and every column 0 on a self-hosted
 server. No row changes but a journal entry's name, below. **Back up first**, as above: an older
-binary refuses schema 23, and going back is that copy, which loses nothing a self-hosted server
-wrote since but the journal's entries of that time.
+binary refuses schema 23, and going back is that copy, which loses everything written since the
+upgrade, as any restore does; the older version needs nothing this release adds.
 
 - **The journal names a mailbox less often.** A display name holding the local part of the
   mailbox's own address (three characters or more, whatever the case: "Support" for

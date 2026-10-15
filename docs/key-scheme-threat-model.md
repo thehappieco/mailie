@@ -406,12 +406,18 @@ public key and seal id: it decides access, so it knows anyway. The scheme hides 
 4, not the shape of who reads what.
 
 A server whose workspaces come from an external directory tells that directory part of the shape,
-through an extension (`docs/workspaces.md`, "Following an external directory"): for each mailbox of
-a workspace it mirrors, who holds which flag, whether each reads it, waits for its key, has an
-account key, and holds a grant at its current epoch — booleans, never a grant, a key, a seal id or
-an address — and the journal of what was done to those mailboxes. A removed mailbox is reported, by
-default, as it would be once recovered, until it is deleted for good. The directory decides who
-belongs; it learns nothing it could open.
+through an extension (`docs/workspaces.md`, "Following an external directory"). For each mailbox of
+a workspace it mirrors, the snapshot carries its id; its display name (`store.MailboxLabel`, left
+out when it holds an address or the address's local part); its address masked, the first character
+and the whole domain (`s…@example.org`); why it does not sync, when it does not; whether it is
+removed, and when it may be deleted for good; the people who hold a flag or a grant on it, by their
+ids, with which flags each holds and whether each reads it, waits for its key, has an account key
+and holds a grant at its current epoch — booleans, never a grant, a key, a seal id or an address;
+and, in a team, the people it cannot lose, each the only one who reads it. The journal of what was
+done to those mailboxes carries the same name and masked address, who did it (a person's id, a key's
+prefix and its creator, or the server's own), why, the person a stranding lost, and who read the
+mailbox then. A removed mailbox is reported, by default, as it would be once recovered, until it is
+deleted for good. The directory decides who belongs; it learns nothing it could open.
 
 ### 5.11 Best effort in the page
 
