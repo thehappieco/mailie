@@ -923,14 +923,16 @@ then and every notice still to read, and adds what an entry may say from now on:
 what an external directory decided), why, and a removal's end. Migrations 0022 and 0023 add tables
 and columns that only an extension following an external directory writes, in a binary that embeds
 the daemon; `mailserver serve` has none, so they stay empty and every column 0 on a self-hosted
-server. No row changes. **Back up first**, as above: an older binary refuses schema 23, and going
-back is that copy, which loses nothing a self-hosted server wrote since but the journal's entries
-of that time.
+server. No row changes but a journal entry's name, below. **Back up first**, as above: an older
+binary refuses schema 23, and going back is that copy, which loses nothing a self-hosted server
+wrote since but the journal's entries of that time.
 
 - **The journal names a mailbox less often.** A display name holding the local part of the
   mailbox's own address (three characters or more, whatever the case: "Support" for
-  `support@example.org`) is no longer kept in the journal or shown in a notice written from now
-  on, which then names the mailbox by its masked address (`s…@example.org`).
+  `support@example.org`) is no longer kept in the journal or shown in a notice, which then names
+  the mailbox by its masked address (`s…@example.org`): the rebuild leaves such a name out of the
+  entries already there too, and, where the name or the local part has a character beyond plain
+  ASCII, leaves the name out rather than compare it.
 - **Forced closures are journaled.** Disabling, deleting or resetting a person with `--force`, where
   it leaves a team mailbox with nobody who reads it, records that mailbox as stranded, by whoever
   closed them (`cli` for `mailserver user disable|delete --bootstrap`); nobody is told in the

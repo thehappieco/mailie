@@ -57,8 +57,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `bound_stopped` when a consent stopped with its person, `recovered`, `purged`, and `stranded`, a
   team mailbox its one reader lost with no protection asked, with its `cause` and `lost_user`),
   written in the transaction that does it with who read the mailbox then (`mailbox_event_readers`),
-  never an address (a label, `MailboxLabel`, never one holding the address's local part, and a
-  masked hint, forgotten when it is deleted for good), kept 90 days, read per workspace from a
+  never an address (a label, `MailboxLabel`, never one holding the address's local part, which
+  0021's copy left out of the older entries too, and a masked hint, forgotten when it is deleted
+  for good), kept 90 days, read per workspace from a
   cursor by an extension (`mailbox_events_workspace`); and `notices`, a row per reader of a removal
   or a sync turned off, never for whoever acted nor of a stranding (a trigger), until dismissed,
   withdrawn by a recovery, or gone with its journal entry. For an extension that follows an

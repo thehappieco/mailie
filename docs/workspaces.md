@@ -1743,9 +1743,14 @@ days as its end, exactly what it wrote then; `notices_to_readers`, whose body na
 dropped before the rename and written again byte for byte; the journal's AUTOINCREMENT high-water
 mark is carried over as it was, and a journal never written keeps none. The trigger that writes an
 entry once now keeps its cause and end too, and lets its lost person go only to nothing. Every row
-keeps every value, and no other table changes. Back up before upgrading, as before any rebuild.
-The tests in `internal/store/migrate_twentyone_test.go` hold every row, reader, notice and
-high-water mark, the schema but for the journal's table, index and trigger, and each refusal.
+keeps every value but a label the journal no longer keeps: 0020 left out only a name holding an
+address, and the copy leaves out one holding the mailbox's local part too (`store.MailboxLabel`'s
+rule, three characters or more, whatever the case; SQLite folds the case of ASCII only, so a label
+or a local part with any other character is not kept either, nor a label whose mailbox is gone).
+No other table changes. Back up before upgrading, as before any rebuild. The tests in
+`internal/store/migrate_twentyone_test.go` hold every row, reader, notice and high-water mark, the
+labels left out and kept, the schema but for the journal's table, index and trigger, and each
+refusal.
 
 ## Migration 0022
 

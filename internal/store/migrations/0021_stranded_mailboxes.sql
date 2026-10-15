@@ -38,7 +38,8 @@
 -- rebuild. Written once, as before: only the label, the hint, the actor and
 -- now the lost person change, and only to ''.
 --
--- Every row keeps every value; no other table changes.
+-- Every row keeps every value but a label the rule now refuses, which is
+-- left out (''); no other table changes.
 
 DROP TRIGGER notices_to_readers;
 
@@ -65,11 +66,31 @@ CREATE TABLE mailbox_events_new (
   purge_after  INTEGER NOT NULL DEFAULT 0          -- a removal's end, as it recorded it; 0 on every other kind
                CHECK ((kind = 'removed') = (purge_after <> 0))
 );
+-- A label is copied only where the rule entries are written by from now on
+-- (store.MailboxLabel) keeps it: 0020 left out only a name holding an
+-- address, and one holding the mailbox's local part (its address up to the
+-- last '@', or all of it without one, of three characters or more, whatever
+-- the case) says the address all the same. SQLite's lower() folds ASCII
+-- only, so a label or a local part with any other character is not kept
+-- either, and neither is a label whose mailbox is gone (a deletion for good
+-- already forgot it). rtrim(email, replace(email, '@', '')) is the address up
+-- to and including its last '@'.
 INSERT INTO mailbox_events_new(seq, id, kind, workspace_id, account_id, label, hint, actor, created_at,
                                cause, lost_user, purge_after)
-SELECT seq, id, kind, workspace_id, account_id, label, hint, actor, created_at, '', '',
-       CASE kind WHEN 'removed' THEN created_at + 2592000 ELSE 0 END
-  FROM mailbox_events ORDER BY seq;
+SELECT e.seq, e.id, e.kind, e.workspace_id, e.account_id,
+       CASE WHEN m.local IS NULL THEN ''
+            WHEN length(m.local) < 3 THEN e.label
+            WHEN length(CAST(e.label AS BLOB)) = length(e.label)
+             AND length(CAST(m.local AS BLOB)) = length(m.local)
+             AND instr(lower(e.label), lower(m.local)) = 0 THEN e.label
+            ELSE '' END,
+       e.hint, e.actor, e.created_at, '', '',
+       CASE e.kind WHEN 'removed' THEN e.created_at + 2592000 ELSE 0 END
+  FROM mailbox_events e
+  LEFT JOIN (SELECT id, CASE WHEN instr(email, '@') = 0 THEN email
+                             ELSE substr(email, 1, length(rtrim(email, replace(email, '@', ''))) - 1) END AS local
+               FROM accounts) m ON m.id = e.account_id
+ ORDER BY e.seq;
 -- The copy wrote the new table's high-water mark as the highest seq it
 -- copied; the journal's own may be higher (rows swept since), or absent
 -- (never written). Either way it is the one that stays.

@@ -124,7 +124,8 @@ func schemaChanges(before, after map[string]string) (added, changed, dropped []s
 // seedJournal writes, at schema 20, a journal of every kind 0020 knew, with
 // its readers and notices: Owner (usr_1) removed acc_t1, which Bea (usr_2)
 // and Fay (usr_6) read and were told of; a key turned acc_t3's sync off,
-// which Dan (usr_4) read and was told of; Owner recovered acc_t1; the sweep
+// which Dan (usr_4) read and was told of; Owner recovered acc_t1, whose
+// label, as 0020 kept it, holds its address's local part; the sweep
 // deleted a mailbox for good; a removal whose remover was deleted since;
 // and an entry swept by its retention, the last, so the journal's high-water
 // mark is above its highest seq.
@@ -133,7 +134,7 @@ func seedJournal(t *testing.T, s *Store) {
 	execAll(t, s,
 		`INSERT INTO mailbox_events(seq, id, kind, workspace_id, account_id, label, hint, actor, created_at) VALUES
 		 (1, 'mbe_0000000000000001', 'removed', 'wsp_t1', 'acc_t1', 'Support', 's…@example.org', 'usr_0000000000000001', 900),
-		 (2, 'mbe_0000000000000002', 'sync_paused', 'wsp_t2', 'acc_t3', 'Ops', 'o…@team.example.org', 'key:abcd0001', 910),
+		 (2, 'mbe_0000000000000002', 'sync_paused', 'wsp_t2', 'acc_t3', 'Operations', 'o…@team.example.org', 'key:abcd0001', 910),
 		 (3, 'mbe_0000000000000003', 'recovered', 'wsp_t1', 'acc_t1', 'Support', 's…@example.org', 'usr_0000000000000001', 920),
 		 (4, 'mbe_0000000000000004', 'purged', 'wsp_t1', 'acc_gone', '', '', 'sweep', 930),
 		 (5, 'mbe_0000000000000005', 'removed', 'wsp_t1', 'acc_t2', '', 'b…@example.org', '', 940),
@@ -174,6 +175,13 @@ func TestMigrationTwentyOneRebuildsTheJournalAndChangesNothingElse(t *testing.T)
 	migrateTo(t, s, 21)
 	after := dumpTables(t, s)
 
+	// The one value that changes: a label that holds its mailbox's local
+	// part ("Support" for support@example.org) is not kept.
+	for _, row := range before["mailbox_events"] {
+		if row["account_id"] == "string:acc_t1" {
+			row["label"] = "string:"
+		}
+	}
 	tried := compareMigrated(t, before, after, journalColumns, nil)
 	if tried["mailbox_events"] != 5 {
 		t.Errorf("the migration was tried on %d entries of the journal, want the seed's 5", tried["mailbox_events"])
@@ -215,6 +223,50 @@ func TestMigrationTwentyOneRebuildsTheJournalAndChangesNothingElse(t *testing.T)
 	}
 	if got := ftsAnswers(t, s); !mapsEqual(got, fts) {
 		t.Errorf("the full-text index answers %v, and answered %v", got, fts)
+	}
+}
+
+func TestMigrationTwentyOneKeepsNoLabelThatHoldsTheAddresssLocalPart(t *testing.T) {
+	// The seed at schema 20: acc_t1 is support@example.org, acc_t2
+	// billing@example.org, renamed al@example.org below, and acc_t3
+	// ops@team.example.org. Each label is what 0020 kept, which left out
+	// only a name holding an address.
+	s := newSchemaTwenty(t).s
+	execAll(t, s, `UPDATE accounts SET email = 'al@example.org' WHERE id = 'acc_t2'`)
+	labels := []struct{ account, label, want string }{
+		{"acc_t1", "Support", ""},
+		{"acc_t1", "The SUPPORT desk", ""},
+		{"acc_t1", "Helpdesk", "Helpdesk"},
+		// SQLite folds the case of ASCII only: past it, nothing is kept.
+		{"acc_t1", "Équipe", ""},
+		{"acc_t3", "Operations", "Operations"},
+		{"acc_t3", "OPS", ""},
+		// A local part under three characters says nothing.
+		{"acc_t2", "Al's box", "Al's box"},
+		{"acc_t2", "Équipe d'Al", "Équipe d'Al"},
+		// A mailbox deleted for good keeps no label.
+		{"acc_gone", "Old", ""},
+		{"acc_t1", "", ""},
+	}
+	for i, l := range labels {
+		execAll(t, s, fmt.Sprintf(`INSERT INTO mailbox_events(id, kind, workspace_id, account_id, label, hint, actor,
+			created_at) VALUES ('mbe_%016x', 'sync_paused', 'wsp_t1', '%s', '%s', '', 'cli', 900)`,
+			i+1, l.account, strings.ReplaceAll(l.label, "'", "''")))
+	}
+	migrateTo(t, s, 21)
+	got := queryStrings(t, s, `SELECT label FROM mailbox_events ORDER BY seq`)
+	if len(got) != len(labels) {
+		t.Fatalf("the journal holds %d entries, want %d", len(got), len(labels))
+	}
+	for i, l := range labels {
+		if got[i] != l.want {
+			t.Errorf("the label %q of %s became %q, want %q", l.label, l.account, got[i], l.want)
+		}
+		// What is kept is what the journal's writer would keep now.
+		if email := map[string]string{"acc_t1": "support@example.org", "acc_t2": "al@example.org",
+			"acc_t3": "ops@team.example.org"}[l.account]; email != "" && got[i] != "" && MailboxLabel(l.label, email) != got[i] {
+			t.Errorf("the label %q of %s was kept, which MailboxLabel refuses", l.label, l.account)
+		}
 	}
 }
 
