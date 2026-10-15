@@ -455,6 +455,18 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   removed mailboxes too.
 - **Closing a person** deletes at once, for good, the removed mailboxes that go with them — of
   their personal workspace and of the local teams they were alone in — with their journal.
+- **Its grant at the provider, revoked.** A Google mailbox deleted for good — by the sweep, by its
+  owners or the operator before, or with the person it goes with, deleted here or forgotten by a
+  directory — has its grant revoked at Google's revocation endpoint (RFC 7009, the refresh token;
+  `account.GoogleRevokeEndpoint`, which the daemon sets and nothing else does). The token is opened
+  inside the transaction that deletes it and handed on in memory only; the revocation is sent once
+  that commits, best effort, bounded (10 s), through a connection held to
+  `MAIL_ACCOUNT_ALLOW_PRIVATE` as a mailbox's are, and logged without the token. A failure never
+  stops the deletion, and is not retried: the grant then lapses when its person removes it. A grant
+  another mailbox here still holds — the same address linked elsewhere through the same OAuth
+  client, which Google keeps one grant for — is not revoked, which would cut that mailbox off.
+  Microsoft's identity platform revokes no single grant, only every session of the person, and a
+  password has nothing to revoke: their stored credential is deleted, and lapses.
 - **The journal** (`mailbox_events`, with who read the mailbox then, `mailbox_event_readers`):
   removals, with the end they recorded (`purge_after`), syncs turned off, recoveries, deletions for
   good and strandings (migration 0021), each written in the transaction that makes it, never with
@@ -734,7 +746,15 @@ changed (`ErrKindChanged`) or that is this server's own or another person's (`Er
 person released while here (`ErrPersonStillHere`) and a person forgotten on a document that does not
 close them (`ErrNotClosed`); `404` for an identity that signs in nobody (`ErrNoSuchPerson`); `400`
 for a document outside its shape; and `500`, "upstream: …", with `Retry-After: 10`, for a new person
-signing in without their document (`ErrDirectoryNeeded`).
+signing in without their document (`ErrDirectoryNeeded`). A snapshot larger than its bounds is
+`409`, and one of a workspace that is not from the directory's source `404`.
+
+**Freshness.** An act the freshness hook could not confirm with the directory is `500`, "upstream:
+this server could not confirm with the directory its workspaces come from that you may do this; try
+again shortly", with `Retry-After: 30` and no reason on the wire (the API logs it as any internal
+error: accepted noise during an outage); an answer the hook gives as a `*service.Error` reaches the
+caller as it is, and one that ended the actor's place is refused by the act's own re-check with the
+act's own code (`404` for a workspace or mailbox no longer theirs, `401` for a session it ended).
 
 ## API keys
 
@@ -1418,6 +1438,63 @@ in the journal, until the extension has delivered what names them and releases t
 `DirectoryPeople` (every person an identity of the issuer signs in now, with what was applied, and
 every gone row), `DirectorySubjects` and `IdentityUser`.
 
+### What an extension reads, and the freshness of an act
+
+An extension reports a followed workspace to the directory it comes from, and asks it, before some
+acts, whether the actor still stands where this server thinks; the core gives it reads that decide
+nothing, and one question it asks. No transport calls any of them, and none takes a principal.
+
+- **The journal as an outbox** (`service.MailboxJournal`): a workspace's entries after a seq, oldest
+  first, 1 to 500 at a time, each with who read the mailbox then (`mailbox_event_readers`), its
+  actor raw and the person behind it — the person themself for `usr_…`, a key's creator for
+  `key:<prefix>` while the key's row is there, nobody for `cli`, `sweep` or `directory` — the
+  person a stranding lost, its cause, and a removal's end (`purge_after`). The extension keeps its
+  own cursor per workspace; the entries stay for their 90 days whatever it reads.
+  `MailboxJournalHead` is the newest seq.
+- **The followed workspaces** (`FollowedWorkspaces`: every workspace whose source is not the local
+  one, with its kind, its person and whether it is closed) and **which changed**
+  (`WorkspaceChanges`: the marks the schema writes, after a seq, with the head, read at one moment).
+- **A snapshot** of who holds what on a followed workspace (`service.AccessSnapshot`, in one
+  read-only transaction, `store.ReadTx`), at most 1000 mailboxes and 5000 people on one (`409`
+  otherwise): every mailbox, live and removed until it is deleted for good, with its label and
+  masked hint — never its address — and, for a live one, why it does not sync, the first that holds
+  of one ordered table beside the sync rule (`store.PauseSQL`, empty exactly when it may sync):
+  `team_closed`, `withheld`, `pending_auth`, `needs_reauth`, `error` (or disabled), `held`, then its
+  consent — `person_off` or `consent_off` for a personal mailbox, `consent_off` for an operator's,
+  `consent_off`, `person_off` (a consent bound to someone not active) or `no_reader` for a team's;
+  each person who holds a flag or a sealed grant on it, with their stored flags, whether they read
+  it now (computed without the team's closure: the pause carries it), wait for its key, have an
+  account key, and hold a grant at its current epoch (`holds_key`: `store.LiveSQL` and
+  `store.CurrentGrantSQL`, a suspended holder included); and, in a team, the people it cannot lose,
+  each the only one who reads it. A removed mailbox is reported, by default, as it would be once
+  recovered — who would read it, wait for its key and hold its key, and its kept last readers as
+  protected — until it is deleted for good, as the directory asks of every product
+  (`service.RemovedAsKept`); the other way (`RemovedAsNobody`, one switch, `Deps.RemovedInSnapshot`)
+  reports nobody. Either way a removed mailbox has no reader here and protects nobody in what this
+  server refuses: only what the snapshot says follows the directory's rule
+  ([conflict 31](#conflicts-and-resolutions)).
+- **Its own state** (`app.Deps.State(name)`, over `extension_state`): a few keys of at most 256
+  bytes and values of a mebibyte at most, per extension name (1 to 64 of `a-z`, `0-9`, `_`, `-`),
+  written in one transaction each, kept in the database it describes, so that a restore takes it
+  back with that data, never ahead of it.
+- **The freshness of an act** (`service.Freshness`, `app.Options.Freshness`, never set by `serve`):
+  before eleven acts of a person signed in, after the act's own read-only checks and outside every
+  write, the service asks the extension, which may read the actor's standing from the directory and
+  apply what it reads (a write: never asked inside one). The acts: giving read or flags, with a
+  grant or without (`share_key` when a key is sealed to the person, `raise_flags` when a flag of
+  theirs rises), supplying the key, a first key, a personal mailbox's new key (`share_key`, naming
+  who the key is sealed to but the actor, or the actor alone for their own new key), raising what a
+  workspace key holds (`raise_flags`), creating a key (`create_key`), linking a mailbox into a team
+  (`link`), starting a team mailbox's consent again (`reauthorize`), switching a team mailbox's
+  sync on or off (`team_sync`), an action on a team mailbox (`act`) and a send from one (`send`).
+  It gates and never authorizes: the write that makes the act asks again who may, in its
+  transaction — and starting a consent, an action and a send, which write nothing first, ask again
+  at once — so an answer that ended the actor's membership, or disabled them, stops the act, which
+  changes nothing. A `*service.Error` it returns is the caller's answer as it is; a context's end is
+  passed on; any other error is `internal`, "upstream: …", with `Retry-After: 30`, and no reason on
+  the wire. Never asked: reading, removing, recovering, deleting for good, taking access away,
+  turning a removed mailbox's sync off, a key's own acts and the operator's.
+
 ## Migration 0008
 
 What becomes of a schema-7 database:
@@ -2051,6 +2128,36 @@ Test names state the guarantee. At least:
   `TestReleasingAPersonBlanksTheirActorAndLostUser` and `TestAForcedDeleteJournalsEveryMailboxItStrands`;
   `TestTheStartLineListsWhatWouldKeepAPersonalWorkspace`, `TestNoTransportCallsWhatOnlyAnExtensionMay`;
   and `TestThePlatformSourceCreatesNoPersonalWorkspaceAndRefusesEveryChange` (`internal/app`).
+- Following an external directory, what it reads and asks: the pause (`internal/store`),
+  `TestAPauseIsEmptyExactlyWhenTheMailboxMaySync` and `TestThePauseTableIsOneOrderForEveryCause`;
+  the snapshot (`internal/workspace`), `TestASnapshotListsLiveAndRemovedMailboxesWithTheirState`,
+  `TestASnapshotsPeopleFollowTheReaderRule`, `TestARemovedMailboxIsReportedAsLiveByDefaultInASnapshot`,
+  `TestARemovedMailboxProtectsNobodyAndHoldsNoKeyInASnapshot` (the switch's two ways),
+  `TestASuspendedHolderHoldsTheKeyButNeitherReadsNorWaitsNorIsProtected`,
+  `TestASnapshotReadsIgnoreTheTeamsClosure`, `TestASnapshotNeverHoldsAnAddress`,
+  `TestASnapshotRefusesMoreThanItsLimits` and `TestASnapshotIsOneConsistentRead`; the service,
+  `TestAnAccessSnapshotIsOnlyOfAWorkspaceFromTheDirectorysSource`,
+  `TestOneSwitchSaysWhatASnapshotReportsOfARemovedMailbox`,
+  `TestTheJournalIsReadPerWorkspaceFromACursor`, `TestTheJournalNamesAKeysCreatorAsItsActor`,
+  `TestTheJournalsReadersAreWhoReadTheMailboxThen` and
+  `TestAnExtensionListsTheFollowedWorkspacesAndWhichChanged`; freshness,
+  `TestEveryActThatWidensAccessAsksForFreshness` (the eleven acts),
+  `TestFreshnessNamesTheRecipientOfAKeyOrOfRaisedFlags`,
+  `TestFreshnessIsNeverAskedToReadRemoveRecoverOrLowerAccess`, `TestFreshnessIsNeverAskedForAKeysOwnActs`,
+  `TestFreshnessIsAskedOutsideEveryWriteTransaction`, one
+  `TestAFreshnessThatEndsTheActorsMembershipFailsTheActAt<Site>` per act (`SetAccess`, `SupplyKey`,
+  `WriteFirstKey`, `WriteNewKey`, `SetKeyAccess`, `CreateWorkspaceKey`, `AddAccount`, `StartOAuth`,
+  `SetMailboxSync`, `SetFlags`, `SendMessage`) and
+  `TestARefusedFreshnessPassesItsOwnErrorAndMapsAnyOtherToUpstream`; the revocation
+  (`internal/account`), `TestAGoogleMailboxDeletedForGoodHasItsGrantRevoked`,
+  `TestOnlyAGoogleGrantNoOtherMailboxHoldsIsRevoked` and
+  `TestAFailedRevocationNeverStopsTheDeletionNorLogsTheToken`, with
+  `TestForgettingAPersonRevokesTheGoogleGrantsOfTheMailboxesThatGoWithThem` (`internal/service`);
+  the daemon (`internal/app`), `TestAnExtensionsStateSurvivesARestartAndRollsBackWithTheDatabase`,
+  `TestAnExtensionsStateIsTheDaemonsAndNamedWithinBounds` and
+  `TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotReplace`; the console
+  (vitest), `a failure keeps the server’s Retry-After` and `a workspace that vanished under a live
+  session falls back to the personal one`.
 
 ## Conflicts and resolutions
 
@@ -2284,6 +2391,28 @@ Test names state the guarantee. At least:
     revoked; a personal workspace is replaced only while it holds no mailbox and no live key. What a
     disable here decides stays: a directory never resumes a person disabled here, nor one whose
     disable its document does not know of.
+31. **A removed mailbox in what a directory is told.** Here a removed mailbox has no reader and
+    protects nobody: its readers may leave while it is kept, and a recovery brings back only those
+    who still qualify. A directory that protects people on every product's word asks one rule for
+    all of them, and another product keeps protecting a deleted item until its purge. *Resolution
+    (pending the owner, 2026-10-14):* the snapshot reports a removed mailbox's people as they would
+    be once it is recovered — who would read it and hold its key at its epoch, its kept last readers
+    protected — until it is deleted for good, behind one switch (`service.RemovedInSnapshot`) whose
+    other way reports nobody; both are tested. This server's own refusals are unchanged either way.
+32. **A provider's grant outliving its mailbox.** A mailbox deleted for good takes its stored
+    token, but the grant behind it stays at the provider until its person removes it there.
+    *Resolution:* Google's grant is revoked at its revocation endpoint once the deletion commits,
+    best effort, never while another mailbox here holds the same grant (Google keeps one per
+    address and OAuth client); Microsoft has no per-grant revocation (only every session of the
+    person, which is not this server's to end), and a password has nothing to revoke: both lapse.
+33. **Freshness, and who decides.** A directory elsewhere may have ended someone's membership a
+    moment before they act here, and an act that shares a key or widens access cannot be taken back.
+    *Resolution:* the freshness hook, asked before eleven acts of a person signed in and outside
+    every write, lets the extension read and apply the directory's answer first; it never
+    authorizes, and the act's write asks again who may, so an answer that ended the actor's place
+    stops it there. An outage is `internal` with a `Retry-After`, which the console keeps
+    (`Failure.retryAfter`), and a page whose workspace vanished under its session reads its
+    workspaces again once and shows the person's own.
 
 ## Not in this phase
 
@@ -2320,4 +2449,5 @@ Test names state the guarantee. At least:
 | 0020 (removed mailboxes) | `internal/store/migrations/0020_removed_mailboxes.sql` and `migrate_twenty_test.go`; `store/readers.go` (`LiveSQL` in the one rule), `eligibility.go` (a removed or held mailbox syncs nothing), `consent.go` (`SetMailboxSync` lifts the hold; a sync turned off, and `StopBoundTx`, tell the readers), `mailboxevents.go` (the journal and the notices); `account/removal.go` (removing, recovering, deleting for good, the sweep), `store.go` (`Visibility` and `Get` leave a removed mailbox out; `GetRemoved`, `ListRemoved`) and `registry.go` (an address kept removed is a conflict); `workspace/grants.go`, `keys.go`, `sealed.go`, `workspace.go` (nothing finds a removed mailbox) and `people.go` (who removed and who acted forgotten with their person); `auth/keys.go` (no new key restricted to a removed mailbox); `service/removed.go`, `notices.go`, `accounts.go` (only owners remove), `consent.go`, `sync.go` (`held`) and `events.go` (`NewNotices`); `app/sweep.go`; `api/removed.go`, `api/events.go` (`event: notice`) and the fixtures; the command line (`account removed`, `recover`, `purge`); the open sync text `-4`; the console's removed mailboxes, notices and hold ([`console.md`](console.md)) |
 | 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
 | Following an external directory, its documents | `internal/workspace/mirror.go` (`ValidExternalID`, `MirrorWorkspaceTx`, `ReplacePersonalTx`, `MirrorMemberTx`, `EndMembershipTx` and its holds, `HeldMembershipsTx`, `PersonalReplacementBlocks`), `reader.go` (`StrandCandidatesTx`), `members.go` (`Member.Held`), `source.go` (`Platform` made real); `auth` (`ExternalSignIn.PersonCreatedTx`, `IdentityUser`, `ResumeTx`, `RevokeSessionsStartedBeforeTx`, `Keys.RevokeCreatedBeforeTx`; a disable, `DisableBy` naming its actor, and a forced reset journal what they strand); `store/directory.go` (the listings and the sweep); `service/directory.go` (the documents, the directory's calls, a closed person forgotten and released), `external.go` (the document at sign-in), `closure.go` (`removePerson`: a deletion journals what it strands); `app/sweep.go` (`SweepDirectory`) |
+| Following an external directory, what it reads | `internal/store` (`ReadTx`, `PauseSQL` beside the sync rule, `KeptWaitingSQL`, `journalreads.go`: the journal per workspace with its readers and a key's creator, its head, the followed workspaces); `workspace/snapshot.go` (`SnapshotTx`); `service/snapshot.go` (`AccessSnapshot`, `RemovedInSnapshot`), `journal.go` (`MailboxJournal`, `MailboxJournalHead`, `FollowedWorkspaces`, `WorkspaceChanges`, the extension state), `freshness.go` (`Freshness` and its eleven call sites in `workspaces.go`, `mailboxkeys.go`, `workspacekeys.go`, `accounts.go`, `consent.go`, `actions.go`, `send.go`); `app` (`Options.Freshness`, `Deps.State`, the start line of personal workspaces a document would not replace); `account/revoke.go` (a Google grant revoked once its mailbox is deleted for good) and `registry.go`, `removal.go`, `store.go` (the token opened in the deleting transaction); `web/src/state/failure.ts` (`Failure.retryAfter`), `workspaces.ts` (`workspaceVanished`), `accounts.ts` and `storage.ts` |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

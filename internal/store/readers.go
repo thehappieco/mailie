@@ -158,7 +158,15 @@ func OpenWorkspaceSQL(workspace string) string {
 // (section 12.13), or, for their own personal mailbox, they write it a new
 // one (section 12.12).
 func WaitingSQL(alias string) string {
+	return `(` + LiveSQL(alias+`.account_id`) + ` AND ` + KeptWaitingSQL(alias) + `)`
+}
+
+// KeptWaitingSQL is WaitingSQL on a removed mailbox as if it were live: who
+// would wait for its key once it is recovered. Like KeptReaderSQL, it
+// decides nothing: it only says, to whoever reports a removed mailbox as it
+// was, who waited for its key.
+func KeptWaitingSQL(alias string) string {
 	account, user := alias+".account_id", alias+".user_id"
-	return `(` + FlagHolderSQL(alias) + `
+	return `(` + flagHolderSQL(alias) + `
 	  AND ` + HasKeySQL(account) + ` AND NOT ` + CurrentGrantSQL(account, user) + `)`
 }

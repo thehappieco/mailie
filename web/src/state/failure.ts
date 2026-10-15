@@ -48,9 +48,12 @@ export type FailureCode = ErrorCode | 'flow_expired' | 'flow_failed' | 'flow_uns
  * account is set when the failure left an account failing (a consent that
  * ended in error, a grant the mail server refused): the server records why
  * on the account, and a reason the console knows (ui/reasons.ts) says more
- * to the person than the operation's own text.
+ * to the person than the operation's own text. retryAfter is how many
+ * seconds the server asked to wait before trying again (its Retry-After), on
+ * a rate limit or on a server that could not confirm something elsewhere
+ * yet: what a page may say, or wait for, before offering to try again.
  */
-export interface Failure { op: Operation; code: FailureCode; account?: ReasonFacts; partial?: PartialChange }
+export interface Failure { op: Operation; code: FailureCode; account?: ReasonFacts; partial?: PartialChange; retryAfter?: number }
 
 /**
  * An action on more messages than one request takes is sent in parts; when a
@@ -60,5 +63,7 @@ export interface Failure { op: Operation; code: FailureCode; account?: ReasonFac
 export interface PartialChange { done: number; left: number }
 
 export function failure(op: Operation, error: unknown): Failure {
-  return { op, code: error instanceof ApiError || error instanceof CeremonyError ? error.code : 'internal' }
+  const found: Failure = { op, code: error instanceof ApiError || error instanceof CeremonyError ? error.code : 'internal' }
+  if (error instanceof ApiError && error.retryAfter !== undefined) found.retryAfter = error.retryAfter
+  return found
 }

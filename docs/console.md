@@ -745,7 +745,13 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   removed mailboxes and the person's notices if they were read, and forgets the folders of a
   mailbox no longer readable; an edition hears it through `onLiveAccess()`. `event: notice` reads
   the person's notices again. A stream narrowed to a workspace the person is no longer in ends with
-  `not_found`: the console reads their workspaces again, shows another and says which went.
+  `not_found`: the console reads their workspaces again, shows another and says which went. So
+  does a list narrowed to the workspace shown (the mailboxes, Storage) that answers `not_found`,
+  once for that workspace (`workspaceVanished`): a directory the workspaces come from may have
+  replaced the person's own, or ended their membership, under a session still open, and the one
+  shown then is the one remembered if it is still listed, else the person's own. A failure keeps
+  how long the server asked to wait (`Failure.retryAfter`, from `Retry-After`), which an act the
+  server could not yet confirm with that directory carries.
 - **Members** (the open edition, `teams`): shown for the personal workspace, where a person
   creates a team (and becomes its owner) and sees the teams they are in, and, to its owners and
   admins, for a team made here (`source: local`); a team mirrored from elsewhere is changed there,

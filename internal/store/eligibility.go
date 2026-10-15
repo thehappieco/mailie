@@ -85,6 +85,72 @@ var syncPermitted = `a.removed_at = 0 AND a.sync_held_at = 0 AND CASE
 var boundToSomeoneOff = `(a.sync_enabled_via = 'migration' AND EXISTS (SELECT 1 FROM users bound_u
 	WHERE bound_u.id = a.sync_enabled_by AND bound_u.status <> 'active'))`
 
+// Why a mailbox does not sync (PauseSQL), the first that holds, in this
+// order.
+const (
+	// PauseRemoved is a removed mailbox, kept for a recovery.
+	PauseRemoved = "removed"
+	// PauseTeamClosed is a closed team's mailbox.
+	PauseTeamClosed = "team_closed"
+	// PauseWithheld is a team's mailbox where the edition withholds teams.
+	PauseWithheld = "withheld"
+	// PausePendingAuth is a mailbox waiting for its first consent.
+	PausePendingAuth = "pending_auth"
+	// PauseNeedsReauth is a mailbox whose grant died.
+	PauseNeedsReauth = "needs_reauth"
+	// PauseError is a mailbox in error, or disabled.
+	PauseError = "error"
+	// PauseHeld is a recovered mailbox whose sync is held until someone who
+	// may turns it on.
+	PauseHeld = "held"
+	// PausePersonOff is a personal mailbox whose person is not active, or a
+	// team mailbox whose consent migration 0011 bound to a person who is
+	// not.
+	PausePersonOff = "person_off"
+	// PauseConsentOff is a mailbox whose consent to sync was never given or
+	// was withdrawn: its person's, the operator's or its team's.
+	PauseConsentOff = "consent_off"
+	// PauseNoReader is a team mailbox nobody reads.
+	PauseNoReader = "no_reader"
+)
+
+// PauseSQL is why a mailbox, aliased a, does not sync, as an expression: empty
+// exactly when it may (the rule above, syncEligible, with the edition's
+// withholding of teams when withheld), and otherwise the first of these that
+// holds, in one order, from the same fragments: removed (PauseRemoved), a
+// closed team (OpenWorkspaceSQL), a team where teams are withheld, the
+// account's state (pending_auth, needs_reauth, error for error and
+// disabled), its sync held by a recovery, and then its consent — a personal
+// mailbox's person not active or not consenting, an operator mailbox not
+// switched on, a team mailbox not switched on, bound to a person who is not
+// active (boundToSomeoneOff) or with nobody who reads it (hasReader). What an
+// extension reports of a mailbox it does not sync is this.
+func PauseSQL(withheld bool) string {
+	teams := ``
+	if withheld {
+		teams = `WHEN NOT ` + notATeams + ` THEN '` + PauseWithheld + `'`
+	}
+	return `(CASE
+	WHEN a.removed_at <> 0 THEN '` + PauseRemoved + `'
+	WHEN NOT ` + OpenWorkspaceSQL("a.workspace_id") + ` THEN '` + PauseTeamClosed + `'
+	` + teams + `
+	WHEN a.state = 'pending_auth' THEN '` + PausePendingAuth + `'
+	WHEN a.state = 'needs_reauth' THEN '` + PauseNeedsReauth + `'
+	WHEN a.state <> 'active' THEN '` + PauseError + `'
+	WHEN a.sync_held_at <> 0 THEN '` + PauseHeld + `'
+	WHEN a.owner_user_id IS NOT NULL THEN CASE
+		WHEN NOT EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id AND u.status = 'active')
+			THEN '` + PausePersonOff + `'
+		WHEN NOT EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id AND u.sync_consent_at <> 0)
+			THEN '` + PauseConsentOff + `'
+		ELSE '' END
+	WHEN a.workspace_id = 'wsp_operator' THEN CASE WHEN a.sync_enabled_at = 0 THEN '` + PauseConsentOff + `' ELSE '' END
+	WHEN a.sync_enabled_at = 0 THEN '` + PauseConsentOff + `'
+	WHEN ` + boundToSomeoneOff + ` THEN '` + PausePersonOff + `'
+	WHEN NOT ` + hasReader + ` THEN '` + PauseNoReader + `'
+	ELSE '' END)`
+}
+
 // hasReader is whether a mailbox, aliased a, has a reader, by the one rule
 // (ReaderSQL).
 var hasReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account_id = a.id AND ` + ReaderSQL("r") + `)`

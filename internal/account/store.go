@@ -766,10 +766,12 @@ type attempt struct {
 // the person.
 // It returns the accounts removed and the attempts dropped, which the
 // registry then stops waiting on.
-func (r *Repository) deleteOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) ([]string, []attempt, error) {
+func (r *Repository) deleteOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error, revoke bool,
+) ([]string, []attempt, []grantToRevoke, error) {
 	var (
 		owned    []string
 		attempts []attempt
+		grants   []grantToRevoke
 	)
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
 		if before != nil {
@@ -786,16 +788,22 @@ func (r *Repository) deleteOwner(ctx context.Context, userID string, before, als
 		if attempts, err = deleteFlowsByTx(ctx, tx, userID); err != nil {
 			return err
 		}
+		if revoke {
+			if grants, err = r.grantsToRevokeTx(ctx, tx, owned); err != nil {
+				return err
+			}
+		}
 		if _, err := purgeTx(ctx, tx, owned, purge{forget: true, at: r.now()}); err != nil {
 			return err
 		}
 		return also(tx)
 	})
 	if err != nil {
-		return nil, nil, err
+		forgetGrants(grants)
+		return nil, nil, nil, err
 	}
 	r.committed(nil, owned...)
-	return owned, attempts, nil
+	return owned, attempts, grants, nil
 }
 
 // deleteFlowsBy drops every consent attempt a person started and returns them.

@@ -8,11 +8,12 @@
 // predate the change.
 
 import { reactive, watch } from 'vue'
+import { ApiError } from '../api/http'
 import { getStorage } from '../api/storage'
 import type { Storage } from '../api/types'
 import { failure, type Failure } from './failure'
 import { authorized, identity } from './session'
-import { settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
+import { settleWorkspace, workspaces, workspaceVanished, WorkspacesUnknown } from './workspaces'
 
 interface StorageState {
   /** The workspace the figures were read for; empty for every workspace (a server without them). */
@@ -60,8 +61,9 @@ export async function loadStorage(): Promise<void> {
   storage.loading = true
   storage.failure = null
   asking = null
+  let workspace = ''
   try {
-    const workspace = await settleWorkspace()
+    workspace = await settleWorkspace()
     if (at !== generation) return
     asking = workspace
     const usage = await authorized(token => getStorage(token, workspace))
@@ -70,6 +72,9 @@ export async function loadStorage(): Promise<void> {
     storage.workspace = workspace
     storage.loaded = true
   } catch (error) {
+    // The workspace is gone from under the session: another is shown, and
+    // its figures read instead.
+    if (at === generation && error instanceof ApiError && error.code === 'not_found' && await workspaceVanished(workspace)) return
     if (at === generation) storage.failure = error instanceof WorkspacesUnknown ? error.failure : failure('load-storage', error)
   } finally {
     if (at === generation) {

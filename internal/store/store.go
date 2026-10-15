@@ -256,6 +256,22 @@ func (s *Store) Read(ctx context.Context, fn func(context.Context, *sql.DB) erro
 	return fn(ctx, s.r)
 }
 
+// ReadTx begins a read-only transaction on the query-only pool: a deferred
+// BEGIN, so every query in it reads the one snapshot of the database its
+// first query takes, whatever commits meanwhile. The caller rolls it back
+// when done; it can write nothing.
+func (s *Store) ReadTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.r.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("store: begin a read: %w", err)
+	}
+	return tx, nil
+}
+
+// TeamsWithheld reports whether the edition withholds teams
+// (Options.TeamsWithheld): no team's mailbox may sync.
+func (s *Store) TeamsWithheld() bool { return s.teamsWithheld }
+
 // Meta reads a value from the meta table. A missing key yields "".
 func (s *Store) Meta(ctx context.Context, key string) (string, error) {
 	var value string

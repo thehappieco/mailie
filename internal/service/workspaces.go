@@ -910,6 +910,9 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 	if err != nil {
 		return Grant{}, err
 	}
+	if err := s.freshGrant(ctx, p, a, userID, flags, sealed != nil); err != nil {
+		return Grant{}, err
+	}
 	g, err := s.workspaces.SetGrantSealed(ctx, a.ID, userID, flags, sealed, p.Actor(), func(tx *sql.Tx) error {
 		if err := s.mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
 			return err
@@ -925,6 +928,29 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 	s.accessChanged()
 	s.reconcile(a.ID)
 	return presentGrant(g), nil
+}
+
+// freshGrant asks the freshness hook before a grant is set (freshness.go): a
+// key sealed to userID, or a flag of theirs rising against what they hold
+// now. Taking flags away asks nothing. The write checks again who may.
+func (s *Service) freshGrant(ctx context.Context, p Principal, a account.Account, userID string, flags workspace.Flags,
+	sealed bool,
+) error {
+	if !s.asksFresh(p) {
+		return nil
+	}
+	kind := FreshShareKey
+	if !sealed {
+		before, err := s.workspaces.Grant(ctx, a.ID, userID)
+		if err != nil && !errors.Is(err, workspace.ErrNoGrant) {
+			return E(CodeInternal, "reading the access to the mailbox failed", err)
+		}
+		if !raised(before.Flags, flags) {
+			return nil
+		}
+		kind = FreshRaiseFlags
+	}
+	return s.fresh(ctx, p, FreshAct{Kind: kind, RecipientIDs: []string{userID}, WorkspaceID: a.WorkspaceID, AccountID: a.ID})
 }
 
 // RevokeAccess takes flags away from a person's grant on a mailbox; none

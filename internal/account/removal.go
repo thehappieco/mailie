@@ -223,8 +223,9 @@ func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check
 // checks nothing), journaled: what its owner, or the operator, decides before
 // its 30 days are over. ErrNotFound for a mailbox nobody knows, ErrNotRemoved
 // for a live one: removing comes first.
-func (r *Repository) purgeRemoved(ctx context.Context, id, actor string, check func(*sql.Tx) error) error {
+func (r *Repository) purgeRemoved(ctx context.Context, id, actor string, check func(*sql.Tx) error, revoke bool) ([]grantToRevoke, error) {
 	at := r.now()
+	var grants []grantToRevoke
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
 		var removedAt int64
 		err := tx.QueryRowContext(ctx, `SELECT removed_at FROM accounts WHERE id = ?`, id).Scan(&removedAt)
@@ -241,14 +242,20 @@ func (r *Repository) purgeRemoved(ctx context.Context, id, actor string, check f
 				return err
 			}
 		}
+		if revoke {
+			if grants, err = r.grantsToRevokeTx(ctx, tx, []string{id}); err != nil {
+				return err
+			}
+		}
 		_, err = purgeTx(ctx, tx, []string{id}, purge{actor: actor, at: at})
 		return err
 	})
 	if err != nil {
-		return err
+		forgetGrants(grants)
+		return nil, err
 	}
 	r.committed(nil, id)
-	return nil
+	return grants, nil
 }
 
 // ExpiredRemoved lists the removed mailboxes whose 30 days are over at now:
@@ -279,8 +286,9 @@ func (r *Repository) ExpiredRemoved(ctx context.Context, now time.Time) ([]strin
 // purgeExpired deletes one removed mailbox for good if its 30 days are over
 // at now, journaled as the sweep's, and reports whether it did: one recovered
 // meanwhile, or already gone, is left alone.
-func (r *Repository) purgeExpired(ctx context.Context, id string, now time.Time) (bool, error) {
+func (r *Repository) purgeExpired(ctx context.Context, id string, now time.Time, revoke bool) (bool, []grantToRevoke, error) {
 	purged := false
+	var grants []grantToRevoke
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
 		var due bool
 		err := tx.QueryRowContext(ctx, `SELECT removed_at <> 0 AND purge_after <= ? FROM accounts WHERE id = ?`,
@@ -294,14 +302,20 @@ func (r *Repository) purgeExpired(ctx context.Context, id string, now time.Time)
 			return nil
 		}
 		purged = true
+		if revoke {
+			if grants, err = r.grantsToRevokeTx(ctx, tx, []string{id}); err != nil {
+				return err
+			}
+		}
 		_, err = purgeTx(ctx, tx, []string{id}, purge{actor: store.ActorSweep, at: now})
 		return err
 	})
 	if err != nil || !purged {
-		return false, err
+		forgetGrants(grants)
+		return false, nil, err
 	}
 	r.committed(nil, id)
-	return true, nil
+	return true, grants, nil
 }
 
 // GetRemoved reads one removed mailbox: a live one, or one nobody knows, is
@@ -428,19 +442,22 @@ func (r *Registry) Recover(ctx context.Context, accountID, actor string, check f
 }
 
 // Purge deletes a removed mailbox for good, as actor, after check (nil checks
-// nothing), journaled. A live one is ErrNotRemoved: it is removed first.
+// nothing), journaled. A live one is ErrNotRemoved: it is removed first. Its
+// Google grant is revoked once that commits (revoke.go).
 func (r *Registry) Purge(ctx context.Context, accountID, actor string, check func(*sql.Tx) error) error {
-	if err := r.repo.purgeRemoved(ctx, accountID, actor, check); err != nil {
+	grants, err := r.repo.purgeRemoved(ctx, accountID, actor, check, r.revokes())
+	if err != nil {
 		return err
 	}
 	r.stopWaiting(accountID)
 	r.forget(accountID)
+	r.revokeGrants(ctx, grants)
 	return nil
 }
 
 // PurgeExpired deletes for good every removed mailbox whose 30 days are over
-// at now, one transaction each, journaled as the sweep's, and returns those
-// it deleted; perMailbox, when not nil, is told each once its transaction has
+// at now, one transaction each, journaled as the sweep's, its Google grant
+// revoked once that commits (revoke.go), and returns those it deleted; perMailbox, when not nil, is told each once its transaction has
 // committed. A failure stops it, with what it deleted until then: the next
 // sweep goes on.
 func (r *Registry) PurgeExpired(ctx context.Context, now time.Time, perMailbox func(accountID string)) ([]string, error) {
@@ -450,7 +467,7 @@ func (r *Registry) PurgeExpired(ctx context.Context, now time.Time, perMailbox f
 	}
 	var purged []string
 	for _, id := range ids {
-		done, err := r.repo.purgeExpired(ctx, id, now)
+		done, grants, err := r.repo.purgeExpired(ctx, id, now, r.revokes())
 		if err != nil {
 			return purged, err
 		}
@@ -459,6 +476,7 @@ func (r *Registry) PurgeExpired(ctx context.Context, now time.Time, perMailbox f
 		}
 		r.stopWaiting(id)
 		r.forget(id)
+		r.revokeGrants(ctx, grants)
 		purged = append(purged, id)
 		if perMailbox != nil {
 			perMailbox(id)

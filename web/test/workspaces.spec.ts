@@ -159,6 +159,45 @@ describe('the workspace shown', () => {
     expect(accounts.accounts.list.map(item => item.id)).toEqual(['acc_mine'])
   })
 
+  it('a workspace that vanished under a live session falls back to the personal one', async () => {
+    // A directory replaced Ana's personal workspace while her session ran:
+    // the one shown answers not_found, and the list now names another.
+    const REPLACED = 'personal.ana-1'
+    let list: Workspace[] = [personal, support]
+    let gone = false
+    const { accounts, storage: usage, workspaces, requests } = await page(request => {
+      if (gone && request.query.workspace === PERSONAL) return failure('not_found', 404)
+      if (request.path === '/v1/me/storage') {
+        return json({ mailboxes: [], workspaces: [{ workspace_id: request.query.workspace, mailboxes: 0, messages: 0, bytes: 0 }], total: { messages: 0, bytes: 0 } })
+      }
+      return listing(request)
+    }, { workspaces: () => list })
+    await accounts.loadAccounts()
+    await usage.loadStorage()
+    expect(workspaces.workspaces.currentID).toBe(PERSONAL)
+    gone = true
+    list = [{ ...personal, id: REPLACED, source: 'platform' }, support]
+    await accounts.loadAccounts()
+    await accounts.accountsSettled()
+    expect(workspaces.workspaces.currentID).toBe(REPLACED)
+    expect(workspaces.workspaces.lost?.id).toBe(PERSONAL)
+    expect(accounts.accounts.failure).toBeNull()
+    expect(reads(requests, '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL, PERSONAL, REPLACED])
+    await vi.waitFor(() => expect(usage.storage.workspace).toBe(REPLACED))
+    expect(reads(requests, '/v1/workspaces')).toHaveLength(2)
+  })
+
+  it('asks for the workspaces again only once for a workspace still listed that answers not_found', async () => {
+    const { accounts, workspaces, requests } = await page(request =>
+      request.path === '/v1/accounts' && request.query.workspace === PERSONAL ? failure('not_found', 404) : listing(request))
+    await accounts.loadAccounts()
+    await accounts.loadAccounts()
+    expect(workspaces.workspaces.currentID).toBe(PERSONAL)
+    expect(accounts.accounts.failure).toEqual({ op: 'load-accounts', code: 'not_found' })
+    expect(reads(requests, '/v1/workspaces')).toHaveLength(2)
+    expect(workspaces.workspaces.lost).toBeNull()
+  })
+
   it('reads storage for the workspace shown, and again for another', async () => {
     const { storage: usage, workspaces, requests } = await page(request => listing(request)
       ?? (request.path === '/v1/me/storage' ? json({ mailboxes: [], workspaces: [], total: { messages: 0, bytes: 0 } }) : undefined))

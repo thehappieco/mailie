@@ -17,6 +17,14 @@
 // everything. While the console is shown (retryWorkspaces), a first read that
 // failed is tried again by itself.
 //
+// A read narrowed to the workspace shown that answers not_found says the
+// workspace is no longer the person's under a session still live: a
+// directory their workspaces come from replaced their personal one, or ended
+// their membership (workspaceVanished). The list is read again, once for
+// that workspace, and the one shown chosen again: the one remembered if it
+// is still there, else the person's own; the one gone is kept for the notice
+// that says so.
+//
 // Everything resets when the person changes, as in the other stores.
 
 import { reactive, watch } from 'vue'
@@ -51,6 +59,8 @@ export const workspaces = reactive<WorkspacesState>(fresh())
 
 let generation = 0
 let pending: Promise<void> | null = null
+/** The workspaces a narrowed read found gone, each read again for once. */
+const vanished = new Set<string>()
 /** The console is shown: a first read that failed is tried again. */
 let retrying = false
 let retryTimer: ReturnType<typeof setTimeout> | undefined
@@ -62,6 +72,7 @@ watch(identity, () => {
   clearTimeout(retryTimer)
   retryTimer = undefined
   retries = 0
+  vanished.clear()
   Object.assign(workspaces, fresh())
 }, { flush: 'sync' })
 
@@ -174,6 +185,24 @@ export async function settleWorkspace(): Promise<string> {
   if (!workspaces.loaded) await loadWorkspaces()
   if (!workspaces.loaded) throw new WorkspacesUnknown(workspaces.failure ?? { op: 'load-workspaces', code: 'internal' })
   return workspaces.currentID
+}
+
+/**
+ * A read narrowed to workspace id answered not_found: the workspace may be
+ * gone from under the session. When it is the one shown, and was not asked
+ * about before, the list is read again and the one shown chosen again
+ * (chooseWorkspace: the person's own when nothing remembered is left), the
+ * one gone kept in lost. Answers whether another workspace is shown now,
+ * which its lists are read for; false leaves the failure to the caller.
+ */
+export async function workspaceVanished(id: string): Promise<boolean> {
+  if (!id || id !== workspaces.currentID || vanished.has(id)) return false
+  vanished.add(id)
+  const at = generation
+  if (pending) await pending
+  if (at !== generation || id !== workspaces.currentID) return at === generation
+  await loadWorkspaces()
+  return at === generation && workspaces.currentID !== id
 }
 
 /** The workspace shown, as listed. */

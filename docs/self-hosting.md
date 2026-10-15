@@ -935,6 +935,19 @@ of that time.
   it leaves a team mailbox with nobody who reads it, records that mailbox as stranded; nobody
   is told in the console, and deleting the person forgets them there too, as it forgets that they
   acted.
+- **A Google mailbox deleted for good has its grant revoked at Google.** When the sweep deletes a
+  removed Gmail mailbox after its 30 days, when its owners or the operator delete it before, and
+  when the person it goes with is deleted, the daemon sends its refresh token to Google's
+  revocation endpoint (`https://oauth2.googleapis.com/revoke`) once the deletion has committed, so
+  the grant no longer appears among the person's connected apps. It is best effort: a failure is
+  logged (without the token) and never stops the deletion; a server whose egress cannot reach that
+  address only logs it. The same Google address linked again in another workspace through the
+  same OAuth client shares one grant there, which is then kept until the last such mailbox goes.
+  Microsoft 365 offers no revocation of a single grant, and a password account has nothing to
+  revoke: their stored credentials are deleted, as before.
+- **The console** keeps how long the server asked to wait before trying again (`Retry-After`), and,
+  when the workspace it shows is no longer the person's under a session still open, reads their
+  workspaces again once and shows their own.
 
 ```sh
 # Compose, from deploy/:

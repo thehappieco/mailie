@@ -39,7 +39,7 @@ import { failure, type Failure, type Operation } from './failure'
 import { FLOW_LIFETIME_MS, rememberOAuthStart, takeOAuthReturn, takeOAuthStart } from './oauthReturn'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
-import { loadWorkspaces, selectWorkspace, settleWorkspace, workspaces, WorkspacesUnknown } from './workspaces'
+import { loadWorkspaces, selectWorkspace, settleWorkspace, workspaces, workspaceVanished, WorkspacesUnknown } from './workspaces'
 
 export const POLL_INTERVAL_MS = 3_000
 /** While the event stream is open, account.state events end the wait; this poll only covers one that went missing. */
@@ -248,8 +248,9 @@ async function readAccounts(): Promise<void> {
   accounts.loading = true
   accounts.failure = null
   asking = null
+  let workspace = ''
   try {
-    const workspace = await settleWorkspace()
+    workspace = await settleWorkspace()
     if (!current()) return
     asking = workspace
     const list = await authorized(token => api.listAccounts(token, workspace))
@@ -259,6 +260,9 @@ async function readAccounts(): Promise<void> {
     accounts.workspace = workspace
     accounts.loaded = true
   } catch (error) {
+    // The workspace is gone from under the session: another is shown, and
+    // its list read instead.
+    if (current() && error instanceof ApiError && error.code === 'not_found' && await workspaceVanished(workspace)) return
     if (current()) accounts.failure = error instanceof WorkspacesUnknown ? error.failure : failure('load-accounts', error)
   } finally {
     if (current()) accounts.loading = false

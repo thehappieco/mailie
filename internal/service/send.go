@@ -306,6 +306,16 @@ func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest)
 	if err := s.maySend(ctx, p, a); err != nil {
 		return SendResult{}, err
 	}
+	if teamMailbox(a) && s.asksFresh(p) {
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshSend, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+			return SendResult{}, err
+		}
+		// What the answer applied is asked about at once, before anything
+		// of the send is recorded, as it is again right before dialing.
+		if err := s.stillMaySend(ctx, p, a); err != nil {
+			return SendResult{}, err
+		}
+	}
 	if err := readyToSend(a); err != nil {
 		return SendResult{}, err
 	}

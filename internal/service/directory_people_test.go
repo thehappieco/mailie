@@ -466,7 +466,8 @@ func TestNoTransportCallsWhatOnlyAnExtensionMay(t *testing.T) {
 	extensionOnly := []string{
 		"ApplyDirectoryDocument", "Directory", "ResetDirectory", "ConfirmDirectoryGeneration", "SetDirectoryCursor",
 		"ForgetExternalPerson", "ReleaseDirectoryPerson", "DirectoryPeople", "DirectorySubjects", "IdentityUser",
-		"SweepDirectory", "PersonalReplacementBlocks",
+		"SweepDirectory", "PersonalReplacementBlocks", "AccessSnapshot", "MailboxJournal", "MailboxJournalHead",
+		"FollowedWorkspaces", "WorkspaceChanges", "ExtensionState", "ExtensionStateKeys", "WriteExtensionState",
 	}
 	for _, dir := range []string{"../api", "../mcp"} {
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {

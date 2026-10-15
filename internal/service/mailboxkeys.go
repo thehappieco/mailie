@@ -376,6 +376,18 @@ func (s *Service) WriteFirstKey(ctx context.Context, p Principal, accountID stri
 	if err := s.requireStepUp(ctx, p); err != nil {
 		return MailboxKeyPair{}, err
 	}
+	// Who else the key is sealed to: the freshness hook asks about them,
+	// and the write checks again that its grants are exactly theirs.
+	var others []string
+	for _, g := range grants {
+		if g.UserID != p.UserID {
+			others = append(others, g.UserID)
+		}
+	}
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshShareKey, RecipientIDs: others, WorkspaceID: a.WorkspaceID,
+		AccountID: a.ID}); err != nil {
+		return MailboxKeyPair{}, err
+	}
 	key, err := s.workspaces.WriteFirstKey(ctx, a.ID, p.UserID,
 		workspace.FirstKey{PublicKey: pub, Namespace: req.Namespace, Grants: grants}, s.stepUpCheck(ctx, p))
 	if err != nil {
@@ -424,6 +436,10 @@ func (s *Service) WriteNewKey(ctx context.Context, p Principal, accountID string
 	if err := s.requireStepUp(ctx, p); err != nil {
 		return MailboxKeyPair{}, err
 	}
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshShareKey, RecipientIDs: []string{p.UserID}, WorkspaceID: a.WorkspaceID,
+		AccountID: a.ID}); err != nil {
+		return MailboxKeyPair{}, err
+	}
 	key, err := s.workspaces.WriteNextKey(ctx, a.ID, p.UserID,
 		workspace.NextKey{Epoch: req.Epoch, PublicKey: pub, Grant: grant}, s.stepUpCheck(ctx, p))
 	if err != nil {
@@ -463,6 +479,10 @@ func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID 
 		return SealedGrant{}, err
 	}
 	if err := s.requireStepUp(ctx, p); err != nil {
+		return SealedGrant{}, err
+	}
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshShareKey, RecipientIDs: []string{userID}, WorkspaceID: a.WorkspaceID,
+		AccountID: a.ID}); err != nil {
 		return SealedGrant{}, err
 	}
 	g, err := s.workspaces.SupplyGrant(ctx, a.ID, userID, p.UserID, req.Epoch, sealed, s.stepUpCheck(ctx, p))

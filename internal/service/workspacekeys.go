@@ -288,6 +288,9 @@ func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspace
 		}
 		grants = append(grants, workspace.KeyGrant{AccountID: id, Flags: flags})
 	}
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshCreateKey, WorkspaceID: w.ID}); err != nil {
+		return CreatedWorkspaceKey{}, err
+	}
 	check := func(tx *sql.Tx) error {
 		if err := s.keyAdminTx(ctx, tx, p, w.ID); err != nil {
 			return err
@@ -408,6 +411,19 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 	}
 	if flags.Send && s.keysMayNotSend {
 		return KeyMailbox{}, errKeysMayNotSend
+	}
+	if s.asksFresh(p) {
+		// Only a flag the key does not hold yet asks; the write checks again
+		// who may.
+		before, err := s.workspaces.KeyAccessOf(ctx, prefix, []string{accountID})
+		if err != nil {
+			return KeyMailbox{}, E(CodeInternal, "reading what the key holds failed", err)
+		}
+		if raised(before[accountID], flags) {
+			if err := s.fresh(ctx, p, FreshAct{Kind: FreshRaiseFlags, WorkspaceID: workspaceID, AccountID: accountID}); err != nil {
+				return KeyMailbox{}, err
+			}
+		}
 	}
 	held, err := s.workspaces.SetKeyAccess(ctx, prefix, accountID, flags, p.Actor(),
 		func(tx *sql.Tx, key workspace.KeyRef, mailboxWorkspace string, before workspace.Flags) error {

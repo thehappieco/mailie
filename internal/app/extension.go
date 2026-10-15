@@ -57,7 +57,8 @@ type Extension func(ctx context.Context, r *Router, d Deps) error
 // an identity provider calls Service.SignInExternal, and Service.PinIdentityKey
 // for the keys it pins, under SignInLimits. Nor does it hold the daemon's
 // sealer: OpenSecret opens an extension's own secrets with it, and nothing
-// else.
+// else; nor the database: State keeps the extension's own state there, and
+// nothing else.
 type Deps struct {
 	// Config is the daemon's configuration, as loaded.
 	Config config.Config
@@ -76,13 +77,21 @@ type Deps struct {
 	// own collectors there, beside the core's, whose names it cannot take.
 	Metrics prometheus.Registerer
 
-	// run is what Go and OpenSecret reach. Only Run makes one.
+	// run is what Go, OpenSecret and State reach. Only Run makes one.
 	run *extensionRun
 }
 
 // ErrNoSealer says OpenSecret was called on Deps that Run did not make, which
 // have no sealer to open with.
 var ErrNoSealer = errors.New("app: no sealer: these Deps were not made by the daemon")
+
+// ErrNoState says State was called on Deps that Run did not make, which have
+// no database to keep it in.
+var ErrNoState = errors.New("app: no state: these Deps were not made by the daemon")
+
+// ErrStateName is an extension's state asked for under a name that is not
+// 1 to 64 of a-z, 0-9, '_' and '-'.
+var ErrStateName = errors.New("app: an extension's state is named by 1 to 64 of a-z, 0-9, '_' and '-'")
 
 // Go asks the daemon to run fn in a goroutine of its own, on the extensions'
 // context, once every extension has run and every route is mounted: work an
@@ -123,11 +132,74 @@ func (d Deps) OpenSecret(ctx context.Context, ref string, envelope []byte) ([]by
 	return d.run.sealer.Open(ctx, secrets.ExtensionSecret(ref), envelope)
 }
 
-// extensionRun is the daemon's side of Deps.Go and Deps.OpenSecret: its
-// sealer, and the background work the extensions asked for.
+// State is the extension's own small durable state, kept in the daemon's
+// database under name (1 to 64 of a-z, 0-9, '_' and '-'; ErrStateName
+// otherwise), apart from every other extension's: what it must remember
+// across restarts about the data it describes — where it read up to, what it
+// still owes elsewhere — which a restore of the database takes back with
+// that data, never ahead of it. A key is 1 to 256 bytes and a value a
+// mebibyte at most. Deps that Run did not make have none: ErrNoState.
+func (d Deps) State(name string) (StateStore, error) {
+	if d.run == nil || d.run.service == nil {
+		return nil, ErrNoState
+	}
+	if !validStateName(name) {
+		return nil, ErrStateName
+	}
+	return extensionState{svc: d.run.service, name: name}, nil
+}
+
+// StateStore is an extension's own state (Deps.State).
+type StateStore interface {
+	// Get reads one value; false when the key holds none.
+	Get(ctx context.Context, key string) (value []byte, ok bool, err error)
+	// Keys lists the keys that begin with prefix, every one for "", sorted
+	// by their bytes.
+	Keys(ctx context.Context, prefix string) ([]string, error)
+	// Write puts and deletes in one write transaction, the deletions first:
+	// nothing at all when a key is out of bounds or a value larger than a
+	// mebibyte.
+	Write(ctx context.Context, put map[string][]byte, del []string) error
+}
+
+// validStateName reports whether name is 1 to 64 of a-z, 0-9, '_' and '-'.
+func validStateName(name string) bool {
+	if name == "" || len(name) > 64 {
+		return false
+	}
+	for _, c := range name {
+		if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '_' && c != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// extensionState is a StateStore over the service's extension state.
+type extensionState struct {
+	svc  *service.Service
+	name string
+}
+
+func (e extensionState) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	return e.svc.ExtensionState(ctx, e.name, key)
+}
+
+func (e extensionState) Keys(ctx context.Context, prefix string) ([]string, error) {
+	return e.svc.ExtensionStateKeys(ctx, e.name, prefix)
+}
+
+func (e extensionState) Write(ctx context.Context, put map[string][]byte, del []string) error {
+	return e.svc.WriteExtensionState(ctx, e.name, put, del)
+}
+
+// extensionRun is the daemon's side of Deps.Go, Deps.OpenSecret and
+// Deps.State: its sealer, its service, and the background work the
+// extensions asked for.
 type extensionRun struct {
-	sealer secrets.Sealer
-	log    *slog.Logger
+	sealer  secrets.Sealer
+	service *service.Service
+	log     *slog.Logger
 
 	mu      sync.Mutex
 	closed  bool // the start has begun: Go drops what it is asked
@@ -141,8 +213,8 @@ type extensionWork struct {
 	fn   func(context.Context)
 }
 
-func newExtensionRun(sealer secrets.Sealer, log *slog.Logger) *extensionRun {
-	return &extensionRun{sealer: sealer, log: log}
+func newExtensionRun(sealer secrets.Sealer, svc *service.Service, log *slog.Logger) *extensionRun {
+	return &extensionRun{sealer: sealer, service: svc, log: log}
 }
 
 // ask queues fn until start, or drops it once the start has begun.

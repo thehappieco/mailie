@@ -59,7 +59,10 @@ type Registry struct {
 	spoolDir     string
 	debug        io.Writer
 	insecure     bool
-	log          *slog.Logger
+	// googleRevokeURL is where a Google grant is revoked once its mailbox is
+	// deleted for good (revoke.go); empty revokes none.
+	googleRevokeURL string
+	log             *slog.Logger
 	// baseCtx outlives every request and is cancelled only when the daemon
 	// stops.
 	baseCtx context.Context
@@ -141,6 +144,12 @@ type RegistryOptions struct {
 	// Log receives what the background consent paths cannot return to
 	// anyone: why a loopback or device flow failed. Nil discards it.
 	Log *slog.Logger
+	// GoogleRevokeURL is where a Google mailbox's grant is revoked once the
+	// mailbox is deleted for good (revoke.go): the daemon sets
+	// GoogleRevokeEndpoint. Empty revokes none, and opens no token to: what
+	// a registry built for anything but the daemon does. Its connections are
+	// held to AllowPrivate as an account's are.
+	GoogleRevokeURL string
 	// RedirectIMAP dials another address in place of an account's IMAP
 	// server, keyed by host:port. Nothing in the daemon sets it: it exists so
 	// tests can stand an in-process server in for a provider whose servers
@@ -163,23 +172,24 @@ func NewRegistry(ctx context.Context, repo *Repository, opts RegistryOptions) *R
 		}
 	}
 	return &Registry{
-		redirect:     redirect,
-		repo:         repo,
-		google:       opts.Google,
-		microsoft:    opts.Microsoft,
-		googleWeb:    opts.GoogleWeb,
-		microsoftWeb: opts.MicrosoftWeb,
-		publicURL:    strings.TrimSuffix(opts.PublicURL, "/"),
-		deviceCode:   opts.DeviceCode,
-		allowPrivate: opts.AllowPrivate,
-		spoolDir:     opts.SpoolDir,
-		debug:        opts.Debug,
-		insecure:     opts.AllowInsecureAuth,
-		log:          log,
-		baseCtx:      ctx,
-		mailboxes:    map[string]provider.Mailbox{},
-		sources:      map[string]*tokenSource{},
-		waiting:      map[string]*waiter{},
+		redirect:        redirect,
+		repo:            repo,
+		google:          opts.Google,
+		microsoft:       opts.Microsoft,
+		googleWeb:       opts.GoogleWeb,
+		microsoftWeb:    opts.MicrosoftWeb,
+		publicURL:       strings.TrimSuffix(opts.PublicURL, "/"),
+		deviceCode:      opts.DeviceCode,
+		allowPrivate:    opts.AllowPrivate,
+		spoolDir:        opts.SpoolDir,
+		debug:           opts.Debug,
+		insecure:        opts.AllowInsecureAuth,
+		googleRevokeURL: opts.GoogleRevokeURL,
+		log:             log,
+		baseCtx:         ctx,
+		mailboxes:       map[string]provider.Mailbox{},
+		sources:         map[string]*tokenSource{},
+		waiting:         map[string]*waiter{},
 	}
 }
 
@@ -1418,7 +1428,7 @@ func (r *Registry) credentials(ctx context.Context, a Account) (provider.Credent
 // cached mailboxes, and any listener or device poll still waiting on their
 // behalf. It reports how many accounts it deleted.
 func (r *Registry) RemoveOwner(ctx context.Context, userID string, before, also func(*sql.Tx) error) (int, error) {
-	removed, attempts, err := r.repo.deleteOwner(ctx, userID, before, also)
+	removed, attempts, grants, err := r.repo.deleteOwner(ctx, userID, before, also, r.revokes())
 	if err != nil {
 		return 0, err
 	}
@@ -1429,6 +1439,7 @@ func (r *Registry) RemoveOwner(ctx context.Context, userID string, before, also 
 		r.stopWaiting(id)
 		r.forget(id)
 	}
+	r.revokeGrants(ctx, grants)
 	return len(removed), nil
 }
 

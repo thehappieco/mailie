@@ -33,7 +33,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   route is mounted, its context ended at the stop and awaited without a bound before the engine,
   the registry and the database close; a `Go` once the start has begun is dropped, logged at
   error), open its own secrets with the daemon's sealer (`OpenSecret`, only
-  `secrets.ExtensionSecret(ref)`) and register its metrics beside the core's (`Metrics`).
+  `secrets.ExtensionSecret(ref)`), register its metrics beside the core's (`Metrics`) and keep its
+  own small state in the database it describes (`State(name)`, `extension_state`: restored with it,
+  never ahead of it). `Options.Freshness` (never set by `serve`) is asked, outside every write,
+  before a person's act that widens access or touches a team's shared data
+  (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
+  the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
   `Options.ExternalSignInOnly` (never set by `serve`) has the service
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
   an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
@@ -64,7 +69,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `workspace_members.held_at` (`HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no
   access), `extension_state` (`extstate.go`, values of a mebibyte at most) and `workspace_changes`
   (`changes.go`: a mark per workspace from another source, written by triggers in the transaction
-  of every change its snapshot shows, only rising).
+  of every change its snapshot shows, only rising). What an extension reads of them: the journal
+  per workspace from a cursor, with its readers and a key's creator (`JournalOf`, `JournalHead`),
+  the workspaces from another source (`FollowedWorkspaces`), and why a mailbox does not sync
+  (`PauseSQL`, one order of causes beside `syncEligible`, empty exactly when it may sync, held to
+  `SyncEligible` by test), all in one read when it must be (`ReadTx`, a deferred BEGIN on the
+  query-only pool).
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -158,7 +168,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   once, and so are the removed mailboxes that go with a person closed, their journal entries with
   them (a never-connected link in a workspace from another source is journaled `purged` instead,
   its earlier entries kept, for an extension to report). Its address stays taken in its workspace
-  meanwhile (`ErrRemovedDuplicate`).
+  meanwhile (`ErrRemovedDuplicate`). A Google mailbox deleted for good — the sweep, its owners or
+  the operator early, the person it goes with deleted or forgotten — has its grant revoked at
+  Google (`revoke.go`, `GoogleRevokeURL`, which the daemon sets): the refresh token opened inside
+  the deleting transaction, revoked after the commit, best effort, bounded, logged without it,
+  never while another mailbox here holds the same grant; Microsoft has no such endpoint and a
+  password nothing to revoke.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -178,8 +193,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   flags and grants kept) while the directory's generation is unconfirmed and the end would strand a
   mailbox. `strand.go` defines `Stranding` and journals the mailboxes a change strands
   (`JournalStrandedTx`); `StrandCandidatesTx` says which, before the change: the ones the person
-  reads, would read once resumed or would read but for a hold, and nobody else does or would. See
-  `docs/workspaces.md`.
+  reads, would read once resumed or would read but for a hold, and nobody else does or would.
+  `snapshot.go` reads who holds what on a workspace's mailboxes for an extension (`SnapshotTx`, in
+  one read transaction): every mailbox, live and removed until deleted for good, its pause, label
+  and masked hint, never its address; each person with a flag or a sealed grant, whether they read,
+  wait, are enrolled and hold the key at its epoch; the people a team mailbox cannot lose. It
+  decides nothing. See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
@@ -190,7 +209,18 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   created), the directory's generation, resets, confirmation (which ends the held memberships) and
   feed cursor (a compare and set), a closed person forgotten (`ForgetExternalPerson`, a forced
   deletion refused by nothing) and released (`ReleaseDirectoryPerson`, or the 90-day
-  `SweepDirectory`), and the listings it maps people and subjects with.
+  `SweepDirectory`), and the listings it maps people and subjects with. `journal.go` and
+  `snapshot.go` are what it reports: the journal as its outbox (`MailboxJournal`), the followed
+  workspaces and their change marks, its own state, and a snapshot of a followed workspace
+  (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
+  recovered, `RemovedAsKept`, unless `Deps.RemovedInSnapshot` says otherwise). `freshness.go`: the
+  hook (`Deps.Freshness`) asked before eleven acts of a person signed in — a key sealed to someone,
+  flags raised for a person or a key, a key created, a link into a team, a team mailbox's consent
+  started again, its sync switched, an action on it or a send from it — after the read-only
+  authorization and outside every write; the write, or for those that write nothing first an
+  immediate re-check, asks again who may, so an answer that ended the actor's place stops the act.
+  Never asked for reading, removing, recovering, deleting for good, taking access away, or a key's
+  own acts.
 - `internal/api` — REST `/v1/...`, SSE and the long poll. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
   `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
@@ -409,7 +439,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   whose end would strand a mailbox, is held (disabled, reading nothing, its flags and grants kept)
   until a document lists it again or the generation is confirmed; and a document whose workspace
   part is refused still applies what it revoked. A disable here stands over a directory: its
-  documents never resume a person disabled here, nor one whose disable they do not know of.
+  documents never resume a person disabled here, nor one whose disable they do not know of. The
+  freshness hook gates and never authorizes: every act it is asked about keeps its own checks, run
+  again in the write.
 - **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
   same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -448,7 +480,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `{code, message}` with seven fixed codes and never says which credential failed. What an
   extension calls keeps the cause of each refusal for `errors.Is` (`service.ErrNotFollowing`,
   `ErrDirectoryGeneration`, `ErrKindChanged`…); a new person under a directory's source without
-  their document is `internal`, "upstream: …", with a `Retry` of 10 s.
+  their document is `internal`, "upstream: …", with a `Retry` of 10 s; so is an act the freshness
+  hook could not confirm (a `Retry` of 30 s, no reason on the wire), while a `*service.Error` the
+  hook returns passes through as it is and a context's end is passed on.
 - **Backup: the host only encrypts and uploads.** It generates data keys with the context exactly
   `{service: mailie, env: MAIL_ENV, purpose: db-backup, ref: <object key>}`
   (`backup.EncryptionContext`) and creates new objects under `db/` (`If-None-Match: *`, SSE-S3,

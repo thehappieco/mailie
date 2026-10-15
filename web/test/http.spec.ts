@@ -3,6 +3,7 @@ import { getAccount, listAccounts } from '../src/api/accounts'
 import { endpoint, segment } from '../src/api/endpoint'
 import { ApiError, parseRetryAfter, request, serverCodes } from '../src/api/http'
 import { server } from '../src/state/connection'
+import { failure as failureOfOp } from '../src/state/failure'
 import { account, failure, json, ORIGIN } from './support'
 
 beforeEach(() => { vi.stubGlobal('location', new URL(ORIGIN + '/')); server.reachable = true })
@@ -106,4 +107,17 @@ describe('the one request wrapper', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+})
+
+describe('a failure the console keeps', () => {
+  it('a failure keeps the server’s Retry-After', async () => {
+    // A server that could not confirm with the directory its workspaces come
+    // from says so as internal, with how long to wait.
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(failure('internal', 500, { 'Retry-After': '30' }))
+    const error = await request('/v1/accounts', { token: 't' }).then(() => { throw new Error('expected a failure') }, (e: unknown) => e)
+    expect(failureOfOp('give-read', error)).toEqual({ op: 'give-read', code: 'internal', retryAfter: 30 })
+    // Without one, the failure says none.
+    expect(failureOfOp('give-read', new ApiError('internal', 500))).toEqual({ op: 'give-read', code: 'internal' })
+    expect('retryAfter' in failureOfOp('give-read', new Error('boom'))).toBe(false)
+  })
 })

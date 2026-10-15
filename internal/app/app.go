@@ -12,8 +12,10 @@
 // for (Deps.Go), awaited before the database closes; for a binary whose
 // people sign in through such a route (service.SignInExternal), the switch
 // that turns the core's passwords and invitations off (ExternalSignInOnly);
-// and, for an edition that does not offer team workspaces yet, the one that
-// withholds them (TeamsWithheld). Nothing else of
+// for an edition that does not offer team workspaces yet, the one that
+// withholds them (TeamsWithheld); and, for a binary whose workspaces come
+// from a directory elsewhere, the question asked before an act that widens
+// access (Freshness). Nothing else of
 // the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
 // implementation of it.
@@ -87,6 +89,13 @@ type Options struct {
 	// engine. Only a binary that embeds the daemon sets it: there is no
 	// environment variable, and `serve` never does.
 	TeamsWithheld bool
+	// Freshness, when set, is asked before an act of a person signed in that
+	// widens who may read a mailbox or touches a team's shared data
+	// (service.Freshness): an extension that follows the directory the
+	// workspaces come from reads the actor's standing there again first. It
+	// gates, never authorizes. Only a binary that embeds the daemon sets it:
+	// there is no environment variable, and `serve` never does.
+	Freshness service.Freshness
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -221,9 +230,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		PublicURL:    cfg.PublicURL,
 		DeviceCode:   cfg.MicrosoftDeviceCode,
 		AllowPrivate: cfg.AccountAllowPrivate,
-		SpoolDir:     cfg.SpoolDir(),
-		Debug:        imapDebug,
-		Log:          logger,
+		// A Google mailbox deleted for good has its grant revoked there.
+		GoogleRevokeURL: account.GoogleRevokeEndpoint,
+		SpoolDir:        cfg.SpoolDir(),
+		Debug:           imapDebug,
+		Log:             logger,
 	})
 	//nolint:contextcheck // shutdown paths make their own bounded contexts
 	defer func() {
@@ -300,7 +311,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
+		Freshness: opts.Freshness,
 	})
+	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
+		return err
+	}
 
 	// One limiter for REST and MCP: a key has one budget whichever way it
 	// comes in. Sign-in has its own, which an extension that signs people in
@@ -357,7 +372,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	// for starts once every route is mounted, and is waited for, without a
 	// bound, before the engine, the registry and the database close.
 	extensionCtx, stopExtensions := context.WithCancel(ctx)
-	extensions := newExtensionRun(sealer, logger)
+	extensions := newExtensionRun(sealer, svc, logger)
 	defer func() {
 		stopExtensions()
 		extensions.wait()
@@ -586,4 +601,26 @@ func firstInviteHint(publicURL, anyKey bool) string {
 		return "mailserver user invite --role owner --email ADDRESS (needs MAIL_ADMIN_KEY), " +
 			"or with the daemon stopped: mailserver user invite --bootstrap --role owner --email ADDRESS"
 	}
+}
+
+// personalReplacementHint says at start, under a source that mirrors a
+// directory, which people's local personal workspaces a document of theirs
+// will not replace while they hold mailboxes, live or removed, or live keys
+// (service.PersonalReplacementBlocks): the directory's personal workspace
+// waits for them, and the rest of each document applies. Under the local
+// source it says nothing.
+func personalReplacementHint(ctx context.Context, svc *service.Service, source workspace.Source, logger *slog.Logger) error {
+	if source == nil || source.Name() == workspace.SourceLocal {
+		return nil
+	}
+	blocks, err := svc.PersonalReplacementBlocks(ctx)
+	if err != nil {
+		return err
+	}
+	for _, b := range blocks {
+		logger.Warn("personal workspaces that a directory's document will not replace while they hold these",
+			"user", b.UserID, "workspace", b.WorkspaceID, "accounts", b.Accounts, "live_keys", b.LiveKeys,
+			"stopped_keys", b.StoppedKeys)
+	}
+	return nil
 }

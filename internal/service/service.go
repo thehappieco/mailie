@@ -91,6 +91,12 @@ type Service struct {
 	// (withheldteams.go): nothing of a team is used, while personal
 	// workspaces and the operator's are as they were.
 	teamsWithheld bool
+	// freshness is asked before an act that widens access or touches a
+	// team's shared data (freshness.go); nil asks nothing.
+	freshness Freshness
+	// removedInSnapshot is what a snapshot says of a removed mailbox's
+	// people (snapshot.go).
+	removedInSnapshot RemovedInSnapshot
 }
 
 // Deps is what the service needs.
@@ -167,6 +173,14 @@ type Deps struct {
 	// workspaces and the operator's are as they were. False, the default,
 	// changes nothing. Only internal/app sets it, from its Options.
 	TeamsWithheld bool
+	// Freshness, when set, is asked before an act of a person signed in
+	// that widens who may read a mailbox or touches a team's shared data
+	// (freshness.go). nil, the default, asks nothing. Only internal/app
+	// sets it, from its Options.
+	Freshness Freshness
+	// RemovedInSnapshot is what a snapshot says of a removed mailbox's
+	// people (snapshot.go); the zero value is RemovedAsKept.
+	RemovedInSnapshot RemovedInSnapshot
 }
 
 // New builds the service.
@@ -219,6 +233,8 @@ func New(d Deps) *Service {
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
 		teamsWithheld:       d.TeamsWithheld,
+		freshness:           d.Freshness,
+		removedInSnapshot:   d.RemovedInSnapshot,
 	}
 }
 

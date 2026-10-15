@@ -306,6 +306,12 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 		return AddAccountResult{}, err
 	}
 	add.WorkspaceID, add.Check, add.SyncConsent = link.workspaceID, link.check, link.consent
+	if link.team {
+		// The transaction that creates the mailbox runs link.check again.
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshLink, WorkspaceID: link.workspaceID}); err != nil {
+			return AddAccountResult{}, err
+		}
+	}
 	if p.IsSession() {
 		// The person's account key, and their step-up before the login a
 		// password account costs; the transaction that writes the key asks
@@ -497,6 +503,17 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 	kind, err := s.chooseFlow(p, a.Provider, flowKind)
 	if err != nil {
 		return nil, err
+	}
+	if teamMailbox(a) && s.asksFresh(p) {
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshReauthorize, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+			return nil, err
+		}
+		// What the answer applied may have taken the mailbox from them: the
+		// attempt is started only for someone who still manages it, as its
+		// completion asks again before the code is exchanged.
+		if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage); err != nil {
+			return nil, err
+		}
 	}
 	flow, err := s.accounts.StartAuth(ctx, id, kind, p.UserID)
 	if err != nil {
@@ -694,6 +711,8 @@ type link struct {
 	workspaceID string
 	check       func(*sql.Tx) error
 	consent     store.MailboxConsent
+	// team is a link into a team: what asks the freshness hook first.
+	team bool
 }
 
 // linkInto decides where a new mailbox goes and who may put it there.
@@ -767,7 +786,7 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVe
 	if err := s.precheck(ctx, check); err != nil {
 		return link{}, fromWorkspace(err, "reading the workspace failed")
 	}
-	return link{workspaceID: w.ID, check: check, consent: consent}, nil
+	return link{workspaceID: w.ID, check: check, consent: consent, team: w.Kind == workspace.KindTeam}, nil
 }
 
 var errSyncVersionNotTeam = E(CodeBadRequest,

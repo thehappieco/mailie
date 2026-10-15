@@ -417,6 +417,16 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 	if err := s.mayAct(ctx, p, a); err != nil {
 		return account.Account{}, nil, err
 	}
+	if teamMailbox(a) && s.asksFresh(p) {
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshActions, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+			return account.Account{}, nil, err
+		}
+		// What the answer applied is asked about at once, as each command
+		// asks again before the server is touched.
+		if err := s.stillMayAct(ctx, p, a); err != nil {
+			return account.Account{}, nil, err
+		}
+	}
 	if err := readyToRead(a); err != nil {
 		return account.Account{}, nil, err
 	}

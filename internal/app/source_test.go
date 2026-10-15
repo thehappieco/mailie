@@ -104,3 +104,63 @@ func TestThePlatformSourceCreatesNoPersonalWorkspaceAndRefusesEveryChange(t *tes
 		t.Errorf("the team is named %q (%v)", name, err)
 	}
 }
+
+func TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotReplace(t *testing.T) {
+	// Ana signs in through an identity provider, and her local personal
+	// workspace holds a mailbox: a directory's document would not replace
+	// it. Bea's holds nothing, and would be replaced.
+	cfg := localConfig(t)
+	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
+	personal := authtest.Personal(t, db, ana.ID)
+	for _, q := range []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES ('https://id.example.org', ?, ?, 100)`,
+			[]any{"sub-ana", ana.ID}},
+		{`INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES ('https://id.example.org', ?, ?, 100)`,
+			[]any{"sub-bea", bea.ID}},
+		{`INSERT INTO accounts(id, workspace_id, owner_user_id, email, provider, auth_kind, imap_host, imap_port, smtp_host,
+			smtp_port, smtp_tls, login_user, save_sent_copy, state, state_changed_at, created_at, updated_at)
+			VALUES ('acc_anas0000000001', ?, ?, 'ana@mail.example.com', 'imap', 'password', 'imap.example.com', 993,
+			'smtp.example.com', 587, 'starttls', 'ana', 1, 'active', 100, 100, 100)`, []any{personal, ana.ID}},
+	} {
+		if _, err := db.Writer().ExecContext(t.Context(), q.query, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const line = "personal workspaces that a directory's document will not replace while they hold these"
+
+	// The local source says nothing of it.
+	local := startDaemon(t, cfg, Options{})
+	local.stop()
+	if err := local.wait(); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(local.logs.String(), line) {
+		t.Errorf("a daemon whose workspaces are local said: %s", local.logs.String())
+	}
+	d := startDaemon(t, cfg, Options{WorkspaceSource: workspace.Platform()})
+	d.stop()
+	if err := d.wait(); err != nil {
+		t.Fatal(err)
+	}
+	var said []string
+	for _, l := range strings.Split(d.logs.String(), "\n") {
+		if strings.Contains(l, line) {
+			said = append(said, l)
+		}
+	}
+	if len(said) != 1 || !strings.Contains(said[0], ana.ID) || !strings.Contains(said[0], personal) ||
+		!strings.Contains(said[0], "accounts=1") || strings.Contains(said[0], "ana@") {
+		t.Errorf("the start line under a directory's source: %q", said)
+	}
+}

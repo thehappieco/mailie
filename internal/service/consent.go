@@ -419,6 +419,10 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 			}
 			return nil
 		}
+		// On and off alike; the write runs check again.
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshTeamSync, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+			return AccountSync{}, err
+		}
 		if err := s.precheck(ctx, check); err != nil {
 			return AccountSync{}, err
 		}
