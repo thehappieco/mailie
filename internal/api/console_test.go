@@ -485,8 +485,16 @@ func TestGuessingCredentialsIsThrottled(t *testing.T) {
 	// The other half of the same limiter: misses at a key pay into that
 	// key's bucket, keys that match nothing into their address's, and no
 	// miss is ever charged to a credential somebody else holds.
+	// The clock stands still: a key's bucket gives a token back every two
+	// seconds, and ten checks under load can take longer than that.
 	proxy := []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
-	h := newHarnessWith(t, func(h *api.Handler) { h.Limits = ratelimit.DefaultAuth(proxy) }, serviceOptions{})
+	clock := &fakeClock{now: time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)}
+	h := newHarnessWith(t, func(h *api.Handler) {
+		limits := ratelimit.DefaultAuth(proxy)
+		limits.PerIP.WithClock(clock.Now)
+		limits.PerSubject.WithClock(clock.Now)
+		h.Limits = limits
+	}, serviceOptions{})
 	get := func(token, from string) int { return h.statusOf(t, "/v1/accounts", token, from) }
 
 	// Session tokens are 256 random bits found by one SHA-256: guessing them
