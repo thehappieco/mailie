@@ -11,6 +11,12 @@
 // the list the server answers: a workspace the person is no longer in is
 // never asked for.
 //
+// A page whose address names the workspace it shows asks for that one
+// (requestWorkspace), for itself only: it is shown once the list holds it,
+// and nothing is remembered of it. Such a page may also turn remembering off
+// altogether (rememberWorkspaceChoice), so that nothing of a workspace is
+// written to storage while it is open: what a reload shows is its address.
+//
 // Until the list has been read the lists wait: reading them without
 // ?workspace= would show every workspace's mailboxes together, a team's as if
 // they were the person's own. Only a server without workspaces (404) lists
@@ -51,9 +57,25 @@ interface WorkspacesState {
   currentID: string
   /** The workspace shown last, gone from the list since (the person left it, or was removed): for the notice that says so. */
   lost: Workspace | null
+  /**
+   * The workspace the page asked to show (requestWorkspace), until the list
+   * holds it: then it is the one shown, and this is empty again. Never
+   * remembered.
+   */
+  requested: string
+  /**
+   * The list was read and does not hold the workspace requested: it is not
+   * one of the person's (or the server has none). The one shown was chosen as
+   * ever meanwhile; the page says so rather than show it in its place. Set
+   * only by a request the list answered, never when a workspace shown goes
+   * away (lost says that).
+   */
+  requestUnknown: boolean
 }
 
-const fresh = (): WorkspacesState => ({ list: [], loaded: false, loading: false, supported: false, failure: null, currentID: '', lost: null })
+const fresh = (): WorkspacesState => ({
+  list: [], loaded: false, loading: false, supported: false, failure: null, currentID: '', lost: null, requested: '', requestUnknown: false,
+})
 
 export const workspaces = reactive<WorkspacesState>(fresh())
 
@@ -63,6 +85,8 @@ let pending: Promise<void> | null = null
 const vanished = new Set<string>()
 /** The console is shown: a first read that failed is tried again. */
 let retrying = false
+/** Whether choosing a workspace remembers it for the person's next visit (rememberWorkspaceChoice). */
+let remembering = true
 let retryTimer: ReturnType<typeof setTimeout> | undefined
 let retries = 0
 
@@ -104,8 +128,29 @@ function adopt(list: Workspace[]): void {
   workspaces.list = list
   workspaces.loaded = true
   workspaces.supported = true
-  workspaces.currentID = chooseWorkspace(list, [workspaces.currentID, readPersonPreference('workspace', identity()) ?? ''])
+  workspaces.currentID = chooseWorkspace(list, [workspaces.requested, workspaces.currentID, readPersonPreference('workspace', identity()) ?? ''])
   if (before && before.id !== workspaces.currentID && !list.some(item => item.id === before.id)) workspaces.lost = before
+  answerRequest()
+}
+
+/**
+ * A read list answers the workspace requested: listed, it is the one shown
+ * (adopt chose it first) and the request is done; else it is not the
+ * person's, and stays asked for in case a later read holds it.
+ */
+function answerRequest(): void {
+  const wanted = workspaces.requested
+  if (!wanted) return
+  if (workspaces.list.some(item => item.id === wanted)) {
+    if (workspaces.currentID !== wanted) {
+      workspaces.lost = null
+      workspaces.currentID = wanted
+    }
+    workspaces.requested = ''
+    workspaces.requestUnknown = false
+  } else {
+    workspaces.requestUnknown = true
+  }
 }
 
 /**
@@ -126,8 +171,9 @@ export function loadWorkspaces(): Promise<void> {
     } catch (error) {
       if (at !== generation) return
       if (error instanceof ApiError && error.code === 'not_found') {
-        // A server older than workspaces: nothing to narrow to.
+        // A server older than workspaces: nothing to narrow to, and nothing a page asks for is one.
         Object.assign(workspaces, { list: [], loaded: true, supported: false, currentID: '' })
+        answerRequest()
         return
       }
       workspaces.failure = failure('load-workspaces', error)
@@ -210,12 +256,48 @@ export function currentWorkspace(): Workspace | undefined {
   return workspaces.list.find(item => item.id === workspaces.currentID)
 }
 
-/** Shows another of the person's workspaces, and remembers it for their next visit. */
+/**
+ * Shows another of the person's workspaces, and remembers it for their next
+ * visit, unless remembering is off (rememberWorkspaceChoice). A workspace a
+ * page asked for (requestWorkspace) is no longer waited for: this one is
+ * chosen instead.
+ */
 export function selectWorkspace(id: string): void {
   if (!workspaces.list.some(item => item.id === id)) return
   workspaces.lost = null
-  writePersonPreference('workspace', identity(), id)
+  workspaces.requested = ''
+  workspaces.requestUnknown = false
+  if (remembering) writePersonPreference('workspace', identity(), id)
   workspaces.currentID = id
+}
+
+/**
+ * Shows the workspace the page's address names, for this page only: nothing
+ * is remembered, and the next visit opens where it would have. Asked once the
+ * person's workspaces are read, it is shown at once if they hold it; asked
+ * before, once their list is read, and every list is read for it first. A
+ * workspace the list does not hold is not the person's: the one shown is
+ * chosen as ever meanwhile, requestUnknown says so, and it stays asked for (a
+ * later read that holds it shows it). An empty id or null withdraws the
+ * request, and so do choosing a workspace (selectWorkspace) and a change of
+ * person: ask while signed in.
+ */
+export function requestWorkspace(id: string | null): void {
+  workspaces.requested = id ?? ''
+  workspaces.requestUnknown = false
+  if (workspaces.loaded) answerRequest()
+}
+
+/**
+ * Whether choosing a workspace (selectWorkspace, the person's choice or the
+ * core's own: the workspace a mailbox was just linked into, the person's own
+ * shown) remembers it for the person's next visit. On unless turned off. A
+ * page whose address names the workspace it shows turns it off, so that
+ * nothing of a workspace is written to storage while it is open; the one
+ * remembered before is still read, to choose one when nothing else does.
+ */
+export function rememberWorkspaceChoice(remember: boolean): void {
+  remembering = remember
 }
 
 /** Says nothing more about a workspace that went away. */

@@ -18,6 +18,8 @@ import { apiKeys } from '../src/state/apikeys'
 import { mcpAccess } from '../src/state/mcp'
 import { consent, syncRequests } from '../src/state/sync'
 import { workspaces } from '../src/state/workspaces'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
 import { emptyDraft } from '../src/ui/accountDraft'
 import { locale } from '../src/ui/i18n'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SYNC_TEXT_VERSION } from '../src/open/versions'
@@ -640,5 +642,57 @@ describe('API keys, as the console shows them', () => {
       expect(html).not.toContain('/mcp')
       expect(html).toContain('No API keys yet')
     }
+  })
+})
+
+describe('what a host’s own frame changes', () => {
+  const team: Workspace = { id: 'wsp_000000000000bbbb', kind: 'team', source: 'local', name: 'Support', role: 'admin', status: 'active', created_at: 1_790_000_000 }
+  /** A mailbox of Support that Ana, its admin, reads, and which has no key yet: its sheet offers its first key. */
+  const shared = account({ id: 'acc_shared', state: 'active', workspace_id: team.id, access: { read: true, act: true, send: true, manage: false } })
+
+  afterEach(() => { configureEdition(openEdition) })
+
+  it('links a team mailbox’s access where the edition manages it, for its admins, and keeps the mailbox’s key on the sheet', async () => {
+    signIn()
+    consented()
+    Object.assign(workspaces, { list: [team], loaded: true, supported: true, currentID: team.id })
+    Object.assign(accounts, { list: [shared], loaded: true, loading: false, workspace: team.id })
+    const here = await render(AccountSheet, { account: shared })
+    // The open edition: who can use it is on the sheet.
+    expect(here).toContain('Who in Support can use this mailbox.')
+    expect(here).toContain('key-section')
+
+    configureEdition({ ...openEdition, mailboxAccess: { href: account => `/elsewhere/access?mailbox=${account.id}`, label: () => 'Who uses it, elsewhere' } })
+    const elsewhere = await render(AccountSheet, { account: shared })
+    const section = elsewhere.match(/<section class="sheet-section"[^>]*><h3[^>]*>Access<\/h3>(?:(?!<\/section>).)*<\/section>/s)?.[0] ?? ''
+    expect(section).toMatch(/<a class="ghost small access-elsewhere" href="\/elsewhere\/access\?mailbox=acc_shared"[^>]*>/)
+    expect(text(section)).toBe('Access Who uses it, elsewhere')
+    expect(elsewhere).not.toContain('Who in Support can use this mailbox.')
+    // The person's own: the mailbox's key, its first one here, stays.
+    expect(elsewhere).toContain('key-section')
+
+    // A member of the team, who would not see who uses it, is not sent there either.
+    Object.assign(workspaces, { list: [{ ...team, role: 'member' }] })
+    const member = await render(AccountSheet, { account: shared })
+    expect(member).not.toContain('access-elsewhere')
+    expect(member).not.toMatch(/<h3[^>]*>Access<\/h3>/)
+    expect(elsewhere).toMatch(/<h3[^>]*>Access<\/h3>/)
+  })
+
+  it('draws the sign-in card in a host’s frame without the brand or the appearance control, and keeps its notes', async () => {
+    Object.assign(session, { phase: 'signed-out', notice: 'expired' })
+    const own = await render(SignInView, { invitation: null })
+    expect(own).toContain('class="unlock"')
+    expect(own).toContain('class="lockup"')
+    expect(own).toContain('appearance-trigger')
+    const framed = await render(SignInView, { invitation: null, framed: true })
+    expect(framed).toMatch(/class="unlock framed"/)
+    expect(framed).not.toContain('auth-top')
+    expect(framed).not.toContain('class="lockup"')
+    expect(framed).not.toContain('appearance-trigger')
+    expect(text(framed)).toContain('Sign in')
+    expect(text(framed)).toContain('Your session ended. Sign in again.')
+    expect(framed).toContain('name="mailie-login"')
+    Object.assign(session, { notice: '' })
   })
 })

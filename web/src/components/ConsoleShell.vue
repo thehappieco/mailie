@@ -32,29 +32,26 @@ export interface ConsoleSection {
 // edition's is a console, another's may be an app. Anything else the edition
 // keeps on screen across sections goes in the default slot.
 //
-// While the console is on screen it reads the person's workspaces (again by
-// itself, after a first read that failed: every list waits for them), the
-// mailboxes of the one shown, the providers, and where the person stands on
-// sync and on actions, and keeps the event stream open. The workspace shown
-// is chosen in the sidebar (WorkspaceSwitcher) once there is more than one;
-// every section's lists follow it, and the header names it on the sections
-// that are a workspace's: never on the person's own (scope 'person', and the
-// account section always), which no workspace holds. When it goes away from
-// under the person, or they join a team, a line above the section says so;
-// and above every section, the person's notices (PersonNotices): a mailbox
-// they read that someone else removed, or whose sync they turned off.
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// While the console is on screen it keeps the console going (useConsoleFrame,
+// state/consoleFrame.ts: the person's workspaces, the mailboxes of the one
+// shown, the providers, where the person stands on sync and on actions, the
+// event stream). The workspace shown is chosen in the sidebar
+// (WorkspaceSwitcher) once there is more than one; every section's lists
+// follow it, and the header names it on the sections that are a workspace's:
+// never on the person's own (scope 'person', and the account section
+// always), which no workspace holds. When it goes away from under the
+// person, or they join a team, a line above the section says so; and above
+// every section, the person's notices (PersonNotices): a mailbox they read
+// that someone else removed, or whose sync they turned off. The panels' look
+// is ui/surface.css's, under the root's console-surface class.
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { edition } from '../edition'
-import { accounts, loadAccounts, loadProviders } from '../state/accounts'
-import { actionsConsent, loadActionsConsent } from '../state/actionsConsent'
+import { accounts } from '../state/accounts'
+import { useConsoleFrame } from '../state/consoleFrame'
 import { server } from '../state/connection'
-import { dismissJoined, invitation } from '../state/invitation'
-import { startLive, stopLive, wakeLive } from '../state/live'
 import { session, signOut } from '../state/session'
-import { consent, loadConsent } from '../state/sync'
-import { currentWorkspace, dismissLost, loadWorkspaces, retryWorkspaces, workspaces } from '../state/workspaces'
-import { workspaceName, workspaceRoleLabel } from '../ui/access'
-import { announce } from '../ui/announce'
+import { currentWorkspace, workspaces } from '../state/workspaces'
+import { workspaceName } from '../ui/access'
 import { initials } from '../ui/format'
 import { t } from '../ui/i18n'
 import AppearanceMenu from './AppearanceMenu.vue'
@@ -95,14 +92,6 @@ const { brand, appearance } = edition().look ?? {}
 const personSection = computed(() => current.value.scope === 'person' || current.value.id === props.account)
 /** The workspace shown, named in the header once there is more than one to tell apart, on a section that is the workspace's. */
 const workspaceLabel = computed(() => workspaces.list.length > 1 && !personSection.value ? workspaceName(currentWorkspace()) : '')
-/** What changed about the person's workspaces: one they are no longer in, or one they just joined. */
-const workspaceNotice = computed(() => {
-  if (workspaces.lost) return t('You are no longer a member of {name}. This page now shows {current}.', { name: workspaceName(workspaces.lost), current: workspaceName(currentWorkspace()) })
-  if (invitation.joined) return t('You joined {name} as {role}. Its mailboxes appear here as you are given access to them.', { name: workspaceName(invitation.joined), role: workspaceRoleLabel(invitation.joined.role) })
-  return ''
-})
-watch(workspaceNotice, words => { if (words) announce(words) })
-function dismissWorkspaceNotice() { dismissLost(); dismissJoined() }
 
 function show(id: string) {
   navigated = true
@@ -129,35 +118,16 @@ function landed() {
 }
 watch(() => accounts.loaded, loaded => { if (loaded) landed() })
 watch(() => props.sections.some(item => item.id === section.value), present => { if (!present) section.value = props.home })
+// Mailboxes known already (a console shown again): where to land is known now.
+onMounted(() => { if (accounts.loaded) landed() })
 
-// A network that comes back cuts the event stream's reconnection wait short.
-function online() { wakeLive() }
-
-let stopRetrying: (() => void) | null = null
-let stopStreamWatch: (() => void) | null = null
-onMounted(() => {
-  stopRetrying = retryWorkspaces()
-  if (!workspaces.loaded) void loadWorkspaces()
-  if (accounts.loaded) landed()
-  else void loadAccounts()
-  if (!accounts.providersLoaded) void loadProviders()
-  if (!consent.loaded) void loadConsent()
-  if (!actionsConsent.loaded) void loadActionsConsent()
-  // The stream narrows to the workspace shown, so it opens once that is known.
-  stopStreamWatch = watch(() => workspaces.loaded, loaded => { if (loaded) startLive() }, { immediate: true })
-  window.addEventListener('online', online)
-})
-onBeforeUnmount(() => {
-  stopRetrying?.()
-  stopStreamWatch?.()
-  window.removeEventListener('online', online)
-  stopLive()
-})
+/** What changed about the person's workspaces: one they are no longer in, or one they just joined. */
+const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
 </script>
 
 <template>
   <a class="skip-link" href="#console-content" @click.prevent="content?.focus()">{{ t('Skip to content') }}</a>
-  <div class="console console-app">
+  <div class="console console-app console-surface">
     <aside class="console-sidebar" :aria-label="navLabel">
       <div class="console-brand"><component :is="brand" v-if="brand" place="menu" :label="brandLabel" /><BrandLockup v-else :size="34" animate="load" :label="brandLabel" /></div>
       <WorkspaceSwitcher />
@@ -244,7 +214,6 @@ onBeforeUnmount(() => {
 .mobile-account-area .profile-trigger { padding: 10px; }
 .console-content { padding: 28px 36px 48px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .console-content:focus { outline: none; }
-.console-content > :not(:first-child) { margin-top: 20px; }
 .console-section-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .workspace-notice { display: flex; align-items: center; gap: 10px; margin-bottom: 0; }
 .workspace-notice span { overflow-wrap: anywhere; }
@@ -257,16 +226,6 @@ onBeforeUnmount(() => {
 .connection-label { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 11px; flex-shrink: 0; margin-top: 3px; }
 .connection-label i { width: 6px; height: 6px; border-radius: 50%; background: var(--danger); flex-shrink: 0; }
 .connection-label.connected i { background: var(--ok); }
-.console-app :deep(.console-panel) { border-color: var(--console-border); padding: 24px; gap: 16px; }
-.console-app :deep(.console-panel h2) { font-size: 17px; font-weight: 600; }
-.console-app :deep(.console-panel p) { line-height: 1.65; margin: 0; }
-.console-app :deep(.console-panel input:not([type='checkbox']):not([type='radio'])), .console-app :deep(.console-panel select) {
-  min-height: 42px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px;
-}
-.console-app :deep(input::placeholder) { color: var(--text-faint); opacity: 1; }
-.console-app :deep(input:-webkit-autofill) { -webkit-text-fill-color: var(--text); -webkit-box-shadow: 0 0 0 1000px var(--bg-input) inset; caret-color: var(--text); }
-.console-app :deep(input:focus-visible), .console-app :deep(select:focus-visible) { outline: 2px solid var(--console-accent); outline-offset: 2px; }
-.console-app :deep(.console-panel button) { min-height: 36px; }
 @media (max-width: 1020px) {
   .console-app { grid-template-columns: 208px minmax(0, 1fr); }
   .console-sidebar { padding: 22px 12px 16px; }
@@ -287,7 +246,5 @@ onBeforeUnmount(() => {
   .console-header :deep(.appearance-trigger) { padding: 8px; }
   .console-content { padding: 18px 14px calc(28px + env(safe-area-inset-bottom)); scrollbar-gutter: auto; }
   .console-section-intro p { font-size: 12px; }
-  .console-app :deep(.console-panel) { padding: 18px 16px; }
-  .console-app :deep(.console-panel input:not([type='checkbox']):not([type='radio'])), .console-app :deep(.console-panel select) { font-size: 16px; }
 }
 </style>

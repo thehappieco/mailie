@@ -14,6 +14,7 @@
 // server names another, the page offers a reload instead of an agreement.
 
 import type { Component } from 'vue'
+import type { Account } from './api/types'
 import { addCatalogs, setOfferedLocales, type Catalog, type Locale } from './ui/i18n'
 import { setSharedDomain } from './ui/preferences'
 
@@ -194,6 +195,20 @@ export interface Edition {
     signInFooter?: Component
     /** In the form that connects a mailbox, before any access is granted. */
     accountAccess?: Component
+  }
+  /**
+   * Where who uses a mailbox, and what each may do, is managed, when that is
+   * not on the mailbox's sheet (components/AccountSheet.vue): the sheet then
+   * draws one link there in place of its Access section (AccessPanel), for
+   * the same people it would show that section to (a team's owners and
+   * admins). The mailbox's key (MailboxKeyPanel), the person's own, stays on
+   * the sheet. Unset: the sheet holds the Access section.
+   */
+  mailboxAccess?: {
+    /** The link's target for this mailbox: a path of this origin. */
+    href(account: Account): string
+    /** The link's words. Translated. */
+    label(): string
   }
   /** Translations beyond the core's, for the edition's own sources. */
   catalogs?: Catalog[]

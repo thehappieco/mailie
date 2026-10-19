@@ -1,0 +1,78 @@
+/* The surface the console's panels sit on: the look of a panel, its fields
+   and its buttons, and the room between the things a section shows. The
+   console's frame (components/ConsoleShell.vue) carries .console-surface on
+   its root, and its content area is .console-content; a host that draws a
+   frame of its own around the core's panels puts .console-surface around
+   them, and .console-content on the element that holds them (the same one
+   may carry both).
+
+   Each selector names .console-surface twice: these rules were the frame's
+   scoped ones, and the second class keeps the weight they had there (a class
+   and the frame's scope attribute), so they win over the same rules they
+   always won over. */
+
+.console-surface.console-surface .console-panel {
+  border-color: var(--console-border);
+  padding: 24px;
+  gap: 16px;
+}
+
+.console-surface.console-surface .console-panel h2 {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.console-surface.console-surface .console-panel p {
+  line-height: 1.65;
+  margin: 0;
+}
+
+.console-surface.console-surface .console-panel input:not([type='checkbox']):not([type='radio']),
+.console-surface.console-surface .console-panel select {
+  min-height: 42px;
+  border: 1px solid var(--console-border);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.console-surface.console-surface input::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+.console-surface.console-surface input:-webkit-autofill {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--bg-input) inset;
+  caret-color: var(--text);
+}
+
+.console-surface.console-surface input:focus-visible,
+.console-surface.console-surface select:focus-visible {
+  outline: 2px solid var(--console-accent);
+  outline-offset: 2px;
+}
+
+.console-surface.console-surface .console-panel button {
+  min-height: 36px;
+}
+
+/* Between the things a section shows, one after the other: its intro, a
+   notice, the section itself. */
+.console-surface .console-content > :not(:first-child),
+.console-surface.console-content > :not(:first-child) {
+  margin-top: 20px;
+}
+
+@media (max-width: 760px) {
+  .console-surface.console-surface .console-panel {
+    padding: 18px 16px;
+  }
+
+  .console-surface.console-surface .console-panel input:not([type='checkbox']):not([type='radio']),
+  .console-surface.console-surface .console-panel select {
+    font-size: 16px;
+  }
+}

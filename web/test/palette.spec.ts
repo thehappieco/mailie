@@ -20,8 +20,8 @@ const read = (file: string) => readFileSync(file, 'utf8')
  * under src/ sets a custom property from a script or a style binding.
  */
 const WRITTEN_AT_RUN_TIME: Record<string, string> = {
-  '--app-height': 'App.vue writes the visual viewport’s height on the document, for the full-screen dialog on a phone',
-  '--app-top': 'App.vue writes the visual viewport’s offset on the document beside it',
+  '--app-height': 'state/appLifecycle.ts writes the visual viewport’s height on the document, for the core’s own frame and the full-screen dialog on a phone',
+  '--app-top': 'state/appLifecycle.ts writes the visual viewport’s offset on the document beside it',
 }
 
 const STYLE = /<style\b[^>]*>([^]*?)<\/style>/g
@@ -77,7 +77,7 @@ const valuesOf = (selector: string) => Object.fromEntries(palette.filter(rule =>
 const tokensOf = (selector: string) => palette.filter(rule => rule.selector === selector).flatMap(rule => rule.declarations).map(([name]) => name).filter(name => name.startsWith('--'))
 
 describe('the palette', () => {
-  it('leaves no custom property a source reads undeclared under src/ (palette.css’s, or the component’s own), but the two App.vue writes at run time, read with a fallback', () => {
+  it('leaves no custom property a source reads undeclared under src/ (palette.css’s, or the component’s own), but the two the page’s life writes at run time, read with a fallback', () => {
     const declarations = new Set(stylesheets.flatMap(sheet => declared(sheet.css)))
     const found = reads()
     expect(found.size).toBeGreaterThan(30)
@@ -87,7 +87,7 @@ describe('the palette', () => {
     // The exceptions are exactly what the page writes, it still writes them,
     // and every read of one names a fallback for the page before it does.
     expect([...new Set(written())].sort()).toEqual(Object.keys(WRITTEN_AT_RUN_TIME).sort())
-    const app = read(join(src, 'App.vue'))
+    const app = read(join(src, 'state', 'appLifecycle.ts'))
     for (const name of Object.keys(WRITTEN_AT_RUN_TIME)) {
       expect(found.has(name), name).toBe(true)
       expect(declarations.has(name), name).toBe(false)

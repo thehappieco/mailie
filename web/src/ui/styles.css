@@ -2,24 +2,35 @@
    panels; a component library would be more code than the whole client. The
    tokens and class names are the Wappie console's, so the two read as one
    family; the accent is Mailie's own. The tokens themselves, light and dark,
-   are palette.css's, imported before this file. */
+   are palette.css's, imported before this file. The surface the panels sit
+   on is surface.css's, imported here. */
+
+@import './surface.css';
 
 * {
   box-sizing: border-box;
 }
 
 html,
-body,
-#app {
-  height: 100%;
+body {
   margin: 0;
+}
+
+/* The core's own frame (App.vue, through useFixedFrame in ui/frame.ts, which
+   puts .fixed-frame on <html>) owns its scrolling: the document never
+   scrolls, and #app follows the visual viewport, so a phone's keyboard
+   shrinks the page instead of covering the field being typed in
+   (state/appLifecycle.ts writes --app-height and --app-top). A host that
+   draws a frame of its own around the core's panels leaves the class off,
+   and its document scrolls as any page does. */
+html.fixed-frame,
+html.fixed-frame body,
+html.fixed-frame #app {
+  height: 100%;
   overflow: hidden;
 }
 
-/* The app owns its scrolling, and follows the visual viewport so a phone's
-   keyboard shrinks the page instead of covering the field being typed in
-   (App.vue writes --app-height and --app-top). */
-#app {
+html.fixed-frame #app {
   position: fixed;
   inset-inline: 0;
   top: var(--app-top, 0px);
@@ -27,8 +38,11 @@ body,
   min-width: 0;
 }
 
-body {
+html.fixed-frame body {
   overscroll-behavior: none;
+}
+
+body {
   background: var(--bg);
   color: var(--text);
   font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,

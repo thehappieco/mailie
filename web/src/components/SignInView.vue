@@ -37,7 +37,13 @@ import PasswordInput from './PasswordInput.vue'
 // the operator (#reset=…), which is also the way back for an account made
 // before the key scheme that never enrolled. Both say, above the button that
 // confirms them, that they stop every API key the person created.
-const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | null }>()
+//
+// framed: drawn inside a frame of a host's own, which draws the brand and the
+// appearance control itself: the card is then laid out in the flow of that
+// frame's content rather than centred on a screen of its own, without the
+// brand and the appearance control atop it; the notes, the edition's sign-in
+// or the password card, and the legal footer stay.
+const props = defineProps<{ invitation: Invitation | null; reset?: ResetLink | null; framed?: boolean }>()
 const legal = edition().legal
 const teams = edition().teams === true
 const editionSignIn = edition().signIn
@@ -158,9 +164,9 @@ async function submit(event: SubmitEvent) {
 </script>
 
 <template>
-  <div class="unlock">
+  <div class="unlock" :class="{ framed }">
     <div class="unlock-card">
-      <div class="auth-top">
+      <div v-if="!framed" class="auth-top">
         <component :is="brand" v-if="brand" place="card" label="Mailie" />
         <BrandLockup v-else :size="44" animate="load" label="Mailie" />
         <component :is="appearance" v-if="appearance" />
@@ -237,6 +243,8 @@ async function submit(event: SubmitEvent) {
 </template>
 
 <style scoped>
+/* In a host's frame: in the flow of its content, not a screen of its own. */
+.unlock.framed { display: block; height: auto; padding: 0; overflow: visible; }
 /* An edition's brand and appearance control may be wider than the core's: the control drops below the brand rather than either being cut. */
 .auth-top { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 28px; }
 .auth-top :deep(.appearance-trigger) { margin: -6px -8px 0 0; }

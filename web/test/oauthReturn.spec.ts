@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FLOW_LIFETIME_MS, captureOAuthReturn, parseOAuthReturn, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
+import { FLOW_LIFETIME_MS, captureOAuthReturn, oauthBack, parseOAuthReturn, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
 import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
 import { account, failure, freshModules, json, ORIGIN, reply, serve, stubPage } from './support'
 
@@ -83,6 +83,80 @@ describe('keeping a return across sign-in', () => {
     expect(takeOAuthReturn()?.url).toBe(`${ORIGIN}/oauth/return?code=abc&state=${STATE}`)
     expect(takeOAuthReturn()).toBeNull()
     expect(pendingOAuthReturn()).toBe(false)
+  })
+})
+
+describe('coming back to the page the flow left from', () => {
+  beforeEach(() => { stubPage(`/oauth/return?code=abc&state=${STATE}`) })
+  const start = { account_id: 'acc_1', provider: 'gmail', email: 'ana@example.test' } as const
+  const kept = () => JSON.parse(sessionStorage.getItem('mailie.oauthStart')!) as Record<string, unknown>
+
+  it('comes back to the path it left from, with the code out of the address bar, and leaves the start to be taken once', () => {
+    // As a browser does: the address becomes what replaceState names.
+    vi.mocked(history.replaceState).mockImplementation((_state, _unused, url) => { vi.stubGlobal('location', new URL(String(url), ORIGIN)) })
+    rememberOAuthStart({ ...start, back: '/settings/mailboxes' })
+    expect(kept().back).toBe('/settings/mailboxes')
+    expect(captureOAuthReturn()).toBe(true)
+    expect(history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/settings/mailboxes')
+    expect(JSON.stringify(vi.mocked(history.replaceState).mock.calls)).not.toContain('code')
+    // Read, not taken: finishing the return takes it, once.
+    expect(takeOAuthStart()).toMatchObject({ ...start, back: '/settings/mailboxes' })
+    expect(takeOAuthStart()).toBeNull()
+    // The same page load again: no return any more, nothing replaced.
+    expect(captureOAuthReturn()).toBe(false)
+    expect(history.replaceState).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['nothing', undefined],
+    ['a path from the root of another origin', '//evil.example/settings'],
+    ['a backslash, which a browser reads as a slash', '/\\evil.example/settings'],
+    ['a control character', '/settings\u0000/mailboxes'],
+    ['a tab', '/settings\t/mailboxes'],
+    ['a relative path', 'settings/mailboxes'],
+    ['an absolute URL', 'https://evil.example/settings'],
+    ['the provider’s return itself', '/oauth/return'],
+    ['dot segments', '/settings/../mailboxes'],
+    ['what the browser would encode', '/configurações'],
+    ['a query, which may name a workspace', '/settings/mailboxes?workspace=wsp_000000000000bbbb'],
+    ['a fragment', '/settings/mailboxes#keys'],
+    ['more than 1024 bytes', `/${'a'.repeat(1024)}`],
+  ])('keeps no back given %s, and comes back to /', (_, back) => {
+    rememberOAuthStart({ ...start, back })
+    expect(kept()).not.toHaveProperty('back')
+    expect(JSON.stringify(kept())).not.toContain('wsp_')
+    captureOAuthReturn()
+    expect(history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/')
+  })
+
+  it('comes back to / when the start is older than the flow, written in the future, not this page’s, or gone', () => {
+    rememberOAuthStart({ ...start, back: '/settings' }, Date.now() - FLOW_LIFETIME_MS - 1000)
+    captureOAuthReturn()
+    expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/')
+    for (const record of [
+      { ...start, back: '/settings', started_at: Date.now() + 60_000 },
+      { ...start, provider: 'yahoo', back: '/settings', started_at: Date.now() },
+      // Written by something else, with a back no page here would keep.
+      { ...start, back: '//evil.example/', started_at: Date.now() },
+    ]) {
+      sessionStorage.setItem('mailie.oauthStart', JSON.stringify(record))
+      vi.stubGlobal('location', new URL(`${ORIGIN}/oauth/return?code=abc&state=${STATE}`))
+      captureOAuthReturn()
+      expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/')
+    }
+    sessionStorage.removeItem('mailie.oauthStart')
+    vi.stubGlobal('location', new URL(`${ORIGIN}/oauth/return?code=abc&state=${STATE}`))
+    captureOAuthReturn()
+    expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/')
+  })
+
+  it('answers a back only for a fresh start of this origin', () => {
+    const at = Date.now()
+    expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at)).toBe('/settings')
+    expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at + FLOW_LIFETIME_MS + 1)).toBeNull()
+    expect(oauthBack({ ...start, started_at: at }, ORIGIN, at)).toBeNull()
+    expect(oauthBack(null, ORIGIN, at)).toBeNull()
+    expect(oauthBack('/settings', ORIGIN, at)).toBeNull()
   })
 })
 

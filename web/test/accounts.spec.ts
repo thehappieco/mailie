@@ -286,6 +286,18 @@ describe('leaving for the provider', () => {
     expect(JSON.parse(sessionStorage.getItem('mailie.oauthStart')!)).toMatchObject({ account_id: 'acc_0000000000000001', provider: 'microsoft', email: 'ana.souza@example.test' })
   })
 
+  it('notes the path of the page it left from, never its query or fragment, for the return to come back to', async () => {
+    stubPage('/settings/mailboxes?workspace=wsp_000000000000bbbb#add')
+    const web = { flow: 'web', auth_url: 'https://accounts.google.com/o/oauth2/v2/auth?state=x', state: 'x', expires_at: now() + 600 }
+    const { store, navigate } = await signedIn(daemon(['pending_auth'], web))
+    await store.connectOAuthAccount({ provider: 'gmail', email: 'suporte@example.test' })
+    expect(navigate).toHaveBeenCalledWith(web.auth_url)
+    const kept = sessionStorage.getItem('mailie.oauthStart')!
+    expect(JSON.parse(kept)).toMatchObject({ account_id: 'acc_0000000000000001', back: '/settings/mailboxes' })
+    expect(kept).not.toContain('wsp_')
+    expect(kept).not.toContain('add')
+  })
+
   it.each(['javascript:alert(1)', 'http://accounts.google.com/', 'https://user:pass@evil.example/', 'not a url'])('never sends the page to %s', async auth_url => {
     const { store, navigate } = await signedIn(daemon(['pending_auth'], { flow: 'web', auth_url, state: 'x', expires_at: now() + 600 }))
     await store.connectOAuthAccount({ provider: 'gmail', email: 'suporte@example.test' })

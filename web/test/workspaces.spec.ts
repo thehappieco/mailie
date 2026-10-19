@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MailboxAccess, Member, TeamInvite, User, Workspace } from '../src/api/types'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
 import { memberPermissions } from '../src/ui/access'
-import { account, ana, failure, freshModules, json, memoryStorage, reply, stubPage } from './support'
+import { account, ana, failure, freshModules, json, memoryStorage, ORIGIN, reply, stubPage } from './support'
 
 const PERSONAL = 'wsp_000000000000aaaa'
 const TEAM = 'wsp_000000000000bbbb'
@@ -206,6 +206,112 @@ describe('the workspace shown', () => {
     workspaces.selectWorkspace(TEAM)
     await vi.waitFor(() => expect(usage.storage.workspace).toBe(TEAM))
     expect(reads(requests, '/v1/me/storage').map(request => request.query.workspace)).toEqual([PERSONAL, TEAM])
+  })
+})
+
+describe('a workspace the page’s address names', () => {
+  const remembered = () => Array.from({ length: storage.length }, (_, index) => storage.key(index)!).filter(key => key.startsWith('mailie_workspace'))
+
+  it('is shown once the list holds it, every list read for it first, and nothing of it is remembered', async () => {
+    const { accounts, workspaces, requests } = await page(listing)
+    workspaces.requestWorkspace(TEAM)
+    await accounts.loadAccounts()
+    expect(reads(requests, '/v1/accounts').map(request => request.query.workspace)).toEqual([TEAM])
+    expect(workspaces.workspaces).toMatchObject({ currentID: TEAM, requested: '', requestUnknown: false })
+    expect(accounts.accounts.list.map(item => item.id)).toEqual(['acc_shared'])
+    expect(remembered()).toEqual([])
+
+    // The next visit opens where it would have.
+    vi.restoreAllMocks()
+    const next = await page(listing)
+    await next.accounts.loadAccounts()
+    expect(next.workspaces.workspaces.currentID).toBe(PERSONAL)
+  })
+
+  it('is shown at once once the list is read, and a list read again after the page moved on keeps the one shown', async () => {
+    const { accounts, workspaces, requests } = await page(listing)
+    await accounts.loadAccounts()
+    workspaces.requestWorkspace(TEAM)
+    expect(workspaces.workspaces.currentID).toBe(TEAM)
+    await accounts.accountsSettled()
+    // The address moves to the person's own: asked for again.
+    workspaces.requestWorkspace(PERSONAL)
+    await accounts.accountsSettled()
+    // A read of the workspaces later (a refresh, the stream): the request was done, and nothing goes back to it.
+    await workspaces.loadWorkspaces()
+    await accounts.accountsSettled()
+    expect(workspaces.workspaces).toMatchObject({ currentID: PERSONAL, requested: '', requestUnknown: false, lost: null })
+    expect(reads(requests, '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL, TEAM, PERSONAL])
+    expect(remembered()).toEqual([])
+  })
+
+  it('says one that is not the person’s, shows the one it would have meanwhile, and shows it once a later read holds it', async () => {
+    let list = [personal]
+    const { accounts, workspaces, requests } = await page(listing, { workspaces: () => list })
+    workspaces.requestWorkspace(TEAM)
+    await accounts.loadAccounts()
+    expect(workspaces.workspaces).toMatchObject({ currentID: PERSONAL, requested: TEAM, requestUnknown: true })
+    expect(reads(requests, '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL])
+    list = [personal, support]
+    await workspaces.loadWorkspaces()
+    await accounts.accountsSettled()
+    expect(workspaces.workspaces).toMatchObject({ currentID: TEAM, requested: '', requestUnknown: false })
+    expect(reads(requests, '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL, TEAM])
+  })
+
+  it('says none is the person’s on a server without workspaces, which lists every mailbox as ever', async () => {
+    const { accounts, workspaces, requests } = await page(listing, { workspaces: () => failure('not_found', 404) })
+    workspaces.requestWorkspace(TEAM)
+    await accounts.loadAccounts()
+    expect(workspaces.workspaces).toMatchObject({ supported: false, currentID: '', requestUnknown: true })
+    expect(reads(requests, '/v1/accounts')[0]!.query).toEqual({})
+  })
+
+  it('is lost, never unknown, when the one shown at a request goes away', async () => {
+    let list = [personal, support]
+    const { accounts, workspaces } = await page(listing, { workspaces: () => list })
+    workspaces.requestWorkspace(TEAM)
+    await accounts.loadAccounts()
+    list = [personal]
+    await workspaces.loadWorkspaces()
+    await accounts.accountsSettled()
+    expect(workspaces.workspaces).toMatchObject({ currentID: PERSONAL, requested: '', requestUnknown: false })
+    expect(workspaces.workspaces.lost?.id).toBe(TEAM)
+  })
+
+  it('is no longer waited for once a workspace is chosen, or the person changes', async () => {
+    const { session, workspaces } = await page(listing, { workspaces: () => [personal] })
+    workspaces.requestWorkspace(TEAM)
+    await workspaces.loadWorkspaces()
+    expect(workspaces.workspaces.requestUnknown).toBe(true)
+    workspaces.selectWorkspace(PERSONAL)
+    expect(workspaces.workspaces).toMatchObject({ currentID: PERSONAL, requested: '', requestUnknown: false })
+    workspaces.requestWorkspace(TEAM)
+    expect(workspaces.workspaces.requestUnknown).toBe(true)
+    workspaces.requestWorkspace(null)
+    expect(workspaces.workspaces).toMatchObject({ currentID: PERSONAL, requested: '', requestUnknown: false })
+    workspaces.requestWorkspace(TEAM)
+    await session.signOut()
+    expect(workspaces.workspaces).toMatchObject({ requested: '', requestUnknown: false, currentID: '' })
+  })
+
+  it('remembers nothing once remembering is off: not a choice, nor the workspace a mailbox was just linked into', async () => {
+    const STATE = 'Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA'
+    const { accounts, workspaces } = await page(request =>
+      request.path === '/v1/accounts/oauth/callback' && request.method === 'POST' ? json(shared) : listing(request))
+    workspaces.rememberWorkspaceChoice(false)
+    await accounts.loadAccounts()
+    expect(workspaces.workspaces.currentID).toBe(PERSONAL)
+    // Back from the provider, for a mailbox linked into the team.
+    const returns = await import('../src/state/oauthReturn')
+    vi.stubGlobal('location', new URL(`${ORIGIN}/oauth/return?code=abc&state=${STATE}`))
+    expect(returns.captureOAuthReturn()).toBe(true)
+    await accounts.finishOAuthReturn()
+    expect(workspaces.workspaces.currentID).toBe(TEAM)
+    expect(accounts.accounts.notice).toMatchObject({ kind: 'connected', email: shared.email })
+    workspaces.selectWorkspace(PERSONAL)
+    expect(workspaces.workspaces.currentID).toBe(PERSONAL)
+    expect(remembered()).toEqual([])
   })
 })
 

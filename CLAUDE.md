@@ -243,7 +243,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   edition of the console shares, plus the **open edition** (`web/src/open`), which a self-hosted
   server serves. Another edition (the hosted service's app, private) compiles `web/src` from
   source; nothing under `web/src` imports from outside it, and the open console names nothing of
-  the hosted service (`web/test/editions.spec.ts`, `web/test/hosted.ts`). See `docs/console.md`.
+  the hosted service (`web/test/editions.spec.ts`, `web/test/hosted.ts`). An edition may draw the
+  core's panels in a frame of its own (`useConsoleFrame`, `useAppLifecycle`, `AppOverlays`,
+  `.console-surface`, `requestWorkspace`): only `App.vue` holds the page still (`html.fixed-frame`),
+  and the open console is built on the same pieces. See `docs/console.md`, "Editions".
 - `deploy/` — the self-hosting packaging (`docs/self-hosting.md`): `Dockerfile` (Node builds the
   open console, Go a static binary, both onto distroless `static-debian13:nonroot`; the build
   context is the root, where `.dockerignore` is an allowlist), `compose.yaml` (read-only, no

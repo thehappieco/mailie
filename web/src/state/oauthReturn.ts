@@ -6,11 +6,16 @@
 // flow exists and belongs to the signed-in person before it exchanges anything.
 //
 // Two things are kept in this tab's sessionStorage, never elsewhere:
-// - the start, {account_id, provider, email}, written just before leaving, so
-//   the return can name the mailbox it was about;
+// - the start, {account_id, provider, email, back}, written just before
+//   leaving, so the return can name the mailbox it was about, and come back
+//   to the page it left from (back: that page's path alone, never its query
+//   or fragment; a host whose address names a workspace takes it again from
+//   the mailbox, once the return is finished);
 // - the return itself, written the moment the page loads and removed from the
 //   address bar at once, so a person who has to sign in first (a new tab, an
 //   expired session) can still finish, and a reload never replays the code.
+//   The address becomes the start's back, while the start is fresh and back is
+//   a path of this origin; else /.
 // Both expire with the provider's flow, ten minutes, and are taken, not read,
 // when used: one return is posted once. One that is never used is removed once
 // its ten minutes are up (sweepOAuthStorage), as soon as the console is running
@@ -29,7 +34,14 @@ const RETURN_KEY = 'mailie.oauthReturn'
 /** The server keeps a pending flow for ten minutes; nothing here outlives it. */
 export const FLOW_LIFETIME_MS = 10 * 60_000
 
-export interface OAuthStart { account_id: string; provider: ProviderID; email: string; started_at: number }
+export interface OAuthStart {
+  account_id: string
+  provider: ProviderID
+  email: string
+  started_at: number
+  /** The path of the page the flow left from, where its return comes back to: a path alone (oauthBack). */
+  back?: string
+}
 export interface OAuthReturn {
   /** What is posted to the server: the return URL without its fragment. Empty when the shape was wrong. */
   url: string
@@ -88,34 +100,78 @@ function currentReturn(): OAuthReturn | null {
   return read<OAuthReturn>(RETURN_KEY) ?? captured
 }
 
-/** Kept by the tab that leaves for the provider, so the tab that comes back can say which mailbox it was. */
+/** The longest back kept, in bytes. */
+const BACK_MAX_BYTES = 1024
+/** A control character, or a backslash, which a browser reads as a slash. */
+const unsafeInPath = /[\x00-\x1f\x7f\\]/
+
+/**
+ * The path a flow may come back to: a path of this origin as the browser
+ * spells it (location.pathname), nothing else. Not the provider's return
+ * itself, never another origin ('//host', a backslash a browser reads as a
+ * slash), and no query or fragment, which may carry what only the page that
+ * had them should (a workspace, a code): null for anything else.
+ */
+function checkBack(back: unknown, origin: string): string | null {
+  if (typeof back !== 'string' || !back.startsWith('/') || back.startsWith('//') || unsafeInPath.test(back)
+    || new TextEncoder().encode(back).length > BACK_MAX_BYTES || back === RETURN_PATH) return null
+  let url: URL
+  try { url = new URL(back, origin) } catch { return null }
+  // The browser's own spelling of it, and only a path: no query, no fragment, no dot segments, nothing it would encode.
+  return url.origin === origin && url.pathname === back && !url.search && !url.hash ? back : null
+}
+
+/** Whether a start record is one this page wrote, for a flow still open. */
+function freshStart(start: unknown, now: number): start is OAuthStart {
+  if (!start || typeof start !== 'object') return false
+  const record = start as Partial<OAuthStart>
+  return typeof record.account_id === 'string' && typeof record.email === 'string' && providerIDs.includes(record.provider!)
+    && typeof record.started_at === 'number' && now - record.started_at <= FLOW_LIFETIME_MS && record.started_at <= now
+}
+
+/**
+ * Where a provider's return comes back to: the start's back, when the start
+ * is fresh and its back a path of this origin (checkBack); null otherwise,
+ * and the return goes to /.
+ */
+export function oauthBack(start: unknown, origin: string, now = Date.now()): string | null {
+  return freshStart(start, now) ? checkBack(start.back, origin) : null
+}
+
+/**
+ * Kept by the tab that leaves for the provider, so the tab that comes back can
+ * say which mailbox it was, and come back to back: the path of the page it
+ * left from (location.pathname), kept only when it is one checkBack takes.
+ */
 export function rememberOAuthStart(start: Omit<OAuthStart, 'started_at'>, now = Date.now()): void {
-  write(START_KEY, { ...start, started_at: now } satisfies OAuthStart)
+  const { back, ...rest } = start
+  const kept = typeof location === 'undefined' ? null : checkBack(back, location.origin)
+  write(START_KEY, { ...rest, started_at: now, ...(kept ? { back: kept } : {}) } satisfies OAuthStart)
 }
 
 /** Takes the start record, if this tab left one recently. */
 export function takeOAuthStart(now = Date.now()): OAuthStart | null {
   const start = read<OAuthStart>(START_KEY)
   remove(START_KEY)
-  if (!start || typeof start !== 'object' || typeof start.account_id !== 'string' || typeof start.email !== 'string'
-    || !providerIDs.includes(start.provider) || typeof start.started_at !== 'number' || now - start.started_at > FLOW_LIFETIME_MS
-    || start.started_at > now) return null
-  return start
+  return freshStart(start, now) ? start : null
 }
 
 /**
  * captureOAuthReturn runs once, before anything renders. When the page is an
- * OAuth return it keeps the URL in this tab and replaces the address with /,
- * so the code is no longer in the address bar, the history entry, or anything
- * a later navigation could leak.
+ * OAuth return it keeps the URL in this tab and replaces the address with the
+ * page the flow left from (oauthBack: the start, read, not taken), or /, so
+ * the code is no longer in the address bar, the history entry, or anything a
+ * later navigation could leak. Running it again on the same page load changes
+ * nothing: the address is no return any more.
  */
-export function captureOAuthReturn(): boolean {
+export function captureOAuthReturn(now = Date.now()): boolean {
   if (typeof location === 'undefined') return false
-  const found = parseOAuthReturn(location.href)
+  const found = parseOAuthReturn(location.href, now)
   if (!found) return false
   captured = found
   write(RETURN_KEY, found)
-  try { history.replaceState(null, '', '/') } catch { /* The stored copy is what gets used either way. */ }
+  const back = oauthBack(read<unknown>(START_KEY), location.origin, now) ?? '/'
+  try { history.replaceState(null, '', back) } catch { /* The stored copy is what gets used either way. */ }
   return true
 }
 

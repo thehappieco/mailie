@@ -9,9 +9,11 @@
 // it, and an admin only a link of their own that never connected. A member
 // sees their own card. Anyone who holds Read on it sees its key's section
 // (MailboxKeyPanel): waiting for the key, handing it over, a first key and a
-// personal mailbox's new one. Removal is typed, never a confirm(): the person
-// writes the address, which also makes them read it, and the server is
-// sent the mailbox's id to confirm. A removed mailbox is kept 30 days,
+// personal mailbox's new one. An edition that manages who uses a mailbox
+// elsewhere (mailboxAccess) has the sheet link there instead of drawing
+// that, for the same owners and admins; the key's section stays. Removal is
+// typed, never a confirm(): the person writes the address, which also makes
+// them read it, and the server is sent the mailbox's id to confirm. A removed mailbox is kept 30 days,
 // recoverable by the workspace's owners, which the sheet says before; one
 // that never connected is deleted at once. A mailbox recovered after it was
 // removed says its sync is paused: its person turns it on here, and a team's
@@ -42,6 +44,8 @@ import TeamMailboxSync from './TeamMailboxSync.vue'
 
 // returnFocus: where focus goes on close when the control that opened the sheet is gone (its card, once removed).
 const props = defineProps<{ account: Account; returnFocus?: () => HTMLElement | null }>()
+/** Where who uses the mailbox is managed, when the edition keeps that off the sheet. */
+const accessElsewhere = edition().mailboxAccess
 const emit = defineEmits<{ authorize: [Account] }>()
 
 const dialog = ref<HTMLDialogElement | null>(null)
@@ -261,7 +265,8 @@ function authorize() {
 
         <section v-if="admin" class="sheet-section">
           <h3>{{ t('Access') }}</h3>
-          <AccessPanel :account-id="account.id" :email="account.email" />
+          <a v-if="accessElsewhere" class="ghost small access-elsewhere" :href="accessElsewhere.href(account)"><AppIcon name="users" :size="16" />{{ accessElsewhere.label() }}</a>
+          <AccessPanel v-else :account-id="account.id" :email="account.email" />
         </section>
 
         <section v-if="removable" class="sheet-section danger-zone">
@@ -331,6 +336,7 @@ function authorize() {
 .sync-section .hint, .folder-note { margin-top: 10px; }
 .sync-section > .ghost { margin-top: 10px; }
 .held-resume { display: inline-flex; align-items: center; gap: 6px; }
+.access-elsewhere { overflow-wrap: anywhere; }
 .folder-count { font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
 .danger-zone h3 { color: var(--danger); }
 .danger-zone .field { margin: 14px 0 0; }

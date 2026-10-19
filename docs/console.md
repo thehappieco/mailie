@@ -63,7 +63,8 @@ byline, legal components, more translations, its own look and the languages it o
 core's own sentences never name the frame: they say "this page". Other extension points are
 `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()` (`state/live.ts`), `addDescriber()` for an
 edition's own operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account
-section's pieces (`AccountPanel`, `SyncPermission`, `ActionsPermission`, `PermissionRow`).
+section's pieces (`AccountPanel`, `SessionsRow`, `SyncPermission`, `ActionsPermission`,
+`PermissionRow`), and the pieces of a frame of a host's own (below).
 
 An edition may draw its own **look** in the places the frame keeps for it (`look`). `look.brand` is
 drawn in place of the core's lockup (`BrandLockup`) atop the sidebar and atop the signed-out card,
@@ -94,10 +95,10 @@ console's: `--card-radius` and `--card-shadow` (the signed-out card), `--dialog-
 `--dialog-shadow` (`ConsoleDialog` and `AccountSheet`, and the rounded side of the drawer and of the
 sheet on a phone), and `--control-radius` (the card's primary button). `web/test/palette.spec.ts`
 holds every `var(--…)` under `web/src` to a declaration under `web/src` (the palette's, or the
-component's own), except `--app-height` and `--app-top`, which `App.vue` writes at run time and
-every read names a fallback for; and it holds the palette's tokens to `palette.css` alone: the list
-in `web/test/palette.ts`, for the light page, the same declarations for dark twice, and the shapes'
-defaults above, with no other stylesheet under `web/src` declaring one.
+component's own), except `--app-height` and `--app-top`, which `state/appLifecycle.ts` writes at
+run time and every read names a fallback for; and it holds the palette's tokens to `palette.css`
+alone: the list in `web/test/palette.ts`, for the light page, the same declarations for dark
+twice, and the shapes' defaults above, with no other stylesheet under `web/src` declaring one.
 
 An edition whose people sign in another way (see
 [Signing in through an extension](#signing-in-through-an-extension)) sets `signIn`, a component
@@ -128,6 +129,80 @@ password; `copy.accountRecovered` says why a key stopped when its creator's acco
 (`account_recovered`), which the core's says without naming where; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
 failures (the core's say to sign in again here, and, for `not_enrolled`, to ask the administrator
 for a reset link). The open edition sets none of these.
+
+An edition's pages may also be drawn in a **frame of a host's own** rather than in
+`ConsoleShell`: the core's panels inside another sidebar and header, on a page whose document
+scrolls. The core keeps what such a host needs apart from its own frame, and the open console is
+built on the same pieces, so it behaves as it always did:
+
+- **The console kept going.** `useConsoleFrame()` (`state/consoleFrame.ts`), called from the setup
+  of whatever draws the frame once the person is signed in, does what `ConsoleShell` does while it
+  is on screen: it reads the person's workspaces (again by itself after a first read that failed),
+  the mailboxes of the one shown, the providers and where the person stands on sync and on
+  actions, opens the event stream once the workspace shown is known and stops it on unmount, and
+  cuts a reconnection wait short when the network comes back. It answers `workspaceNotice`, the
+  sentence about a workspace that went away from under the person or a team they just joined (said
+  through the live region as it appears), and `dismissWorkspaceNotice()`. Sections, navigation and
+  what is drawn stay the frame's.
+- **The surface.** The panels' look (`.console-panel`, its headings, fields and buttons, the focus
+  ring and autofill of every field) is `ui/surface.css`'s, which `ui/styles.css` imports first,
+  under `.console-surface`; the room between what a section shows is under `.console-content` inside
+  it (or on the same element). `ConsoleShell`'s root carries `console-surface` and its content area
+  `console-content`; a host puts them around the panels it draws. A sheet or dialog closed after the
+  control that opened it went away returns the focus to `#console-content`: a host gives its content
+  area that id.
+- **Scrolling.** Only the core's own frame owns the page's scrolling: `App.vue` asks for it
+  (`useFixedFrame()`, `ui/frame.ts`), which puts `fixed-frame` on `<html>` while it is mounted, and
+  only under that class are `html`, `body` and `#app` held to the viewport with nothing to scroll
+  and `#app` fixed to the visual viewport. Any other root leaves it off, and its document scrolls
+  as any page does; a root of an edition's own that wants the core's frame (a full-screen card of
+  its own, say) calls `useFixedFrame()` too.
+- **The page's life and what goes over it.** `useAppLifecycle()` (`state/appLifecycle.ts`), called
+  once from the setup of the page's root, runs what `App.vue` runs around its phases: it captures a
+  provider's return, a reset link and an invitation before anything renders, sweeps the provider
+  records this tab never used, keeps the first keys after a sign-in, writes the visual viewport's
+  height and offset (`--app-height`, `--app-top`), finishes a captured return once the session is
+  ready, restores a remembered session on mount and checks it again when the tab comes back. It
+  answers `finishing`, while a return is being finished, and `teams`. The host draws the phases
+  from `session.phase` and `finishing` with the core's views: `RestoringView` (restoring, and the
+  way on when the server could not be asked), `SignInView` with `framed` (signed out: in the flow of
+  the frame's content, without the brand and the appearance control atop the card, which the
+  frame draws; the notes, the edition's sign-in or the password card and the legal footer stay)
+  and `OAuthReturnView`; and `AppOverlays` beside them, with `finishing`: the invitation to join a
+  team, the recovery code, the step-up prompt, the line saying the browser would not keep the
+  session, and the live region.
+- **Coming back from a provider.** The web flow keeps, with its start in this tab's
+  `sessionStorage`, the path of the page it left from (`back`: `location.pathname` alone, never a
+  query or a fragment, which may carry a workspace or a code; at most 1024 bytes, of this origin,
+  without a backslash, a control character or dot segments, and never `/oauth/return`).
+  `captureOAuthReturn()` reads the start without taking it and replaces the address with that
+  path while the start is fresh, else with `/`; it may run from an edition's entry before the page
+  chooses its root, and running it again changes nothing. A host whose address names a workspace
+  takes it again from the mailbox once the return is finished: the workspace shown is then the
+  mailbox's (`workspaces.currentID`).
+- **The workspace in the address.** `requestWorkspace(id)` (`state/workspaces.ts`) shows the
+  workspace a page's address names, for that page only: once the person's workspaces are read and
+  hold it, it is the one shown (`currentID`; every list is read for it first) and the request is
+  done (`requested` empty again); one they do not hold sets `requestUnknown`, while the one shown is
+  chosen as ever, until a later read holds it, another is asked for, or one is chosen
+  (`selectWorkspace`); `requestUnknown` never says that a workspace shown went away, which `lost`
+  says. A change of person withdraws a request, so a page asks while signed in. Nothing of it is
+  written to storage. `rememberWorkspaceChoice(false)` stops `selectWorkspace` (the person's choice,
+  and the core's own moves: the workspace a mailbox was just linked into, the person's own shown)
+  from remembering the workspace for the person's next visit, for a page that should write nothing
+  of one: the one remembered before is still read, to choose one when nothing else does. A host
+  keeps its address in step with `currentID`, which the core may still change by itself.
+- **Who uses a mailbox, elsewhere.** `mailboxAccess` (`{ href(account), label() }`) has the
+  mailbox's sheet (`AccountSheet`) draw one link to `href` in place of its Access section
+  (`AccessPanel`), for the same owners and admins of a team who would see that section; the
+  mailbox's key (`MailboxKeyPanel`), which is the person's own, stays on the sheet. Unset, the
+  sheet holds the section.
+- **The person's sessions.** `SessionsRow`, the row of `AccountPanel` that says how long this
+  session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
+  shows the person's own settings, with words of its own (`title`, `description`,
+  `signOutLabel`). Signing out goes through the core's `signOut`, and so the edition's `signedOut`.
+
+The open edition reaches them only through `ConsoleShell` and `App.vue`.
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
@@ -607,7 +682,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   and the event stream (`GET /v1/events`) pass `?workspace=`; a card
   of another workspace that an answer names is left out of the list. Choosing another workspace
   reads its lists again and opens its stream from now; an answer for the one before that lands
-  later is dropped. A server without workspaces (`404`) lists everything together. Any other
+  later is dropped. A page whose address names the workspace it shows asks for it instead
+  (`requestWorkspace`, "Editions"), and remembers nothing of it. A server without workspaces
+  (`404`) lists everything together. Any other
   failure to read them holds every list and the stream, and says why, rather than read them
   without `?workspace=`, which would show a team's mailboxes as the person's own: while the console
   is shown it asks again by itself (2 s doubling to 30 s, or as long as a rate limit asks), and
@@ -1112,9 +1189,10 @@ host). A console anywhere else never gets loopback: the redirect would land on t
 machine, not the daemon's. `GET /v1/providers` says exactly what each caller can use.
 
 **How the web flow ends.** The provider sends the browser to `/oauth/return?code=…&state=…`, a
-console route. The page restores the session, removes the code from the address bar and posts
-`POST /v1/accounts/oauth/callback` with `{redirect_url: location.href}` and its own bearer. The
-daemon finds the attempt by its `state` **and by its owner**, checks that the caller may still
+console route. The page restores the session, removes the code from the address bar (returning it to
+the path of the page the flow left from, or to `/`: "Editions", "Coming back from a provider") and
+posts `POST /v1/accounts/oauth/callback` with `{redirect_url: location.href}` and its own bearer.
+The daemon finds the attempt by its `state` **and by its owner**, checks that the caller may still
 manage the mailbox, and only then exchanges the code. A `state` that belongs to someone else is
 `404`: the attempt is not consumed and its code is never exchanged. This is the defence against
 consent phishing, where someone starts a flow in their own account and gets a victim to consent, so

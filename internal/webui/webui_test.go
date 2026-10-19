@@ -122,6 +122,34 @@ func TestEveryConsoleRouteGetsThePageAndIsOnlyRevalidated(t *testing.T) {
 	}
 }
 
+func TestADeepPageWithAQueryGetsThePageThatNoOtherPageMayFrame(t *testing.T) {
+	// A path of an edition's own pages, any depth, with a query the page
+	// reads itself: the page, revalidated, and never inside another page's
+	// frame, whatever frame of its own the page draws.
+	h, _ := newConsole(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/a/b?c=d&e=f", nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != page {
+		t.Fatalf("/a/b?c=d&e=f: %d %q", rec.Code, rec.Body.String())
+	}
+	header := rec.Header()
+	if got := header.Get("Cache-Control"); got != "no-cache" {
+		t.Errorf("Cache-Control = %q, want no-cache", got)
+	}
+	if got := header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options = %q, want DENY", got)
+	}
+	ancestors := ""
+	for _, directive := range strings.Split(header.Get("Content-Security-Policy"), ";") {
+		if name, value, _ := strings.Cut(strings.TrimSpace(directive), " "); name == "frame-ancestors" {
+			ancestors = value
+		}
+	}
+	if ancestors != "'none'" {
+		t.Errorf("frame-ancestors = %q, want 'none' (%q)", ancestors, header.Get("Content-Security-Policy"))
+	}
+}
+
 func TestHashedAssetsAreCachedForeverAndOtherFilesForAnHour(t *testing.T) {
 	h, _ := newConsole(t)
 	rec := get(t, h, http.MethodGet, "/assets/main-1a2b.js")

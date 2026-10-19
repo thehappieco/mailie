@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// The signed-in person: name, password and sessions (and their role on this
-// server, where the edition's people have one), and below them whatever
+// The signed-in person: name, password and sessions (SessionsRow), and their
+// role on this server, where the edition's people have one; and below them whatever
 // the edition puts in its account section (the default slot): the permission
 // rows, and anything else of its own. A password change ends every session on
 // the server, this one included, and hands back the one that replaces it; the
@@ -26,16 +26,17 @@ import { edition } from '../edition'
 import { CeremonyError } from '../crypto/errors'
 import { changePassword, replaceRecoveryCode } from '../state/account'
 import { failure, type Failure } from '../state/failure'
-import { session, signOut, updateProfile } from '../state/session'
+import { session, updateProfile } from '../state/session'
 import { announce } from '../ui/announce'
 import { describe } from '../ui/errors'
-import { dayStamp, initials } from '../ui/format'
+import { initials } from '../ui/format'
 import { t } from '../ui/i18n'
 import { roleLabel } from '../ui/labels'
 import { accountNotice } from './accountNotice'
 import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
 import PasswordInput from './PasswordInput.vue'
+import SessionsRow from './SessionsRow.vue'
 
 const name = ref('')
 const profileBusy = ref(false)
@@ -146,17 +147,6 @@ async function replaceCode(event: SubmitEvent) {
     recoveryPassword.value = ''
   }
 }
-
-const everywhere = ref(false)
-const leaving = ref(false)
-const leaveProblem = ref<Failure | null>(null)
-async function leave(all: boolean) {
-  if (leaving.value) return
-  leaving.value = true; leaveProblem.value = null
-  try { await signOut({ everywhere: all }) }
-  catch (error) { leaveProblem.value = failure('sign-out', error) }
-  finally { leaving.value = false; everywhere.value = false }
-}
 </script>
 
 <template>
@@ -192,24 +182,7 @@ async function leave(all: boolean) {
         <span class="summary-icon"><AppIcon name="lock" :size="22" /></span>
         <span class="summary-text"><strong>{{ t('Password') }}</strong><small>{{ t('Your password is from before passwords stayed in the browser, and it no longer signs you in: once this session ends, you need a reset link from the administrator of this server. With it you choose a new password, which stays in your browser, and get a recovery code.') }}</small></span>
       </div>
-      <div class="security-summary sessions">
-        <span class="summary-icon"><AppIcon name="shield" :size="22" /></span>
-        <span class="summary-text">
-          <strong>{{ t('Sessions') }}</strong>
-          <small>{{ t('This session lasts until {date}. Signing out everywhere ends the sessions of your account on every browser.', { date: dayStamp(session.expiresAt) }) }}</small>
-        </span>
-        <div class="session-actions">
-          <template v-if="everywhere">
-            <button class="danger small" type="button" :disabled="leaving" @click="leave(true)">{{ leaving ? t('Signing out…') : t('Sign out everywhere now') }}</button>
-            <button class="ghost small" type="button" :disabled="leaving" @click="everywhere = false">{{ t('Cancel') }}</button>
-          </template>
-          <template v-else>
-            <button class="ghost small" type="button" :disabled="leaving" @click="leave(false)"><AppIcon name="logout" :size="16" />{{ t('Sign out') }}</button>
-            <button class="ghost small" type="button" :disabled="leaving" @click="everywhere = true">{{ t('Sign out everywhere') }}</button>
-          </template>
-        </div>
-      </div>
-      <p v-if="leaveProblem" class="alert" role="alert">{{ describe(leaveProblem) }}</p>
+      <SessionsRow />
       <slot />
     </div>
 
@@ -259,22 +232,15 @@ button.security-summary:hover { background: var(--bg-hover); }
 .summary-text { flex: 1; min-width: 0; }
 .summary-text strong { display: block; font-size: 14px; color: var(--text); }
 .summary-text small { display: block; font-size: 12px; color: var(--text-dim); margin-top: 5px; line-height: 1.5; }
-.sessions, .not-enrolled { flex-wrap: wrap; }
-.session-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.session-actions button { display: inline-flex; align-items: center; gap: 6px; }
+.not-enrolled { flex-wrap: wrap; }
 .success, .alert { margin: 0; }
 .password-field { display: grid; gap: 8px; }
 .account-identifier { position: absolute !important; width: 1px !important; height: 1px !important; min-height: 0 !important; opacity: 0; pointer-events: none; padding: 0 !important; border: 0 !important; }
-@media (max-width: 760px) {
-  .sessions .session-actions { width: 100%; padding-left: 56px; }
-}
 @media (max-width: 600px) {
   .account-profile { flex-direction: column; align-items: stretch; padding: 18px; gap: 20px; }
   .profile-fields input { font-size: 16px; }
   .account-avatar { align-self: center; width: 76px; height: 76px; font-size: 25px; }
   .profile-fields > button { width: 100%; }
   .security-summary { padding: 15px; }
-  .sessions .session-actions { padding-left: 0; }
-  .session-actions button { flex: 1; }
 }
 </style>

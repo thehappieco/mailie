@@ -607,7 +607,8 @@ interface Baseline { state: AccountState; reason: string }
 /**
  * follow takes the flow the server chose and does what it needs.
  *
- * web: the page leaves for the provider, having noted which mailbox it was.
+ * web: the page leaves for the provider, having noted which mailbox it was,
+ * and the path of the page it left from, where the return comes back to.
  * loopback and device: the person opens the provider themselves (a link a
  * popup blocker cannot eat, a code to type) and this page waits for the
  * account to change. pasted is a CLI flow; a console has nowhere to paste.
@@ -620,7 +621,7 @@ function follow(generation: number, flow: AuthFlow, baseline: Baseline): void {
     case 'web': {
       const url = providerURL(flow.auth_url)
       if (!url || !connect.provider) { fail(generation, 'start-auth', 'flow_unsupported'); return }
-      rememberOAuthStart({ account_id: connect.accountID, provider: connect.provider, email: connect.email })
+      rememberOAuthStart({ account_id: connect.accountID, provider: connect.provider, email: connect.email, back: location.pathname })
       connect.phase = 'redirecting'
       navigation.assign(url)
       return
@@ -855,8 +856,9 @@ export function resetConnect(): void {
 /**
  * Shows the workspace a mailbox just authorized belongs to, so the notice
  * about it sits above its card: the page came back from the provider in the
- * workspace remembered, which another tab may have changed meanwhile. The
- * person's workspaces were read before the exchange.
+ * workspace remembered, which another tab may have changed meanwhile (and
+ * a page whose address names its workspace came back to its path alone,
+ * oauthReturn.ts). The person's workspaces were read before the exchange.
  */
 function showWorkspaceOf(account: Account): void {
   const id = account.workspace_id
