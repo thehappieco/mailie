@@ -18,6 +18,21 @@ export interface ConsoleSection {
    */
   scope?: 'workspace' | 'person'
 }
+
+/** A place the frame links to rather than holds: another page, of this origin or another, opened in this tab. */
+export interface ConsoleLink {
+  id: string
+  label: string
+  icon: IconName
+  href: string
+}
+
+/** Links the frame draws after its sections, as a group of their own under a name. */
+export interface ConsoleLinks {
+  /** The group's name, shown above it and naming its navigation. */
+  label: string
+  items: ConsoleLink[]
+}
 </script>
 
 <script setup lang="ts">
@@ -29,8 +44,12 @@ export interface ConsoleSection {
 // section that goes away takes the person home), which one is the person's
 // own account, and where the console opens once it knows the person's
 // mailboxes; and what the frame is called (edition().shell): the open
-// edition's is a console, another's may be an app. Anything else the edition
-// keeps on screen across sections goes in the default slot.
+// edition's is a console, another's may be an app. An edition whose person's
+// own settings are elsewhere names no account section: the sidebar's foot
+// then says who is signed in, as text, and keeps signing out; and it may link
+// to those places, as a group of plain links after the sections (links),
+// which the frame draws and never holds. Anything else the edition keeps on
+// screen across sections goes in the default slot.
 //
 // While the console is on screen it keeps the console going (useConsoleFrame,
 // state/consoleFrame.ts: the person's workspaces, the mailboxes of the one
@@ -65,8 +84,10 @@ const props = defineProps<{
   sections: ConsoleSection[]
   /** Where the console opens, and where it goes when the section shown goes away. */
   home: string
-  /** The person's own section: the profile button in the sidebar and the header opens it. */
-  account: string
+  /** The person's own section: the profile button in the sidebar and the header opens it. Without one, the sidebar's foot says who is signed in, and opens nothing. */
+  account?: string
+  /** Places elsewhere, linked after the sections under a name of their own (in the sidebar and in the drawer). */
+  links?: ConsoleLinks
   /** Once, when the first list of mailboxes arrives and nobody has picked a section yet: where to go instead of home. */
   landing?: () => string | undefined
 }>()
@@ -80,6 +101,9 @@ const content = ref<HTMLElement>()
 const signingOut = ref(false)
 const current = computed(() => props.sections.find(item => item.id === section.value) ?? props.sections[0]!)
 const accountLabel = computed(() => props.sections.find(item => item.id === props.account)?.label ?? '')
+/** The person's own section, when the edition has one here and it is listed. */
+const hasAccount = computed(() => !!props.account && props.sections.some(item => item.id === props.account))
+const linkItems = computed(() => props.links?.items ?? [])
 const profileName = computed(() => session.user?.name || session.user?.email || '')
 /** What the edition calls what this frame holds: the breadcrumb's root. */
 const rootLabel = computed(() => edition().shell.rootLabel())
@@ -93,7 +117,8 @@ const personSection = computed(() => current.value.scope === 'person' || current
 /** The workspace shown, named in the header once there is more than one to tell apart, on a section that is the workspace's. */
 const workspaceLabel = computed(() => workspaces.list.length > 1 && !personSection.value ? workspaceName(currentWorkspace()) : '')
 
-function show(id: string) {
+function show(id: string | undefined) {
+  if (!id) return
   navigated = true
   section.value = id
   mobileNav.value = false
@@ -139,8 +164,13 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
           <span v-if="item.count !== undefined" class="nav-count">{{ item.count }}</span>
         </button>
       </nav>
+      <nav v-if="linkItems.length" class="console-nav console-links" :aria-label="links?.label">
+        <p class="console-links-label" aria-hidden="true">{{ links?.label }}</p>
+        <a v-for="item in linkItems" :key="item.id" class="console-nav-item" :href="item.href"><AppIcon :name="item.icon" :size="20" /><span>{{ item.label }}</span></a>
+      </nav>
       <div class="console-profile">
-        <button type="button" class="profile-trigger" :aria-label="accountLabel" @click="show(account)"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span><AppIcon name="chevron-right" :size="15" /></button>
+        <button v-if="hasAccount" type="button" class="profile-trigger" :aria-label="accountLabel" @click="show(account)"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span><AppIcon name="chevron-right" :size="15" /></button>
+        <div v-else class="profile-who"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span></div>
         <button class="profile-signout" type="button" :disabled="signingOut" @click="leave"><AppIcon name="logout" :size="17" /><span>{{ t('Sign out') }}</span></button>
       </div>
     </aside>
@@ -151,7 +181,7 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
         <div class="grow"><div class="console-breadcrumb">{{ rootLabel }} <span>/</span> <template v-if="workspaceLabel">{{ workspaceLabel }} <span>/</span>{{ ' ' }}</template>{{ current.label }}</div><h1>{{ current.label }}</h1></div>
         <component :is="appearance" v-if="appearance" />
         <AppearanceMenu v-else />
-        <button class="mobile-profile" type="button" :aria-label="accountLabel" @click="show(account)"><span aria-hidden="true">{{ initials(profileName) }}</span></button>
+        <button v-if="hasAccount" class="mobile-profile" type="button" :aria-label="accountLabel" @click="show(account)"><span aria-hidden="true">{{ initials(profileName) }}</span></button>
       </header>
 
       <main id="console-content" ref="content" class="console-content" tabindex="-1" :aria-label="current.label">
@@ -171,8 +201,13 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
       <div class="mobile-navigation">
         <WorkspaceSwitcher />
         <nav class="console-nav" :aria-label="t('Sections')"><button v-for="item in sections" :key="item.id" type="button" class="console-nav-item" :class="{ active: section === item.id }" :aria-current="section === item.id ? 'page' : undefined" @click="show(item.id)"><AppIcon :name="item.icon" :size="21" /><span>{{ item.label }}</span><span v-if="item.count !== undefined" class="nav-count">{{ item.count }}</span></button></nav>
+        <nav v-if="linkItems.length" class="console-nav console-links" :aria-label="links?.label">
+          <p class="console-links-label" aria-hidden="true">{{ links?.label }}</p>
+          <a v-for="item in linkItems" :key="item.id" class="console-nav-item" :href="item.href"><AppIcon :name="item.icon" :size="21" /><span>{{ item.label }}</span></a>
+        </nav>
         <div class="mobile-account-area">
-          <button type="button" class="profile-trigger" @click="show(account)"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span></button>
+          <button v-if="hasAccount" type="button" class="profile-trigger" @click="show(account)"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span></button>
+          <div v-else class="profile-who"><span class="profile-initials" aria-hidden="true">{{ initials(profileName) }}</span><span class="profile-text"><strong>{{ profileName }}</strong><small>{{ session.user?.email }}</small></span></div>
           <button class="console-nav-item" type="button" :disabled="signingOut" @click="leave"><AppIcon name="logout" :size="20" />{{ t('Sign out') }}</button>
         </div>
       </div>
@@ -188,6 +223,8 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
 .console-nav-item { display: flex; gap: 12px; align-items: center; width: 100%; min-height: 44px; padding: 10px 12px; border-radius: 9px; color: var(--text-dim); font-size: 13px; font-weight: 550; text-align: left; white-space: nowrap; }
 .console-nav-item:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .console-nav-item.active { background: var(--console-tint); color: var(--console-accent); font-weight: 650; }
+a.console-nav-item { text-decoration: none; }
+.console-links-label { margin: 0 0 3px; padding: 0 12px; color: var(--text-faint); font-size: 11px; font-weight: 600; }
 .console-nav-item:focus-visible, .profile-trigger:focus-visible, .profile-signout:focus-visible, .mobile-profile:focus-visible { outline: 2px solid var(--console-accent); outline-offset: 2px; }
 .nav-count { margin-left: auto; padding: 1px 6px; font-size: 11px; border-radius: 5px; background: var(--bg-panel); color: var(--text-dim); font-weight: 550; }
 .console-profile { margin-top: auto; padding: 14px 0 0; border-top: 1px solid var(--console-border); display: grid; gap: 8px; }
@@ -201,7 +238,7 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
 .console-header h1 { margin: 7px 0 0; font-size: 25px; font-weight: 650; letter-spacing: -.7px; line-height: 1.15; overflow-wrap: anywhere; hyphens: auto; }
 .mobile-menu, .mobile-profile { display: none; }
 .mobile-profile { width: 36px; height: 36px; min-width: 36px; aspect-ratio: 1; flex-shrink: 0; padding: 0; border: 0; overflow: hidden; border-radius: 50%; background: var(--accent-dim); color: var(--accent); font-weight: 600; font-size: 13px; }
-.profile-trigger { display: flex; gap: 10px; align-items: center; min-width: 0; flex: 1; text-align: left; padding: 7px 4px; border-radius: 10px; color: var(--text-dim); }
+.profile-trigger, .profile-who { display: flex; gap: 10px; align-items: center; min-width: 0; flex: 1; text-align: left; padding: 7px 4px; border-radius: 10px; color: var(--text-dim); }
 .profile-trigger:hover { background: var(--bg-hover); }
 .profile-initials { width: 35px; height: 35px; border-radius: 50%; flex: none; display: grid; place-items: center; background: var(--accent-dim); color: var(--accent); font-size: 13px; font-weight: 600; }
 .profile-text { min-width: 0; flex: 1; }
@@ -211,7 +248,7 @@ const { workspaceNotice, dismissWorkspaceNotice } = useConsoleFrame()
 .mobile-navigation { display: flex; flex-direction: column; gap: 22px; min-height: 70dvh; }
 .mobile-navigation .console-nav-item { min-height: 48px; }
 .mobile-account-area { margin-top: auto; border-top: 1px solid var(--line); padding-top: 14px; display: grid; gap: 12px; }
-.mobile-account-area .profile-trigger { padding: 10px; }
+.mobile-account-area .profile-trigger, .mobile-account-area .profile-who { padding: 10px; }
 .console-content { padding: 28px 36px 48px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .console-content:focus { outline: none; }
 .console-section-intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }

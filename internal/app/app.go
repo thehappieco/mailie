@@ -9,14 +9,16 @@
 // exactly the same server calls Run too, and adds what is its own through
 // Options: routes beside the core's (Extension), which can never take a
 // request a core route answers, with the background work an extension asks
-// for (Deps.Go), awaited before the database closes; for a binary whose
-// people sign in through such a route (service.SignInExternal), the switch
-// that turns the core's passwords and invitations off (ExternalSignInOnly);
-// for an edition that does not offer team workspaces yet, the one that
-// withholds them (TeamsWithheld); and, for a binary whose workspaces come
-// from a directory elsewhere, the question asked before an act that widens
-// access (Freshness). Nothing else of
-// the assembly is open to a caller, because a server that differed from
+// for (Deps.Go), awaited before the database closes; headers of its own on
+// the console's page documents, and small files beside them (Pages); for a
+// binary whose people sign in through such a route
+// (service.SignInExternal), the switch that turns the core's passwords and
+// invitations off (ExternalSignInOnly) and the one that has their names
+// follow the provider's (NameFollowsIdentity); for an edition that does not
+// offer team workspaces yet, the one that withholds them (TeamsWithheld);
+// and, for a binary whose workspaces come from a directory elsewhere, the
+// question asked before an act that widens access (Freshness). Nothing else
+// of the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
 // implementation of it.
 package app
@@ -76,6 +78,16 @@ type Options struct {
 	// Only a binary that embeds the daemon sets it: there is no environment
 	// variable, and `serve` never does.
 	ExternalSignInOnly bool
+	// NameFollowsIdentity says a person's name follows the identity they
+	// sign in with through an extension: every sign-in
+	// (service.SignInExternal) names them as the provider names them then,
+	// an empty name leaving them none, and they never rename themselves here
+	// (PUT /v1/auth/profile is a conflict for anyone linked to an identity).
+	// A step-up never touches a name, nor does anything else. Someone who
+	// signs in with a password names themselves as ever. The service decides
+	// it, for every transport. Only a binary that embeds the daemon sets it:
+	// there is no environment variable, and `serve` never does.
+	NameFollowsIdentity bool
 	// TeamsWithheld says this edition does not offer team workspaces yet:
 	// the core refuses, not_authorized, every use of a team, by a person or
 	// a key — linking a mailbox into one, its mailboxes, its keys, who holds
@@ -96,6 +108,16 @@ type Options struct {
 	// gates, never authorizes. Only a binary that embeds the daemon sets it:
 	// there is no environment variable, and `serve` never does.
 	Freshness service.Freshness
+	// Pages is what the console's page documents carry besides the core's
+	// own headers, document by document, and the small files served beside
+	// them (webui.Pages): for pages of an edition's own that another site
+	// may load ahead of a click, say, whose answer then depends on who asked
+	// and is never stored. Nothing in it weakens what protects a page. A
+	// file the console would not serve stops the daemon from starting
+	// (webui.ErrPages); without a console (MAIL_WEB_DIR) it serves nothing.
+	// Only a binary that embeds the daemon sets it: there is no environment
+	// variable, and `serve` never does.
+	Pages webui.Pages
 }
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
@@ -103,6 +125,12 @@ type Options struct {
 // then, each waited for, the background work of its extensions, the sync
 // engine, and the database.
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
+	// What the binary asks of the console's pages is checked before
+	// anything starts: a page it cannot have is its mistake, never the
+	// console's absence.
+	if err := opts.Pages.Check(); err != nil {
+		return err
+	}
 	if opts.MCPStdio {
 		// Standard output is the MCP client's: one stray line there and the
 		// client stops understanding the stream. Everything logged goes to
@@ -311,7 +339,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
-		Freshness: opts.Freshness,
+		Freshness: opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
 	})
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err
@@ -352,7 +380,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	}
 	var console http.Handler
 	if cfg.WebDir != "" {
-		web, err := webui.New(cfg.WebDir, cfg.ConnectSrc...)
+		web, err := webui.NewWith(cfg.WebDir, webui.Options{ConnectSrc: cfg.ConnectSrc, Pages: opts.Pages})
 		if err != nil {
 			logger.Warn("no console to serve; serving the API only", "dir", cfg.WebDir, "err", err)
 		} else {

@@ -594,12 +594,20 @@ func (s *Service) SignOut(ctx context.Context, p Principal, req SignOutRequest) 
 	return nil
 }
 
-// UpdateProfile changes what the console calls the caller.
+// UpdateProfile changes what the console calls the caller. Where names
+// follow the identity a person signs in with (Deps.NameFollowsIdentity), a
+// person linked to one is refused, conflict, whatever the name, and keeps
+// theirs: it is changed where they sign in, and reaches this server at their
+// next sign-in.
 func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileRequest) (User, error) {
 	if err := requireSession(p); err != nil {
 		return User{}, err
 	}
-	user, err := s.users.SetName(ctx, p.UserID, req.Name)
+	set := s.users.SetName
+	if s.nameFollowsIdentity {
+		set = s.users.SetNameUnlessLinked
+	}
+	user, err := set(ctx, p.UserID, req.Name)
 	if err != nil {
 		return User{}, fromUsers(err, "saving the profile failed")
 	}
@@ -705,6 +713,8 @@ func fromUsers(err error, what string) error {
 		return E(CodeBadRequest, "that is not a valid email address", err)
 	case errors.Is(err, auth.ErrInvalidName):
 		return Ef(CodeBadRequest, err, "a name is at most %d characters and has no control characters", auth.MaxNameLength)
+	case errors.Is(err, auth.ErrNameFromIdentity):
+		return errNameFromIdentity
 	case errors.Is(err, auth.ErrUserNotFound), errors.Is(err, auth.ErrInvalidSession):
 		// The session authenticated a moment ago; if its user or its row is
 		// gone now, the honest answer is the one a revoked session gets.

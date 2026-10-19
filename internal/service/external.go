@@ -27,6 +27,11 @@ import (
 // invitation, changes a password, or creates an invitation: every route of
 // the key scheme's password and recovery code (docs/key-scheme.md section
 // 12). Its step-up is the provider's (MarkExternalStepUp, ExternalStepUp).
+//
+// A daemon whose people's names follow their identity
+// (Deps.NameFollowsIdentity) names a person as the provider does at every
+// sign-in, and only then: a step-up carries no name, and nothing else here
+// gives one. Such a person never renames themselves here (UpdateProfile).
 
 // ExternalSignIn is a person an identity provider vouched for, as an
 // extension presents them once it has done the provider's protocol.
@@ -48,7 +53,9 @@ type ExternalSignIn struct {
 	EmailVerified bool
 	// Name is a new person's display name, made into one the server takes
 	// rather than refused; the person a linked identity signs in keeps
-	// theirs, and it is not looked at.
+	// theirs, and it is not looked at, unless names follow the identity
+	// (Deps.NameFollowsIdentity): then every sign-in names the person so,
+	// and an empty one leaves them none.
 	Name string
 	// UserAgent is the browser's, as the session list shows it.
 	UserAgent string
@@ -131,6 +138,10 @@ type ExternalEnrolmentTicket struct {
 //     signing up creates one, to whom it is linked. An address somebody here
 //     has already, however they sign in, is a conflict, and nothing is
 //     created or linked: accounts are never linked by matching addresses;
+//   - where names follow the identity (Deps.NameFollowsIdentity), the
+//     person a linked identity signs in takes in.Name as theirs, an empty
+//     one leaving them none, in the same transaction: so a sign-in that is
+//     refused, or creates nothing, changes no name;
 //   - a person who has an account key gets a session, which expires TTL
 //     after it starts and is never extended, and, when the sign-in asked
 //     for the product key, their platform wrap at ProductKeyID. None stored
@@ -163,7 +174,7 @@ func (s *Service) signInExternal(ctx context.Context, in ExternalSignIn, meanwhi
 	}
 	signed, err := s.users.SignInExternal(ctx, auth.ExternalSignIn{
 		Issuer: in.Issuer, Subject: in.Subject, Email: in.Email, EmailVerified: in.EmailVerified,
-		Name: in.Name, UserAgent: in.UserAgent, TTL: in.TTL, AuthTime: in.AuthTime,
+		Name: in.Name, NameFollows: s.nameFollowsIdentity, UserAgent: in.UserAgent, TTL: in.TTL, AuthTime: in.AuthTime,
 		WantsKey: in.WantsKey, ProductKeyID: in.ProductKeyID, PersonCreatedTx: created,
 	})
 	if err != nil {
@@ -388,6 +399,12 @@ func (s *Service) ExternalStepUp(ctx context.Context, p Principal, proof Externa
 	}
 	return at, nil
 }
+
+// errNameFromIdentity is a person whose name follows their identity
+// (Deps.NameFollowsIdentity) renaming themselves here.
+var errNameFromIdentity = E(CodeConflict,
+	"your name is the one you have where you sign in: change it there, and it reaches this server at your next sign-in",
+	auth.ErrNameFromIdentity)
 
 // errExternalSignInOnly is every password and invitation route of a daemon
 // whose people sign in only through an extension.

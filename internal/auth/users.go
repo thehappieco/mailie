@@ -121,6 +121,10 @@ var (
 	ErrInvalidEmail = errors.New("auth: that is not a valid email address")
 	// ErrInvalidName is a name that is too long or carries control characters.
 	ErrInvalidName = errors.New("auth: a name is at most 120 characters and has no control characters")
+	// ErrNameFromIdentity is a name set for a person whose name follows
+	// their external identity (SetNameUnlessLinked): it is changed where
+	// they sign in, and reaches this server at their next sign-in.
+	ErrNameFromIdentity = errors.New("auth: this person's name follows their identity provider's")
 	// ErrInvalidRole is a role other than owner or member.
 	ErrInvalidRole = errors.New("auth: a role is owner or member")
 	// ErrInvalidWorkspaceRole is a team invite's role other than owner,
@@ -244,11 +248,35 @@ func (u *Users) Count(ctx context.Context) (int, error) {
 
 // SetName changes a user's display name.
 func (u *Users) SetName(ctx context.Context, id, name string) (User, error) {
-	name, err := NormalizeName(name)
-	if err != nil {
-		return User{}, err
-	}
-	err = u.store.Write(ctx, func(tx *sql.Tx) error {
+	return u.setName(ctx, id, name, false)
+}
+
+// SetNameUnlessLinked is SetName where a name may follow an external
+// identity (ExternalSignIn.NameFollows): a person linked to one is refused,
+// ErrNameFromIdentity, whatever the name asked for, and keeps theirs. Their
+// name is the provider's, taken again at every sign-in. A person without an
+// identity (one who signs in with a password) names themselves as ever;
+// nobody gains an identity once created, so what this reads stays true.
+func (u *Users) SetNameUnlessLinked(ctx context.Context, id, name string) (User, error) {
+	return u.setName(ctx, id, name, true)
+}
+
+func (u *Users) setName(ctx context.Context, id, name string, unlessLinked bool) (User, error) {
+	err := u.store.Write(ctx, func(tx *sql.Tx) error {
+		if unlessLinked {
+			var linked bool
+			if err := tx.QueryRowContext(ctx,
+				`SELECT EXISTS (SELECT 1 FROM user_identities WHERE user_id = ?)`, id).Scan(&linked); err != nil {
+				return fmt.Errorf("auth: look up identities: %w", err)
+			}
+			if linked {
+				return ErrNameFromIdentity
+			}
+		}
+		name, err := NormalizeName(name)
+		if err != nil {
+			return err
+		}
 		res, err := tx.ExecContext(ctx, `UPDATE users SET name = ?, updated_at = ? WHERE id = ?`,
 			name, u.now().Unix(), id)
 		if err != nil {

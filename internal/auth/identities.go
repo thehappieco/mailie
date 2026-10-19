@@ -34,7 +34,8 @@ import (
 //     whoever has it, however they sign in, disabled or not, is not the
 //     pair's to take over, and accounts are never linked by matching
 //     addresses. The new person is an instance member without a password,
-//     named as the provider names them;
+//     named as the provider names them; with NameFollows, every later
+//     sign-in names them as the provider names them then;
 //   - the session lasts what the extension asks, never more than SessionTTL,
 //     and nothing extends it;
 //   - only a person who has an account key gets one: a person who has none
@@ -98,8 +99,16 @@ type ExternalSignIn struct {
 	// Name is a new person's display name, as the provider has it: made
 	// into one this server takes rather than refused (providerName), since
 	// the person did not type it here. The person a linked identity signs
-	// in keeps theirs, and it is not looked at.
+	// in keeps theirs, and it is not looked at, unless NameFollows.
 	Name string
+	// NameFollows has the person's name follow the provider's: the person a
+	// linked identity signs in takes Name as theirs too, made the same way,
+	// and an empty one (the provider has none for them now) leaves them
+	// none. It is written in the sign-in's transaction, so a sign-in that is
+	// refused, or that creates nothing for want of the product key, changes
+	// no name. Only a sign-in does it: nothing else here takes a name from
+	// the provider (a step-up, ExternalStepUp, has none to give).
+	NameFollows bool
 	// UserAgent is the browser's, for the session list.
 	UserAgent string
 	// TTL is how long the session lasts: more than nothing, at most
@@ -170,6 +179,11 @@ type ExternalSignedIn struct {
 //     nothing. A session never exists for such a person, so nobody who
 //     copies one chooses their account key.
 //
+// With NameFollows, the person a linked identity signs in takes the
+// provider's name (Name, an empty one leaving them none), in the same
+// transaction: their name follows the provider's, and is never taken from
+// anywhere else.
+//
 // An address somebody here has already is refused with ErrEmailTaken, and
 // nothing is created or linked: an identity never takes over a person who
 // exists, however they sign in. The person of a linked identity who is
@@ -196,9 +210,17 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (External
 	now := u.now().UTC().Truncate(time.Second)
 	var out ExternalSignedIn
 	err = u.store.Write(ctx, func(tx *sql.Tx) error {
-		userID, err := u.identifyTx(ctx, tx, in, email, now)
+		userID, created, err := u.identifyTx(ctx, tx, in, email, now)
 		if err != nil {
 			return err
+		}
+		if in.NameFollows && !created {
+			// A new person was just named so; one who exists takes the
+			// provider's name now, none included.
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET name = ?, updated_at = ? WHERE id = ? AND name <> ?`,
+				providerName(in.Name), now.Unix(), userID, providerName(in.Name)); err != nil {
+				return fmt.Errorf("auth: follow the provider's name: %w", err)
+			}
 		}
 		user, err := scanUser(tx.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE id = ?`, userID))
 		switch {
@@ -245,23 +267,24 @@ func (u *Users) SignInExternal(ctx context.Context, in ExternalSignIn) (External
 
 // identifyTx returns the ID of the person in's identity signs in, inside
 // SignInExternal's transaction: the one it is linked to, or a new person
-// created for it and linked to it. email is in.Email normalized.
-func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, email string, now time.Time) (string, error) {
+// created for it and linked to it, and whether it was created now. email is
+// in.Email normalized.
+func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, email string, now time.Time) (string, bool, error) {
 	issuer, subject := in.Issuer, in.Subject
 	var userID string
 	err := tx.QueryRowContext(ctx,
 		`SELECT user_id FROM user_identities WHERE issuer = ? AND subject = ?`, issuer, subject).Scan(&userID)
 	switch {
 	case err == nil:
-		return userID, nil
+		return userID, false, nil
 	case !errors.Is(err, sql.ErrNoRows):
-		return "", fmt.Errorf("auth: look up identity: %w", err)
+		return "", false, fmt.Errorf("auth: look up identity: %w", err)
 	case !in.EmailVerified:
 		// Before the address is looked up: an address the provider has not
 		// verified learns nothing of who has an account here.
-		return "", ErrEmailNotVerified
+		return "", false, ErrEmailNotVerified
 	case lowerCaseMakesAnother(in.Email):
-		return "", ErrInvalidEmail
+		return "", false, ErrInvalidEmail
 	}
 
 	// An identity seen for the first time only ever creates a person. The
@@ -271,25 +294,25 @@ func (u *Users) identifyTx(ctx context.Context, tx *sql.Tx, in ExternalSignIn, e
 	// addresses.
 	var taken int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE email = ?`, email).Scan(&taken); err != nil {
-		return "", fmt.Errorf("auth: look up address: %w", err)
+		return "", false, fmt.Errorf("auth: look up address: %w", err)
 	}
 	if taken > 0 {
-		return "", ErrEmailTaken
+		return "", false, ErrEmailTaken
 	}
 	if userID, err = u.createPasswordlessTx(ctx, tx, email, providerName(in.Name), now); err != nil {
-		return "", err
+		return "", false, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO user_identities(issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)`,
 		issuer, subject, userID, now.Unix()); err != nil {
-		return "", fmt.Errorf("auth: link identity: %w", err)
+		return "", false, fmt.Errorf("auth: link identity: %w", err)
 	}
 	if in.PersonCreatedTx != nil {
 		if err := in.PersonCreatedTx(ctx, tx, userID, now); err != nil {
-			return "", err
+			return "", false, err
 		}
 	}
-	return userID, nil
+	return userID, true, nil
 }
 
 // IdentityUserTx reads, inside the caller's transaction, the person an

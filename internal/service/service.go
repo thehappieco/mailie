@@ -87,6 +87,10 @@ type Service struct {
 	// extension (external.go): every password and invitation route is
 	// refused.
 	externalSignInOnly bool
+	// nameFollowsIdentity is whether a person signed in through an
+	// extension is named as their identity provider names them, at every
+	// sign-in, and never renames themselves here (external.go).
+	nameFollowsIdentity bool
 	// teamsWithheld is an edition that does not offer team workspaces
 	// (withheldteams.go): nothing of a team is used, while personal
 	// workspaces and the operator's are as they were.
@@ -162,6 +166,17 @@ type Deps struct {
 	// False, the default, changes nothing. Only internal/app sets it, from
 	// its Options.
 	ExternalSignInOnly bool
+	// NameFollowsIdentity says a person's name follows their external
+	// identity: every sign-in through an extension (SignInExternal) names
+	// the person as the provider names them then, an empty name leaving
+	// them none, and the person never renames themselves here
+	// (UpdateProfile is a conflict for anyone linked to an identity). A
+	// step-up never touches a name, nor does anything else. A person
+	// without an identity (one who signs in with a password) names
+	// themselves as ever. False, the default, keeps a person's name as
+	// their first sign-in gave it, theirs to change. Only internal/app sets
+	// it, from its Options.
+	NameFollowsIdentity bool
 	// TeamsWithheld is an edition that does not offer team workspaces yet:
 	// every use of a team is refused, not_authorized — linking a mailbox
 	// into one, its mailboxes, its keys, who holds what on them, its
@@ -224,6 +239,7 @@ func New(d Deps) *Service {
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
 		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
 		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP, externalSignInOnly: d.ExternalSignInOnly,
+		nameFollowsIdentity: d.NameFollowsIdentity,
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
 		teamsWithheld:       d.TeamsWithheld,

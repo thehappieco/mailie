@@ -43,7 +43,16 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
   an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
   listed `withheld`, their mailboxes listed nowhere and synced by none (the store's rule), nothing
-  of them deleted.
+  of them deleted. `Options.NameFollowsIdentity` (never set by `serve`) names a person linked to an
+  external identity as the provider names them at every sign-in (`SignInExternal`, in its
+  transaction; an empty name leaves them none), never at a step-up nor from anywhere else, and
+  refuses their `PUT /v1/auth/profile` (`conflict`, `auth.ErrNameFromIdentity`); a person with a
+  password names themselves as ever. `Options.Pages` (never set by `serve`; `webui.Pages`) adds
+  headers of the binary's own to the console's page documents it chooses (`Document`, given the
+  request: never a header that protects the page or describes the answer, never a referrer
+  policy that sends another origin the path; `Whole`: `no-store`, conditional and range headers
+  ignored) and serves small files beside them (`Files`: their own type, `no-store`, whole),
+  refused at start, `webui.ErrPages`, for a path the console would not serve.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
@@ -236,8 +245,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   and subscriptions, never follows a redirect, and sends the key only to the endpoint. `Check` opens
   and closes a session with a key. See `docs/mcp.md`, "Connect a client".
 - `internal/webui` — serves the built console from `MAIL_WEB_DIR` (via `os.Root`), mounted last;
-  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths. It is also a transport for
-  depguard.
+  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths; what an embedding binary adds
+  to its page documents and beside them is `Pages` (`pages.go`, `NewWith`), which never weakens
+  the page's own headers. It is also a transport for depguard.
 - `web/` — the console: Vue 3 + TS + Vite, with no router, Pinia or UI library. A Node project of
   its own: `go.mod` ignores it, `make check` does not touch it. `web/src` is the **core** every
   edition of the console shares, plus the **open edition** (`web/src/open`), which a self-hosted

@@ -9,7 +9,9 @@
 //
 // The console holds a session token that can remove mailboxes, so the headers
 // below are load-bearing rather than decoration: anything that can run script
-// in this origin, or frame it, can act as whoever is signed in.
+// in this origin, or frame it, can act as whoever is signed in. A binary that
+// embeds the daemon may add headers of its own to the page documents, and
+// small files beside them (Pages, pages.go), and never take one of these away.
 package webui
 
 import (
@@ -76,6 +78,18 @@ type Handler struct {
 	fsys  fs.FS
 	files http.Handler
 	csp   string
+	pages Pages
+}
+
+// Options are what NewWith serves the console with besides its directory.
+type Options struct {
+	// ConnectSrc are origins the console's pages may connect to besides
+	// their own, added to the policy's connect-src: MAIL_CONNECT_SRC, as
+	// config.Load validated it. None leaves the policy as it always was.
+	ConnectSrc []string
+	// Pages is what a binary that embeds the daemon adds to the page
+	// documents and beside them (Pages); the zero value adds nothing.
+	Pages Pages
 }
 
 // New opens the directory, or reports why it cannot be served.
@@ -88,10 +102,27 @@ type Handler struct {
 // encoded "%2e%2e", or a symlink inside the build pointing elsewhere — can
 // name a file outside it.
 //
-// connectSrc are origins the console's pages may connect to besides their
-// own, added to the policy's connect-src: MAIL_CONNECT_SRC, as config.Load
-// validated it. None leaves the policy as it always was.
+// connectSrc are Options.ConnectSrc.
 func New(dir string, connectSrc ...string) (*Handler, error) {
+	return NewWith(dir, Options{ConnectSrc: connectSrc})
+}
+
+// NewWith is New with every option: what it serves besides the directory is
+// o's. Pages it would not serve are refused first, ErrPages; a directory it
+// cannot serve is ErrNotBuilt, as with New.
+func NewWith(dir string, o Options) (*Handler, error) {
+	if err := o.Pages.Check(); err != nil {
+		return nil, err
+	}
+	pages := Pages{Document: o.Pages.Document}
+	if len(o.Pages.Files) > 0 {
+		// The caller's map and bodies stay the caller's: what is served
+		// never changes under a request.
+		pages.Files = make(map[string]File, len(o.Pages.Files))
+		for name, file := range o.Pages.Files {
+			pages.Files[name] = File{ContentType: file.ContentType, Body: append([]byte(nil), file.Body...)}
+		}
+	}
 	if dir == "" {
 		return nil, ErrNotBuilt
 	}
@@ -107,7 +138,8 @@ func New(dir string, connectSrc ...string) (*Handler, error) {
 		return nil, errors.Join(ErrNotBuilt, err)
 	}
 	return &Handler{
-		dir: dir, root: root, fsys: fsys, files: http.FileServerFS(fsys), csp: contentSecurityPolicy(connectSrc),
+		dir: dir, root: root, fsys: fsys, files: http.FileServerFS(fsys), csp: contentSecurityPolicy(o.ConnectSrc),
+		pages: pages,
 	}, nil
 }
 
@@ -137,6 +169,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A file a binary that embeds the daemon serves beside the pages, before
+	// the build's: never stored, always whole.
+	if file, ok := h.pages.Files[clean]; ok {
+		serveFile(w, r, file)
+		return
+	}
 	if clean != "/" && h.hasFile(clean) {
 		w.Header().Set("Cache-Control", cacheControl(clean))
 		h.files.ServeHTTP(w, r)
@@ -153,8 +191,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Everything else is a route inside the console — /, /oauth/return — and
 	// gets the page, which is only ever revalidated: a cached shell after a
-	// deploy is a client speaking an older protocol.
+	// deploy is a client speaking an older protocol. A binary that embeds the
+	// daemon may add headers of its own to it, or have it answered whole and
+	// never stored (Pages.Document).
 	w.Header().Set("Cache-Control", "no-cache")
+	r = h.pages.document(w, r)
 	http.ServeFileFS(w, r, h.fsys, "index.html")
 }
 

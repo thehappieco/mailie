@@ -33,6 +33,26 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
   `/oauth/return`). Every response carries a strict CSP, `X-Frame-Options: DENY`,
   `Referrer-Policy: no-referrer`, COOP/CORP `same-origin` and `nosniff`. The directory is opened
   with `os.Root`: neither `..` nor a symlink escapes it.
+- **A binary's own pages.** A binary that embeds the daemon may add to how the console is served
+  (`app.Options.Pages`, `webui.Pages`; there is no variable, and `serve` never sets it).
+  `Document`, given the request, is asked about every page document (the page answered for a GET or
+  HEAD of a route of the console, never a file, an API path, a refusal or a 404) and answers what
+  that one carries besides the handler's own headers: headers of its own (one that depends on the
+  path, or on who asked, is decided there), and `Whole`, which answers it whole and never stored
+  (`Cache-Control: no-store`, the request's conditional and range headers ignored, so never a
+  `304` whose stored copy would carry another request's headers). It never replaces a header that
+  protects the page or describes the answer (the CSP, `X-Frame-Options`, `nosniff`, COOP, CORP,
+  `Permissions-Policy`, `Cache-Control`, the content's type, length, encoding, range and
+  disposition, `Last-Modified`, `ETag`, `Set-Cookie`): those stay as the handler set them. It may
+  replace `Referrer-Policy` only with one policy that never sends another origin the page's path or
+  query (`no-referrer`, `same-origin`, `origin`, `strict-origin`, `origin-when-cross-origin`,
+  `strict-origin-when-cross-origin`), since a provider's return carries its code there; and a page's
+  own `<meta name="referrer">` applies after the header. `Files` are small files served from memory
+  at their exact path, for GET and HEAD, each with its own type, `no-store` and whole, before the
+  build's files: a clean path with an extension, of letters, digits and `-._~/`, never
+  `/index.html`, under `/assets/` or under the API's prefixes. A path or type it would not serve
+  stops the daemon at start (`webui.ErrPages`), before anything is opened. Unset, every answer is
+  what it always was.
 - **Other origins.** `MAIL_CONNECT_SRC`, empty by default, adds origins to the header's
   `connect-src`, for an edition whose pages talk to a service on another origin: a list separated by
   spaces, each a scheme and a host with an optional port, without a path, query, fragment or
@@ -201,6 +221,15 @@ built on the same pieces, so it behaves as it always did:
   session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
   shows the person's own settings, with words of its own (`title`, `description`,
   `signOutLabel`). Signing out goes through the core's `signOut`, and so the edition's `signedOut`.
+
+`ConsoleShell` itself also serves an edition whose person's own settings are elsewhere (on pages
+of its own, in such a frame): its `account`, the person's own section that the sidebar's profile
+and the header's initials open, is optional. Without it the sidebar's foot (and the drawer's) says
+who is signed in, as text that opens nothing, beside Sign out, and the header has no profile
+button. `links` (`ConsoleLinks`: `{label, items}`, each item `{id, label, icon, href}`) draws,
+after the sections in the sidebar and in the drawer, a navigation of plain links named `label` and
+headed by it: places the frame never holds, which leave the page (no section is current there).
+The open edition sets `account` and no links, and its frame is the one it always was.
 
 The open edition reaches them only through `ConsoleShell` and `App.vue`.
 
@@ -487,8 +516,9 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   one; the instance invitations waiting for the address are spent, as signing up spends them. The
   name is the provider's, so it is made into one the server takes (control characters become
   spaces, a name past 120 characters is cut) rather than refused; the person a linked pair signs in
-  keeps theirs, whatever the provider now calls them. All of this, and the session or the
-  enrolment ticket (below), is one transaction.
+  keeps theirs, whatever the provider now calls them, unless names follow the identity
+  (`NameFollowsIdentity`, below). All of this, and the session or the enrolment ticket (below), is
+  one transaction.
 - **An identity never takes over a person who exists.** Accounts are never linked by matching
   addresses: when somebody here already has the address, compared without regard to case, the
   sign-in is refused (`conflict`) and nothing is created or linked, whoever they are, however they
@@ -578,6 +608,18 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   `/v1/workspaces/{id}/invites`. No salt key is made there. The command line's `--bootstrap`
   commands still write to the database, but an invitation they print signs nobody up there. Left at
   its zero value nothing changes.
+- **`NameFollowsIdentity`** (`app.Options`, `service.Deps`; set only by a binary that embeds the
+  daemon, never by `serve`) is a server whose people's names are their identity provider's. Every
+  sign-in (`SignInExternal`) names the person its pair signs in as `ExternalSignIn.Name` says then,
+  made the same way as a new person's, and an empty name leaves them none, not the last one; it is
+  written in the sign-in's transaction, so a refused sign-in (a disabled person, a product key id
+  nothing is pinned under) or one that creates nothing changes no name. Only a sign-in does it: a
+  step-up (`ExternalStepUpProof`) carries no name, and nothing else (an external directory's
+  document included) gives one. Such a person never renames themselves here: `PUT
+  /v1/auth/profile` is a `conflict` (caused by `auth.ErrNameFromIdentity`), whatever the name, and
+  the name is changed where they sign in, reaching this server at their next sign-in. A person
+  without an identity, who signs in with a password, names themselves as ever. Left at its zero
+  value, the name the first sign-in gave is the person's to change.
 
 ### Keys and scopes
 
@@ -916,7 +958,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/auth/password/finish` | session | `{ticket, current_auth_key, auth_key, kdf, password_wrap}` → a new `Session` (a change: every other session ends), or 204 (a sign-in's re-derivation); `current_auth_key` is the auth key that earned the ticket (`password/begin`'s, or the sign-in's) |
 | `POST /v1/auth/recovery` | session, current auth key | `{current_auth_key, recovery_wrap, recovery_proof}` → 204 |
 | `POST /v1/auth/stepup` | session | `{auth_key}` → `{authenticated_at}` |
-| `PUT /v1/auth/profile` | session | `{name}` → `User` |
+| `PUT /v1/auth/profile` | session | `{name}` → `User`; `conflict` for a person whose name follows their identity (`NameFollowsIdentity`) |
 | `POST /v1/users/invites` | instance owner signed in, or unrestricted instance admin key | `{email, role?}` → `Invite` |
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins the team with the invite's role |
 | `POST /v1/users/disable` | owner signed in (never on themselves), or unrestricted instance admin key | `{email, force?}`: sessions ended, keys revoked, and `team_syncs_stopped` |

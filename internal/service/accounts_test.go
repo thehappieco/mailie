@@ -77,6 +77,9 @@ type fixtureOptions struct {
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
+	// nameFollowsIdentity is a daemon whose people's names follow the
+	// identity they sign in with through an extension.
+	nameFollowsIdentity bool
 	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false.
 	keysMayNotSend bool
 	// keysActUnderCreator is MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true.
@@ -169,6 +172,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		SendSpoolBytes:             f.opts.sendSpool,
 		ConsentVersions:            f.opts.consent,
 		ExternalSignInOnly:         f.opts.externalSignInOnly,
+		NameFollowsIdentity:        f.opts.nameFollowsIdentity,
 		KeysMayNotSend:             f.opts.keysMayNotSend,
 		KeysActUnderCreatorConsent: f.opts.keysActUnderCreator,
 		TeamsWithheld:              f.opts.teamsWithheld,

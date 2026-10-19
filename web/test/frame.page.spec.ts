@@ -1,9 +1,11 @@
 // The pieces a host draws its own frame with, on a page (test/dom.ts): what
 // keeps the console going while a frame is on screen (useConsoleFrame), the
 // page's life around its phases (useAppLifecycle, AppOverlays), the core's own
-// frame, which alone owns the page's scrolling (useFixedFrame), and the row of
-// the person's sessions (SessionsRow). The open console builds on the same
-// pieces, and its own specs hold what it shows.
+// frame, which alone owns the page's scrolling (useFixedFrame), the row of
+// the person's sessions (SessionsRow), and the core's frame for an edition
+// whose person's settings are elsewhere (ConsoleShell without an account
+// section, with links). The open console builds on the same pieces, and its
+// own specs hold what it shows.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
@@ -12,6 +14,7 @@ import { mount, type Mounted } from './mount'
 import type { Workspace } from '../src/api/types'
 import App from '../src/App.vue'
 import AppOverlays from '../src/components/AppOverlays.vue'
+import ConsoleShell, { type ConsoleLinks, type ConsoleSection } from '../src/components/ConsoleShell.vue'
 import RestoringView from '../src/components/RestoringView.vue'
 import SessionsRow from '../src/components/SessionsRow.vue'
 import SignInView from '../src/components/SignInView.vue'
@@ -226,5 +229,73 @@ describe('the row of the person’s sessions', () => {
     expect(row).toContain('Until tomorrow.')
     expect(row).not.toContain('This session lasts until')
     expect(find('button', 'Leave this page’s session')).not.toBeNull()
+  })
+})
+
+/** The one section of an edition whose person's own settings are elsewhere. */
+const Reading = defineComponent({ setup: () => () => h('p', { class: 'reading' }, 'Your mail') })
+const reading: ConsoleSection[] = [{ id: 'mail', label: 'Mail', description: 'Read your mail.', icon: 'inbox', component: Reading }]
+const elsewhere: ConsoleLinks = {
+  label: 'Settings',
+  items: [
+    { id: 'mailboxes', label: 'Email accounts', icon: 'mail', href: '/screens/mailboxes?workspace=w1' },
+    { id: 'permissions', label: 'Permissions', icon: 'shield', href: '/screens/permissions?workspace=w1' },
+  ],
+}
+/** Each link of a group of links, as its label and where it goes. */
+const linked = (selector: string) => page.querySelectorAll(`${selector} a`).map(link => `${words(link)} → ${link.getAttribute('href')}`)
+
+describe('the core’s frame, for an edition whose person’s settings are elsewhere', () => {
+  it('links to them after its sections, as plain links under the group’s name, in the sidebar and in the drawer', async () => {
+    await adoptSession(reply())
+    mounted.push(mount(ConsoleShell, { sections: reading, home: 'mail', links: elsewhere }))
+    await flush()
+    const want = ['Email accounts → /screens/mailboxes?workspace=w1', 'Permissions → /screens/permissions?workspace=w1']
+    const group = find('.console-sidebar nav.console-links')!
+    expect(group.getAttribute('aria-label')).toBe('Settings')
+    expect(words(group.querySelector('.console-links-label')!)).toBe('Settings')
+    expect(linked('.console-sidebar nav.console-links')).toEqual(want)
+    // Links, never the frame's own sections: no button, nothing current.
+    expect(group.querySelectorAll('button')).toEqual([])
+    expect(group.querySelectorAll('[aria-current]')).toEqual([])
+    expect(page.querySelectorAll('.console-sidebar nav').map(nav => nav.getAttribute('aria-label'))).toEqual(['Sections', 'Settings'])
+    expect(words(find('.reading')!)).toBe('Your mail')
+
+    await click(find('.mobile-menu'))
+    expect(linked('.mobile-navigation nav.console-links')).toEqual(want)
+    expect(find('.mobile-navigation nav.console-links')!.getAttribute('aria-label')).toBe('Settings')
+  })
+
+  it('says who is signed in at the sidebar’s foot, as text that opens nothing, and keeps signing out', async () => {
+    await adoptSession(reply())
+    mounted.push(mount(ConsoleShell, { sections: reading, home: 'mail', links: elsewhere }))
+    await flush()
+    expect(find('.profile-trigger')).toBeNull()
+    expect(find('.mobile-profile')).toBeNull()
+    const who = (selector: string) => ['strong', 'small'].map(part => words(find(`${selector} .profile-who ${part}`)!))
+    expect(who('.console-sidebar')).toEqual(['Ana Souza', 'ana@example.test'])
+    await click(find('.mobile-menu'))
+    expect(who('.mobile-account-area')).toEqual(['Ana Souza', 'ana@example.test'])
+    expect(find('.mobile-account-area .profile-trigger')).toBeNull()
+
+    await click(find('.console-sidebar .profile-signout'))
+    await vi.waitFor(() => expect(session.phase).toBe('signed-out'))
+    expect(asked('/v1/auth/logout').map(request => request.body)).toEqual([{ everywhere: false }])
+  })
+
+  it('with the person’s own section and no links, is the frame it always was', async () => {
+    await adoptSession(reply())
+    const own = defineComponent({ setup: () => () => h('p', { class: 'own' }, 'Yours') })
+    mounted.push(mount(ConsoleShell, {
+      sections: [...reading, { id: 'account', label: 'Account', description: 'Yours.', icon: 'user', component: own, scope: 'person' }],
+      home: 'mail', account: 'account',
+    }))
+    await flush()
+    expect(find('.console-links')).toBeNull()
+    expect(find('.profile-who')).toBeNull()
+    expect(find('.mobile-profile')!.getAttribute('aria-label')).toBe('Account')
+    await click(find('.console-sidebar .profile-trigger'))
+    expect(words(find('.own')!)).toBe('Yours')
+    expect(find('.console-sidebar [aria-current]')!.textContent).toContain('Account')
   })
 })
