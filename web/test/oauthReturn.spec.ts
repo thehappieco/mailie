@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FLOW_LIFETIME_MS, captureOAuthReturn, oauthBack, parseOAuthReturn, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
 import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
-import { account, failure, freshModules, json, ORIGIN, reply, serve, stubPage } from './support'
+import { account, ana, failure, freshModules, json, ORIGIN, reply, serve, stubPage } from './support'
 
 // A return is also held in module memory until taken; take it so no test sees another's.
 afterEach(() => { takeOAuthReturn(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -229,6 +229,43 @@ describe('finishing a return', () => {
     expect((init!.headers as Record<string, string>).Authorization).toBe('Bearer ' + reply().token)
     expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.souza@example.test', syncing: false })
     expect(accounts.accounts.list.map(item => item.email)).toEqual(['ana.souza@example.test'])
+  })
+
+  it('finishes a return that comes back before the person’s workspaces were read, and shows the one its mailbox is in', async () => {
+    const PERSONAL = 'wsp_000000000000aaaa'
+    const TEAM = 'wsp_000000000000bbbb'
+    const listed = [
+      { id: PERSONAL, kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 },
+      { id: TEAM, kind: 'team', source: 'local', name: 'Support', role: 'admin', status: 'active', created_at: 1_790_000_000 },
+    ]
+    const { accounts, returns, fetch } = await signedIn(({ path }) => path === '/v1/workspaces'
+      ? json(listed) : json(account({ state: 'active', email: 'suporte@example.test', workspace_id: TEAM })))
+    const { workspaces } = await import('../src/state/workspaces')
+    returns.rememberOAuthStart({ account_id: 'acc_0000000000000001', provider: 'gmail', email: 'suporte@example.test' })
+    returns.captureOAuthReturn()
+    // A page back from the provider: the workspace shown is first known while the return is finished.
+    expect(workspaces.loaded).toBe(false)
+    await accounts.finishOAuthReturn()
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/v1/accounts/oauth/callback'))).toHaveLength(1)
+    expect(workspaces.currentID).toBe(TEAM)
+    expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'suporte@example.test', syncing: false })
+  })
+
+  it('posts nothing for a return whose person signed out while the workspaces were read, not even with the next person’s session', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+    const { accounts, returns, fetch, session } = await signedIn(async ({ path }) => {
+      if (path !== '/v1/workspaces') return json(account({ state: 'active' }))
+      await held
+      return json([{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }])
+    })
+    returns.captureOAuthReturn()
+    const finishing = accounts.finishOAuthReturn()
+    await session.signOut()
+    await session.adoptSession(reply('tok_second_000000000000000000000000000000000', { ...ana, id: 'usr_00000000000000b1', email: 'bea@example.test' }))
+    release()
+    await finishing
+    expect(fetch.mock.calls.filter(([url]) => String(url).endsWith('/v1/accounts/oauth/callback'))).toHaveLength(0)
   })
 
   it('posts a return exactly once in a browser that refuses site storage', async () => {

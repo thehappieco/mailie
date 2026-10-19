@@ -874,15 +874,19 @@ export async function finishOAuthReturn(now = Date.now()): Promise<void> {
   const found = takeOAuthReturn()
   const start = takeOAuthStart(now)
   if (!found) return
-  const current = currentAccounts()
+  const person = identity()
   const email = start?.email ?? ''
   if (now - found.at > FLOW_LIFETIME_MS) { accounts.notice = { kind: 'failed', email, failure: { op: 'complete-auth', code: 'return_expired' } }; return }
   if (!found.url) { accounts.notice = { kind: 'failed', email, failure: { op: 'complete-auth', code: 'return_invalid' } }; return }
   // Which workspaces there are, to show the one the mailbox lands in; read
   // first, so nothing waits on it once the provider's code is exchanged. Not
-  // knowing them is no reason to let the code expire.
+  // knowing them is no reason to let the code expire. A page that comes back
+  // from the provider has seldom read them yet: the workspace shown is first
+  // known now, which is no change of the list under this return, so what
+  // follows is held to the list from here on (and to the same person).
   await settleWorkspace().catch(() => '')
-  if (!current()) return
+  if (identity() !== person) return
+  const current = currentAccounts()
   try {
     const account = await authorized(token => api.completeOAuth(token, found.url))
     if (!current()) return
