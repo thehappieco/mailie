@@ -26,6 +26,12 @@ interface ConsentState {
   /** The text revision the person agreed to; empty until they do. */
   version: string
   consentedAt: number
+  /**
+   * When the person last took the consent back, while they have not given
+   * it again; 0 when they never answered (or consent). The open console asks
+   * again regardless; an edition that asks only the first time reads it.
+   */
+  withdrawnAt: number
   /** The revision the server asks about now; the page's own text is the edition's actions.version. */
   currentVersion: string
   /** "Not now" where the question was asked, for this page's life only. */
@@ -36,7 +42,7 @@ interface ConsentState {
 }
 
 const freshConsent = (): ConsentState => ({
-  loaded: false, loading: false, failure: null, consented: false, version: '', consentedAt: 0, currentVersion: '',
+  loaded: false, loading: false, failure: null, consented: false, version: '', consentedAt: 0, withdrawnAt: 0, currentVersion: '',
   dismissed: false, busy: '', problem: null,
 })
 
@@ -80,6 +86,7 @@ function adopt(answer: ActionsConsent): void {
   actionsConsent.consented = answer.consented
   actionsConsent.version = answer.version ?? ''
   actionsConsent.consentedAt = answer.consented_at ?? 0
+  actionsConsent.withdrawnAt = answer.withdrawn_at ?? 0
   actionsConsent.currentVersion = answer.current_version
   tell('adopted')
 }

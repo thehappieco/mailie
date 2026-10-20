@@ -493,7 +493,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   nobody can read is never switched on. Closing a person without force is refused for the last
   reader of a team that outlives them (one another member remains in, whatever their status, or
   one whose source is not local), the same test as whether the team goes with them. Actions and sending have their own consents, the actor's own,
-  checked again right before the mail server is touched; a workspace key's are the key terms its
+  checked again right before the mail server is touched; a withdrawal of either writes its moment
+  (`actions_consent_withdrawn_at`, `send_consent_withdrawn_at`, migration 0024) in the `UPDATE`
+  that clears it and a grant clears that in its own, answered as `withdrawn_at`, never beside a
+  consent, so an edition may ask only someone who never answered (the open console asks again); a workspace key's are the key terms its
   creator agreed to (recorded on the key), with the key, its flag and its scope checked again
   instead, so no text says a person's own switch stops a key created since 0012. The revisions come
   from

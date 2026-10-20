@@ -400,15 +400,17 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           calls.actionsConsent.push('grant')
           user.actionsVersion = versions.actions
           user.actions ||= now()
+          user.actionsWithdrawn = 0
         } else if (method === 'DELETE') {
           // Nothing was stored by actions: turning them off only stops them.
           calls.actionsConsent.push('withdraw')
           user.actions = 0
           user.actionsVersion = ''
+          user.actionsWithdrawn = now()
         }
         return json(user.actions
           ? { consented: true, consented_at: user.actions, current_version: versions.actions, version: user.actionsVersion }
-          : { consented: false, current_version: versions.actions })
+          : { consented: false, current_version: versions.actions, ...(user.actionsWithdrawn ? { withdrawn_at: user.actionsWithdrawn } : {}) })
       }
       const syncMatch = path.match(/^\/v1\/accounts\/([^/]+)\/sync$/)
       if (syncMatch && method === 'POST') {

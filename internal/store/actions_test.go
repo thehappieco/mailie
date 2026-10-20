@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/emersion/go-imap/v2"
@@ -323,11 +324,18 @@ func TestActionsConsentKeepsTheFirstDateAndWithdrawingClearsIt(t *testing.T) {
 	if err != nil || again.At != first.At-100 {
 		t.Fatalf("granting the same version again moved the date: %+v, %v", again, err)
 	}
-	if err := f.db.WithdrawActionsConsent(ctx, "usr_1"); err != nil {
+	if first.WithdrawnAt != 0 || again.WithdrawnAt != 0 {
+		t.Errorf("a person who allows actions has withdrawn them: %+v, %+v", first, again)
+	}
+	withdrawn, err := f.db.WithdrawActionsConsent(ctx, "usr_1")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if c, _ := f.db.ActionsConsentOf(ctx, "usr_1"); c.At != 0 || c.Version != "" {
-		t.Fatalf("after withdrawing: %+v", c)
+	if c, _ := f.db.ActionsConsentOf(ctx, "usr_1"); c.At != 0 || c.Version != "" || c != withdrawn {
+		t.Fatalf("after withdrawing: %+v, and the withdrawal answered %+v", c, withdrawn)
+	}
+	if withdrawn.WithdrawnAt == 0 || withdrawn.WithdrawnAt != f.int(`SELECT updated_at FROM users WHERE id = 'usr_1'`) {
+		t.Errorf("the withdrawal recorded no moment of its own: %+v", withdrawn)
 	}
 	// Sync goes on: the two consents are separate.
 	if n := f.int(`SELECT sync_consent_at FROM users WHERE id = 'usr_1'`); n == 0 {
@@ -335,6 +343,64 @@ func TestActionsConsentKeepsTheFirstDateAndWithdrawingClearsIt(t *testing.T) {
 	}
 	if _, err := f.db.ActionsConsentOf(ctx, "usr_nobody"); err == nil {
 		t.Error("a person who does not exist has a consent")
+	}
+	if _, err := f.db.WithdrawActionsConsent(ctx, "usr_nobody"); !errors.Is(err, store.ErrNoSuchUser) {
+		t.Errorf("withdrawing for nobody = %v, want ErrNoSuchUser", err)
+	}
+}
+
+func TestAWithdrawalIsRecordedUntilTheConsentIsGivenAgain(t *testing.T) {
+	f := newIndex(t)
+	ctx := context.Background()
+	if a, err := f.db.ActionsConsentOf(ctx, "usr_1"); err != nil || a.WithdrawnAt != 0 {
+		t.Fatalf("a person never asked has withdrawn actions: %+v, %v", a, err)
+	}
+	if c, err := f.db.SendConsentOf(ctx, "usr_1"); err != nil || c.WithdrawnAt != 0 {
+		t.Fatalf("a person never asked has withdrawn sending: %+v, %v", c, err)
+	}
+	if _, err := f.db.GrantActionsConsent(ctx, "usr_1", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.db.GrantSendConsent(ctx, "usr_1", "s1"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Each withdrawal records its moment, and leaves the other consent as
+	// it was.
+	actions, err := f.db.WithdrawActionsConsent(ctx, "usr_1")
+	if err != nil || actions.At != 0 || actions.Version != "" || actions.WithdrawnAt == 0 {
+		t.Fatalf("withdrawing actions = %+v, %v", actions, err)
+	}
+	if c, _ := f.db.SendConsentOf(ctx, "usr_1"); c.At == 0 || c.WithdrawnAt != 0 {
+		t.Errorf("withdrawing actions touched sending: %+v", c)
+	}
+	send, err := f.db.WithdrawSendConsent(ctx, "usr_1")
+	if err != nil || send.At != 0 || send.Version != "" || send.WithdrawnAt == 0 {
+		t.Fatalf("withdrawing sending = %+v, %v", send, err)
+	}
+	if a, _ := f.db.ActionsConsentOf(ctx, "usr_1"); a != actions {
+		t.Errorf("reading actions after withdrawing sending = %+v, want %+v", a, actions)
+	}
+
+	// Given again, the withdrawal is gone in the same write: a consent is
+	// never beside one.
+	given, err := f.db.GrantActionsConsent(ctx, "usr_1", "v2")
+	if err != nil || given.At == 0 || given.WithdrawnAt != 0 {
+		t.Fatalf("granting actions again = %+v, %v", given, err)
+	}
+	if n := f.int(`SELECT actions_consent_withdrawn_at FROM users WHERE id = 'usr_1'`); n != 0 {
+		t.Errorf("the withdrawal of actions is still recorded: %d", n)
+	}
+	sending, err := f.db.GrantSendConsent(ctx, "usr_1", "s2")
+	if err != nil || sending.At == 0 || sending.WithdrawnAt != 0 {
+		t.Fatalf("granting sending again = %+v, %v", sending, err)
+	}
+	if n := f.int(`SELECT count(*) FROM users WHERE (actions_consent_at <> 0 AND actions_consent_withdrawn_at <> 0)
+		OR (send_consent_at <> 0 AND send_consent_withdrawn_at <> 0)`); n != 0 {
+		t.Errorf("%d people hold a consent beside a withdrawal", n)
+	}
+	if _, err := f.db.WithdrawSendConsent(ctx, "usr_nobody"); !errors.Is(err, store.ErrNoSuchUser) {
+		t.Errorf("withdrawing sending for nobody = %v, want ErrNoSuchUser", err)
 	}
 }
 

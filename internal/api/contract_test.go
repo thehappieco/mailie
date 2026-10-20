@@ -498,6 +498,11 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("account_held", http.StatusOK, http.MethodPost, "/v1/accounts/"+billingID+"/recover", token, "")
 	capture("removal_purged", http.StatusOK, http.MethodDelete, "/v1/accounts/"+gmail+"?confirm="+gmail, token, "")
 
+	// Ana takes her consents to actions and to sending back, after everything
+	// that acts or sends: each answer says when.
+	capture("actions_consent_withdrawn", http.StatusOK, http.MethodDelete, "/v1/me/actions-consent", token, "")
+	capture("send_consent_withdrawn", http.StatusOK, http.MethodDelete, "/v1/me/send-consent", token, "")
+
 	// A plain session, as signing up, a reset and a password change answer
 	// it: here a password change, which ends every session ana had, so it
 	// comes last.

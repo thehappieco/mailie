@@ -21,7 +21,7 @@ import {
   type Challenge, type LoginReply, type Opening, type RecoverOpen,
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
   isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
-  isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
+  isActionsConsent, isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
   isGrantText, isMailboxKeyPair, isMailboxKeyState, isSealedGrant, isSealIDText, readsNow,
   isPersonNoticeList, isRemoval, isRemovedMailboxList, type PersonNotice, type Removal, type RemovedMailbox,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
@@ -76,15 +76,17 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['event', value => isServerEvent(value, true)],
   ['events_wait', value => isWaitResult(value, true)],
   ['folders_indexed', value => Array.isArray(value) && value.every(item => isFolder(item, true))],
-  ['actions_consent', value => isSyncConsent(value, true)],
-  ['actions_consent_given', value => isSyncConsent(value, true)],
+  ['actions_consent', value => isActionsConsent(value, true)],
+  ['actions_consent_given', value => isActionsConsent(value, true)],
+  ['actions_consent_withdrawn', value => isActionsConsent(value, true)],
   ['apikeys', value => isWorkspaceKeyList(value, true)],
   ['my_apikeys', value => isWorkspaceKeyList(value, true)],
   ['apikey_created', value => isCreatedKey(value, true)],
   ['key_access', value => isKeyMailbox(value, true)],
   ['key_sends', value => isKeySendList(value, true)],
-  ['send_consent', value => isSyncConsent(value, true)],
-  ['send_consent_given', value => isSyncConsent(value, true)],
+  ['send_consent', value => isActionsConsent(value, true)],
+  ['send_consent_given', value => isActionsConsent(value, true)],
+  ['send_consent_withdrawn', value => isActionsConsent(value, true)],
   ['storage', value => isStorage(value, true)],
   ['mcp', value => isMcpAccess(value, true)],
   ['workspaces', value => isWorkspaceList(value, true)],
@@ -282,6 +284,24 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(ACTIONS_TEXT_VERSION).not.toBe(CONSENT_TEXT_VERSION)
   })
 
+  it('tells a person who withdrew actions or sending apart from one never asked, and never beside a consent', () => {
+    for (const [never, given, withdrawn] of [
+      ['actions_consent', 'actions_consent_given', 'actions_consent_withdrawn'],
+      ['send_consent', 'send_consent_given', 'send_consent_withdrawn'],
+    ] as const) {
+      expect((fixture(never) as ActionsConsent).withdrawn_at, never).toBeUndefined()
+      expect((fixture(given) as ActionsConsent).withdrawn_at, given).toBeUndefined()
+      const after = fixture(withdrawn) as ActionsConsent
+      expect(after.consented, withdrawn).toBe(false)
+      expect(after.version, withdrawn).toBeUndefined()
+      expect(after.withdrawn_at, withdrawn).toBeGreaterThan(0)
+    }
+    // The strict check refuses one beside a consent; sync's answer has none.
+    expect(isActionsConsent({ ...(fixture('actions_consent_given') as object), withdrawn_at: 1 }, true)).toBe(false)
+    expect(isSyncConsent(fixture('actions_consent_withdrawn'), true)).toBe(false)
+    expect(isSyncConsent(fixture('actions_consent_withdrawn'))).toBe(true)
+  })
+
   it('says on every account whether it has an archive and a trash to move to', () => {
     for (const name of ['account', 'account_icloud', 'account_syncing']) {
       const actions = (fixture(name) as Account).actions
@@ -401,9 +421,9 @@ describe('the HTTP contract the Go handlers answer with', () => {
   it('names the revision of a sending text the open console does not show, apart from the others', () => {
     // The open console asks nobody about sending, but the daemon's default
     // still names a revision of its own, which a deployment's console must
-    // replace with its text's. The answer has sync's shape.
+    // replace with its text's. The answer has actions' shape.
     const before = fixture('send_consent') as SyncConsent
-    expect(isSyncConsent(before, true)).toBe(true)
+    expect(isActionsConsent(before, true)).toBe(true)
     expect(before).toEqual({ consented: false, current_version: SEND_TEXT_VERSION })
     expect((fixture('send_consent_given') as SyncConsent).current_version).toBe(SEND_TEXT_VERSION)
     expect(new Set([SEND_TEXT_VERSION, ACTIONS_TEXT_VERSION, CONSENT_TEXT_VERSION, KEY_TERMS_VERSION]).size).toBe(4)

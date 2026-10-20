@@ -251,8 +251,14 @@ export interface AccountSync {
 }
 /** A person's answer about sync, and the revision of the text the server asks about. */
 export interface SyncConsent { consented: boolean; version?: string; consented_at?: number; current_version: string }
-/** A person's answer about actions on their messages: the same shape, its own revision. */
-export type ActionsConsent = SyncConsent
+/**
+ * A person's answer about actions on their messages: sync's shape, its own
+ * revision, and withdrawn_at, when the person last took it back while they
+ * have not given it again (absent for a person who consents, who never
+ * answered, or whose withdrawal the server did not record). Sending's answer
+ * has this shape too.
+ */
+export interface ActionsConsent extends SyncConsent { withdrawn_at?: number }
 /** One journal entry, as the event stream's data lines and the long poll both carry it. */
 export interface ServerEvent { seq: number; type: string; account_id: string; at: number; payload: Record<string, unknown> }
 export interface WaitResult { timed_out: boolean; lagged: boolean; events: ServerEvent[]; next_cursor: number }
@@ -939,6 +945,14 @@ export function isAccountSync(v: unknown, strict = false): v is AccountSync {
 export function isSyncConsent(v: unknown, strict = false): v is SyncConsent {
   return record(v) && known(v, ['consented', 'version', 'consented_at', 'current_version'], strict)
     && flag(v.consented) && optional(v.version, x => text(x, 128)) && optional(v.consented_at, seconds) && filled(v.current_version, 128)
+}
+
+/** Actions' and sending's answer: sync's, and when it was withdrawn, never beside a consent. */
+export function isActionsConsent(v: unknown, strict = false): v is ActionsConsent {
+  if (!record(v)) return false
+  const { withdrawn_at: withdrawnAt, ...rest } = v
+  return isSyncConsent(rest, strict) && optional(withdrawnAt, seconds)
+    && (!strict || withdrawnAt === undefined || (typeof withdrawnAt === 'number' && withdrawnAt > 0 && v.consented === false))
 }
 
 export function isServerEvent(v: unknown, strict = false): v is ServerEvent {

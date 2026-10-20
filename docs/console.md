@@ -1585,8 +1585,14 @@ Changing a mailbox is a new use of it, so actions have their **own** consent, se
 acts as nobody). `POST {"version": …}` and `DELETE` are the person's, signed in. Withdrawing
 deletes nothing and stops actions at once: every action checks the consent before connecting and
 again, on the connection, before each command that changes the mailbox. `ActionsConsent` has the
-shape of `SyncConsent`. Without sync there is no index, and without an index no message to act on;
-an index that stays while sync is stopped is not acted on either (point 6 below).
+shape of `SyncConsent` and one more field, `withdrawn_at`: when the person last withdrew it
+(`users.actions_consent_withdrawn_at`, migration 0024), written in the same `UPDATE` that clears the
+consent and cleared by the one that gives it again, so it is never beside a consent. It is absent
+for a person who never answered, which tells the two apart; a withdrawal made before migration 0024
+reads as never answered. The open console asks again either way; an edition that asks for a
+permission only the first time leaves a person who withdrew it alone. Without sync there is no
+index, and without an index no message to act on; an index that stays while sync is stopped is not
+acted on either (point 6 below).
 
 ### Who may act
 
@@ -1667,7 +1673,8 @@ sending is an API feature.
 ### Consent to sending
 
 Its **own** consent, like actions: `users.send_consent_at` and `users.send_consent_version`, revision
-`MAIL_CONSENT_VERSION_SEND`. `GET /v1/me/send-consent` reads it; `POST {"version": …}` and `DELETE`
+`MAIL_CONSENT_VERSION_SEND`, and its `withdrawn_at` (`users.send_consent_withdrawn_at`), as actions'
+has. `GET /v1/me/send-consent` reads it; `POST {"version": …}` and `DELETE`
 are the person's, signed in. Withdrawing deletes nothing and stops sending at once: every send checks
 the consent when it is accepted and **again right before each connection to the SMTP server**. The
 open console never asks for this consent, so on a server running it a person's mailbox does not

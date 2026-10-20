@@ -54,7 +54,7 @@ afterEach(() => {
   Object.assign(connect, { phase: 'idle', provider: '', email: '', accountID: '', created: false, flow: '', failure: null })
   Object.assign(consent, { loaded: false, consented: false, version: '', consentedAt: 0, currentVersion: '', dismissed: false, busy: '', problem: null, failure: null })
   for (const id of Object.keys(syncRequests)) delete syncRequests[id]
-  Object.assign(actionsConsent, { loaded: false, consented: false, version: '', consentedAt: 0, currentVersion: '', dismissed: false, busy: '', problem: null, failure: null })
+  Object.assign(actionsConsent, { loaded: false, consented: false, version: '', consentedAt: 0, withdrawnAt: 0, currentVersion: '', dismissed: false, busy: '', problem: null, failure: null })
   Object.assign(apiKeys, { list: [], loaded: false, loading: false, failure: null, revoking: '' })
   Object.assign(mcpAccess, { loaded: false, loading: false, served: false })
   Object.assign(workspaces, { list: [], loaded: false, supported: false, currentID: '', failure: null, lost: null })

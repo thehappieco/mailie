@@ -7,6 +7,7 @@ import { freshModules, json, reply, serve, stubPage, type Route } from './suppor
 
 const notYet = { consented: false, current_version: ACTIONS_TEXT_VERSION }
 const given = { consented: true, consented_at: 1_790_000_000, version: ACTIONS_TEXT_VERSION, current_version: ACTIONS_TEXT_VERSION }
+const withdrawn = { consented: false, current_version: ACTIONS_TEXT_VERSION, withdrawn_at: 1_790_000_100 }
 
 async function signedIn(route: Route) {
   await freshModules()
@@ -59,6 +60,20 @@ describe('consent to actions', () => {
     expect(consent.actionsStanding()).toBe('outdated')
     expect(await consent.allowActions()).toBe(false)
     expect(bodies(fetch, 'POST')).toEqual([])
+  })
+
+  it('keeps when the person took it back, until they give it again, and still asks them in the open console', async () => {
+    let state: object = withdrawn
+    const { consent } = await signedIn(({ method }) => {
+      if (method === 'POST') state = given
+      return json(state)
+    })
+    await consent.loadActionsConsent()
+    expect(consent.actionsConsent.withdrawnAt).toBe(1_790_000_100)
+    // What the open console does with it is unchanged: it asks again.
+    expect(consent.needsActionsConsent()).toBe(true)
+    expect(await consent.allowActions()).toBe(true)
+    expect(consent.actionsConsent.withdrawnAt).toBe(0)
   })
 
   it('forgets the answer when the person changes', async () => {

@@ -165,6 +165,12 @@ type ActionsConsent struct {
 	// CurrentVersion is the revision this server asks for; until Version
 	// matches it, actions are refused.
 	CurrentVersion string `json:"current_version"`
+	// WithdrawnAt is when the person last took this consent back, while
+	// they have not given it again: absent for a person who consents, who
+	// never answered, or whose withdrawal came before the server recorded
+	// one. An edition that asks only the first time reads it to leave a
+	// person who said no alone.
+	WithdrawnAt int64 `json:"withdrawn_at,omitempty"`
 }
 
 // ActionsConsentRequest is agreeing to actions.
@@ -214,15 +220,16 @@ func (s *Service) WithdrawActionsConsent(ctx context.Context, p Principal) (Acti
 	if err := requireSession(p); err != nil {
 		return ActionsConsent{}, err
 	}
-	if err := s.store.WithdrawActionsConsent(ctx, p.UserID); err != nil {
+	c, err := s.store.WithdrawActionsConsent(ctx, p.UserID)
+	if err != nil {
 		return ActionsConsent{}, fromConsent(err, "withdrawing the actions consent failed")
 	}
 	s.log.Info("actions consent withdrawn", "user", p.UserID)
-	return s.presentActionsConsent(store.ActionsConsent{}), nil
+	return s.presentActionsConsent(c), nil
 }
 
 func (s *Service) presentActionsConsent(c store.ActionsConsent) ActionsConsent {
-	out := ActionsConsent{CurrentVersion: s.consent.Actions}
+	out := ActionsConsent{CurrentVersion: s.consent.Actions, WithdrawnAt: c.WithdrawnAt}
 	if c.At != 0 {
 		out.Consented = true
 		out.Version = c.Version
@@ -259,6 +266,12 @@ type SendConsent struct {
 	// CurrentVersion is the revision this server asks for; until Version
 	// matches it, sends are refused.
 	CurrentVersion string `json:"current_version"`
+	// WithdrawnAt is when the person last took this consent back, while
+	// they have not given it again: absent for a person who consents, who
+	// never answered, or whose withdrawal came before the server recorded
+	// one. An edition that asks only the first time reads it to leave a
+	// person who said no alone.
+	WithdrawnAt int64 `json:"withdrawn_at,omitempty"`
 }
 
 // SendConsentRequest is agreeing to sending.
@@ -307,15 +320,16 @@ func (s *Service) WithdrawSendConsent(ctx context.Context, p Principal) (SendCon
 	if err := requireSession(p); err != nil {
 		return SendConsent{}, err
 	}
-	if err := s.store.WithdrawSendConsent(ctx, p.UserID); err != nil {
+	c, err := s.store.WithdrawSendConsent(ctx, p.UserID)
+	if err != nil {
 		return SendConsent{}, fromConsent(err, "withdrawing the send consent failed")
 	}
 	s.log.Info("send consent withdrawn", "user", p.UserID)
-	return s.presentSendConsent(store.SendConsent{}), nil
+	return s.presentSendConsent(c), nil
 }
 
 func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
-	out := SendConsent{CurrentVersion: s.consent.Send}
+	out := SendConsent{CurrentVersion: s.consent.Send, WithdrawnAt: c.WithdrawnAt}
 	if c.At != 0 {
 		out.Consented = true
 		out.Version = c.Version

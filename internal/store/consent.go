@@ -173,10 +173,14 @@ func (s *Store) ForgetMoves(accountIDs []string) { s.moves.forget(accountIDs) }
 
 // ActionsConsent is a person's standing answer to Mailie changing their
 // mailboxes: when they allowed it and to which revision of the policy. A zero
-// At is no consent, never given or withdrawn.
+// At is no consent, never given or withdrawn; WithdrawnAt, when they last
+// took it back, tells the two apart (migration 0024). It is 0 while they
+// consent, and 0 for a person who never answered or whose withdrawal came
+// before that migration.
 type ActionsConsent struct {
-	At      int64
-	Version string
+	At          int64
+	Version     string
+	WithdrawnAt int64
 }
 
 // ActionsConsentOf reads a person's consent to actions. A person who does not
@@ -185,8 +189,9 @@ type ActionsConsent struct {
 func (s *Store) ActionsConsentOf(ctx context.Context, userID string) (ActionsConsent, error) {
 	var c ActionsConsent
 	err := s.r.QueryRowContext(ctx,
-		`SELECT actions_consent_at, actions_consent_version FROM users WHERE id = ? AND status = 'active'`, userID,
-	).Scan(&c.At, &c.Version)
+		`SELECT actions_consent_at, actions_consent_version, actions_consent_withdrawn_at FROM users
+		  WHERE id = ? AND status = 'active'`, userID,
+	).Scan(&c.At, &c.Version, &c.WithdrawnAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ActionsConsent{}, ErrNoSuchUser
@@ -198,7 +203,8 @@ func (s *Store) ActionsConsentOf(ctx context.Context, userID string) (ActionsCon
 
 // GrantActionsConsent records that a person allowed actions under version of
 // the policy. Allowing again under the same version keeps the first date, as
-// the sync consent does.
+// the sync consent does; a withdrawal before it is cleared in the same
+// UPDATE.
 func (s *Store) GrantActionsConsent(ctx context.Context, userID, version string) (ActionsConsent, error) {
 	now := s.now().Unix()
 	var c ActionsConsent
@@ -207,10 +213,10 @@ func (s *Store) GrantActionsConsent(ctx context.Context, userID, version string)
 			`UPDATE users
 			    SET actions_consent_at = CASE WHEN actions_consent_at = 0 OR actions_consent_version <> ?1
 			                                  THEN ?2 ELSE actions_consent_at END,
-			        actions_consent_version = ?1, updated_at = ?2
+			        actions_consent_version = ?1, actions_consent_withdrawn_at = 0, updated_at = ?2
 			  WHERE id = ?3 AND status = 'active'
-			  RETURNING actions_consent_at, actions_consent_version`, version, now, userID,
-		).Scan(&c.At, &c.Version)
+			  RETURNING actions_consent_at, actions_consent_version, actions_consent_withdrawn_at`, version, now, userID,
+		).Scan(&c.At, &c.Version, &c.WithdrawnAt)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoSuchUser
@@ -230,29 +236,41 @@ func (s *Store) GrantActionsConsent(ctx context.Context, userID, version string)
 // service checks the consent when an action is accepted and again before
 // each command that changes the mailbox, so once this has committed no
 // further change is sent; a command already on the wire finishes.
-func (s *Store) WithdrawActionsConsent(ctx context.Context, userID string) error {
+//
+// The withdrawal's moment is written in the same UPDATE (WithdrawnAt), so a
+// console can tell a person who said no from one never asked.
+func (s *Store) WithdrawActionsConsent(ctx context.Context, userID string) (ActionsConsent, error) {
 	now := s.now().Unix()
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET actions_consent_at = 0, actions_consent_version = '', updated_at = ? WHERE id = ?`, now, userID)
-		if err != nil {
-			return fmt.Errorf("store: withdraw actions consent: %w", err)
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return fmt.Errorf("store: withdraw actions consent: %w", err)
-		} else if n == 0 {
+	var c ActionsConsent
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx,
+			`UPDATE users SET actions_consent_at = 0, actions_consent_version = '', actions_consent_withdrawn_at = ?1,
+			        updated_at = ?1
+			  WHERE id = ?2
+			  RETURNING actions_consent_at, actions_consent_version, actions_consent_withdrawn_at`, now, userID,
+		).Scan(&c.At, &c.Version, &c.WithdrawnAt)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoSuchUser
+		case err != nil:
+			return fmt.Errorf("store: withdraw actions consent: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return ActionsConsent{}, err
+	}
+	return c, nil
 }
 
 // SendConsent is a person's standing answer to Mailie sending mail from
 // their mailboxes when they ask: when they allowed it and to which revision of
-// the policy. A zero At is no consent, never given or withdrawn.
+// the policy. A zero At is no consent, never given or withdrawn; WithdrawnAt,
+// when they last took it back, tells the two apart, as ActionsConsent's does.
 type SendConsent struct {
-	At      int64
-	Version string
+	At          int64
+	Version     string
+	WithdrawnAt int64
 }
 
 // SendConsentOf reads a person's consent to sending. A person who does not
@@ -261,8 +279,9 @@ type SendConsent struct {
 func (s *Store) SendConsentOf(ctx context.Context, userID string) (SendConsent, error) {
 	var c SendConsent
 	err := s.r.QueryRowContext(ctx,
-		`SELECT send_consent_at, send_consent_version FROM users WHERE id = ? AND status = 'active'`, userID,
-	).Scan(&c.At, &c.Version)
+		`SELECT send_consent_at, send_consent_version, send_consent_withdrawn_at FROM users
+		  WHERE id = ? AND status = 'active'`, userID,
+	).Scan(&c.At, &c.Version, &c.WithdrawnAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return SendConsent{}, ErrNoSuchUser
@@ -274,7 +293,7 @@ func (s *Store) SendConsentOf(ctx context.Context, userID string) (SendConsent, 
 
 // GrantSendConsent records that a person allowed sending under version of the
 // policy. Allowing again under the same version keeps the first date, as the
-// other consents do.
+// other consents do; a withdrawal before it is cleared in the same UPDATE.
 func (s *Store) GrantSendConsent(ctx context.Context, userID, version string) (SendConsent, error) {
 	now := s.now().Unix()
 	var c SendConsent
@@ -283,10 +302,10 @@ func (s *Store) GrantSendConsent(ctx context.Context, userID, version string) (S
 			`UPDATE users
 			    SET send_consent_at = CASE WHEN send_consent_at = 0 OR send_consent_version <> ?1
 			                               THEN ?2 ELSE send_consent_at END,
-			        send_consent_version = ?1, updated_at = ?2
+			        send_consent_version = ?1, send_consent_withdrawn_at = 0, updated_at = ?2
 			  WHERE id = ?3 AND status = 'active'
-			  RETURNING send_consent_at, send_consent_version`, version, now, userID,
-		).Scan(&c.At, &c.Version)
+			  RETURNING send_consent_at, send_consent_version, send_consent_withdrawn_at`, version, now, userID,
+		).Scan(&c.At, &c.Version, &c.WithdrawnAt)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoSuchUser
@@ -307,21 +326,31 @@ func (s *Store) GrantSendConsent(ctx context.Context, userID, version string) (S
 // right before it connects to the submission server, so once this has
 // committed no send of theirs connects; one already talking to the server
 // finishes.
-func (s *Store) WithdrawSendConsent(ctx context.Context, userID string) error {
+//
+// The withdrawal's moment is written in the same UPDATE (WithdrawnAt), as
+// WithdrawActionsConsent does.
+func (s *Store) WithdrawSendConsent(ctx context.Context, userID string) (SendConsent, error) {
 	now := s.now().Unix()
-	return s.Write(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx,
-			`UPDATE users SET send_consent_at = 0, send_consent_version = '', updated_at = ? WHERE id = ?`, now, userID)
-		if err != nil {
-			return fmt.Errorf("store: withdraw send consent: %w", err)
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return fmt.Errorf("store: withdraw send consent: %w", err)
-		} else if n == 0 {
+	var c SendConsent
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		err := tx.QueryRowContext(ctx,
+			`UPDATE users SET send_consent_at = 0, send_consent_version = '', send_consent_withdrawn_at = ?1,
+			        updated_at = ?1
+			  WHERE id = ?2
+			  RETURNING send_consent_at, send_consent_version, send_consent_withdrawn_at`, now, userID,
+		).Scan(&c.At, &c.Version, &c.WithdrawnAt)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoSuchUser
+		case err != nil:
+			return fmt.Errorf("store: withdraw send consent: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		return SendConsent{}, err
+	}
+	return c, nil
 }
 
 // MailboxConsent is a mailbox's own consent to sync: a team mailbox's, given

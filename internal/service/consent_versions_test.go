@@ -307,3 +307,49 @@ func TestATeamMailboxsConsentIsGivenOnlyToTheCurrentSyncTextAndOutlivesItsChange
 		}
 	}
 }
+
+func TestAPersonWhoWithdrewIsToldApartFromOneNeverAskedUntilTheyAgreeAgain(t *testing.T) {
+	m := newMailFixture(t)
+	ctx := t.Context()
+	ana := m.person(t, "ana@example.com", auth.RoleMember)
+
+	// Never asked: no consent, and nothing withdrawn.
+	if c, err := m.svc.ActionsConsent(ctx, ana); err != nil || c.Consented || c.WithdrawnAt != 0 {
+		t.Fatalf("actions, never asked = %+v, %v", c, err)
+	}
+	if c, err := m.svc.SendConsent(ctx, ana); err != nil || c.Consented || c.WithdrawnAt != 0 {
+		t.Fatalf("sending, never asked = %+v, %v", c, err)
+	}
+
+	// Each withdrawal answers when, and every read says it after.
+	if _, err := m.svc.GrantActionsConsent(ctx, ana, service.DefaultActionsConsentVersion); err != nil {
+		t.Fatal(err)
+	}
+	actions, err := m.svc.WithdrawActionsConsent(ctx, ana)
+	if err != nil || actions.Consented || actions.Version != "" || actions.WithdrawnAt == 0 {
+		t.Fatalf("withdrawing actions = %+v, %v", actions, err)
+	}
+	if c, err := m.svc.ActionsConsent(ctx, ana); err != nil || c != actions {
+		t.Errorf("actions after withdrawing = %+v, %v; want %+v", c, err, actions)
+	}
+	send, err := m.svc.WithdrawSendConsent(ctx, ana)
+	if err != nil || send.Consented || send.WithdrawnAt == 0 {
+		t.Fatalf("withdrawing sending = %+v, %v", send, err)
+	}
+	if c, err := m.svc.SendConsent(ctx, ana); err != nil || c != send {
+		t.Errorf("sending after withdrawing = %+v, %v; want %+v", c, err, send)
+	}
+
+	// Agreeing again clears it.
+	if c, err := m.svc.GrantActionsConsent(ctx, ana, service.DefaultActionsConsentVersion); err != nil ||
+		!c.Consented || c.WithdrawnAt != 0 {
+		t.Fatalf("actions given again = %+v, %v", c, err)
+	}
+	if c, err := m.svc.GrantSendConsent(ctx, ana, service.DefaultSendConsentVersion); err != nil ||
+		!c.Consented || c.WithdrawnAt != 0 {
+		t.Fatalf("sending given again = %+v, %v", c, err)
+	}
+	if c, err := m.svc.SendConsent(ctx, ana); err != nil || c.WithdrawnAt != 0 {
+		t.Errorf("sending read after it was given again = %+v, %v", c, err)
+	}
+}

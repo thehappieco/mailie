@@ -980,6 +980,20 @@ you kept. What the server refuses changes
   find it in `GET /v1/workspaces/{id}/removed-mailboxes`. The console names it as removed, and
   says how to free its last reader.
 
+### When a permission was turned off (migration 0024)
+
+An ordinary migration: two columns of `users` that record when a person last turned actions or
+sending off (`actions_consent_withdrawn_at`, `send_consent_withdrawn_at`), 0 for everyone at the
+upgrade. No other row changes. **Back up first**, as above: an older binary refuses schema 24, and
+going back is that copy, which loses everything written since the upgrade, as any restore does.
+
+- **For scripts:** `GET`, `POST` and `DELETE /v1/me/actions-consent` and `/v1/me/send-consent`
+  answer `withdrawn_at` (Unix seconds) while the person has turned that permission off and not
+  given it again; it is absent for someone who consents, who never answered, or who turned it off
+  before the upgrade ([`console.md`](console.md#consent-to-actions)). Nothing else of the answers,
+  and nothing of who may act or send, changes.
+- **The open console** asks as before: it offers actions again to a person who turned them off.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
