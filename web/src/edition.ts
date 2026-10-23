@@ -16,7 +16,7 @@
 import type { Component } from 'vue'
 import type { Account } from './api/types'
 import { addCatalogs, setOfferedLocales, type Catalog, type Locale } from './ui/i18n'
-import { setSharedDomain } from './ui/preferences'
+import { setPreferenceStore, type PreferenceStore } from './ui/preferences'
 
 /** A text a person agrees to, and the revision the server knows it by (MAIL_CONSENT_VERSION_*). */
 export interface AgreementText {
@@ -185,8 +185,14 @@ export interface Edition {
    * four translations.
    */
   locales?: readonly Locale[]
-  /** A domain whose hosts share the theme and language preferences (a cookie Domain). Unset: this host only. */
-  cookieDomain?: string
+  /**
+   * Where the theme and the language a person chooses are kept, and read back
+   * from (ui/preferences.ts, PreferenceStore): before the first frame, whenever
+   * the page restores them, and at every choice. Unset: the core's own
+   * (hostPreferences), a cookie of this host and local storage. Installed by
+   * configureEdition, so before the page chooses either.
+   */
+  preferences?: PreferenceStore
   /** Where the edition's legal texts go. Nothing is drawn in a place it leaves empty. */
   legal?: {
     /** Below the sign-up form: what creating the account agrees to. */
@@ -240,9 +246,10 @@ let configured: Edition | null = null
  * does not offer then gives way as initializeLocale chooses, saving nothing.
  */
 export function configureEdition(value: Edition): void {
-  setOfferedLocales(value.locales ?? null)
+  // The edition's store first: a language it no longer offers gives way to the one its store keeps.
+  const before = setPreferenceStore(value.preferences ?? null)
+  try { setOfferedLocales(value.locales ?? null) } catch (error) { setPreferenceStore(before); throw error }
   configured = value
-  setSharedDomain(value.cookieDomain ?? '')
   if (value.catalogs) addCatalogs(...value.catalogs)
 }
 

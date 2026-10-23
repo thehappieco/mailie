@@ -21,6 +21,7 @@ import { accounts } from '../src/state/accounts'
 import { session } from '../src/state/session'
 import { workspaces } from '../src/state/workspaces'
 import { languageOptions, locale } from '../src/ui/i18n'
+import { hostPreferences, setPreferenceStore } from '../src/ui/preferences'
 import { hostedName } from './hosted'
 import { literalKeys, sourceFiles } from './i18nGuard'
 import { ana } from './support'
@@ -102,11 +103,12 @@ describe('the core and the editions', () => {
 })
 
 describe('the open edition', () => {
-  it('shows no language or theme for a page alone: only the two seams name them, for another edition', () => {
-    const seams = ['showLocaleForPage', 'showThemeForPage']
-    const naming = sourceFiles(src).filter(file => seams.some(seam => readFileSync(file, 'utf8').includes(seam))).map(file => relative(src, file)).sort()
-    expect(naming).toEqual(['ui/i18n.ts', 'ui/preferences.ts'])
-    expect(readFileSync(join(web, 'index.html'), 'utf8')).not.toMatch(/showLocaleForPage|showThemeForPage/)
+  it('keeps the theme and the language in the core’s own store, on this host alone: only the edition seam installs another', () => {
+    expect(openEdition.preferences).toBeUndefined()
+    configureEdition(openEdition)
+    expect(setPreferenceStore(null)).toBe(hostPreferences)
+    const installing = sourceFiles(src).filter(file => readFileSync(file, 'utf8').includes('setPreferenceStore(')).map(file => relative(src, file)).sort()
+    expect(installing).toEqual(['edition.ts', 'ui/preferences.ts'])
   })
 
   it('words what a person agrees to as this server’s, in every language, linking no policy and naming no company', async () => {

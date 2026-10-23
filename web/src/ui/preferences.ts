@@ -1,34 +1,71 @@
 import { ref } from 'vue'
 
 export type ThemePreference = 'light' | 'dark' | 'system'
-type PreferenceName = 'theme' | 'locale'
-const prefix = 'mailie_'
+/** The two preferences of the page's look: its theme and its language. */
+export type PreferenceName = 'theme' | 'locale'
+
 /**
- * A domain whose hosts share theme and language with this page, as the
- * edition says (src/edition.ts); empty, the cookie stays with this host.
+ * Where the theme and the language a person chose are kept (Edition.preferences,
+ * src/edition.ts): read before the first frame and whenever the page restores
+ * them (initializeTheme, initializeLocale), written at every choice (setTheme,
+ * setLocale). The theme is 'light', 'dark' or 'system'; the language is one of
+ * the core's (ui/i18n.ts: 'pt', 'en', 'es', 'fr' or 'de'), and a store may answer
+ * any tag supportedLocale reads ('pt-BR' is 'pt'). The core checks whatever a
+ * store answers, as it checks its own: a value it does not know is none. A store
+ * that cannot read answers null, and one that cannot write keeps nothing; one
+ * that throws is treated the same.
  */
-let sharedDomain = ''
-
-export function setSharedDomain(domain: string): void {
-  sharedDomain = domain.toLowerCase()
+export interface PreferenceStore {
+  read(name: PreferenceName): string | null
+  write(name: PreferenceName, value: string): void
 }
 
-/** Preferences are non-sensitive, and shared at most with the edition's own domain. */
+const prefix = 'mailie_'
+
+/**
+ * The core's own store, every edition's unless it installs another: a cookie of
+ * this host alone (mailie_theme, mailie_locale), read first, and this origin's
+ * local storage, for a browser that refuses cookies. Non-sensitive, and never
+ * shared with another host.
+ */
+export const hostPreferences: PreferenceStore = {
+  read(name) {
+    try {
+      const entry = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith(`${prefix}${name}=`))
+      if (entry) return decodeURIComponent(entry.slice(entry.indexOf('=') + 1))
+    } catch { /* Disabled cookies still allow a local preference. */ }
+    try { return localStorage.getItem(`${prefix}${name}`) } catch { return null }
+  },
+  write(name, value) {
+    try { localStorage.setItem(`${prefix}${name}`, value) } catch { /* Private browsing can deny storage. */ }
+    try {
+      document.cookie = `${prefix}${name}=${encodeURIComponent(value)}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol === 'https:' ? '; Secure' : ''}`
+    } catch { /* A preference is still usable for the current page. */ }
+  },
+}
+
+let store: PreferenceStore = hostPreferences
+
+/**
+ * Makes value the only place the theme and the language are read from and
+ * written to, or the core's own again with null, and answers the one it
+ * replaces. configureEdition calls this with the edition's
+ * (Edition.preferences), before the page chooses either.
+ */
+export function setPreferenceStore(value: PreferenceStore | null): PreferenceStore {
+  const before = store
+  store = value ?? hostPreferences
+  return before
+}
+
+/** The value the store keeps for name, or null. */
 export function readPreference(name: PreferenceName): string | null {
-  try {
-    const entry = document.cookie.split(';').map(part => part.trim()).find(part => part.startsWith(`${prefix}${name}=`))
-    if (entry) return decodeURIComponent(entry.slice(entry.indexOf('=') + 1))
-  } catch { /* Disabled cookies still allow a local preference. */ }
-  try { return localStorage.getItem(`${prefix}${name}`) } catch { return null }
+  try { return store.read(name) } catch { return null }
 }
 
+/** Keeps value for name in the store; one it cannot keep lasts this page. */
 export function writePreference(name: PreferenceName, value: string): void {
-  try { localStorage.setItem(`${prefix}${name}`, value) } catch { /* Private browsing can deny storage. */ }
-  try {
-    const host = location.hostname.toLowerCase()
-    const shared = sharedDomain !== '' && (host === sharedDomain || host.endsWith('.' + sharedDomain))
-    document.cookie = `${prefix}${name}=${encodeURIComponent(value)}; Path=/; Max-Age=31536000; SameSite=Lax${shared ? '; Domain=' + sharedDomain : ''}${location.protocol === 'https:' ? '; Secure' : ''}`
-  } catch { /* A preference is still usable for the current page. */ }
+  try { store.write(name, value) } catch { /* The page still shows it. */ }
 }
 
 /**
@@ -70,47 +107,10 @@ function applyTheme(): void {
   document.documentElement.dataset.theme = theme.value === 'system' ? (media?.matches ? 'dark' : 'light') : theme.value
 }
 
-/** The theme saved, or system when none is. */
-function rememberedTheme(): ThemePreference {
-  const saved = readPreference('theme')
-  return isTheme(saved) ? saved : 'system'
-}
-
-/**
- * The theme shown for this page alone (showThemeForPage), over the one
- * saved, or null when the page shows the saved one.
- */
-let pageTheme: ThemePreference | null = null
-
-/** Shows and saves a theme the person chose, ending one shown for the page alone. An unknown value changes nothing. */
 export function setTheme(value: ThemePreference): void {
   if (!isTheme(value)) return
-  pageTheme = null
   theme.value = value
   writePreference('theme', value)
-  applyTheme()
-}
-
-/**
- * Shows a theme for this page alone, over the one saved, and saves nothing:
- * an edition's way to show the theme a page was opened with (a link that
- * named one, say) for as long as the page lasts. What initializeTheme
- * restores when another tab changes the preference or the tab is shown
- * again keeps it; the next setTheme (a choice, saved as ever) ends it, and
- * so does null, which shows the saved one again (with none shown, null
- * changes nothing). An unknown value changes nothing. `theme` reads it as
- * the page's choice. The open console never calls it.
- */
-export function showThemeForPage(value: ThemePreference | null): void {
-  if (value === null) {
-    if (pageTheme === null) return
-    pageTheme = null
-    theme.value = rememberedTheme()
-  } else {
-    if (!isTheme(value)) return
-    pageTheme = value
-    theme.value = value
-  }
   applyTheme()
 }
 
@@ -119,9 +119,9 @@ export function initializeTheme(): () => void {
   stopListening?.()
   media = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     ? window.matchMedia('(prefers-color-scheme: dark)') : null
-  // The saved theme, unless one is shown for the page alone.
   const restore = () => {
-    theme.value = pageTheme ?? rememberedTheme()
+    const saved = readPreference('theme')
+    theme.value = isTheme(saved) ? saved : 'system'
     applyTheme()
   }
   const onStorage = (event: StorageEvent) => {

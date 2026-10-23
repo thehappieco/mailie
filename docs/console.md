@@ -79,8 +79,9 @@ workspace; the API keys section is the workspace's), a few sentences it words it
 way, whether to show how to connect over MCP, whether people make and run teams on this server
 (`teams`: the open edition's, for the local workspace source), whether the account section names
 the person's role on this server (`serverRole`, the open edition's), and optional extras (a
-byline, legal components, more translations, its own look and the languages it offers, below). The
-core's own sentences never name the frame: they say "this page". Other extension points are
+byline, legal components, more translations, its own look, the languages it offers and where the
+theme and the language are kept, below). The core's own sentences never name the frame: they say
+"this page". Other extension points are
 `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()` (`state/live.ts`), `addDescriber()` for an
 edition's own operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account
 section's pieces (`AccountPanel`, `SessionsRow`, `SyncPermission`, `ActionsPermission`,
@@ -105,17 +106,17 @@ moves a page that shows a language it no longer offers to the next one the same 
 nothing. The catalogs
 keep their four translations either way. The open edition sets neither.
 
-An edition may also show a theme and a language **for one page alone**, over the ones saved and
-without saving them: the look a page was opened with, when the address that opened it named one.
-`showThemeForPage(theme)` (`ui/preferences.ts`) and `showLocaleForPage(locale)` (`ui/i18n.ts`) show
-it, and it lasts as long as the page: `theme` and `locale` read it as the page's own, what
-`initializeTheme` restores when another tab saves a theme or the tab is shown again keeps it, and so
-does `initializeLocale` (a language shown for the page comes before the saved one). The next
-`setTheme` or `setLocale`, a choice saved as ever, ends it; so does `null`, which shows the saved
-one again (with none shown, `null` changes nothing), and an edition that stops offering a language
-shown that way. An unknown theme, or a language that is not offered, changes nothing. Neither is
-ever written to the preferences' cookie or storage, so a reload or a later visit shows what is
-saved. The open console never calls them (`web/test/editions.spec.ts`).
+An edition may also say **where the theme and the language are kept** (`preferences`, a
+`PreferenceStore` of `ui/preferences.ts`: `read(name)` and `write(name, value)` for `'theme'` and
+`'locale'`). Without one, the core keeps them itself (`hostPreferences`): a cookie of this host
+alone (`mailie_theme`, `mailie_locale`), read first, and local storage, for a browser that refuses
+cookies. An edition's store is then the only place either is read from (before the first frame,
+when another tab saves a theme or the tab is shown again) and written to (every `setTheme` and
+`setLocale`); `configureEdition` installs it before it narrows the languages, and puts the one
+before back when it refuses an edition. The core checks what a store answers as it checks its own
+(an unknown theme is `system`, an unknown language passed over), takes a language as any tag
+`supportedLocale` reads (`pt-BR` is `pt`) and writes the core's codes (`pt`, `en`, `es`, `fr`,
+`de`); a store that throws only forgets. The open edition sets none (`web/test/editions.spec.ts`).
 
 The console's colours, light and dark, its monospace font, its motion curves and the shapes of a
 few surfaces are custom properties declared in `web/src/ui/palette.css` alone: `styles.css` and

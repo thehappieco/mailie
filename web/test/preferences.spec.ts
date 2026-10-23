@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { initializeTheme, readPreference, setSharedDomain, setTheme, showThemeForPage, theme, writePreference, type ThemePreference } from '../src/ui/preferences'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
+import { initializeLocale, locale, setLocale } from '../src/ui/i18n'
+import { hostPreferences, initializeTheme, readPreference, setPreferenceStore, setTheme, theme, writePreference, type PreferenceName, type PreferenceStore } from '../src/ui/preferences'
 
 let cleanup: (() => void) | undefined
 let cookies: Map<string, string>
@@ -18,7 +21,7 @@ beforeEach(() => {
   vi.stubGlobal('location', { hostname: 'mail.example.org', protocol: 'https:' })
   vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value) } })
 })
-afterEach(() => { cleanup?.(); cleanup = undefined; showThemeForPage(null); setSharedDomain(''); vi.unstubAllGlobals() })
+afterEach(() => { cleanup?.(); cleanup = undefined; configureEdition(openEdition); locale.value = 'en'; vi.unstubAllGlobals() })
 
 describe('appearance preferences', () => {
   it('follows the system at startup and when it changes', () => {
@@ -30,13 +33,12 @@ describe('appearance preferences', () => {
     expect(theme.value).toBe('light'); expect(doc.documentElement.dataset.theme).toBe('light')
     setTheme('dark'); media.matches = false; media.dispatchEvent(new Event('change')); expect(doc.documentElement.dataset.theme).toBe('dark')
   })
-  it('keeps preferences to this host unless the edition names a domain to share them with', () => {
-    // The open edition names none.
+  it('keeps preferences to this host alone, in a cookie and local storage, whatever its domain', () => {
     writePreference('theme', 'dark'); expect(writes[0]).toBe('mailie_theme=dark; Path=/; Max-Age=31536000; SameSite=Lax; Secure'); expect(saved.get('mailie_theme')).toBe('dark')
-    setSharedDomain('Product.Example')
-    vi.stubGlobal('location', { hostname: 'console.product.example', protocol: 'https:' }); writePreference('locale', 'de'); expect(writes[1]).toContain('SameSite=Lax; Domain=product.example; Secure')
-    vi.stubGlobal('location', { hostname: 'notproduct.example', protocol: 'https:' }); writePreference('locale', 'de'); expect(writes[2]).not.toContain('Domain=')
-    vi.stubGlobal('location', { hostname: 'other.example', protocol: 'https:' }); writePreference('locale', 'de'); expect(writes[3]).not.toContain('Domain=')
+    for (const hostname of ['console.product.example', 'product.example', 'mail.example.org']) {
+      vi.stubGlobal('location', { hostname, protocol: 'https:' }); writePreference('locale', 'de')
+      expect(writes.at(-1), hostname).toBe('mailie_locale=de; Path=/; Max-Age=31536000; SameSite=Lax; Secure')
+    }
   })
   it('works on localhost without a Secure or shared-domain cookie', () => {
     vi.stubGlobal('location', { hostname: 'localhost', protocol: 'http:' }); writePreference('locale', 'en')
@@ -63,44 +65,59 @@ describe('appearance preferences', () => {
   })
 })
 
-describe('a theme shown for the page alone', () => {
-  const restored = () => {
-    win.dispatchEvent(Object.assign(new Event('storage'), { key: 'mailie_theme' }))
-    doc.dispatchEvent(new Event('visibilitychange'))
+describe('a store an edition installs', () => {
+  /** A store that keeps its values in memory, as an edition's own might, the language as a BCP 47 tag. */
+  function memoryStore(values: Partial<Record<PreferenceName, string>> = {}) {
+    const kept = new Map(Object.entries(values))
+    const written: [PreferenceName, string][] = []
+    const store: PreferenceStore = {
+      read: name => kept.get(name) ?? null,
+      write: (name, value) => { written.push([name, value]); kept.set(name, name === 'locale' && value === 'pt' ? 'pt-BR' : value) },
+    }
+    return { store, kept, written }
   }
 
-  it('is shown over the one saved and saves nothing, lasting through another tab’s change and the tab shown again, until the person chooses one', () => {
-    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
-    showThemeForPage('dark')
-    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
-    expect(writes).toEqual([]); expect(saved.size).toBe(0)
-    // Another tab saves a theme, and the tab is shown again: the page keeps its own.
-    saved.set('mailie_theme', 'light'); restored()
-    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
-    // System follows the system's, as a saved system does.
-    showThemeForPage('system'); expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['system', 'dark'])
-    media.matches = false; media.dispatchEvent(new Event('change')); expect(doc.documentElement.dataset.theme).toBe('light')
-    // A choice ends it, saved as ever, and what is restored afterwards is what is saved.
-    setTheme('dark'); expect([theme.value, saved.get('mailie_theme'), cookies.get('mailie_theme')]).toEqual(['dark', 'dark', 'dark'])
-    cookies.set('mailie_theme', 'light'); restored(); expect(theme.value).toBe('light')
+  it('is the only place the theme and the language are read from and written to, and the core’s own comes back without one', () => {
+    cookies.set('mailie_theme', 'light'); cookies.set('mailie_locale', 'fr'); saved.set('mailie_theme', 'light')
+    vi.stubGlobal('navigator', { languages: ['de-DE'] })
+    const { store, kept, written } = memoryStore({ theme: 'dark', locale: 'pt-BR' })
+    configureEdition({ ...openEdition, preferences: store })
+    cleanup = initializeTheme(); initializeLocale()
+    expect([theme.value, doc.documentElement.dataset.theme, locale.value]).toEqual(['dark', 'dark', 'pt'])
+    setTheme('system'); setLocale('es'); setLocale('pt')
+    expect(written).toEqual([['theme', 'system'], ['locale', 'es'], ['locale', 'pt']])
+    expect(kept.get('locale')).toBe('pt-BR')
+    // Nothing reached the core's own cookie or storage.
+    expect(writes).toEqual([]); expect([cookies.get('mailie_theme'), saved.get('mailie_theme')]).toEqual(['light', 'light'])
+    // Restoring the theme asks the store again.
+    kept.set('theme', 'light'); doc.dispatchEvent(new Event('visibilitychange')); expect(theme.value).toBe('light')
+    // The edition set again without one: the core's own, as ever.
+    configureEdition(openEdition)
+    expect(readPreference('theme')).toBe('light'); expect(readPreference('locale')).toBe('fr')
+    writePreference('theme', 'dark'); expect(writes).toEqual(['mailie_theme=dark; Path=/; Max-Age=31536000; SameSite=Lax; Secure'])
+    expect(setPreferenceStore(null)).toBe(hostPreferences)
   })
 
-  it('gives way to the one saved when ended, and an end with none shown changes nothing', () => {
-    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
-    showThemeForPage('dark'); showThemeForPage(null)
-    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
-    // Nothing shown: an end leaves even a choice the browser would not keep as it is.
-    Object.defineProperty(doc, 'cookie', { get: () => { throw Error('denied') }, set: () => { throw Error('denied') } })
-    vi.stubGlobal('localStorage', { getItem: () => { throw Error('denied') }, setItem: () => { throw Error('denied') } })
-    setTheme('dark'); showThemeForPage(null)
-    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
+  it('is checked as the core’s own is: an unknown value is none, and a store that throws only forgets', () => {
+    vi.stubGlobal('navigator', { languages: ['es-MX'] })
+    configureEdition({ ...openEdition, preferences: memoryStore({ theme: 'sepia', locale: 'xx' }).store })
+    cleanup = initializeTheme(); initializeLocale()
+    expect([theme.value, locale.value]).toEqual(['system', 'es'])
+    const refusing: PreferenceStore = { read: () => { throw Error('denied') }, write: () => { throw Error('denied') } }
+    configureEdition({ ...openEdition, preferences: refusing })
+    expect(() => { initializeLocale(); setTheme('dark'); setLocale('pt') }).not.toThrow()
+    expect([theme.value, doc.documentElement.dataset.theme, locale.value]).toEqual(['dark', 'dark', 'pt'])
+    expect(writes).toEqual([])
   })
 
-  it('ignores an unknown theme', () => {
-    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
-    for (const unknown of ['sepia', '', 'Dark', '__proto__']) showThemeForPage(unknown as ThemePreference)
-    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
-    // Still none shown: what is restored is what is saved.
-    cookies.set('mailie_theme', 'dark'); restored(); expect(theme.value).toBe('dark')
+  it('is in place before a language the edition no longer offers gives way, and an edition refused leaves the one before', () => {
+    vi.stubGlobal('navigator', { languages: ['de-DE'] })
+    locale.value = 'fr'
+    configureEdition({ ...openEdition, locales: ['pt', 'en', 'es'], preferences: memoryStore({ locale: 'es' }).store })
+    expect(locale.value).toBe('es')
+    const { store } = memoryStore({ theme: 'dark' })
+    expect(() => configureEdition({ ...openEdition, locales: ['pt'], preferences: store })).toThrow(/must include 'en'/)
+    expect(readPreference('theme')).toBeNull()
+    expect(readPreference('locale')).toBe('es')
   })
 })
