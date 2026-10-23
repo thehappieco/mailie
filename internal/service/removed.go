@@ -171,7 +171,8 @@ func (s *Service) RecoverAccount(ctx context.Context, p Principal, id string) (A
 // PurgeAccount deletes a removed mailbox for good, before its 30 days are
 // over: for its workspace's owners, and for the operator, any workspace's.
 // The request repeats its id in Confirm, or nothing is deleted. A live
-// mailbox is removed first (conflict).
+// mailbox is removed first (conflict). A team's owner is asked about first
+// (FreshPurge), never the operator.
 func (s *Service) PurgeAccount(ctx context.Context, p Principal, id string, req PurgeAccountRequest) error {
 	if req.Confirm != id {
 		return E(CodeBadRequest, "deleting a mailbox for good needs its id repeated in confirm; nothing was deleted", nil)
@@ -187,6 +188,14 @@ func (s *Service) PurgeAccount(ctx context.Context, p Principal, id string, req 
 	}
 	if err != nil {
 		return err
+	}
+	if teamMailbox(a) {
+		// An owner deleting a team's mailbox before its 30 days are over:
+		// asked first, outside the write, which checks again that they own
+		// it. The operator, and the sweep, are nobody signed in.
+		if err := s.fresh(ctx, p, FreshAct{Kind: FreshPurge, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+			return err
+		}
 	}
 	err = s.accounts.Purge(ctx, id, p.Actor(), func(tx *sql.Tx) error { return s.ownsRemovedTx(ctx, tx, p, a) })
 	if err != nil {

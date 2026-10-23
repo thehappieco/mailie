@@ -72,7 +72,10 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
 `web/src` is a **core** that every edition shares, plus the open edition in `web/src/open`. An
 edition calls `configureEdition()` (`web/src/edition.ts`) before mounting: the console component
 built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, actions, a new key's
-terms) with their revisions, what the frame calls itself (`shell`: the breadcrumb's root and the
+terms) with their revisions — the sync text drawn for a team (its `team` prop, the team's name)
+where an owner or an admin agrees to it on the team's behalf, connecting a mailbox into it or
+turning a team mailbox's sync on, and without it where a person agrees for their own mailboxes,
+one revision either way, as the key terms take `team` — what the frame calls itself (`shell`: the breadcrumb's root and the
 sidebar's name; the open edition's is the server's "Console"), its sections as data (each one the
 workspace shown's, or with `scope: 'person'` the person's own, where the breadcrumb names no
 workspace; the API keys section is the workspace's), a few sentences it words its own
@@ -233,7 +236,10 @@ built on the same pieces, so it behaves as it always did:
   mailbox's sheet (`AccountSheet`) draw one link to `href` in place of its Access section
   (`AccessPanel`), for the same owners and admins of a team who would see that section; the
   mailbox's key (`MailboxKeyPanel`), which is the person's own, stays on the sheet. Unset, the
-  sheet holds the section.
+  sheet holds the section. Below its people, that section lists the API keys holding something on
+  the mailbox, and says where what a key holds is changed by the name the edition gives its keys'
+  section (`copy.keysSection`, the open edition's "API keys & MCP"); an edition that names none,
+  such as one whose keys are a personal workspace's alone, leaves that sentence out.
 - **The person's sessions.** `SessionsRow`, the row of `AccountPanel` that says how long this
   session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
   shows the person's own settings, with words of its own (`title`, `description`,
@@ -1008,6 +1014,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET /v1/accounts/{id}/sync` | read | `AccountSync` |
 | `POST /v1/accounts/{id}/sync` | write, `read` | ask for a pass now → `AccountSync` (202) |
 | `PUT /v1/accounts/{id}/sync` | a team mailbox: its owners and admins, signed in; an operator mailbox: unrestricted instance admin key; a personal mailbox: its person, `{"enabled": true}` only | `{enabled, version?}` → `AccountSync`: the team's consent (on: `version` the current sync text) or the operator's switch; off deletes the index for everyone; on also lifts a recovery's hold, and from a personal mailbox's person does only that (no `version`; anything else `400`); `409` to turn on a team mailbox nobody can read; a removed team mailbox's owners turn it off, deleting the index it kept |
+| `POST /v1/accounts/{id}/sync/stop` | unrestricted instance admin key (anyone else: `403`) | the operator's turn-off of any workspace's mailbox, live or removed → `AccountSync` (150 s): its index deleted, its readers told; a team's consent withdrawn, a personal mailbox `held` until its person turns it on ([`workspaces.md`](workspaces.md#consents)) |
 | `GET/POST/DELETE /v1/me/sync-consent` | see [Sync](#sync-and-consent) | the person's consent to sync |
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
@@ -1270,11 +1277,15 @@ checks two things before calling the account `active`:
    fails. No `scope` in the response refuses nothing.
 2. **An IMAP login** with the new token, on the path normal use takes, within 30 seconds. A refusal,
    even after a refresh, fails the attempt (almost always: the person picked another account on the
-   provider's page). A server that is down, slow or throttling is not the grant's fault: the account
-   becomes `active` and the log carries a warning.
+   provider's page). A server that is down, slow or throttling proves nothing either way, and the
+   attempt fails too: `500`, "upstream: …", with a `Retry-After` of 30 s, the state reason `the mail
+   server could not be reached to prove this authorization` on a mailbox that never connected, and a
+   warning in the log. Start it again once the server answers. A grant stored without that login
+   could be for another mailbox than the one it replaces, and a re-authorization would swap a
+   working grant for it, for everyone who uses the mailbox.
 
-Nothing is stored when either check refuses; a refused re-authorization of a working mailbox does
-not switch it off. The work after the provider's answer runs detached from the caller, at most 40
+Nothing is stored unless both checks pass; a re-authorization of a working mailbox that fails either
+keeps the grant it had, and does not switch it off. The work after the provider's answer runs detached from the caller, at most 40
 seconds in total, so a code survives a caller that gives up.
 
 **In use.** When the IMAP server refuses the token of an `active` OAuth mailbox, even a freshly
@@ -1810,7 +1821,10 @@ an assistant over MCP, a script over REST — to read the mailboxes they give it
 act on them, with `send`, send from them. Creating a key is its creator's agreement to the key
 terms, which say what a tool holding it can do. Only an owner or an admin **signed in** lists,
 creates and revokes the workspace's keys and changes what they hold: any key, the new one included,
-gets `403` on these routes, and a member does too. No key creates a key.
+gets `403` on these routes, and a member does too. No key creates a key. A daemon whose edition
+keeps keys to personal workspaces (`app.Options.KeysInPersonalWorkspaceOnly`, which `serve` never
+sets) answers `403` to creating a key in a team and to raising what a key holds on a team's
+mailbox; listing, revoking and taking away stay ([`workspaces.md`](workspaces.md#api-keys)).
 
 | Route | Body | Answer |
 |---|---|---|

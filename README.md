@@ -212,8 +212,10 @@ sync and for actions). There is no mail to read or write in it: a tool does that
   operator workspace, which only instance keys reach. See [`docs/workspaces.md`](docs/workspaces.md).
 - Nothing from a person's mailboxes is stored until they turn sync on in the console, and turning
   it off deletes their index; a team's mailbox syncs once an owner or an admin turns it on for the
-  team, and turning it off deletes its index for everyone. Actions on messages are a second,
-  separate permission.
+  team, and turning it off deletes its index for everyone. As the operator,
+  `mailserver account sync ID off` turns any mailbox's sync off and deletes its index, telling
+  whoever read it ([`docs/workspaces.md`](docs/workspaces.md#consents)). Actions on messages are a
+  second, separate permission.
 - Removing a mailbox keeps it 30 days, used by nothing, and then deletes it for good with its
   index; within them its workspace's owners (a team's owners, never its admins) recover it, its sync
   paused until someone who may turns it on, or delete it for good sooner, and everyone else who read

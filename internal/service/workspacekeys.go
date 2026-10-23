@@ -182,7 +182,22 @@ var (
 	errKeysMayNotSend = E(CodeNotAuthorized, "this server's API keys do not send email", nil)
 	errKeyReadNotHeld = E(CodeNotAuthorized,
 		"you can give a key read on a mailbox only while you read it yourself", nil)
+	// errTeamKeys is a key asked for, or given more, in a team where an
+	// edition keeps keys to personal workspaces: not_authorized, as every
+	// other thing a server does not offer is (errTeamsWithheld,
+	// errKeysMayNotSend), never a conflict that a change of state would
+	// clear.
+	errTeamKeys = E(CodeNotAuthorized,
+		"this server's API keys belong to a personal workspace only: a team has none, and none is given its mailboxes", nil)
 )
+
+// teamKeysRefused reports whether the workspace is a team where an edition
+// keeps keys to personal workspaces (Deps.KeysInPersonalWorkspaceOnly). A
+// workspace's kind never changes (migration 0016), so what keyAdminOf read
+// holds for the write.
+func (s *Service) teamKeysRefused(w workspace.Workspace) bool {
+	return s.keysPersonalOnly && w.Kind != workspace.KindPersonal
+}
 
 // keyAdminOf reads a workspace a person asks about its keys, and checks that
 // they may: a person signed in, an active owner or admin of it. A workspace
@@ -244,11 +259,15 @@ func (s *Service) ListWorkspaceKeys(ctx context.Context, p Principal, workspaceI
 // reads, with the write scope or more; send with the send scope, which a
 // server whose keys may not send refuses. It lasts what they chose; the
 // person who created it leaving the workspace, or being disabled or deleted,
-// revokes it sooner.
+// revokes it sooner. Where an edition keeps keys to personal workspaces, a
+// team's is refused (errTeamKeys).
 func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspaceID string, req WorkspaceKeyRequest) (CreatedWorkspaceKey, error) {
 	w, err := s.keyAdminOf(ctx, p, workspaceID)
 	if err != nil {
 		return CreatedWorkspaceKey{}, err
+	}
+	if s.teamKeysRefused(w) {
+		return CreatedWorkspaceKey{}, errTeamKeys
 	}
 	if req.TermsVersion != s.consent.Keys {
 		// A console showing an older text, or none: the person has not
@@ -395,11 +414,15 @@ func (s *Service) RevokeWorkspaceKey(ctx context.Context, p Principal, workspace
 // hold yet only from one who reads the mailbox right then; act where the key
 // will read, with the write scope or more; send with the send scope, on a
 // server whose keys may send. Taking flags away needs nothing held. A key
-// carried over from a person's may only lose flags.
+// carried over from a person's may only lose flags. Where an edition keeps
+// keys to personal workspaces, a flag raised in a team is refused
+// (errTeamKeys), and only taking away is left there.
 func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, prefix, accountID string, req KeyAccessRequest) (KeyMailbox, error) {
-	if _, err := s.keyAdminOf(ctx, p, workspaceID); err != nil {
+	w, err := s.keyAdminOf(ctx, p, workspaceID)
+	if err != nil {
 		return KeyMailbox{}, err
 	}
+	teamRefused := s.teamKeysRefused(w)
 	if req.Read == nil || req.Act == nil || req.Send == nil {
 		return KeyMailbox{}, E(CodeBadRequest,
 			"read, act and send are all required: what the key holds is set to exactly them", nil)
@@ -412,14 +435,17 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 	if flags.Send && s.keysMayNotSend {
 		return KeyMailbox{}, errKeysMayNotSend
 	}
-	if s.asksFresh(p) {
-		// Only a flag the key does not hold yet asks; the write checks again
-		// who may.
+	if s.asksFresh(p) || teamRefused {
+		// Only a flag the key does not hold yet asks, or is refused in a
+		// team; the write checks both again.
 		before, err := s.workspaces.KeyAccessOf(ctx, prefix, []string{accountID})
 		if err != nil {
 			return KeyMailbox{}, E(CodeInternal, "reading what the key holds failed", err)
 		}
 		if raised(before[accountID], flags) {
+			if teamRefused {
+				return KeyMailbox{}, errTeamKeys
+			}
 			if err := s.fresh(ctx, p, FreshAct{Kind: FreshRaiseFlags, WorkspaceID: workspaceID, AccountID: accountID}); err != nil {
 				return KeyMailbox{}, err
 			}
@@ -429,6 +455,9 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 		func(tx *sql.Tx, key workspace.KeyRef, mailboxWorkspace string, before workspace.Flags) error {
 			if err := s.keyTargetTx(ctx, tx, p, workspaceID, key, mailboxWorkspace, before); err != nil {
 				return err
+			}
+			if teamRefused && raised(before, flags) {
+				return errTeamKeys
 			}
 			if !flags.Read || before.Read {
 				return nil

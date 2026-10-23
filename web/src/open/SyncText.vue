@@ -19,7 +19,12 @@
 // teams they were the only member of; and a team mailbox the upgrade left
 // syncing under its linker's own agreement stops with it until the team
 // agrees (migration 0011): the text says both, since it is what is agreed to.
+// The core names the team an agreement is given for (team), which this text
+// takes and words nothing by: it says a person's and a team's agreement
+// alike, in the one revision.
 import { t } from '../ui/i18n'
+
+defineProps<{ team?: string }>()
 </script>
 
 <template>

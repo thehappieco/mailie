@@ -236,6 +236,12 @@ var (
 	// address being connected, because the person picked a different one on
 	// the provider's page. Nothing is stored for it.
 	ErrMailboxRefused = errors.New("account: the mail server refused the new authorization")
+	// ErrGrantUnproved is a grant whose one login could not be tried: the
+	// mail server down, slow or throttling, a connection that dropped.
+	// Nothing is stored for it, since only a login that worked proves a
+	// grant opens the mailbox it was given for; the consent is started
+	// again once the server answers.
+	ErrGrantUnproved = errors.New("account: the mail server could not be reached to prove the new authorization")
 )
 
 // Why a consent attempt or a grant stopped working, as an account's
@@ -251,6 +257,7 @@ const (
 	ReasonClientMissing  = "the OAuth client that authorized this account is not configured"
 	ReasonScopeMissing   = "the provider did not grant access to the mailbox"
 	ReasonMailboxRefused = "the mail server refused this authorization for the mailbox"
+	ReasonUnproved       = "the mail server could not be reached to prove this authorization"
 	ReasonFailed         = "the authorization could not be completed"
 	// ReasonTokenRejected is not a failed consent but a grant that stopped
 	// working: the mail server refused the account's access token, a freshly
@@ -275,6 +282,8 @@ func failureReason(err error) string {
 		return ReasonScopeMissing
 	case errors.Is(err, ErrMailboxRefused):
 		return ReasonMailboxRefused
+	case errors.Is(err, ErrGrantUnproved):
+		return ReasonUnproved
 	case errors.Is(err, ErrExchangeFailed), errors.Is(err, ErrProviderRefused):
 		return ReasonRefused
 	default:

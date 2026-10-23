@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -204,19 +205,36 @@ func TestAGrantForAnotherAccountEndsInErrorAndStoresNoToken(t *testing.T) {
 	f.warned(t, []string{"freshly refreshed", `server="imap: NO AUTHENTICATE failed."`}, issuedSecrets...)
 }
 
-func TestAMailServerThatIsDownAtConsentKeepsTheGrant(t *testing.T) {
-	// A mail server's bad minute is not the grant's fault. Refusing the
-	// consent over it would send the person back through the provider's
-	// screens for nothing.
-	f, _ := consentFixture(t, "http://localhost:5174")
-	ana := f.person(t, "ana@example.com", auth.RoleOwner)
-
+// closedPort is an address nothing listens on: a mail server that is down.
+func closedPort(t *testing.T) (string, int) {
+	t.Helper()
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	host, port := splitHostPort(t, closed.Addr().String())
 	_ = closed.Close()
+	return host, port
+}
+
+// wantUnproved fails the test unless err is a consent whose grant could not
+// be proved: upstream's, to be started again shortly.
+func wantUnproved(t *testing.T, what string, err error) {
+	t.Helper()
+	if service.CodeOf(err) != service.CodeInternal || !strings.HasPrefix(service.MessageOf(err), "upstream: ") ||
+		!strings.Contains(service.MessageOf(err), "nothing was stored") || service.RetryAfterOf(err) != 30*time.Second ||
+		!errors.Is(err, account.ErrGrantUnproved) {
+		t.Errorf("%s = %v (retry %s), want the unproved grant's upstream error", what, err, service.RetryAfterOf(err))
+	}
+}
+
+func TestAMailServerThatIsDownAtConsentStoresNothingAndAsksToStartAgain(t *testing.T) {
+	// Only a login that worked proves a grant opens the mailbox it was given
+	// for. A server that cannot be reached proves nothing: nothing is
+	// stored, and the person starts again once it answers.
+	f, idp := consentFixture(t, "http://localhost:5174")
+	ana := f.person(t, "ana@example.com", auth.RoleOwner)
+	host, port := closedPort(t)
 
 	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{
 		Email: "ana@gmail.com", IMAPHost: host, IMAPPort: port, SMTPHost: host, SMTPPort: port,
@@ -224,18 +242,85 @@ func TestAMailServerThatIsDownAtConsentKeepsTheGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))
-	if err != nil {
-		t.Fatalf("a mail server that could not be reached failed the consent: %v", err)
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))
+	wantUnproved(t, "a consent whose mail server could not be reached", err)
+	if a := f.stateOfAccount(t, added.Account.ID); a.State != account.StateError || a.StateReason != account.ReasonUnproved {
+		t.Errorf("account = %s %q, want error %q", a.State, a.StateReason, account.ReasonUnproved)
 	}
-	if a.State != "active" {
-		t.Errorf("state = %q, want active", a.State)
+	if n := f.credentialsOf(t, added.Account.ID); n != 0 {
+		t.Errorf("%d credentials stored for a grant nothing proved", n)
+	}
+	f.warned(t, []string{"could not prove a new authorization opens the mailbox; nothing is stored", "class=connection_closed"},
+		issuedSecrets...)
+
+	// Once the server answers, the same consent, started again, works.
+	srv := providertest.NewIMAPServer(t, providertest.IMAPOptions{User: "ana@gmail.com", GmailRefusals: true})
+	idp.set(func(f *fakeIDP) { f.onIssue = srv.AcceptToken })
+	host, port = splitHostPort(t, srv.Addr)
+	f.exec(t, `UPDATE accounts SET imap_host = ?, imap_port = ?, smtp_host = ?, smtp_port = ? WHERE id = ?`,
+		host, port, host, port, added.Account.ID)
+	flow, err := f.svc.StartOAuth(t.Context(), ana, added.Account.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow))
+	if err != nil || a.State != "active" {
+		t.Fatalf("the consent started again once the server answers: %+v %v", a, err)
 	}
 	if n := f.credentialsOf(t, added.Account.ID); n != 1 {
-		t.Errorf("%d credentials stored, want the grant kept", n)
+		t.Errorf("%d credentials stored for the proved grant, want one", n)
 	}
-	f.warned(t, []string{"could not prove a new authorization opens the mailbox; keeping it", "class=connection_closed"},
-		issuedSecrets...)
+}
+
+func TestAReauthorizationTheMailServerCannotProveKeepsTheGrantTheMailboxHad(t *testing.T) {
+	// Whoever manages a mailbox may authorize it again, and a grant that
+	// replaced a working one without proof could open another mailbox, for
+	// everyone who uses it. Nothing is replaced unless the new one logs in.
+	f, idp := consentFixture(t, "http://localhost:5174")
+	srv := providertest.NewIMAPServer(t, providertest.IMAPOptions{User: "ana@gmail.com", GmailRefusals: true})
+	idp.set(func(f *fakeIDP) { f.onIssue = srv.AcceptToken })
+	ana := f.person(t, "ana@example.com", auth.RoleOwner)
+	added, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, onServer(t, srv, service.AddAccountRequest{Email: "ana@gmail.com"})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)); err != nil {
+		t.Fatal(err)
+	}
+	stored := func() string {
+		t.Helper()
+		var blob []byte
+		if err := f.db.Reader().QueryRowContext(t.Context(),
+			`SELECT ciphertext FROM credentials WHERE account_id = ? AND field = 'oauth_token'`, added.Account.ID).Scan(&blob); err != nil {
+			t.Fatal(err)
+		}
+		return string(blob)
+	}
+	before := stored()
+
+	// The server goes down while Ana authorizes the mailbox again.
+	host, port := closedPort(t)
+	f.exec(t, `UPDATE accounts SET imap_host = ?, imap_port = ? WHERE id = ?`, host, port, added.Account.ID)
+	flow, err := f.svc.StartOAuth(t.Context(), ana, added.Account.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow))
+	wantUnproved(t, "a re-authorization whose mail server could not be reached", err)
+	if stored() != before {
+		t.Error("a grant nothing proved replaced the one the mailbox had")
+	}
+	if a := f.stateOfAccount(t, added.Account.ID); a.State != account.StateActive || a.StateReason != "" {
+		t.Errorf("the mailbox moved to %s %q", a.State, a.StateReason)
+	}
+
+	// Back up, it still opens with the grant it had.
+	host, port = splitHostPort(t, srv.Addr)
+	f.exec(t, `UPDATE accounts SET imap_host = ?, imap_port = ? WHERE id = ?`, host, port, added.Account.ID)
+	if _, err := f.svc.ListFolders(t.Context(), ana, added.Account.ID); err != nil {
+		t.Errorf("the grant it had no longer works: %v", err)
+	}
 }
 
 func TestACallerThatStopsWaitingChangesNothingAboutTheCheck(t *testing.T) {
@@ -333,7 +418,7 @@ func TestARefusalOfAGrantAlreadyReplacedLeavesTheNewOneAlone(t *testing.T) {
 	f.warned(t, []string{"the mail server refused an authorization the account no longer uses"}, issuedSecrets...)
 }
 
-func TestAMailServerThatSaysItIsUnavailableIsNotARefusal(t *testing.T) {
+func TestAMailServerThatSaysItIsUnavailableIsNotARefusalAndStoresNothing(t *testing.T) {
 	// Exchange answers AUTHENTICATE with "Server Unavailable" when a mailbox
 	// backend is down. Read as a refusal, twice, that would throw a new
 	// consent away and park a working account; it is neither.
@@ -348,20 +433,33 @@ func TestAMailServerThatSaysItIsUnavailableIsNotARefusal(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := idp.refreshCount()
-	a, err := f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, added.Auth))
-	if err != nil || a.State != "active" {
-		t.Fatalf("a server that is down at consent: %+v %v", a, err)
+	_, err = f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, added.Auth))
+	wantUnproved(t, "a server that is down at consent", err)
+	if a := f.stateOfAccount(t, added.Account.ID); a.StateReason != account.ReasonUnproved {
+		t.Errorf("account = %s %q, want the unproved reason, never a refusal's", a.State, a.StateReason)
 	}
-	if n := f.credentialsOf(t, added.Account.ID); n != 1 {
-		t.Errorf("%d credentials stored, want the grant kept", n)
+	if n := f.credentialsOf(t, added.Account.ID); n != 0 {
+		t.Errorf("%d credentials stored for a grant nothing proved", n)
 	}
 	if n := idp.refreshCount() - before; n != 0 {
 		t.Errorf("%d refreshes spent on a server that said it was unavailable", n)
 	}
 	f.warned(t, []string{
-		"could not prove a new authorization opens the mailbox; keeping it", "class=temporary",
+		"could not prove a new authorization opens the mailbox; nothing is stored", "class=temporary",
 		`server="imap: NO Server Unavailable. 15"`,
 	}, issuedSecrets...)
+
+	// Back up, the consent started again stores the grant.
+	srv.Unavailable(false)
+	flow, err := f.svc.StartOAuth(t.Context(), admin(), added.Account.ID, "pasted")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, err := f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code=again&state="+stateOf(t, flow)); err != nil ||
+		a.State != "active" {
+		t.Fatalf("the consent started again: %+v %v", a, err)
+	}
+	srv.Unavailable(true)
 
 	// In use, the same answer leaves the account as it was.
 	if _, err := f.svc.ListFolders(t.Context(), admin(), added.Account.ID); err == nil {

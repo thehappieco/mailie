@@ -95,6 +95,10 @@ type Service struct {
 	// (withheldteams.go): nothing of a team is used, while personal
 	// workspaces and the operator's are as they were.
 	teamsWithheld bool
+	// keysPersonalOnly is an edition whose API keys belong to a personal
+	// workspace alone (workspacekeys.go): no key is created in a team, and
+	// none is given more on a team's mailbox.
+	keysPersonalOnly bool
 	// freshness is asked before an act that widens access or touches a
 	// team's shared data (freshness.go); nil asks nothing.
 	freshness Freshness
@@ -185,6 +189,15 @@ type Deps struct {
 	// workspaces and the operator's are as they were. False, the default,
 	// changes nothing. Only internal/app sets it, from its Options.
 	TeamsWithheld bool
+	// KeysInPersonalWorkspaceOnly is an edition whose API keys belong to a
+	// personal workspace alone, whatever teams it offers (its key terms
+	// cover nothing else): creating a key in a team, and raising a flag a
+	// key holds on a team's mailbox, are refused, not_authorized, as
+	// something this server does not offer. Listing a team's keys, revoking
+	// them and taking what they hold away stay, so that whatever a database
+	// holds can still be seen and stopped. False, the default, changes
+	// nothing. Only internal/app sets it, from its Options.
+	KeysInPersonalWorkspaceOnly bool
 	// Freshness, when set, is asked before an act of a person signed in
 	// that widens who may read a mailbox or touches a team's shared data
 	// (freshness.go). nil, the default, asks nothing. Only internal/app
@@ -243,6 +256,7 @@ func New(d Deps) *Service {
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
 		teamsWithheld:       d.TeamsWithheld,
+		keysPersonalOnly:    d.KeysInPersonalWorkspaceOnly,
 		freshness:           d.Freshness,
 	}
 }

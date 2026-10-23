@@ -7,8 +7,9 @@ import (
 )
 
 // Consent to sync, and each account's sync: its status, a pass on request,
-// and the operator's switch for a mailbox nobody owns. Who may do which is
-// decided in internal/service.
+// the operator's switch for a mailbox nobody owns, and the operator's
+// turn-off of any mailbox's. Who may do which is decided in
+// internal/service.
 
 func (h *Handler) syncConsent(q *request) {
 	if _, err := q.query(); err != nil {
@@ -90,6 +91,22 @@ func (h *Handler) setMailboxSync(q *request) {
 		return
 	}
 	status, err := h.Service.SetMailboxSync(q.ctx(), q.principal, q.r.PathValue("id"), req)
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusOK, status)
+}
+
+// stopMailboxSync is the operator's turn-off of any mailbox's sync, which
+// deletes its index; it takes no body, or an empty one, and answers the
+// mailbox's sync as it stands then.
+func (h *Handler) stopMailboxSync(q *request) {
+	if err := q.decodeOptional(&struct{}{}); err != nil {
+		q.fail(err)
+		return
+	}
+	status, err := h.Service.StopMailboxSync(q.ctx(), q.principal, q.r.PathValue("id"))
 	if err != nil {
 		q.fail(err)
 		return

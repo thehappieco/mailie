@@ -16,7 +16,8 @@
 // invitations off (ExternalSignInOnly) and the one that has their names
 // follow the provider's (NameFollowsIdentity); for an edition that does not
 // offer team workspaces yet, the one that withholds them (TeamsWithheld);
-// and, for a binary whose workspaces come from a directory elsewhere, the
+// for one whose API keys belong to personal workspaces alone, the one that
+// refuses a team's (KeysInPersonalWorkspaceOnly); and, for a binary whose workspaces come from a directory elsewhere, the
 // question asked before an act that widens access (Freshness). Nothing else
 // of the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
@@ -101,6 +102,15 @@ type Options struct {
 	// engine. Only a binary that embeds the daemon sets it: there is no
 	// environment variable, and `serve` never does.
 	TeamsWithheld bool
+	// KeysInPersonalWorkspaceOnly says this edition's API keys belong to a
+	// person's personal workspace alone, whatever teams it offers, as its key
+	// terms say: the core refuses, not_authorized, creating a key in a team
+	// and raising what a key holds on a team's mailbox, while listing a
+	// team's keys, revoking them and taking what they hold away stay. The
+	// service decides it, for every transport. Only a binary that embeds the
+	// daemon sets it: there is no environment variable, and `serve` never
+	// does.
+	KeysInPersonalWorkspaceOnly bool
 	// Freshness, when set, is asked before an act of a person signed in that
 	// widens who may read a mailbox or touches a team's shared data
 	// (service.Freshness): an extension that follows the directory the
@@ -332,6 +342,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Info("team workspaces are withheld in this edition: nothing of a team is used, and nothing of one " +
 			"is deleted")
 	}
+	if opts.KeysInPersonalWorkspaceOnly {
+		logger.Info("API keys belong to personal workspaces only in this edition: none is created in a team, and " +
+			"none is given more on a team's mailbox")
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,
@@ -339,7 +353,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
-		Freshness: opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
+		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
+		Freshness:                   opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
 	})
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err

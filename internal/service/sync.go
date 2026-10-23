@@ -98,11 +98,13 @@ type AccountSync struct {
 	// an operator mailbox, the operator switched it on. Sync runs only for an
 	// enabled account that is also active. Never while it is held.
 	Enabled bool `json:"enabled"`
-	// Held is a mailbox recovered after it was removed, whose sync waits for
-	// someone who may to turn it on (PUT /v1/accounts/{id}/sync), whatever
-	// its consent says: its person for a personal mailbox, an owner or an
-	// admin for a team's, the operator for an operator mailbox. HeldSince is
-	// when it was recovered. It then catches up from the index it kept.
+	// Held is a mailbox recovered after it was removed, or a personal one
+	// whose sync the operator turned off (StopMailboxSync), whose sync waits
+	// for someone who may to turn it on (PUT /v1/accounts/{id}/sync),
+	// whatever its consent says: its person for a personal mailbox, an owner
+	// or an admin for a team's, the operator for an operator mailbox.
+	// HeldSince is when it was held. It then catches up from the index it
+	// kept, or starts over from none.
 	Held      bool  `json:"held,omitempty"`
 	HeldSince int64 `json:"held_since,omitempty"`
 	// Running is whether a worker holds the account now.
@@ -163,7 +165,8 @@ func (s *Service) syncOf(ctx context.Context, a account.Account, enabled bool) (
 	return withHold(presentSync(enabled, st), a), nil
 }
 
-// withHold says on an account's sync that a recovery holds it.
+// withHold says on an account's sync that a recovery, or the operator's
+// turn-off, holds it.
 func withHold(st AccountSync, a account.Account) AccountSync {
 	if !a.SyncHeldAt.IsZero() {
 		st.Held, st.HeldSince = true, a.SyncHeldAt.Unix()

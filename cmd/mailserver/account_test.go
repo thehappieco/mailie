@@ -301,6 +301,78 @@ func TestTheOperatorDeletesAPersonsRemovedMailboxForGoodAndNeverRecoversIt(t *te
 	}
 }
 
+func TestTheOperatorTurnsAnyWorkspacesMailboxsSyncOffFromTheCommandLine(t *testing.T) {
+	cfg, db := realDaemon(t)
+	ctx := t.Context()
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	team, err := workspace.NewRepository(db, nil).CreateTeam(ctx, "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := account.NewRepository(db, daemonKeyring(t))
+	const shared, mine = "acc_00000000000000d1", "acc_00000000000000d2"
+	for _, a := range []account.Account{
+		{ID: shared, WorkspaceID: team.ID, Email: "support@mail.example"},
+		{ID: mine, WorkspaceID: authtest.Personal(t, db, ana.ID), Email: "ana@mail.example"},
+	} {
+		a.Provider, a.AuthKind, a.State = provider.KindIMAP, "password", account.StateActive
+		a.IMAPHost, a.IMAPPort, a.SMTPHost, a.SMTPPort, a.SMTPTLS, a.LoginUser = "imap.mail.example", 993,
+			"smtp.mail.example", 465, "implicit", a.Email
+		if _, err := repo.Create(ctx, a, ana.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The team's consent, Ana's own, and an index for each.
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := db.Writer().ExecContext(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec(`UPDATE accounts SET sync_enabled_at = unixepoch(), sync_enabled_by = ?, sync_consent_version = 'sync-1'
+		WHERE id = ?`, ana.ID, shared)
+	exec(`UPDATE users SET sync_consent_at = unixepoch() WHERE id = ?`, ana.ID)
+	for _, id := range []string{shared, mine} {
+		exec(`INSERT INTO folders(account_id, name, display_name, role, sync_state) VALUES (?, 'INBOX', 'INBOX', '', 'live')`, id)
+	}
+	count := func(query string, args ...any) int {
+		t.Helper()
+		var n int
+		if err := db.Reader().QueryRowContext(ctx, query, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	for _, c := range []struct {
+		id, said string
+	}{
+		{shared, "sync off, its index deleted\n"},
+		{mine, "sync off, its index deleted; held until its person turns it on again\n"},
+	} {
+		out, _, err := captureOutput(t, func() error { return accountCommand(ctx, cfg, []string{"sync", c.id, "off", "--yes"}) })
+		if err != nil || out != c.said {
+			t.Errorf("account sync %s off said %q (%v), want %q", c.id, out, err, c.said)
+		}
+		if n := count(`SELECT count(*) FROM folders WHERE account_id = ?`, c.id); n != 0 {
+			t.Errorf("%s keeps %d folders", c.id, n)
+		}
+		if n := count(`SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'sync_paused' AND actor = ?`,
+			c.id, store.ActorOperator); n != 1 {
+			t.Errorf("%s is journaled %d times as the operator's turn-off", c.id, n)
+		}
+	}
+	if n := count(`SELECT sync_enabled_at FROM accounts WHERE id = ?`, shared); n != 0 {
+		t.Error("the team's consent stands")
+	}
+	if n := count(`SELECT sync_held_at <> 0 FROM accounts WHERE id = ?`, mine); n != 1 {
+		t.Error("Ana's mailbox is not held")
+	}
+	if n := count(`SELECT count(*) FROM notices WHERE user_id = ?`, ana.ID); n != 2 {
+		t.Errorf("Ana, who reads both, is told %d times, want twice", n)
+	}
+}
+
 func TestAnAccountCommandReadsItsFlagsBeforeOrAfterTheID(t *testing.T) {
 	for _, args := range [][]string{
 		{"acc_00000000000000b1", "--yes"},

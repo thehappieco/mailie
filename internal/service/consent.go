@@ -466,7 +466,8 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 }
 
 // liftPersonalHold is SetMailboxSync for a personal mailbox: its person turns
-// it on to lift a recovery's hold, and nothing else is theirs to switch here.
+// it on to lift a recovery's hold, or the operator's (StopMailboxSync), and
+// nothing else is theirs to switch here.
 func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.Account, on bool, version string) (AccountSync, error) {
 	if !on || !p.IsSession() || p.UserID != a.OwnerUserID {
 		return AccountSync{}, E(CodeBadRequest,
@@ -509,8 +510,13 @@ func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string
 }
 
 // syncOffRemoved turns a removed team mailbox's sync off for an owner of its
-// team: what it kept indexed is deleted, and a recovery finds none.
+// team: what it kept indexed is deleted, and a recovery finds none. The owner
+// is asked about first (FreshRemovedSyncOff), outside the write, which checks
+// again that they own it.
 func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Account) (AccountSync, error) {
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshRemovedSyncOff, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+		return AccountSync{}, err
+	}
 	check := func(tx *sql.Tx) error {
 		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 		var se *Error
@@ -538,6 +544,66 @@ func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Acc
 	return AccountSync{State: syncOff}, nil
 }
 
+// StopMailboxSync turns a mailbox's sync off and deletes its index, in any
+// workspace, live or removed, a closed team's included: the operator's (an
+// unrestricted instance admin key), to erase a mailbox's index when asked
+// to, or to stop one being abused, whatever its own people do. Nobody else:
+// a person turns their own sync off (WithdrawSyncConsent), and a team's
+// owners and admins a team mailbox's (SetMailboxSync).
+//
+// What it does is the store's (StopSync): a mailbox that names no person
+// loses its consent, which a team's owners or admins may give again, to the
+// current text, as after any turn-off; a personal one keeps its person's
+// consent and is held until they turn it on again. Everyone who read it is
+// told with a notice, as of any turn-off, and the journal names the
+// operator (store.ActorOperator), never a person or a key. Where an edition
+// withholds teams it stops a team's mailbox all the same: it uses nothing of
+// the team, and deletes what is the operator's to erase.
+func (s *Service) StopMailboxSync(ctx context.Context, p Principal, accountID string) (AccountSync, error) {
+	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+		return AccountSync{}, err
+	}
+	if !isOperator(p) {
+		return AccountSync{}, errOperatorStopsSync
+	}
+	if s.store == nil {
+		return AccountSync{}, E(CodeInternal, "this service has no database to stop a mailbox's sync in", nil)
+	}
+	a, err := s.accounts.Repo().Get(ctx, accountID)
+	removed := false
+	if errors.Is(err, account.ErrNotFound) {
+		a, err = s.accounts.Repo().GetRemoved(ctx, accountID)
+		removed = true
+	}
+	switch {
+	case errors.Is(err, account.ErrNotFound):
+		return AccountSync{}, errNoAccount
+	case err != nil:
+		return AccountSync{}, E(CodeInternal, "reading the mailbox failed", err)
+	}
+	switched, err := s.store.StopSync(ctx, a.ID, store.ActorOperator)
+	switch {
+	case errors.Is(err, store.ErrNoSuchMailbox):
+		return AccountSync{}, errNoAccount
+	case err != nil:
+		return AccountSync{}, E(CodeInternal, "stopping the mailbox's sync failed", err)
+	}
+	s.log.Info("the operator turned a mailbox's sync off and deleted its index", "account", a.ID,
+		"workspace", a.WorkspaceID, "by", p.Actor(), "removed", removed, "changed", switched.Changed,
+		"readers_told", len(switched.Told))
+	if !removed {
+		s.reconcile(a.ID)
+	}
+	s.compact(ctx)
+	if len(switched.Told) > 0 {
+		s.noticesChanged()
+	}
+	if removed {
+		return AccountSync{State: syncOff}, nil
+	}
+	return s.currentSync(ctx, a.ID)
+}
+
 // currentSync reads an account's sync again, after a change to it.
 func (s *Service) currentSync(ctx context.Context, id string) (AccountSync, error) {
 	a, err := s.accounts.Repo().Get(ctx, id)
@@ -555,6 +621,9 @@ func (s *Service) currentSync(ctx context.Context, id string) (AccountSync, erro
 }
 
 var (
+	errOperatorStopsSync = E(CodeNotAuthorized,
+		"only the operator, with an unrestricted instance admin key, stops a mailbox's sync this way; a person "+
+			"turns their own sync off, and a team's owners and admins a team mailbox's", nil)
 	errTeamSync = E(CodeNotAuthorized,
 		"only an owner or an admin of the team turns its mailboxes' sync on or off, on the team's behalf", nil)
 	errNoReaderSync = E(CodeConflict,

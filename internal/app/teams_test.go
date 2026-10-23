@@ -125,3 +125,46 @@ func TestAnEditionThatWithholdsTeamsNeverStartsATeamMailboxsSync(t *testing.T) {
 		t.Errorf("an edition that withholds teams started a team mailbox's sync:\n%s", logs)
 	}
 }
+
+func TestABinaryThatEmbedsTheDaemonKeepsKeysToPersonalWorkspacesThroughItsOptions(t *testing.T) {
+	// Ana owns a team, and her personal workspace.
+	cfg := localConfig(t)
+	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	session := authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	team, err := workspace.NewRepository(db, nil).CreateTeam(t.Context(), "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	personal := authtest.Personal(t, db, ana.ID)
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"name":"assistant","scope":"read","terms_version":"` + cfg.Consent.OrDefaults().Keys + `"}`
+
+	// One daemon at a time over the database: each stops with its subtest.
+	for _, c := range []struct {
+		name string
+		opts Options
+		team int
+	}{
+		{"unset", Options{}, http.StatusCreated},
+		{"set", Options{KeysInPersonalWorkspaceOnly: true}, http.StatusForbidden},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			base := runDaemon(t, cfg, c.opts)
+			if a := request(t, http.MethodPost, base+"/v1/workspaces/"+team.ID+"/apikeys", session, body); a.status != c.team {
+				t.Errorf("creating a team's key answered %d %s, want %d", a.status, a.body, c.team)
+			}
+			if a := request(t, http.MethodPost, base+"/v1/workspaces/"+personal+"/apikeys", session, body); a.status != http.StatusCreated {
+				t.Errorf("creating a key in Ana's personal workspace answered %d %s", a.status, a.body)
+			}
+			if a := request(t, http.MethodGet, base+"/v1/workspaces/"+team.ID+"/apikeys", session, ""); a.status != http.StatusOK {
+				t.Errorf("listing the team's keys answered %d %s", a.status, a.body)
+			}
+		})
+	}
+}

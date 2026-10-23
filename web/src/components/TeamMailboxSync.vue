@@ -2,8 +2,8 @@
 // A team mailbox's sync, for the team's owners and admins, who give or
 // withdraw its agreement on the team's behalf (docs/workspaces.md,
 // "Consents"): who turned it on, when and to which text, and the switch. On
-// shows the edition's sync text, the same a person agrees to for their own
-// mailboxes, and sends its revision; when the server already names another,
+// shows the edition's sync text, the revision a person agrees to for their
+// own mailboxes, drawn for the team (its team prop), and sends its revision; when the server already names another,
 // a reload is offered instead. Off asks for the mailbox's address typed, and
 // says its index goes for everyone who reads it. An agreement to an earlier
 // text, or one the upgrade carried over from whoever connected the mailbox
@@ -132,7 +132,7 @@ onMounted(() => {
       <p v-if="outdated" class="dim team-sync-outdated">{{ text.changedWhileOpen() }}</p>
       <template v-else>
         <p class="team-sync-lead">{{ t('You agree to this text on behalf of {team}: {email} then syncs under the team’s agreement, for everyone in the team who reads it.', { team: teamName, email: account.email }) }}</p>
-        <component :is="text.component" />
+        <component :is="text.component" :team="teamName" />
       </template>
       <p v-if="problem && !outdated" class="alert team-sync-problem" role="alert">{{ describe(problem) }}</p>
       <div class="dialog-actions">

@@ -1025,11 +1025,16 @@ const finishTimeout = grantCheckTimeout + persistTimeout
 // exactly the code that will later sync the account, as the address the
 // account will log in as.
 //
-// Only a refusal fails the consent: ErrMailboxRefused, and nothing is stored
-// — an unusable grant kept around would only make the account look
-// connected. Anything else, a server that is down or slow or throttling, is
-// not the grant's fault, and the grant is kept: a mail server's bad minute
-// must not cost a person their consent. Either way the log says why.
+// Only a login that worked stores the grant. A refusal fails the consent:
+// ErrMailboxRefused, and nothing is stored — an unusable grant kept around
+// would only make the account look connected. Anything else, a server that
+// is down or slow or throttling, proves nothing either way, and nothing is
+// stored either: ErrGrantUnproved, and the consent is started again once
+// the server answers. A grant kept without its proof could be for another
+// mailbox than the one it replaces, and a re-authorization would swap a
+// working grant for it, for everyone who uses the mailbox, with nothing to
+// show until the next login. The account keeps whatever grant it had. Either
+// way the log says why.
 //
 // ctx is already detached from the request: the code has been spent. The
 // check leaves the time the grant still needs to be stored.
@@ -1066,10 +1071,10 @@ func (r *Registry) checkGrant(ctx context.Context, a Account, config *oauth2.Con
 			"err", err, "server", provider.ServerReply(err))
 		return nil, fmt.Errorf("%w: %w", ErrMailboxRefused, err)
 	default:
-		r.log.Warn("could not prove a new authorization opens the mailbox; keeping it",
+		r.log.Warn("could not prove a new authorization opens the mailbox; nothing is stored",
 			"account", a.ID, "provider", a.ProviderName(), "class", provider.Class(err),
 			"err", err, "server", provider.ServerReply(err))
-		return held.latest(), nil
+		return nil, fmt.Errorf("%w: %w", ErrGrantUnproved, err)
 	}
 }
 

@@ -86,6 +86,9 @@ type fixtureOptions struct {
 	keysActUnderCreator bool
 	// teamsWithheld is an edition that does not offer team workspaces.
 	teamsWithheld bool
+	// keysPersonalOnly is an edition whose API keys belong to personal
+	// workspaces alone.
+	keysPersonalOnly bool
 	// source is where workspaces come from; nil is the local source.
 	source workspace.Source
 	// freshness is asked before an act that widens access; nil asks
@@ -165,18 +168,19 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		Log:        logger,
 		PublicURL:  f.opts.publicURL,
 
-		DownloadSpoolBytes:         f.opts.downloadSpool,
-		DownloadsPerCaller:         f.opts.downloadsPerCaller,
-		SpoolDir:                   f.spool,
-		SendHashKey:                f.opts.sendHashKey,
-		SendSpoolBytes:             f.opts.sendSpool,
-		ConsentVersions:            f.opts.consent,
-		ExternalSignInOnly:         f.opts.externalSignInOnly,
-		NameFollowsIdentity:        f.opts.nameFollowsIdentity,
-		KeysMayNotSend:             f.opts.keysMayNotSend,
-		KeysActUnderCreatorConsent: f.opts.keysActUnderCreator,
-		TeamsWithheld:              f.opts.teamsWithheld,
-		Freshness:                  f.opts.freshness,
+		DownloadSpoolBytes:          f.opts.downloadSpool,
+		DownloadsPerCaller:          f.opts.downloadsPerCaller,
+		SpoolDir:                    f.spool,
+		SendHashKey:                 f.opts.sendHashKey,
+		SendSpoolBytes:              f.opts.sendSpool,
+		ConsentVersions:             f.opts.consent,
+		ExternalSignInOnly:          f.opts.externalSignInOnly,
+		NameFollowsIdentity:         f.opts.nameFollowsIdentity,
+		KeysMayNotSend:              f.opts.keysMayNotSend,
+		KeysActUnderCreatorConsent:  f.opts.keysActUnderCreator,
+		TeamsWithheld:               f.opts.teamsWithheld,
+		KeysInPersonalWorkspaceOnly: f.opts.keysPersonalOnly,
+		Freshness:                   f.opts.freshness,
 	}), registry
 }
 

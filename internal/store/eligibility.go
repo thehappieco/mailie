@@ -41,9 +41,9 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 // catches up once the team reopens.
 //
 // Nor does a removed mailbox (removed_at, migration 0020), kept with its
-// index for a recovery, nor a recovered one whose sync is held
-// (sync_held_at) until someone who may turns it on, which catches up from
-// the index it kept: both are in syncPermitted, so neither reads as
+// index for a recovery, nor one whose sync is held (sync_held_at) until
+// someone who may turns it on — a recovered one, which catches up from the
+// index it kept, or a personal one the operator turned off (StopSync): both are in syncPermitted, so neither reads as
 // switched on anywhere.
 //
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
@@ -101,7 +101,8 @@ const (
 	// PauseError is a mailbox in error, or disabled.
 	PauseError = "error"
 	// PauseHeld is a recovered mailbox whose sync is held until someone who
-	// may turns it on.
+	// may turns it on, or a personal one the operator turned off until its
+	// person does.
 	PauseHeld = "held"
 	// PausePersonOff is a personal mailbox whose person is not active, or a
 	// team mailbox whose consent migration 0011 bound to a person who is

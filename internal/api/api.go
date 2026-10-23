@@ -235,6 +235,13 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// mailbox's by its person.
 	mux.Handle("PUT /v1/accounts/{id}/sync",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setMailboxSync))
+	// The operator's turn-off of any mailbox's sync, in any workspace, live
+	// or removed, which deletes its index and tells its readers, as
+	// switching off does: for an erasure asked of the operator, or a mailbox
+	// being abused. Only an unrestricted instance admin key; the service
+	// refuses everyone else.
+	mux.Handle("POST /v1/accounts/{id}/sync/stop",
+		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.stopMailboxSync))
 
 	// The event stream has no route timeout: it lasts as long as the client
 	// stays. The long poll's is the longest wait it accepts, plus room to

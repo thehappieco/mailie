@@ -142,8 +142,11 @@ Usage:
   mailserver account folders ID           List an account's folders
   mailserver account authorize ID         Authorise again after a grant expires
   mailserver account sync ID status|now   Show an account's sync, or ask for a pass
-  mailserver account sync ID on|off       Switch sync for a mailbox of the operator workspace; on also
+  mailserver account sync ID on           Switch sync on for a mailbox of the operator workspace; also
                                           lifts the hold of one recovered after it was removed
+  mailserver account sync ID off [--yes]  Switch any workspace's mailbox's sync off, removed ones too, and
+                                          delete its index; its readers are told, and its team's owners
+                                          and admins, or its person, turn it on again
   mailserver account remove ID [--yes]    Remove a mailbox: kept 30 days, used by nothing and recoverable,
                                           then deleted for good; one that never connected goes at once
   mailserver account removed [--workspace ID]

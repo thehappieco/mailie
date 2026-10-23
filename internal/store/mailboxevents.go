@@ -97,8 +97,8 @@ type MailboxEvent struct {
 	// hint once no notice still to be read needs it.
 	Label string
 	Hint  string
-	// Actor is who did it: "usr_…", "key:<prefix>", "cli", "sweep" or
-	// "directory"; empty once that person is forgotten.
+	// Actor is who did it: "usr_…", "key:<prefix>", "cli", "sweep",
+	// "directory" or "operator"; empty once that person is forgotten.
 	Actor string
 	// At is when, in unix seconds.
 	At int64
@@ -127,6 +127,13 @@ const ActorSweep = "sweep"
 // ActorDirectory is the actor of what an external directory decides through
 // an extension of the daemon: a membership it ended, a person it closed.
 const ActorDirectory = "directory"
+
+// ActorOperator is the actor of what the operator decides for a mailbox of
+// any workspace, outside the ways its own people have: its sync turned off
+// and its index deleted (StopSync). The operator is nobody's reader and no
+// person here, whichever instance key they used, which the daemon's log
+// names.
+const ActorOperator = "operator"
 
 // Errors of the journal and the notices.
 var (

@@ -4,7 +4,8 @@
 // state_reason is English and written for logs, so the console never shows it.
 // A handful are short fixed strings (internal/account), and for some of them
 // the person can do something specific: allow access to the mailbox on the
-// provider's consent screen, or pick the right account on its sign-in screen.
+// provider's consent screen, pick the right account on its sign-in screen, or
+// try again once the mail server answers.
 // Those are matched exactly here; any other reason falls back to the text for
 // the state alone.
 
@@ -21,6 +22,12 @@ export const REASON_MAILBOX_REFUSED = 'the mail server refused this authorizatio
  * again, as the right account.
  */
 export const REASON_TOKEN_REJECTED = "the mail server rejected the account's access token"
+/**
+ * A consent whose grant the mail server could not be reached to prove (down,
+ * slow, throttling): nothing was kept, and the same consent works once it
+ * answers.
+ */
+export const REASON_UNPROVED = 'the mail server could not be reached to prove this authorization'
 
 export type ReasonFacts = Pick<Account, 'provider' | 'email' | 'state' | 'state_reason'>
 
@@ -45,6 +52,8 @@ export function reasonText(account: ReasonFacts): string | undefined {
         case 'microsoft': return t('The mail server refused this authorization. Try again and choose the account {email} on Microsoft’s sign-in screen. If you already did, check that IMAP is turned on for this mailbox.', { email: account.email })
         default: return t('The mail server refused this authorization. Try again and choose the account {email} on the provider’s sign-in screen.', { email: account.email })
       }
+    case REASON_UNPROVED:
+      return t('The mail server could not be reached to check this authorization, so nothing was kept. Try again in a moment.')
     default:
       return undefined
   }

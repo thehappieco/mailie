@@ -296,6 +296,51 @@ func TestServeNeverWithholdsTeams(t *testing.T) {
 	}
 }
 
+func TestServeNeverKeepsKeysToPersonalWorkspaces(t *testing.T) {
+	// Keeping keys to personal workspaces is a choice of a binary that
+	// embeds the daemon (app.Options.KeysInPersonalWorkspaceOnly), with no
+	// environment variable: a team's owners create its keys on the
+	// self-hosted server, whatever its configuration.
+	cfg := localConfig(t)
+	db, release, err := openExclusively(t.Context(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	session := authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+	ana, err := auth.NewUsers(db).GetByEmail(t.Context(), "ana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := workspace.NewRepository(db, nil).CreateTeam(t.Context(), "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
+	base, logs := runDaemon(t, cfg)
+
+	body := `{"name":"assistant","scope":"read","terms_version":"` + cfg.Consent.OrDefaults().Keys + `"}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/v1/workspaces/"+team.ID+"/apikeys",
+		strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+session)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	said, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("Ana creating her team's key: %d %s", resp.StatusCode, said)
+	}
+	if strings.Contains(logs.String(), "API keys belong to personal workspaces only") {
+		t.Errorf("serve says it keeps keys to personal workspaces:\n%s", logs)
+	}
+}
+
 func TestTheDaemonSaysAtStartWhichTeamsAreClosed(t *testing.T) {
 	cfg := localConfig(t)
 	db, release, err := openExclusively(t.Context(), cfg)

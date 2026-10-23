@@ -19,10 +19,12 @@ import (
 // answer that ended the actor's membership stops the act there, and it
 // changes nothing.
 //
-// It is asked only of a person signed in, never of a key's own acts, and
-// never inside a write: the extension may apply a document, which writes.
-// Reading, removing, recovering, deleting for good and taking access away
-// never ask.
+// It is asked only of a person signed in, never of a key's own acts nor of
+// the operator's, and never inside a write: the extension may apply a
+// document, which writes. Reading, removing, recovering and taking access
+// away never ask; deleting a removed mailbox for good, and turning a removed
+// one's sync off, ask only of a team's mailbox, whose owners do it before
+// its 30 days are over: what it deletes is the team's, read by others too.
 
 // FreshKind is the kind of act a freshness question is about.
 type FreshKind string
@@ -47,6 +49,12 @@ const (
 	FreshActions FreshKind = "act"
 	// FreshSend: a send from a team mailbox.
 	FreshSend FreshKind = "send"
+	// FreshPurge: a removed team mailbox deleted for good by an owner of
+	// its team, before its 30 days are over.
+	FreshPurge FreshKind = "purge"
+	// FreshRemovedSyncOff: a removed team mailbox's sync turned off by an
+	// owner of its team, which deletes the index it keeps.
+	FreshRemovedSyncOff FreshKind = "removed_sync_off"
 )
 
 // FreshAct is an act about to happen.

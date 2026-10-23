@@ -456,6 +456,90 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 	return out, err
 }
 
+// StopSync turns a mailbox's sync off by the operator's decision, whatever
+// its workspace and wherever it stands — a person's, a team's (a closed one,
+// one an edition withholds, the operator's), live or removed — and deletes
+// what was indexed for it, in the same transaction: how the operator erases
+// a mailbox's index when asked to, or stops one being abused. actor is who
+// the journal names (ActorOperator).
+//
+//   - A mailbox that names no person loses its consent, as SetMailboxSync
+//     off does, and a hold with it: a team's owners or admins turn it on
+//     again, to the current text, as after any turn-off, and the operator
+//     an operator mailbox's.
+//   - A personal mailbox keeps its person's consent, which is theirs and
+//     covers their other mailboxes; a live one is held instead
+//     (sync_held_at), so that nothing of it syncs until its person turns it
+//     on again (LiftSyncHold), whatever their consent says.
+//
+// A mailbox that was syncing, or could have — a team's or a person's whose
+// consent stood, not already held, live or removed — is journaled
+// sync_paused, and every reader told (none for a removed one, which has
+// none): the actor is nobody's reader. An operator mailbox is journaled for
+// nobody, as SetMailboxSync does. It reports what changed; a mailbox nobody
+// knows is ErrNoSuchMailbox.
+func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxSyncSwitch, error) {
+	now := s.now().Unix()
+	var out MailboxSyncSwitch
+	err := s.Write(ctx, func(tx *sql.Tx) error {
+		var (
+			owner                           sql.NullString
+			c                               MailboxConsent
+			held, removed, person, operator bool
+		)
+		err := tx.QueryRowContext(ctx,
+			`SELECT a.owner_user_id, a.sync_enabled_at, a.sync_enabled_via = 'migration', a.sync_held_at <> 0,
+			        a.removed_at <> 0,
+			        coalesce((SELECT u.sync_consent_at <> 0 FROM users u WHERE u.id = a.owner_user_id), 0),
+			        a.workspace_id = 'wsp_operator'
+			   FROM accounts a WHERE a.id = ?`, accountID,
+		).Scan(&owner, &c.At, &c.Migrated, &held, &removed, &person, &operator)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("%w: %s", ErrNoSuchMailbox, accountID)
+		case err != nil:
+			return fmt.Errorf("store: read the mailbox's sync: %w", err)
+		}
+		var wasOn bool
+		if owner.Valid {
+			wasOn = person && !held
+			if !removed && !held {
+				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET sync_held_at = ?, updated_at = ? WHERE id = ?`,
+					now, now, accountID); err != nil {
+					return fmt.Errorf("store: hold the mailbox's sync: %w", err)
+				}
+				out.Changed = true
+			}
+		} else {
+			wasOn = c.At != 0 || c.Migrated
+			out.Changed = wasOn || held
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '', sync_consent_version = '',
+				   sync_enabled_via = '', sync_held_at = 0, updated_at = ? WHERE id = ?`, now, accountID); err != nil {
+				return fmt.Errorf("store: switch sync off: %w", err)
+			}
+		}
+		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {
+			return err
+		}
+		if !wasOn {
+			return nil
+		}
+		out.Changed = true
+		if operator {
+			// The operator's own mailbox: nobody else reads it, and no
+			// extension reports the operator workspace.
+			return nil
+		}
+		out.Told, err = journalSyncPausedTx(ctx, tx, accountID, actor, "", now)
+		return err
+	})
+	if err == nil {
+		s.moves.forget([]string{accountID})
+	}
+	return out, err
+}
+
 // journalSyncPausedTx journals, inside the caller's transaction, a mailbox's
 // sync turned off by actor, for cause ("" or CauseBoundStopped), with who
 // read it then, and tells each of them but the actor; it returns who it
@@ -479,8 +563,9 @@ func journalSyncPausedTx(ctx context.Context, tx *sql.Tx, accountID, actor, caus
 	return told, nil
 }
 
-// LiftSyncHold lifts the hold a recovery put on a live mailbox's sync
-// (sync_held_at), which then syncs again under its consent as it stands: a
+// LiftSyncHold lifts the hold a recovery, or the operator's turn-off of a
+// personal mailbox (StopSync), put on a live mailbox's sync (sync_held_at),
+// which then syncs again under its consent as it stands: a
 // personal mailbox's person's, which only they lift it for. check runs first
 // in the transaction (nil checks nothing). It reports whether a hold was
 // lifted; a mailbox nobody knows, or a removed one, is ErrNoSuchMailbox.

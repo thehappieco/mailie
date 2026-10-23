@@ -540,11 +540,16 @@ type syncJSON struct {
 	HeldSince       int64  `json:"held_since"`
 }
 
-// accountSync shows an account's sync, asks for a pass, or — for an account
-// nobody owns, which has no person to consent — switches sync on or off;
-// switching on also lifts the hold of a mailbox recovered after it was
-// removed. A person's mailbox syncs when they turn sync on in the console,
-// and the daemon refuses to let anyone else decide for them.
+// accountSync shows an account's sync, asks for a pass, switches an
+// operator mailbox's on — which also lifts the hold of one recovered after
+// it was removed — or turns any mailbox's off. A person's mailbox syncs when
+// they turn sync on in the console, and a team's when its owners or admins
+// do, and the daemon refuses to let anyone else turn it on for them; off is
+// the operator's turn-off (POST /v1/accounts/{id}/sync/stop), of a mailbox of
+// any workspace, live or removed, which deletes its index and tells its
+// readers: how the operator erases a mailbox's index when asked to, or stops
+// one being abused. A team's owners or admins may turn it on again, and a
+// person, whose mailbox it holds.
 func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account sync", flag.ContinueOnError)
 	yes := fs.Bool("yes", false, "do not ask for confirmation before switching sync off")
@@ -568,11 +573,12 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 		raw, err = adminDo(ctx, cfg, http.MethodPut, path, []byte(`{"enabled":true}`))
 	case "off":
 		// Switching off deletes the account's index, as withdrawing consent
-		// does for a person's mailboxes.
-		if !*yes && !confirmed(fmt.Sprintf("Switch sync off for %s and delete everything indexed for it?", accountID)) {
+		// does for a person's mailboxes, whichever workspace it is in.
+		if !*yes && !confirmed(fmt.Sprintf("Switch sync off for %s and delete everything indexed for it? "+
+			"Whoever reads it is told.", accountID)) {
 			return nil
 		}
-		raw, err = adminDo(ctx, cfg, http.MethodPut, path, []byte(`{"enabled":false}`))
+		raw, err = adminDo(ctx, cfg, http.MethodPost, path+"/stop", nil)
 	default:
 		return fmt.Errorf("%w: account sync ID status|now|on|off", errUsage)
 	}
@@ -590,6 +596,14 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	last := "-"
 	if st.LastSyncedAt != 0 {
 		last = time.Unix(st.LastSyncedAt, 0).Format(time.RFC3339)
+	}
+	if rest[1] == "off" {
+		if st.Held {
+			fmt.Println("sync off, its index deleted; held until its person turns it on again")
+			return nil
+		}
+		fmt.Println("sync off, its index deleted")
+		return nil
 	}
 	if st.Held {
 		fmt.Printf("sync held since %s, when it was recovered; `mailserver account sync %s on` turns it on\n",

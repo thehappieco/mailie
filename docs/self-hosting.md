@@ -994,6 +994,30 @@ going back is that copy, which loses everything written since the upgrade, as an
   and nothing of who may act or send, changes.
 - **The open console** asks as before: it offers actions again to a person who turned them off.
 
+### A grant proved before it is stored, and the operator's turn-off of any mailbox
+
+No migration: the schema stays 24 and no row changes, so going back is the binary (and console) you
+kept.
+
+- **A new grant is stored only once it opens the mailbox.** Connecting a mailbox through Google or
+  Microsoft, or authorizing one again, ends with one IMAP login with the new grant. A mail server
+  that could not be reached then (down, slow, throttling) used to leave the grant stored unproved;
+  now nothing is stored: the attempt answers `500`, "upstream: …", with `Retry-After: 30`, a
+  mailbox that never connected shows why (`the mail server could not be reached to prove this
+  authorization`), and one authorized again keeps the grant it had. Start again once the mail
+  server answers ([`console.md`](console.md#mailboxes)).
+- **`mailserver account sync ID off` turns any mailbox's sync off**, of any workspace, removed ones
+  and a closed team's too (`POST /v1/accounts/{id}/sync/stop`, an unrestricted admin key): how you
+  erase a mailbox's index when asked to, or stop one being abused. Its index is deleted, whoever
+  read it is told in the console, and the journal names the operator. A team's owners or admins
+  turn it on again, to the current sync text; a personal mailbox is held, its person's consent
+  kept, until they turn it on. An operator mailbox's is switched off as before
+  ([`workspaces.md`](workspaces.md#consents)).
+- **For a binary that embeds the daemon** (nothing changes for `serve`): the freshness hook is also
+  asked before a team's owner deletes a removed team mailbox for good or turns its kept index off
+  (`purge`, `removed_sync_off`), and `app.Options.KeysInPersonalWorkspaceOnly` keeps API keys to
+  personal workspaces.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to

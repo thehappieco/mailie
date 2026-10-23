@@ -112,6 +112,26 @@ func (w *freshWorld) box(t *testing.T, email string) string {
 	return w.teamBox(t, dirTeamID, w.ana.UserID, email)
 }
 
+// removedBox is a team mailbox Ana reads, which connected once, removed by
+// her and kept: with the team's consent to sync and an index, when synced.
+func (w *freshWorld) removedBox(t *testing.T, email string, synced bool) string {
+	t.Helper()
+	box := w.box(t, email)
+	w.connect(t, box)
+	if synced {
+		on := true
+		if _, err := w.svc.SetMailboxSync(t.Context(), w.ana, box,
+			service.MailboxSyncRequest{Enabled: &on, Version: w.consent().Sync}); err != nil {
+			t.Fatal(err)
+		}
+		w.seedIndex(t, box, "Kept")
+	}
+	if _, err := w.svc.RemoveAccount(t.Context(), w.ana, box, service.RemoveAccountRequest{Confirm: box}); err != nil {
+		t.Fatal(err)
+	}
+	return box
+}
+
 var freshSites = map[string]freshSite{
 	"SetAccess": {func(t *testing.T, w *freshWorld) freshCase {
 		box := w.box(t, "support@team.example.com")
@@ -293,6 +313,39 @@ var freshSites = map[string]freshSite{
 			},
 		}
 	}},
+	"PurgeAccount": {func(t *testing.T, w *freshWorld) freshCase {
+		box := w.removedBox(t, "support@team.example.com", false)
+		return freshCase{
+			do: func() error {
+				return w.svc.PurgeAccount(t.Context(), w.ana, box, service.PurgeAccountRequest{Confirm: box})
+			},
+			want: service.FreshAct{Kind: service.FreshPurge, ActorID: w.ana.UserID, WorkspaceID: dirTeamID, AccountID: box},
+			unchanged: func(t *testing.T) {
+				if n := w.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, box); n != 1 {
+					t.Error("the removed mailbox was deleted for good")
+				}
+			},
+		}
+	}},
+	"SyncOffRemoved": {func(t *testing.T, w *freshWorld) freshCase {
+		box := w.removedBox(t, "support@team.example.com", true)
+		return freshCase{
+			do: func() error {
+				off := false
+				_, err := w.svc.SetMailboxSync(t.Context(), w.ana, box, service.MailboxSyncRequest{Enabled: &off})
+				return err
+			},
+			want: service.FreshAct{Kind: service.FreshRemovedSyncOff, ActorID: w.ana.UserID, WorkspaceID: dirTeamID, AccountID: box},
+			unchanged: func(t *testing.T) {
+				if n := w.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND sync_enabled_at <> 0`, box); n != 1 {
+					t.Error("the removed mailbox's consent to sync was withdrawn")
+				}
+				if n := w.count(t, `SELECT count(*) FROM messages WHERE account_id = ?`, box); n == 0 {
+					t.Error("the index the removed mailbox keeps was deleted")
+				}
+			},
+		}
+	}},
 	"SetFlags": {func(t *testing.T, w *freshWorld) freshCase {
 		id, box := w.ownedBoxIn(t, w.ana, dirTeamID, "desk@team.example.com", providertest.FakeOptions{Caps: providertest.GmailCaps()})
 		box.Deliver("INBOX", message("a", "Lunch on Friday"))
@@ -456,17 +509,63 @@ func TestFreshnessIsNeverAskedToReadRemoveRecoverOrLowerAccess(t *testing.T) {
 			_, err := w.svc.RemoveAccount(ctx, w.ana, box, service.RemoveAccountRequest{Confirm: box})
 			return err
 		}},
-		{"turning a removed mailbox's sync off", func() error {
-			off := false
-			_, err := w.svc.SetMailboxSync(ctx, w.ana, box, service.MailboxSyncRequest{Enabled: &off})
-			return err
-		}},
 		{"recovering", func() error { _, err := w.svc.RecoverAccount(ctx, w.ana, box); return err }},
 		{"removing again", func() error {
 			_, err := w.svc.RemoveAccount(ctx, w.ana, box, service.RemoveAccountRequest{Confirm: box})
 			return err
 		}},
-		{"deleting for good", func() error { return w.svc.PurgeAccount(ctx, w.ana, box, service.PurgeAccountRequest{Confirm: box}) }},
+	} {
+		if err := step.do(); err != nil {
+			t.Fatalf("%s: %v", step.what, err)
+		}
+		if asked := w.hook.take(); len(asked) != 0 {
+			t.Errorf("%s asked %+v", step.what, asked)
+		}
+	}
+}
+
+func TestFreshnessIsNeverAskedToDeleteForGoodOrTurnOffAnythingButARemovedTeamMailboxByItsOwner(t *testing.T) {
+	// A team's mailbox asks, of an owner signed in (sites PurgeAccount and
+	// SyncOffRemoved); a person's own, the operator's deletion of a team's
+	// and the hourly sweep never do.
+	w := newFreshWorld(t)
+	ctx := t.Context()
+	mine := w.mailbox(t, w.ana, "ana@mail.example")
+	w.connect(t, mine)
+	if _, err := w.svc.GrantSyncConsent(ctx, w.ana, w.consent().Sync); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.RemoveAccount(ctx, w.ana, mine, service.RemoveAccountRequest{Confirm: mine}); err != nil {
+		t.Fatal(err)
+	}
+	shared := w.removedBox(t, "support@team.example.com", true)
+	// Removed more than 30 days ago.
+	swept := w.box(t, "desk@team.example.com")
+	w.connect(t, swept)
+	w.exec(t, `UPDATE accounts SET removed_at = 900, removed_by = ?, purge_after = 900 + 2592000 WHERE id = ?`,
+		w.ana.UserID, swept)
+	w.hook.take()
+	for _, step := range []struct {
+		what string
+		do   func() error
+	}{
+		{"deleting Ana's own removed mailbox for good", func() error {
+			return w.svc.PurgeAccount(ctx, w.ana, mine, service.PurgeAccountRequest{Confirm: mine})
+		}},
+		{"the operator turning a removed team mailbox's sync off", func() error {
+			_, err := w.svc.StopMailboxSync(ctx, admin(), shared)
+			return err
+		}},
+		{"the operator deleting a removed team mailbox for good", func() error {
+			return w.svc.PurgeAccount(ctx, admin(), shared, service.PurgeAccountRequest{Confirm: shared})
+		}},
+		{"the sweep, past the 30 days", func() error {
+			n, _, err := w.svc.SweepRemovedMailboxes(ctx, time.Hour)
+			if err == nil && n != 1 {
+				t.Errorf("the sweep deleted %d mailboxes, want the one past its 30 days", n)
+			}
+			return err
+		}},
 	} {
 		if err := step.do(); err != nil {
 			t.Fatalf("%s: %v", step.what, err)
@@ -605,6 +704,14 @@ func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtStartOAuth(t *testing
 
 func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtSetMailboxSync(t *testing.T) {
 	failsAt(t, "SetMailboxSync")
+}
+
+func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtPurgeAccount(t *testing.T) {
+	failsAt(t, "PurgeAccount")
+}
+
+func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtSyncOffRemoved(t *testing.T) {
+	failsAt(t, "SyncOffRemoved")
 }
 
 func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtSetFlags(t *testing.T) {

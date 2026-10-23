@@ -15,10 +15,12 @@
 // can read says so, and what is left to do about it. Below the people, the
 // API keys holding something on it: what each holds and who created it, and
 // taking the mailbox out of one; keys never count as readers, and what one
-// holds is changed in the workspace's API keys. The server decides every
+// holds is changed in the workspace's API keys, the section the edition names
+// (copy.keysSection; unset, the hint names none). The server decides every
 // change.
 import { computed, onMounted, ref } from 'vue'
 import { readsNow, type GrantFlags, type MailboxKey, type Member } from '../api/types'
+import { edition } from '../edition'
 import { dropKeyMailbox } from '../state/apikeys'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
@@ -170,6 +172,12 @@ async function take(key: MailboxKey) {
   announce(t('{email} was taken out of {name}.', { email: props.email, name: key.name }))
 }
 const keyCreator = (key: MailboxKey) => keyPerson(key.created_by, me.value, personName)
+/** What a key's holding is, and, where the edition names it, the section that changes it. */
+const keysHint = computed(() => {
+  const rule = t('A key reads a mailbox only where an owner or an admin who reads it gave it Read, and keeps what it holds when they lose their own access. Keys never count as readers.')
+  const section = edition().copy.keysSection?.()
+  return section ? `${rule} ${t('What a key holds on each mailbox is changed in {section}.', { section })}` : rule
+})
 
 function refresh() {
   void loadMembers()
@@ -244,7 +252,7 @@ onMounted(() => {
           <p v-if="keyProblems[key.prefix]" class="alert" role="alert">{{ describe(keyProblems[key.prefix]!) }}</p>
         </li>
       </ul>
-      <p class="hint">{{ t('A key reads a mailbox only where an owner or an admin who reads it gave it Read, and keeps what it holds when they lose their own access. Keys never count as readers. What a key holds on each mailbox is changed in API keys & MCP.') }}</p>
+      <p class="hint">{{ keysHint }}</p>
     </section>
   </div>
 </template>

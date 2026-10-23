@@ -590,12 +590,21 @@ func fromCompletion(err error) error {
 		return E(CodeBadRequest,
 			"the mail server refused this authorization for the mailbox; "+
 				"start again and sign in as the address being connected", err)
+	case errors.Is(err, account.ErrGrantUnproved):
+		// Nothing was stored: the account keeps the grant it had, and the
+		// person starts again once the mail server answers.
+		return &Error{Code: CodeInternal, Message: "upstream: the mail server could not be reached to prove this " +
+			"authorization opens the mailbox, so nothing was stored; start again shortly", Retry: grantRetry, Err: err}
 	case errors.Is(err, account.ErrExchangeFailed), errors.Is(err, account.ErrProviderRefused):
 		return E(CodeBadRequest, "the provider did not accept the authorisation; start again", err)
 	default:
 		return E(CodeInternal, "completing the authorisation failed", err)
 	}
 }
+
+// grantRetry is how long a person waits before starting a consent again
+// whose grant the mail server could not be reached to prove.
+const grantRetry = 30 * time.Second
 
 // RemoveAccountRequest names the mailbox again, as a guard against removing
 // the wrong one: Confirm must repeat its id.

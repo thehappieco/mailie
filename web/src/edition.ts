@@ -46,7 +46,14 @@ export interface PermissionText extends AgreementText {
 export interface Edition {
   /** What a signed-in person sees: the edition's sections, built on components/ConsoleShell.vue. */
   console: Component
-  /** What sync stores: agreed to before anything from a mailbox is kept. */
+  /**
+   * What sync stores: agreed to before anything from a mailbox is kept. One
+   * revision, drawn two ways: takes `team` (the name of the team an owner or
+   * an admin agrees to it for, on the team's behalf: connecting a mailbox
+   * into it, or turning a team mailbox's sync on), absent where a person
+   * agrees to it for their own mailboxes. A text whose words differ by it
+   * says both in the revision it names.
+   */
   sync: PermissionText
   /** What actions on messages change: agreed to before any is made. */
   actions: PermissionText
@@ -74,6 +81,14 @@ export interface Edition {
     indexHint(): string
     /** In the dialog that turns actions off: what stops. */
     actionsOff(): string
+    /**
+     * The section where a workspace's API keys, and what each holds on its
+     * mailboxes, are changed, as the Access section of a team mailbox names
+     * it (components/AccessPanel.vue): "… is changed in {section}". Unset:
+     * that sentence is left out, as where a team has no keys of its own (an
+     * edition whose keys are a personal workspace's alone).
+     */
+    keysSection?(): string
     /**
      * Beside a write that needs a step-up (giving Read with a grant, a
      * mailbox's key): when the person is asked to prove themselves again.

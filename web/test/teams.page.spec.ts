@@ -14,6 +14,7 @@
 // their personal workspace instead, and is shown none of the team's people.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { defineComponent, h } from 'vue'
 import { check, click, fill, find, fire, flush, keydown, page, submit, words } from './dom'
 import { mount, type Mounted } from './mount'
 import type { MailboxAccess, MailboxKey, Member, RemovedMailbox, Workspace } from '../src/api/types'
@@ -25,6 +26,8 @@ import SyncPermission from '../src/components/SyncPermission.vue'
 import WorkspaceSwitcher from '../src/components/WorkspaceSwitcher.vue'
 import OpenConsole from '../src/open/OpenConsole.vue'
 import OpenMembers from '../src/open/OpenMembers.vue'
+import { configureEdition } from '../src/edition'
+import { openEdition } from '../src/open/edition'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
 import { accounts, loadAccounts, loadProviders, purgeRemoved } from '../src/state/accounts'
 import { holdInvitation, invitation } from '../src/state/invitation'
@@ -67,6 +70,17 @@ async function signedIn(role: string, route: Route, list: () => Workspace[] = ()
   selectWorkspace(TEAM)
 }
 const sent = (method: string, path: string) => seen.filter(request => request.method === method && request.path === path)
+
+/** An edition's sync text that says whom it is drawn for: the team named, or a person's own mailboxes. */
+const SyncProbe = defineComponent({
+  props: { team: { type: String, default: '' } },
+  setup: props => () => h('p', { class: 'sync-probe' }, props.team ? `drawn for the team ${props.team}` : 'drawn for my own mailboxes'),
+})
+/** Runs body with the open edition whose sync text is the probe, and the open edition again after. */
+async function withSyncProbe(body: () => Promise<void>) {
+  configureEdition({ ...openEdition, sync: { ...openEdition.sync, component: SyncProbe } })
+  try { await body() } finally { configureEdition(openEdition) }
+}
 
 beforeEach(() => {
   stubPage()
@@ -279,6 +293,8 @@ describe('connecting a mailbox from a team shown', () => {
     expect(words(box)).toContain('Mail sync for Support')
     expect(words(box)).toContain('Who can read the index')
     expect(words(box)).toContain('A team’s mailbox syncs under the team’s agreement')
+    // The open text takes the team it is drawn for, and leaves it off the page.
+    expect(find('dialog .team-sync-text .consent-text')!.hasAttribute('team')).toBe(false)
     const agree = find('dialog input[name=team-sync]')!
     expect(agree.checked).toBe(false)
     expect(words(box)).toContain('Turn on sync for Support')
@@ -289,6 +305,13 @@ describe('connecting a mailbox from a team shown', () => {
     expect(posted[0]).toMatchObject({ workspace_id: TEAM, sync_consent_version: SYNC_TEXT_VERSION })
     // The person's own agreement was neither asked for nor given.
     expect(sent('POST', '/v1/me/sync-consent')).toEqual([])
+  })
+
+  it('draws the edition’s sync text for the team chosen, the one revision whoever agrees', async () => {
+    await withSyncProbe(async () => {
+      await connecting(current, [])
+      expect(words(find('dialog .team-sync-text')!)).toBe('drawn for the team Support')
+    })
   })
 
   it('forgets a ticked agreement when another team or the personal workspace is chosen, and sends none there', async () => {
@@ -390,6 +413,14 @@ describe('a team mailbox’s sync', () => {
     expect(sent('PUT', `/v1/accounts/${managed.id}/sync`).map(request => request.body)).toEqual([{ enabled: true, version: SYNC_TEXT_VERSION }])
     await vi.waitFor(() => expect(words(find('.team-sync')!)).not.toContain('It is still tied to them'))
     expect(find('.team-sync button[role=switch]')).not.toBeNull()
+  })
+
+  it('draws the edition’s sync text for the team it is agreed for', async () => {
+    await withSyncProbe(async () => {
+      await sheetAs('admin', off)
+      await click(find('.team-sync button[role=switch]'))
+      expect(words(lastDialog())).toContain('drawn for the team Support')
+    })
   })
 
   it('says a refused switch in the console’s words, never the server’s', async () => {
@@ -536,6 +567,19 @@ describe('who can use a mailbox', () => {
     expect(sent('DELETE', `/v1/workspaces/${TEAM}/apikeys/${prefix}/accounts/${shared.id}`)).toHaveLength(1)
     await vi.waitFor(() => expect(holder()).toBeNull())
     expect(words()).toContain('No API key holds anything on this mailbox.')
+  })
+
+  it('names the section where what a key holds is changed only where the edition has one', async () => {
+    await panel()
+    expect(words()).toContain('Keys never count as readers. What a key holds on each mailbox is changed in API keys & MCP.')
+    mounted?.unmount()
+    configureEdition({ ...openEdition, copy: { ...openEdition.copy, keysSection: undefined } })
+    try {
+      mounted = mount(AccessPanel, { accountId: shared.id, email: shared.email })
+      await flush()
+      expect(words()).toContain('Keys never count as readers.')
+      expect(words()).not.toContain('What a key holds on each mailbox is changed')
+    } finally { configureEdition(openEdition) }
   })
 
   it('offers no take-over and names no linker', async () => {
@@ -819,6 +863,20 @@ describe('turning sync off', () => {
     expect(seen.filter(request => request.path === '/v1/accounts')).toEqual([])
     await click(find('dialog button.danger', 'Turn off and delete'))
     expect(sent('DELETE', '/v1/me/sync-consent')).toHaveLength(1)
+  })
+
+  it('draws the edition’s sync text for a person’s own mailboxes when they turn theirs on, in a team too', async () => {
+    await withSyncProbe(async () => {
+      await signedIn('admin', ({ path, method }) => {
+        if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: false, current_version: SYNC_TEXT_VERSION })
+        return failure('not_found', 404)
+      })
+      await loadConsent()
+      mounted = mount(SyncPermission)
+      await flush()
+      await click(find('button[role=switch]'))
+      expect(words(find('dialog')!)).toContain('drawn for my own mailboxes')
+    })
   })
 
   it('says nothing of teams to a person in none', async () => {

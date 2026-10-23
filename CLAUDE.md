@@ -43,8 +43,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
   an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
   listed `withheld`, their mailboxes listed nowhere and synced by none (the store's rule), nothing
-  of them deleted. `Options.NameFollowsIdentity` (never set by `serve`) names a person linked to an
-  external identity as the provider names them at every sign-in (`SignInExternal`, in its
+  of them deleted. `Options.KeysInPersonalWorkspaceOnly` (never set by `serve`, an edition's
+  choice too) keeps API keys to personal workspaces: creating a key in a team and raising what a
+  key holds on a team's mailbox are `not_authorized` (`errTeamKeys`), while listing a team's keys,
+  revoking them and taking away stay. `Options.NameFollowsIdentity` (never set by `serve`) names a
+  person linked to an external identity as the provider names them at every sign-in
+  (`SignInExternal`, in its
   transaction; an empty name leaves them none), never at a step-up nor from anywhere else, and
   refuses their `PUT /v1/auth/profile` (`conflict`, `auth.ErrNameFromIdentity`); a person with a
   password names themselves as ever. `Options.Pages` (never set by `serve`; `webui.Pages`) adds
@@ -225,13 +229,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   workspaces and their change marks, its own state, and a snapshot of a followed workspace
   (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
   recovered, its kept last readers protected, until it is deleted for good). `freshness.go`: the
-  hook (`Deps.Freshness`) asked before eleven acts of a person signed in — a key sealed to someone,
-  flags raised for a person or a key, a key created, a link into a team, a team mailbox's consent
-  started again, its sync switched, an action on it or a send from it — after the read-only
-  authorization and outside every write; the write, or for those that write nothing first an
-  immediate re-check, asks again who may, so an answer that ended the actor's place stops the act.
-  Never asked for reading, removing, recovering, deleting for good, taking access away, or a key's
-  own acts.
+  hook (`Deps.Freshness`) asked before thirteen acts of a person signed in — a key sealed to
+  someone, flags raised for a person or a key, a key created, a link into a team, a team mailbox's
+  consent started again, its sync switched, an action on it or a send from it, and, by an owner, a
+  removed team mailbox deleted for good (`FreshPurge`) or its sync turned off
+  (`FreshRemovedSyncOff`) — after the read-only authorization and outside every write; the write,
+  or for those that write nothing first an immediate re-check, asks again who may, so an answer
+  that ended the actor's place stops the act. Never asked for reading, removing, recovering, taking
+  access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
+  operator's acts, or a key's own acts.
 - `internal/api` — REST `/v1/...`, SSE and the long poll. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
   `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
@@ -423,8 +429,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   from any owner or admin (`act` to a reader), stored `manage` to members only. A team mailbox
   someone reads always keeps a reader (keys and roles never count). An API key belongs to its
   workspace: only its owners and admins, signed in, create, list and revoke keys (a key never
-  mints one); a key reaches exactly what it holds in `key_access`, read live — `read` given only by
-  an owner or an admin who reads that mailbox then, `act` and `send` by any of them — and keeps it
+  mints one; an edition with `KeysInPersonalWorkspaceOnly` creates none in a team); a key reaches
+  exactly what it holds in `key_access`, read live — `read` given only by an owner or an admin who
+  reads that mailbox then, `act` and `send` by any of them — and keeps it
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
   leaves the workspace or is disabled, suspended or deleted (not on a demotion), and in every
   workspace when they recover their account or complete a reset (`account_recovered`, in that
@@ -468,7 +475,11 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
   console route), never derived from `Host`; a console that is not on loopback is never offered
   `loopback`. Refresh uses the client that issued the token (`accounts.oauth_client`);
-  `invalid_client` is a configuration error, not a dead grant.
+  `invalid_client` is a configuration error, not a dead grant. A new grant, a first one or a
+  re-authorization's, is stored only once one login with it worked (`checkGrant`): a refusal is
+  `ErrMailboxRefused`, and a check that could not run (a server down, slow or throttling) is
+  `ErrGrantUnproved`, `internal` "upstream: …" with a `Retry` of 30 s, storing nothing either;
+  the mailbox keeps the grant it had.
 - **A private account host is refused at dial time**, via `netguard.Control` on the IMAP and SMTP
   dialers, unless `MAIL_ACCOUNT_ALLOW_PRIVATE`. A password account logs in once before it is saved.
 - **The console never shows the server's `message`**: it translates the `code`. The `state_reason`
@@ -481,7 +492,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   reader, telling each of them but whoever turned it off with a notice. A removed mailbox keeps its
   index for its 30 days, syncing nothing, and loses it when deleted for good, or at once when its
   person withdraws, a removed team mailbox's owners turn it off or the consent still bound to its
-  linker stops. A recovered one syncs nothing,
+  linker stops. The operator turns any mailbox's sync off (`StopMailboxSync`,
+  `POST /v1/accounts/{id}/sync/stop`, `account sync ID off`), in any workspace, live or removed,
+  a closed or withheld team's included: its index deleted in that transaction, a team's consent
+  withdrawn (its owners and admins give it again), a personal one held (`sync_held_at`) until its
+  person turns it on, its readers told, journaled with the actor `operator`
+  (`store.ActorOperator`). A recovered one syncs nothing,
   whatever its consent says, until someone who may turns it on (`sync_held_at`): its person, a
   team's owners and admins at the current sync text, the operator. A team consent migration 0011
   copied from its linker (`sync_enabled_via = 'migration'`) stays bound to them until confirmed:

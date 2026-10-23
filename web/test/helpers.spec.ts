@@ -8,7 +8,7 @@ import { locale, type Locale } from '../src/ui/i18n'
 import { needsAuthorization, providerChoice, providerIcon, providerName, stateDetail, stateTone, syncTierLabel } from '../src/ui/labels'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, reasonText } from '../src/ui/reasons'
+import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, REASON_UNPROVED, reasonText } from '../src/ui/reasons'
 import { resetLink, signupLink, takeInvitation, takeReset } from '../src/ui/signupLink'
 import { account, ORIGIN, syncing } from './support'
 
@@ -167,10 +167,17 @@ describe('the reasons the console explains itself', () => {
     // than quietly falling back to the state's general text.
     const dir = fileURLToPath(new URL('../../internal/account/', import.meta.url))
     const source = readdirSync(dir).filter(name => name.endsWith('.go') && !name.endsWith('_test.go')).map(name => readFileSync(dir + name, 'utf8')).join('\n')
-    for (const reason of [REASON_NOT_GRANTED, REASON_MAILBOX_REFUSED, REASON_TOKEN_REJECTED]) expect(source, reason).toContain(JSON.stringify(reason))
+    for (const reason of [REASON_NOT_GRANTED, REASON_MAILBOX_REFUSED, REASON_TOKEN_REJECTED, REASON_UNPROVED]) expect(source, reason).toContain(JSON.stringify(reason))
     for (const other of ['consent was declined', 'The provider did not grant access to the mailbox', `${REASON_NOT_GRANTED}.`, '', undefined]) {
       expect(reasonText(account({ state: 'error', state_reason: other })), String(other)).toBeUndefined()
     }
+  })
+
+  it('ask to start a consent again once the mail server answers, when it could not be reached to prove the grant', () => {
+    const unproved = account({ email: 'ana@gmail.example', state: 'error', state_reason: REASON_UNPROVED })
+    expect(reasonText(unproved)).toBe('The mail server could not be reached to check this authorization, so nothing was kept. Try again in a moment.')
+    expect(stateDetail(unproved)).toBe(reasonText(unproved))
+    expect(needsAuthorization(unproved)).toBe(true)
   })
 
   it('ask a working account the mail server stopped taking to be authorized again as the right account', () => {

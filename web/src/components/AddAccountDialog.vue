@@ -10,8 +10,8 @@
 // workspace shown is chosen until they pick, when they may link into it. The
 // console shows that workspace before connecting, so the new mailbox appears
 // in the list it belongs to. A team's mailbox syncs under the team's
-// agreement: into a team, the edition's sync text is shown with a box to
-// turn sync on for the team, which gives that agreement with the link, to
+// agreement: into a team, the edition's sync text is shown, drawn for that
+// team (its team prop), with a box to turn sync on for the team, which gives that agreement with the link, to
 // the revision of the text shown; left unticked, the mailbox is connected
 // with sync off. A server that asks about another text by then is offered a
 // reload instead of the box.
@@ -352,7 +352,7 @@ onBeforeUnmount(() => {
             <button class="ghost small" type="button" @click="reloadPage">{{ t('Reload page') }}</button>
           </template>
           <template v-else>
-            <div class="team-sync-text" tabindex="0" role="region" :aria-label="t('Mail sync for {team}', { team: workspaceName(placeChosen) })"><component :is="syncText.component" /></div>
+            <div class="team-sync-text" tabindex="0" role="region" :aria-label="t('Mail sync for {team}', { team: workspaceName(placeChosen) })"><component :is="syncText.component" :team="workspaceName(placeChosen)" /></div>
             <label :for="teamSyncID" class="team-sync-agree">
               <input :id="teamSyncID" v-model="teamSync" type="checkbox" name="team-sync" />
               <span>{{ t('Turn on sync for {team}', { team: workspaceName(placeChosen) }) }}</span>
