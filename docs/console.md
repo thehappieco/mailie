@@ -111,8 +111,12 @@ An edition may also say **where the theme and the language are kept** (`preferen
 `'locale'`). Without one, the core keeps them itself (`hostPreferences`): a cookie of this host
 alone (`mailie_theme`, `mailie_locale`), read first, and local storage, for a browser that refuses
 cookies. An edition's store is then the only place either is read from (before the first frame,
-when another tab saves a theme or the tab is shown again) and written to (every `setTheme` and
-`setLocale`); `configureEdition` installs it before it narrows the languages, and puts the one
+and the theme again whenever the tab is shown again) and written to (every `setTheme` and
+`setLocale`). Only the core's own store is also read again while the tab is shown, when another
+tab saves a theme (local storage's `storage` event for `mailie_theme`): a store that keeps them
+elsewhere raises no such event, so another tab's theme reaches a page once it is shown again,
+and its language at the page's next load.
+`configureEdition` installs the edition's store before it narrows the languages, and puts the one
 before back when it refuses an edition. The core checks what a store answers as it checks its own
 (an unknown theme is `system`, an unknown language passed over), takes a language as any tag
 `supportedLocale` reads (`pt-BR` is `pt`) and writes the core's codes (`pt`, `en`, `es`, `fr`,
