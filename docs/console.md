@@ -105,6 +105,18 @@ moves a page that shows a language it no longer offers to the next one the same 
 nothing. The catalogs
 keep their four translations either way. The open edition sets neither.
 
+An edition may also show a theme and a language **for one page alone**, over the ones saved and
+without saving them: the look a page was opened with, when the address that opened it named one.
+`showThemeForPage(theme)` (`ui/preferences.ts`) and `showLocaleForPage(locale)` (`ui/i18n.ts`) show
+it, and it lasts as long as the page: `theme` and `locale` read it as the page's own, what
+`initializeTheme` restores when another tab saves a theme or the tab is shown again keeps it, and so
+does `initializeLocale` (a language shown for the page comes before the saved one). The next
+`setTheme` or `setLocale`, a choice saved as ever, ends it; so does `null`, which shows the saved
+one again (with none shown, `null` changes nothing), and an edition that stops offering a language
+shown that way. An unknown theme, or a language that is not offered, changes nothing. Neither is
+ever written to the preferences' cookie or storage, so a reload or a later visit shows what is
+saved. The open console never calls them (`web/test/editions.spec.ts`).
+
 The console's colours, light and dark, its monospace font, its motion curves and the shapes of a
 few surfaces are custom properties declared in `web/src/ui/palette.css` alone: `styles.css` and
 the components read them and declare none of them (a component keeps only its own, such as the

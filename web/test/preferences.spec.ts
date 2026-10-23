@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { initializeTheme, readPreference, setSharedDomain, setTheme, theme, writePreference } from '../src/ui/preferences'
+import { initializeTheme, readPreference, setSharedDomain, setTheme, showThemeForPage, theme, writePreference, type ThemePreference } from '../src/ui/preferences'
 
 let cleanup: (() => void) | undefined
 let cookies: Map<string, string>
@@ -18,7 +18,7 @@ beforeEach(() => {
   vi.stubGlobal('location', { hostname: 'mail.example.org', protocol: 'https:' })
   vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value) } })
 })
-afterEach(() => { cleanup?.(); cleanup = undefined; setSharedDomain(''); vi.unstubAllGlobals() })
+afterEach(() => { cleanup?.(); cleanup = undefined; showThemeForPage(null); setSharedDomain(''); vi.unstubAllGlobals() })
 
 describe('appearance preferences', () => {
   it('follows the system at startup and when it changes', () => {
@@ -60,5 +60,47 @@ describe('appearance preferences', () => {
   })
   it('removes its listeners on cleanup', () => {
     cleanup = initializeTheme(); cleanup(); media.matches = false; media.dispatchEvent(new Event('change')); expect(doc.documentElement.dataset.theme).toBe('dark')
+  })
+})
+
+describe('a theme shown for the page alone', () => {
+  const restored = () => {
+    win.dispatchEvent(Object.assign(new Event('storage'), { key: 'mailie_theme' }))
+    doc.dispatchEvent(new Event('visibilitychange'))
+  }
+
+  it('is shown over the one saved and saves nothing, lasting through another tab’s change and the tab shown again, until the person chooses one', () => {
+    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
+    showThemeForPage('dark')
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
+    expect(writes).toEqual([]); expect(saved.size).toBe(0)
+    // Another tab saves a theme, and the tab is shown again: the page keeps its own.
+    saved.set('mailie_theme', 'light'); restored()
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
+    // System follows the system's, as a saved system does.
+    showThemeForPage('system'); expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['system', 'dark'])
+    media.matches = false; media.dispatchEvent(new Event('change')); expect(doc.documentElement.dataset.theme).toBe('light')
+    // A choice ends it, saved as ever, and what is restored afterwards is what is saved.
+    setTheme('dark'); expect([theme.value, saved.get('mailie_theme'), cookies.get('mailie_theme')]).toEqual(['dark', 'dark', 'dark'])
+    cookies.set('mailie_theme', 'light'); restored(); expect(theme.value).toBe('light')
+  })
+
+  it('gives way to the one saved when ended, and an end with none shown changes nothing', () => {
+    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
+    showThemeForPage('dark'); showThemeForPage(null)
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
+    // Nothing shown: an end leaves even a choice the browser would not keep as it is.
+    Object.defineProperty(doc, 'cookie', { get: () => { throw Error('denied') }, set: () => { throw Error('denied') } })
+    vi.stubGlobal('localStorage', { getItem: () => { throw Error('denied') }, setItem: () => { throw Error('denied') } })
+    setTheme('dark'); showThemeForPage(null)
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
+  })
+
+  it('ignores an unknown theme', () => {
+    cookies.set('mailie_theme', 'light'); cleanup = initializeTheme()
+    for (const unknown of ['sepia', '', 'Dark', '__proto__']) showThemeForPage(unknown as ThemePreference)
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
+    // Still none shown: what is restored is what is saved.
+    cookies.set('mailie_theme', 'dark'); restored(); expect(theme.value).toBe('dark')
   })
 })

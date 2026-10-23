@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import AppearanceMenu from '../src/components/AppearanceMenu.vue'
 import { configureEdition, edition, type Edition } from '../src/edition'
 import { openEdition } from '../src/open/edition'
-import { addCatalogs, initializeLocale, languageOptions, locale, offeredLanguages, setLocale, supportedLocale, t, type Locale } from '../src/ui/i18n'
+import { addCatalogs, initializeLocale, languageOptions, locale, offeredLanguages, setLocale, showLocaleForPage, supportedLocale, t, type Locale } from '../src/ui/i18n'
 import { anyOf, count, since, stamp } from '../src/ui/format'
 import { badTranslations, keysOf, managersGivingAccess, repeatedKeys, sourceFiles, usedKeys, type Catalogs } from './i18nGuard'
 import { memoryStorage } from './support'
@@ -16,7 +16,7 @@ const catalogs: Catalogs = import.meta.glob<Record<string, string[]>>('../src/ui
 function coreSources(): string[] {
   return sourceFiles(fileURLToPath(new URL('../src', import.meta.url)))
 }
-afterEach(() => { configureEdition(openEdition); locale.value = 'en'; vi.unstubAllGlobals() })
+afterEach(() => { configureEdition(openEdition); showLocaleForPage(null); locale.value = 'en'; vi.unstubAllGlobals() })
 
 describe('application languages', () => {
   it('recognizes regional language preferences and rejects unsupported values', () => {
@@ -214,5 +214,74 @@ describe('the languages an edition offers', () => {
     }
     configureEdition(openEdition)
     expect(offeredLanguages()).toHaveLength(5)
+  })
+})
+
+describe('a language shown for the page alone', () => {
+  const three: Edition = { ...openEdition, locales: ['pt', 'en', 'es'] }
+
+  /** A page whose preferences are kept in memory, with a browser in German. */
+  function stubPreferences(cookie = '') {
+    const storage = memoryStorage()
+    const page = { cookie, documentElement: { lang: '' } }
+    vi.stubGlobal('localStorage', storage)
+    vi.stubGlobal('document', page)
+    vi.stubGlobal('location', new URL('https://mail.example.org/'))
+    vi.stubGlobal('navigator', { languages: ['de-DE'] })
+    return { storage, page }
+  }
+
+  it('is shown over the one saved and saves nothing, lasting through the page’s own choosing again, until the person chooses one', () => {
+    const { storage, page } = stubPreferences('mailie_locale=fr')
+    initializeLocale()
+    showLocaleForPage('es')
+    expect([locale.value, page.documentElement.lang]).toEqual(['es', 'es'])
+    expect(t('Email accounts')).toBe('Cuentas de correo')
+    expect(storage.length).toBe(0)
+    expect(page.cookie).toBe('mailie_locale=fr')
+    // The page choosing again, or its edition set again, keeps it.
+    initializeLocale()
+    configureEdition({ ...openEdition, byline: 'again' })
+    expect(locale.value).toBe('es')
+    // A choice ends it, and is saved as ever.
+    setLocale('pt')
+    expect([locale.value, storage.getItem('mailie_locale')]).toEqual(['pt', 'pt'])
+    expect(page.documentElement.lang).toBe('pt-BR')
+    initializeLocale()
+    expect(locale.value).toBe('pt')
+  })
+
+  it('gives way to what the page would choose when ended, and an end with none shown changes nothing', () => {
+    stubPreferences('mailie_locale=fr')
+    initializeLocale()
+    showLocaleForPage('pt')
+    expect(locale.value).toBe('pt')
+    showLocaleForPage(null)
+    expect(locale.value).toBe('fr')
+    // Nothing shown: an end leaves even a language set without saving as it is.
+    locale.value = 'es'
+    showLocaleForPage(null)
+    expect(locale.value).toBe('es')
+  })
+
+  it('is only one the edition offers: another changes and saves nothing, and one it stops offering gives way', () => {
+    configureEdition(three)
+    const { storage, page } = stubPreferences('mailie_locale=pt')
+    initializeLocale()
+    for (const refused of ['de', 'fr', 'pt-BR', '__proto__'] as Locale[]) {
+      showLocaleForPage(refused)
+      expect(locale.value, refused).toBe('pt')
+    }
+    configureEdition(openEdition)
+    showLocaleForPage('fr')
+    expect(locale.value).toBe('fr')
+    configureEdition(three)
+    expect(locale.value).toBe('pt')
+    // Gone for good: the next edition that offers French again shows the saved language.
+    configureEdition(openEdition)
+    initializeLocale()
+    expect(locale.value).toBe('pt')
+    expect(storage.length).toBe(0)
+    expect(page.cookie).toBe('mailie_locale=pt')
   })
 })

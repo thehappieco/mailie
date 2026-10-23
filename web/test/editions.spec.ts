@@ -102,6 +102,13 @@ describe('the core and the editions', () => {
 })
 
 describe('the open edition', () => {
+  it('shows no language or theme for a page alone: only the two seams name them, for another edition', () => {
+    const seams = ['showLocaleForPage', 'showThemeForPage']
+    const naming = sourceFiles(src).filter(file => seams.some(seam => readFileSync(file, 'utf8').includes(seam))).map(file => relative(src, file)).sort()
+    expect(naming).toEqual(['ui/i18n.ts', 'ui/preferences.ts'])
+    expect(readFileSync(join(web, 'index.html'), 'utf8')).not.toMatch(/showLocaleForPage|showThemeForPage/)
+  })
+
   it('words what a person agrees to as this server’s, in every language, linking no policy and naming no company', async () => {
     for (const { value } of languageOptions) {
       locale.value = value

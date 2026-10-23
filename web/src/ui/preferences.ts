@@ -70,10 +70,47 @@ function applyTheme(): void {
   document.documentElement.dataset.theme = theme.value === 'system' ? (media?.matches ? 'dark' : 'light') : theme.value
 }
 
+/** The theme saved, or system when none is. */
+function rememberedTheme(): ThemePreference {
+  const saved = readPreference('theme')
+  return isTheme(saved) ? saved : 'system'
+}
+
+/**
+ * The theme shown for this page alone (showThemeForPage), over the one
+ * saved, or null when the page shows the saved one.
+ */
+let pageTheme: ThemePreference | null = null
+
+/** Shows and saves a theme the person chose, ending one shown for the page alone. An unknown value changes nothing. */
 export function setTheme(value: ThemePreference): void {
   if (!isTheme(value)) return
+  pageTheme = null
   theme.value = value
   writePreference('theme', value)
+  applyTheme()
+}
+
+/**
+ * Shows a theme for this page alone, over the one saved, and saves nothing:
+ * an edition's way to show the theme a page was opened with (a link that
+ * named one, say) for as long as the page lasts. What initializeTheme
+ * restores when another tab changes the preference or the tab is shown
+ * again keeps it; the next setTheme (a choice, saved as ever) ends it, and
+ * so does null, which shows the saved one again (with none shown, null
+ * changes nothing). An unknown value changes nothing. `theme` reads it as
+ * the page's choice. The open console never calls it.
+ */
+export function showThemeForPage(value: ThemePreference | null): void {
+  if (value === null) {
+    if (pageTheme === null) return
+    pageTheme = null
+    theme.value = rememberedTheme()
+  } else {
+    if (!isTheme(value)) return
+    pageTheme = value
+    theme.value = value
+  }
   applyTheme()
 }
 
@@ -82,9 +119,9 @@ export function initializeTheme(): () => void {
   stopListening?.()
   media = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     ? window.matchMedia('(prefers-color-scheme: dark)') : null
+  // The saved theme, unless one is shown for the page alone.
   const restore = () => {
-    const saved = readPreference('theme')
-    theme.value = isTheme(saved) ? saved : 'system'
+    theme.value = pageTheme ?? rememberedTheme()
     applyTheme()
   }
   const onStorage = (event: StorageEvent) => {

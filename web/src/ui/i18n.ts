@@ -22,6 +22,11 @@ const columns: Record<Exclude<Locale, 'en'>, number> = { pt: 0, es: 1, fr: 2, de
 const catalog: Catalog = Object.assign({}, ...Object.values(catalogs))
 /** The languages the edition offers (src/edition.ts), or null for every one of the core's. */
 let offered: ReadonlySet<Locale> | null = null
+/**
+ * The language shown for this page alone (showLocaleForPage), over the one
+ * saved, or null when the page shows the one initializeLocale chooses.
+ */
+let pageLocale: Locale | null = null
 
 /**
  * Narrows the languages offered to an edition's list, or back to all of the
@@ -40,6 +45,7 @@ export function setOfferedLocales(list: readonly Locale[] | null): void {
     if (!list.includes('en')) throw new Error("i18n: the languages offered must include 'en', the source text")
   }
   offered = list ? new Set(list) : null
+  if (offered && pageLocale !== null && !offered.has(pageLocale)) pageLocale = null
   if (offered && !offered.has(locale.value)) initializeLocale()
 }
 
@@ -63,12 +69,15 @@ export function supportedLocale(value: string | null | undefined): Locale | unde
   return offeredLanguages().find((item) => item.value === base)?.value
 }
 
-/** The saved language, then the browser's, then English: the first of them that is offered. */
+/**
+ * The saved language, then the browser's, then English: the first of them
+ * that is offered. A language shown for the page alone comes before them.
+ */
 export function initializeLocale(): void {
   const saved = supportedLocale(readPreference('locale'))
   const languages = typeof navigator === 'undefined' ? [] : navigator.languages ?? [navigator.language]
   const detected = languages.map(supportedLocale).find(Boolean)
-  applyLocale(saved ?? detected ?? 'en')
+  applyLocale(pageLocale ?? saved ?? detected ?? 'en')
 }
 
 function applyLocale(value: Locale): void {
@@ -76,11 +85,36 @@ function applyLocale(value: Locale): void {
   if (typeof document !== 'undefined') document.documentElement.lang = value === 'pt' ? 'pt-BR' : value
 }
 
-/** Shows and saves a language the person chose. One that is not offered changes and saves nothing. */
+/**
+ * Shows and saves a language the person chose, ending one shown for the page
+ * alone. One that is not offered changes and saves nothing.
+ */
 export function setLocale(value: Locale): void {
   if (supportedLocale(value) !== value) return
+  pageLocale = null
   applyLocale(value)
   writePreference('locale', value)
+}
+
+/**
+ * Shows a language for this page alone, over the one saved, and saves
+ * nothing: an edition's way to show the language a page was opened with (a
+ * link that named one, say) for as long as the page lasts. The next
+ * setLocale (a choice, saved as ever) ends it, and so does null, which shows
+ * the language initializeLocale chooses again (with none shown, null changes
+ * nothing); so does an edition that no longer offers it. One that is not
+ * offered changes nothing. The open console never calls it.
+ */
+export function showLocaleForPage(value: Locale | null): void {
+  if (value === null) {
+    if (pageLocale === null) return
+    pageLocale = null
+    initializeLocale()
+    return
+  }
+  if (supportedLocale(value) !== value) return
+  pageLocale = value
+  applyLocale(value)
 }
 
 /**
