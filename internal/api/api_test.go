@@ -92,6 +92,10 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		Sync:      o.sync,
 		Log:       obs.NewLogger("error", "text"),
 		PublicURL: o.publicURL,
+		// The store's clock, when a test fixes one: a service on the wall
+		// clock would judge what the store wrote at that moment against
+		// today (a key 30 days past a fixed epoch is no longer live).
+		Now: o.now,
 
 		DownloadsPerCaller: o.downloadsPerCaller,
 		SpoolDir:           opts.SpoolDir,
