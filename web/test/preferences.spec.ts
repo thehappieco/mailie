@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureEdition } from '../src/edition'
 import { openEdition } from '../src/open/edition'
@@ -62,6 +63,34 @@ describe('appearance preferences', () => {
   })
   it('removes its listeners on cleanup', () => {
     cleanup = initializeTheme(); cleanup(); media.matches = false; media.dispatchEvent(new Event('change')); expect(doc.documentElement.dataset.theme).toBe('dark')
+  })
+  it('shows a theme read again while the page runs through the entry’s reread, and never the first one nor the system’s change', () => {
+    const asked: string[] = []
+    let held: (() => void) | null = null
+    cookies.set('mailie_theme', 'light')
+    cleanup = initializeTheme({ reread: (next, apply) => { asked.push(next); held = apply } })
+    // The first read shows at once, before the first frame: no reread.
+    expect([asked, theme.value, doc.documentElement.dataset.theme]).toEqual([[], 'light', 'light'])
+    // The tab shown again: the theme read again goes to the reread, and shows only when it applies it, once.
+    cookies.set('mailie_theme', 'dark'); doc.dispatchEvent(new Event('visibilitychange'))
+    expect([asked, theme.value, doc.documentElement.dataset.theme]).toEqual([['dark'], 'light', 'light'])
+    held!()
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['dark', 'dark'])
+    // Another tab's choice in the core's own store, and a value read again that is none: the same way.
+    saved.set('mailie_theme', 'light'); cookies.delete('mailie_theme'); win.dispatchEvent(Object.assign(new Event('storage'), { key: 'mailie_theme' }))
+    cookies.set('mailie_theme', 'sepia'); doc.dispatchEvent(new Event('visibilitychange'))
+    expect(asked).toEqual(['dark', 'light', 'system'])
+    // A hidden tab reads nothing, and the system's scheme changing under system shows at once.
+    doc.visibilityState = 'hidden'; doc.dispatchEvent(new Event('visibilitychange'))
+    held!(); media.matches = false; media.dispatchEvent(new Event('change'))
+    expect([asked.length, theme.value, doc.documentElement.dataset.theme]).toEqual([3, 'system', 'light'])
+    // Nothing read again writes the store.
+    expect(writes).toEqual([])
+  })
+  it('shows a theme read again at once in the open console, whose entry gives no reread', () => {
+    expect(readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')).toMatch(/^initializeTheme\(\)$/m)
+    cleanup = initializeTheme(); cookies.set('mailie_theme', 'light'); doc.dispatchEvent(new Event('visibilitychange'))
+    expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
   })
 })
 

@@ -118,7 +118,12 @@ and the theme again whenever the tab is shown again) and written to (every `setT
 `setLocale`). Only the core's own store is also read again while the tab is shown, when another
 tab saves a theme (local storage's `storage` event for `mailie_theme`): a store that keeps them
 elsewhere raises no such event, so another tab's theme reaches a page once it is shown again,
-and its language at the page's next load.
+and its language at the page's next load. An edition's entry may also say how a theme read again
+while the page runs is shown: `initializeTheme({ reread })` (a `ThemeReread`) is given each theme
+read again (the tab shown again, another tab's save) and a function that shows it, which it calls
+exactly once, when and how it chooses (fading the page into it, say); never for the theme read
+before the first frame, nor when the system's scheme changes under a theme that follows it. The
+open console's entry passes none: a theme read again shows at once.
 `configureEdition` installs the edition's store before it narrows the languages, and puts the one
 before back when it refuses an edition. The core checks what a store answers as it checks its own
 (an unknown theme is `system`, an unknown language passed over), takes a language as any tag

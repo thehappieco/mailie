@@ -114,15 +114,39 @@ export function setTheme(value: ThemePreference): void {
   applyTheme()
 }
 
-/** Call before mounting the application, so the first frame has the chosen palette. */
-export function initializeTheme(): () => void {
+/**
+ * How the page shows a theme it reads again from the store while it runs
+ * (the tab shown again, another tab's choice): it calls apply, which shows
+ * next, exactly once, when and how it chooses (an edition may fade the page
+ * into it). An edition's entry gives one to initializeTheme; without one the
+ * theme read again shows at once. It is never asked for the theme read
+ * before the first frame, nor when the system's scheme changes under a theme
+ * that follows it.
+ */
+export type ThemeReread = (next: ThemePreference, apply: () => void) => void
+
+/**
+ * Call before mounting the application, so the first frame has the chosen
+ * palette: it shows the store's theme at once, then reads it again whenever
+ * the tab is shown again (and, for the core's own store, when another tab
+ * saves one), showing that through reread when given.
+ */
+export function initializeTheme(options: { reread?: ThemeReread } = {}): () => void {
   stopListening?.()
   media = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
     ? window.matchMedia('(prefers-color-scheme: dark)') : null
-  const restore = () => {
+  const stored = (): ThemePreference => {
     const saved = readPreference('theme')
-    theme.value = isTheme(saved) ? saved : 'system'
+    return isTheme(saved) ? saved : 'system'
+  }
+  const show = (next: ThemePreference) => {
+    theme.value = next
     applyTheme()
+  }
+  const restore = () => {
+    const next = stored()
+    if (options.reread) options.reread(next, () => show(next))
+    else show(next)
   }
   const onStorage = (event: StorageEvent) => {
     if (event.key === `${prefix}theme` || event.key === null) restore()
@@ -130,7 +154,7 @@ export function initializeTheme(): () => void {
   const onVisibility = () => {
     if (document.visibilityState === 'visible') restore()
   }
-  restore()
+  show(stored())
   media?.addEventListener('change', applyTheme)
   window.addEventListener('storage', onStorage)
   document.addEventListener('visibilitychange', onVisibility)
