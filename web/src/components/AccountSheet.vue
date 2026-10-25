@@ -200,7 +200,7 @@ function authorize() {
               <AppIcon name="refresh" :size="16" />{{ request?.busy ? t('Requesting…') : t('Sync now') }}
             </button>
           </div>
-          <!-- Recovered after it was removed: nothing syncs until someone who may turns it on. -->
+          <!-- Held (recovered after it was removed, or turned off by the server's operator): nothing syncs until someone who may turns it on. -->
           <template v-if="held">
             <SyncStatus v-if="account.state === 'active'" :account="account" />
             <p v-else class="dim">{{ heldText(account) }}</p>

@@ -16,8 +16,9 @@
 // API keys holding something on it: what each holds and who created it, and
 // taking the mailbox out of one; keys never count as readers, and what one
 // holds is changed in the workspace's API keys, the section the edition names
-// (copy.keysSection; unset, the hint names none). The server decides every
-// change.
+// (copy.keysSection; unset, the hint names none). An edition whose keys are a
+// personal workspace's alone (personalKeysOnly) shows no keys here: a team
+// has none. The server decides every change.
 import { computed, onMounted, ref } from 'vue'
 import { readsNow, type GrantFlags, type MailboxKey, type Member } from '../api/types'
 import { edition } from '../edition'
@@ -152,6 +153,8 @@ const giving = computed(() => {
   return t('You do not read this mailbox, so you cannot give Read on it, not even to yourself: only an owner or an admin who reads it can.')
 })
 
+/** Whether a team has API keys here: not where they are a personal workspace's alone. */
+const teamKeys = edition().personalKeysOnly !== true
 /** The live keys holding something on the mailbox, by name. */
 const keys = computed<MailboxKey[]>(() => [...(entry.value?.keys ?? [])].sort((a, b) => a.name.localeCompare(b.name)))
 /** The key whose removal from this mailbox is being asked about, and the one being removed. */
@@ -234,7 +237,7 @@ onMounted(() => {
       <div v-for="flag in flagNames" :key="flag"><dt>{{ flagLabel(flag) }}</dt><dd>{{ flagHint(flag) }}</dd></div>
     </dl>
 
-    <section v-if="entry && !gone" class="access-keys" :aria-labelledby="`keys-${accountId}`">
+    <section v-if="entry && !gone && teamKeys" class="access-keys" :aria-labelledby="`keys-${accountId}`">
       <h4 :id="`keys-${accountId}`">{{ t('API keys') }}</h4>
       <p v-if="!keys.length" class="dim">{{ t('No API key holds anything on this mailbox.') }}</p>
       <ul v-else class="access-rows" :aria-label="t('API keys on {email}', { email })">

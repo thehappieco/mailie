@@ -311,7 +311,7 @@ describe('mailboxes in a team', () => {
       // Its card: paused, whatever its agreement says.
       const card = text(await render(AccountsPanel))
       expect(card, role).toContain('Paused')
-      expect(card, role).toContain('Paused since it was recovered on')
+      expect(card, role).toContain('Paused since ')
       expect(card, role).not.toContain('Messages indexed')
       // Its sheet: turning it on again for the team, to the current text, in place of the switch.
       const html = await render(AccountSheet, { account: recovered })
@@ -325,7 +325,7 @@ describe('mailboxes in a team', () => {
     const read = { ...recovered, access: { ...none, read: true } }
     Object.assign(accounts, { list: [read], loaded: true, workspace: TEAM })
     const member = text(await render(AccountSheet, { account: read }))
-    expect(member).toContain('Paused since it was recovered on')
+    expect(member).toContain('Paused since ')
     expect(member).toContain('The owners and admins of Support turn it on again, for the team.')
     expect(member).not.toContain('Turn sync on again')
   })

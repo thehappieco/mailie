@@ -105,7 +105,8 @@ type Options struct {
 	// KeysInPersonalWorkspaceOnly says this edition's API keys belong to a
 	// person's personal workspace alone, whatever teams it offers, as its key
 	// terms say: the core refuses, not_authorized, creating a key in a team
-	// and raising what a key holds on a team's mailbox, while listing a
+	// and raising what a key holds on a team's mailbox, and lets no key reach
+	// a team's mailbox, one a database still holds included, while listing a
 	// team's keys, revoking them and taking what they hold away stay. The
 	// service decides it, for every transport. Only a binary that embeds the
 	// daemon sets it: there is no environment variable, and `serve` never
@@ -343,8 +344,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 			"is deleted")
 	}
 	if opts.KeysInPersonalWorkspaceOnly {
-		logger.Info("API keys belong to personal workspaces only in this edition: none is created in a team, and " +
-			"none is given more on a team's mailbox")
+		logger.Info("API keys belong to personal workspaces only in this edition: none is created in a team, " +
+			"none is given more on a team's mailbox, and none reaches one")
 	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,

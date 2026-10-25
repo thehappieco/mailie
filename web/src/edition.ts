@@ -85,8 +85,9 @@ export interface Edition {
      * The section where a workspace's API keys, and what each holds on its
      * mailboxes, are changed, as the Access section of a team mailbox names
      * it (components/AccessPanel.vue): "… is changed in {section}". Unset:
-     * that sentence is left out, as where a team has no keys of its own (an
-     * edition whose keys are a personal workspace's alone).
+     * that sentence is left out. An edition whose keys are a personal
+     * workspace's alone sets personalKeysOnly instead, which leaves the
+     * section's keys out altogether.
      */
     keysSection?(): string
     /**
@@ -112,6 +113,16 @@ export interface Edition {
    * which an edition that sets this false never asks.
    */
   mcp: boolean
+  /**
+   * Whether this server's API keys belong to personal workspaces alone, as
+   * its key terms say (the server's app.Options.KeysInPersonalWorkspaceOnly,
+   * which refuses a team's keys and lets none reach a team's mailbox): a
+   * team mailbox's Access section (components/AccessPanel.vue) lists no API
+   * keys, and a member of a team is not told that its keys are managed by
+   * its owners and admins (components/AccountsPanel.vue). Unset: a team has
+   * keys of its own, as on a self-hosted server.
+   */
+  personalKeysOnly?: boolean
   /**
    * Whether people make and run teams here (the server's local workspace
    * source): creating a team, inviting into it and administering its

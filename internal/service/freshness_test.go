@@ -576,6 +576,48 @@ func TestFreshnessIsNeverAskedToDeleteForGoodOrTurnOffAnythingButARemovedTeamMai
 	}
 }
 
+func TestFreshnessIsNeverAskedToDeleteOrTurnOffARemovedTeamMailboxOfATeamWithheldOrClosed(t *testing.T) {
+	// The read-only authorization refuses them first, as the write would:
+	// the directory is never asked about an act that cannot happen, and a
+	// directory that could not be asked never answers in place of the
+	// refusal.
+	for _, gate := range []string{"withheld", "closed"} {
+		t.Run(gate, func(t *testing.T) {
+			w := newFreshWorld(t)
+			ctx := t.Context()
+			box := w.removedBox(t, "support@team.example.com", true)
+			want := func(what string, err error) {
+				t.Helper()
+				if gate == "withheld" {
+					wantWithheld(t, what, err)
+				} else {
+					wantClosed(t, what, err)
+				}
+			}
+			if gate == "withheld" {
+				w.withholdTeams(t)
+			} else {
+				w.closeTeam(t, dirTeamID)
+			}
+			w.hook.answerWith(func(context.Context, service.FreshAct) error { return errors.New("the directory is down") })
+			w.hook.take()
+			off := false
+			_, err := w.svc.SetMailboxSync(ctx, w.ana, box, service.MailboxSyncRequest{Enabled: &off})
+			want("turning the removed mailbox's sync off", err)
+			want("deleting it for good", w.svc.PurgeAccount(ctx, w.ana, box, service.PurgeAccountRequest{Confirm: box}))
+			if asked := w.hook.take(); len(asked) != 0 {
+				t.Errorf("asked %+v", asked)
+			}
+			if n := w.count(t, `SELECT count(*) FROM messages WHERE account_id = ?`, box); n == 0 {
+				t.Error("the index the removed mailbox keeps was deleted")
+			}
+			if n := w.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, box); n != 1 {
+				t.Error("the removed mailbox was deleted for good")
+			}
+		})
+	}
+}
+
 func TestFreshnessIsNeverAskedForAKeysOwnActs(t *testing.T) {
 	w := newFreshWorld(t)
 	ctx := t.Context()

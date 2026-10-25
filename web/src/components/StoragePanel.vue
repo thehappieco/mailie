@@ -11,7 +11,7 @@
 // A team nothing can be used in (closed, or not offered by this server) shows
 // why instead: none of its mailboxes is read there.
 import { computed, onMounted, watch } from 'vue'
-import type { WorkspaceStorage } from '../api/types'
+import type { MailboxStorage, WorkspaceStorage } from '../api/types'
 import { accounts } from '../state/accounts'
 import { loadStorage, storage } from '../state/storage'
 import { consent } from '../state/sync'
@@ -38,16 +38,22 @@ const unusable = computed(() => workspaceUnusable(currentWorkspace()))
 
 /**
  * What a mailbox's figures mean when it is not syncing now, as the accounts
- * list says. Recovered after it was removed: its sync is held, and what it
- * kept is counted. Sync off: nothing is indexed, and its zeros say so. Sync
- * on for an account that does not work (waiting for authorization, or
- * refused): the server stops syncing it and keeps its index, so its figures
- * are what was indexed before.
+ * list says. Held until someone turns it on: recovered after it was removed,
+ * with what it kept counted, or a person's mailbox the server's operator
+ * turned off, whose index went; its figures say which, and so does this.
+ * Sync off: nothing is indexed, and its zeros say so. Sync on for an account
+ * that does not work (waiting for authorization, or refused): the server
+ * stops syncing it and keeps its index, so its figures are what was indexed
+ * before.
  */
-function note(id: string): string {
-  const account = accounts.list.find(item => item.id === id)
+function note(mailbox: MailboxStorage): string {
+  const account = accounts.list.find(item => item.id === mailbox.account_id)
   if (!account) return ''
-  if (account.sync.held) return t('Sync is paused since this mailbox was recovered, until it is turned on again. What was indexed is kept.')
+  if (account.sync.held) {
+    return mailbox.messages > 0
+      ? t('Sync is paused until it is turned on again. What was indexed is kept.')
+      : t('Sync is paused until it is turned on again. Nothing from this mailbox is indexed.')
+  }
   if (!account.sync.enabled) return t('Not synced: nothing from this mailbox is indexed.')
   if (account.state !== 'active') return t('Sync is paused until the account works again. What was indexed is kept.')
   return ''
@@ -103,7 +109,7 @@ watch(() => [consent.consented, ...accounts.list.map(item => `${item.id}:${item.
       <ul v-if="usage && usage.mailboxes.length" class="storage-list" :aria-label="t('By mailbox')" :aria-busy="storage.loading">
         <li v-for="mailbox in usage.mailboxes" :key="mailbox.account_id">
           <span class="provider-tile"><AppIcon name="mail" :size="19" /></span>
-          <span class="storage-name grow"><strong>{{ mailbox.email }}</strong><small v-if="note(mailbox.account_id)">{{ note(mailbox.account_id) }}</small></span>
+          <span class="storage-name grow"><strong>{{ mailbox.email }}</strong><small v-if="note(mailbox)">{{ note(mailbox) }}</small></span>
           <dl class="storage-figures">
             <div><dt>{{ t('Messages') }}</dt><dd>{{ count(mailbox.messages) }}</dd></div>
             <div><dt>{{ t('Size') }}</dt><dd>{{ fileSize(mailbox.bytes) }}</dd></div>

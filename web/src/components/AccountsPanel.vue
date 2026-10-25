@@ -6,7 +6,8 @@
 // they are given Read; one nobody can read is marked, and one whose key the
 // person waits for says so, and who can mend it. A member of a team sees
 // the mailboxes they hold a grant on, and a line saying who manages the
-// team's people, access and API keys. Connecting a mailbox is offered only where the
+// team's people, access and API keys (no keys where an edition keeps them to
+// personal workspaces, personalKeysOnly). Connecting a mailbox is offered only where the
 // person may link one (docs/workspaces.md, "Mailboxes"): their personal
 // workspace, or a team they own or administer. In another team the button
 // would only ever connect to their personal workspace, so it is not there;
@@ -128,6 +129,8 @@ function showPersonal() {
   void nextTick(() => headingElement.value?.focus())
 }
 function authorize(account: Account) { dismissNotice(); dialog.value = { resume: account } }
+/** Whether a team's keys are left unnamed: an edition whose keys are a personal workspace's alone. */
+const personalKeysOnly = edition().personalKeysOnly === true
 </script>
 
 <template>
@@ -140,7 +143,7 @@ function authorize(account: Account) { dismissNotice(); dialog.value = { resume:
     </div>
 
     <SyncConsentCard v-if="askConsent" />
-    <p v-if="inTeam && !admin && !unusable" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
+    <p v-if="inTeam && !admin && !unusable" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ personalKeysOnly ? t('The people of {team} and who can use each of its mailboxes are managed by its owners and admins.', { team: teamName }) : t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
 
     <div v-if="!unusable" class="console-overview">
       <article><span>{{ t('Email accounts') }}</span><strong>{{ accounts.loaded ? count(accounts.list.length) : '—' }}</strong><small>{{ t('added to Mailie') }}</small></article>

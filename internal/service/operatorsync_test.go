@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/thehappieco/mailie/internal/auth"
@@ -118,6 +119,53 @@ func TestTheOperatorHoldsAPersonsMailboxUntilTheyTurnItOnAgainAndKeepsTheirConse
 	}
 	if !f.eligible(t, mine) {
 		t.Error("Ana's mailbox does not sync once she turned it on")
+	}
+}
+
+func TestTheOperatorTellsAPersonWhoseRecoveredMailboxKeptItsIndexOnce(t *testing.T) {
+	// A recovered mailbox is held and keeps its index until its person
+	// turns it on: the operator's turn-off deletes that index, and says so,
+	// once.
+	f := newFixture(t)
+	ctx := t.Context()
+	ana := f.person(t, "ana@example.com", auth.RoleMember)
+	mine := f.mailbox(t, ana, "ana@mail.example")
+	f.connect(t, mine)
+	if _, err := f.svc.GrantSyncConsent(ctx, ana, f.consent().Sync); err != nil {
+		t.Fatal(err)
+	}
+	f.seedIndex(t, mine, "Quartz")
+	f.removed(t, ana, mine)
+	if _, err := f.svc.RecoverAccount(ctx, ana, mine); err != nil {
+		t.Fatal(err)
+	}
+	if f.indexed(t, mine) == 0 {
+		t.Fatal("the recovered mailbox did not keep its index")
+	}
+
+	if st := f.operatorStopped(t, mine); !st.Held {
+		t.Errorf("Ana's recovered mailbox after the operator's turn-off: %+v, want it held", st)
+	}
+	if !operatorPaused(t, f, mine) {
+		t.Errorf("the journal holds %q, want the operator's sync_paused", f.journalOf(t, mine))
+	}
+	if kinds := noticeKinds(f.notices(t, ana)); !slices.Equal(kinds, []string{"sync_off"}) {
+		t.Errorf("Ana is told %v, want the sync turned off", kinds)
+	}
+
+	// Again, with nothing left to delete: nothing more is journaled or told.
+	f.operatorStopped(t, mine)
+	paused := 0
+	for _, entry := range f.journalOf(t, mine) {
+		if strings.HasPrefix(entry, "sync_paused ") {
+			paused++
+		}
+	}
+	if paused != 1 {
+		t.Errorf("the journal holds %q, want one sync_paused", f.journalOf(t, mine))
+	}
+	if kinds := noticeKinds(f.notices(t, ana)); !slices.Equal(kinds, []string{"sync_off"}) {
+		t.Errorf("Ana is told %v after a second turn-off, want the one notice", kinds)
 	}
 }
 

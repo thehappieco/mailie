@@ -149,6 +149,15 @@ describe('the console’s frame in a team', () => {
     expect(crumb()).toBe('Console / Account')
   })
 
+  it('tells a member who manages the team’s people and access, and names no keys where an edition keeps them to personal workspaces', async () => {
+    configureEdition({ ...openEdition, personalKeysOnly: true })
+    try {
+      await consoleIn('member')
+      expect(words()).toContain('The people of Support and who can use each of its mailboxes are managed by its owners and admins.')
+      expect(words()).not.toContain('its API keys')
+    } finally { configureEdition(openEdition) }
+  })
+
   it('offers Members and API keys to a team’s owners and admins only, and tells a member who manages them, never asking for them', async () => {
     await consoleIn('member')
     expect(page.querySelectorAll('.console-sidebar .console-nav-item').map(item => words(item))).not.toContain('Members')
@@ -579,6 +588,17 @@ describe('who can use a mailbox', () => {
       await flush()
       expect(words()).toContain('Keys never count as readers.')
       expect(words()).not.toContain('What a key holds on each mailbox is changed')
+    } finally { configureEdition(openEdition) }
+  })
+
+  it('lists no API keys on a team mailbox where an edition keeps keys to personal workspaces', async () => {
+    configureEdition({ ...openEdition, copy: { ...openEdition.copy, keysSection: undefined }, personalKeysOnly: true })
+    try {
+      await panel()
+      expect(find('.access-keys')).toBeNull()
+      expect(words()).not.toContain('API key')
+      expect(words()).not.toContain('Keys never count as readers.')
+      expect(find('.access-rows')).not.toBeNull()
     } finally { configureEdition(openEdition) }
   })
 

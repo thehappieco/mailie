@@ -238,8 +238,12 @@ built on the same pieces, so it behaves as it always did:
   mailbox's key (`MailboxKeyPanel`), which is the person's own, stays on the sheet. Unset, the
   sheet holds the section. Below its people, that section lists the API keys holding something on
   the mailbox, and says where what a key holds is changed by the name the edition gives its keys'
-  section (`copy.keysSection`, the open edition's "API keys & MCP"); an edition that names none,
-  such as one whose keys are a personal workspace's alone, leaves that sentence out.
+  section (`copy.keysSection`, the open edition's "API keys & MCP"); an edition that names none
+  leaves that sentence out.
+- **Keys of a personal workspace alone.** `personalKeysOnly`, for an edition whose server keeps
+  API keys to personal workspaces (`app.Options.KeysInPersonalWorkspaceOnly`), leaves a team
+  mailbox's Access section without its keys, and a team's member is told that its people and who
+  uses each mailbox are managed by its owners and admins, naming no keys. Unset, a team has keys.
 - **The person's sessions.** `SessionsRow`, the row of `AccountPanel` that says how long this
   session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
   shows the person's own settings, with words of its own (`title`, `description`,
@@ -1824,7 +1828,8 @@ creates and revokes the workspace's keys and changes what they hold: any key, th
 gets `403` on these routes, and a member does too. No key creates a key. A daemon whose edition
 keeps keys to personal workspaces (`app.Options.KeysInPersonalWorkspaceOnly`, which `serve` never
 sets) answers `403` to creating a key in a team and to raising what a key holds on a team's
-mailbox; listing, revoking and taking away stay ([`workspaces.md`](workspaces.md#api-keys)).
+mailbox, and lets no key reach a team's mailbox, one a database still holds included; listing,
+revoking and taking away stay ([`workspaces.md`](workspaces.md#api-keys)).
 
 | Route | Body | Answer |
 |---|---|---|

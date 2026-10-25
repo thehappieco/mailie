@@ -25,6 +25,9 @@ import (
 // away never ask; deleting a removed mailbox for good, and turning a removed
 // one's sync off, ask only of a team's mailbox, whose owners do it before
 // its 30 days are over: what it deletes is the team's, read by others too.
+// Each act asks after its own read-only authorization — a team withheld or
+// closed refused first, as its write would — so the extension is never
+// asked about an act that cannot happen.
 
 // FreshKind is the kind of act a freshness question is about.
 type FreshKind string

@@ -189,10 +189,15 @@ func (s *Service) PurgeAccount(ctx context.Context, p Principal, id string, req 
 	if err != nil {
 		return err
 	}
-	if teamMailbox(a) {
+	if teamMailbox(a) && !isOperator(p) {
 		// An owner deleting a team's mailbox before its 30 days are over:
-		// asked first, outside the write, which checks again that they own
-		// it. The operator, and the sweep, are nobody signed in.
+		// refused first, read only, in a team withheld or closed, as the
+		// write would; then asked about, outside the write, which checks
+		// again that they own it, in a team that is open. The operator, who
+		// deletes a closed team's too, and the sweep are nobody signed in.
+		if err := s.removedTeamOpen(ctx, a); err != nil {
+			return err
+		}
 		if err := s.fresh(ctx, p, FreshAct{Kind: FreshPurge, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
 			return err
 		}
@@ -249,6 +254,31 @@ func (s *Service) removedFor(ctx context.Context, p Principal, id string, purge 
 		}
 	}
 	return account.Account{}, errNoAccount
+}
+
+// removedTeamOpen refuses, read only, a removed team mailbox's team that the
+// write's own check (callerTx) would refuse: one an edition withholds
+// (not_authorized) or a closed one (conflict). Read before the freshness
+// hook is asked, so that it is asked only of an act the rest of the
+// authorization lets through.
+func (s *Service) removedTeamOpen(ctx context.Context, a account.Account) error {
+	if s.workspaces == nil {
+		return nil
+	}
+	w, err := s.workspaces.Get(ctx, a.WorkspaceID)
+	switch {
+	case errors.Is(err, workspace.ErrNotFound):
+		return errNoAccount
+	case err != nil:
+		return E(CodeInternal, "reading the workspace failed", err)
+	}
+	if err := s.teamWithheld(w); err != nil {
+		return err
+	}
+	if !w.ClosedAt.IsZero() {
+		return errTeamClosed
+	}
+	return nil
 }
 
 // ownsRemovedTx re-reads, inside the transaction that recovers or deletes a

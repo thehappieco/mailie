@@ -20,9 +20,10 @@ export interface SyncView {
 
 /**
  * syncView describes a syncing account: one that is active and whose owner
- * turned sync on; and an active one recovered after it was removed, whose
- * sync is held until someone who may turns it on. Anything else is described
- * by its account state (labels.stateDetail), and this answers null.
+ * turned sync on; and an active one whose sync is held until someone who may
+ * turns it on (recovered after it was removed, or a person's mailbox the
+ * server's operator turned off). Anything else is described by its account
+ * state (labels.stateDetail), and this answers null.
  */
 export function syncView(account: Account, now = Date.now()): SyncView | null {
   const sync = account.sync
@@ -53,14 +54,19 @@ export function syncView(account: Account, now = Date.now()): SyncView | null {
   }
 }
 
-/** Whether an account's sync is held since it was recovered: nothing syncs until someone who may turns it on. */
+/** Whether an account's sync is held: nothing syncs until someone who may turns it on. */
 export function syncHeld(account: Pick<Account, 'sync'>): boolean {
   return account.sync.held === true
 }
 
-/** Why a recovered mailbox does not sync, and since when. */
+/**
+ * Why a held mailbox does not sync, and since when. The server says that it
+ * is held, never why: a recovery holds it with its index kept, and the
+ * server's operator holds a person's mailbox once it deleted its index
+ * (POST /v1/accounts/{id}/sync/stop), so the words claim neither.
+ */
 export function heldText(account: Pick<Account, 'sync'>): string {
-  return t('Paused since it was recovered on {date}: nothing syncs until it is turned on again.', { date: dayStamp(account.sync.held_since) })
+  return t('Paused since {date}: nothing syncs until it is turned on again.', { date: dayStamp(account.sync.held_since) })
 }
 
 /** What went wrong, from the short class the server reports (provider.Class). */

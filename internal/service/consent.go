@@ -510,10 +510,14 @@ func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string
 }
 
 // syncOffRemoved turns a removed team mailbox's sync off for an owner of its
-// team: what it kept indexed is deleted, and a recovery finds none. The owner
-// is asked about first (FreshRemovedSyncOff), outside the write, which checks
-// again that they own it.
+// team: what it kept indexed is deleted, and a recovery finds none. A team
+// withheld or closed is refused first, read only, as the write would; then
+// the owner is asked about (FreshRemovedSyncOff), outside the write, which
+// checks again that they own it, in a team that is open.
 func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Account) (AccountSync, error) {
+	if err := s.removedTeamOpen(ctx, a); err != nil {
+		return AccountSync{}, err
+	}
 	if err := s.fresh(ctx, p, FreshAct{Kind: FreshRemovedSyncOff, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
 		return AccountSync{}, err
 	}

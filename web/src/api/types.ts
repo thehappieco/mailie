@@ -240,11 +240,13 @@ export interface AccountSync {
   error_class?: string
   next_retry_at?: number
   /**
-   * A mailbox recovered after it was removed, whose sync waits, whatever its
-   * agreement says, until someone who may turns it on: its person for a
-   * personal mailbox, an owner or an admin of a team for a team's. Only ever
-   * true, never beside enabled; held_since says when it was recovered.
-   * Absent from a daemon older than removed mailboxes.
+   * A mailbox whose sync waits, whatever its agreement says, until someone
+   * who may turns it on: its person for a personal mailbox, an owner or an
+   * admin of a team for a team's. Held by a recovery (its index kept), or,
+   * for a person's mailbox, by the server's operator turning its sync off
+   * (its index deleted); the server says which by neither. Only ever true,
+   * never beside enabled; held_since says since when. Absent from a daemon
+   * older than removed mailboxes.
    */
   held?: true
   held_since?: number

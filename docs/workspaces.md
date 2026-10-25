@@ -561,10 +561,14 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   names no person loses its consent: a team's owners or admins give it again, to the current sync
   text, as after any turn-off, and nothing holds it. A personal one keeps its person's consent,
   which covers their other mailboxes, and is held instead (`sync_held_at`, as after a recovery)
-  until they turn it on again (`PUT /v1/accounts/{id}/sync` `{"enabled": true}`). Everyone who read
-  it is told with a notice ([Removed mailboxes](#removed-mailboxes)); the journal names the actor
-  `operator` (`store.ActorOperator`), which is nobody's person or key, and the daemon's log names
-  the key used. An operator mailbox's, which nobody else reads, is journaled for nobody.
+  until they turn it on again (`PUT /v1/accounts/{id}/sync` `{"enabled": true}`); the console
+  says it is paused since then, never that it was recovered, since the server says only that it is
+  held. Everyone who read it is told with a notice ([Removed mailboxes](#removed-mailboxes)) — of a
+  personal mailbox, its person, whenever it could sync or kept an index this deletes, a recovered
+  one held with its index included, and once: a second turn-off that deletes nothing says nothing
+  again; the journal names the actor `operator` (`store.ActorOperator`), which is nobody's person
+  or key, and the daemon's log names the key used. An operator mailbox's, which nobody else reads,
+  is journaled for nobody.
 - A team mailbox **nobody can read** syncs nothing more; its consent stays, and its owners and
   admins see it marked (`no_reader`). One a suspended member would read once resumed is not marked:
   it waits for them. Read passes only from someone who reads it, so its sync is
@@ -838,8 +842,11 @@ terms cover a personal workspace's keys alone sets `app.Options.KeysInPersonalWo
 (`service.Deps`; `serve` never does): creating a key in a team, and raising a flag a key holds on
 a team's mailbox, are then `403` (`not_authorized`, as everything else a server does not offer is,
 such as a withheld team or a key's send where keys may not send: no change of state lifts it),
-while listing a team's keys, revoking them and taking flags or mailboxes away from them stay, so
-that what a database holds is still seen and stopped. A member creates
+and no key reaches a team's mailbox — a team's key a database still holds, or a carried-over one
+holding a team's mailbox, sees none listed, is refused one asked for by name (`403`, the same
+refusal) and is refused a listing narrowed to the team, over REST and MCP alike — while listing a
+team's keys, revoking them and taking flags or mailboxes away from them stay, so that what a
+database holds is still seen and stopped. A member creates
 none. A key never mints, lists or changes a key, so a leaked one cannot keep access after it is
 revoked; the operator lists and revokes every key on `/v1/apikeys`. A person lists the keys they
 created, in every workspace, on `GET /v1/me/apikeys`, and revokes any of them.
@@ -1547,7 +1554,10 @@ nothing, and one question it asks. No transport calls any of them, and none take
   sync on or off (`team_sync`), an action on a team mailbox (`act`), a send from one (`send`), and,
   by an owner of its team before its 30 days are over, a removed team mailbox deleted for good
   (`purge`) or its sync turned off, which deletes the index it keeps (`removed_sync_off`): what they
-  delete is the team's, read by others too.
+  delete is the team's, read by others too. A team withheld or closed is refused before any of
+  these is asked about, read only, as the write would refuse it, so the directory is never asked
+  about an act that cannot happen, and its being out of reach never answers in place of that
+  refusal.
   It gates and never authorizes: the write that makes the act asks again who may, in its
   transaction — and starting a consent, an action and a send, which write nothing first, ask again
   at once — so an answer that ended the actor's membership, or disabled them, stops the act, which
@@ -2541,5 +2551,5 @@ Test names state the guarantee. At least:
 | 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
 | Following an external directory, its documents | `internal/workspace/mirror.go` (`ValidExternalID`, `MirrorWorkspaceTx`, `ReplacePersonalTx`, `MirrorMemberTx`, `EndMembershipTx` and its holds, `HeldMembershipsTx`, `PersonalReplacementBlocks`), `reader.go` (`StrandCandidatesTx`), `members.go` (`Member.Held`), `source.go` (`Platform` made real); `auth` (`ExternalSignIn.PersonCreatedTx`, `IdentityUser`, `ResumeTx`, `RevokeSessionsStartedBeforeTx`, `Keys.RevokeCreatedBeforeTx`; a disable, `DisableBy` naming its actor, and a forced reset journal what they strand); `store/directory.go` (the listings and the sweep); `service/directory.go` (the documents, the directory's calls, a closed person forgotten and released), `external.go` (the document at sign-in), `closure.go` (`removePerson`: a deletion journals what it strands); `app/sweep.go` (`SweepDirectory`) |
 | Following an external directory, what it reads | `internal/store` (`ReadTx`, `PauseSQL` beside the sync rule, `KeptWaitingSQL`, `journalreads.go`: the journal per workspace with its readers and a key's creator, its head, the followed workspaces); `workspace/snapshot.go` (`SnapshotTx`); `service/snapshot.go` (`AccessSnapshot`), `journal.go` (`MailboxJournal`, `MailboxJournalHead`, `FollowedWorkspaces`, `WorkspaceChanges`, the extension state), `freshness.go` (`Freshness` and its thirteen call sites in `workspaces.go`, `mailboxkeys.go`, `workspacekeys.go`, `accounts.go`, `consent.go`, `actions.go`, `send.go`, `removed.go`); `app` (`Options.Freshness`, `Deps.State`, the start line of personal workspaces a document would not replace); `account/revoke.go` (a Google grant revoked once its mailbox is deleted for good) and `registry.go`, `removal.go`, `store.go` (the token opened in the deleting transaction); `web/src/state/failure.ts` (`Failure.retryAfter`), `workspaces.ts` (`workspaceVanished`), `accounts.ts` and `storage.ts` |
-| Teams ready behind an edition's gate | `service/workspacekeys.go` (`Deps.KeysInPersonalWorkspaceOnly`, `errTeamKeys`) and `app` (`Options.KeysInPersonalWorkspaceOnly`); `service/freshness.go` (`FreshPurge`, `FreshRemovedSyncOff`), `removed.go` (`PurgeAccount`) and `consent.go` (`syncOffRemoved`); `store/consent.go` (`StopSync`), `store/mailboxevents.go` (`ActorOperator`), `service/consent.go` (`StopMailboxSync`), `api` (`POST /v1/accounts/{id}/sync/stop`) and `cmd/mailserver` (`account sync ID off`); `account/registry.go` (`checkGrant`: `ErrGrantUnproved`, `ReasonUnproved`) and `service/accounts.go` (`fromCompletion`); `web/src/edition.ts` (`sync` drawn with `team`, `copy.keysSection`), `TeamMailboxSync.vue`, `AddAccountDialog.vue`, `AccessPanel.vue`, `open/SyncText.vue`, `ui/reasons.ts` and the catalogs (`concordância da equipe`, `acuerdo del equipo`) |
+| Teams ready behind an edition's gate | `service/workspacekeys.go` (`Deps.KeysInPersonalWorkspaceOnly`, `errTeamKeys`), `service.go` (`visibility`, `authorizeAccount`: no key reaches a team's mailbox), `access.go` (`keyWorkspace`) and `app` (`Options.KeysInPersonalWorkspaceOnly`); `service/freshness.go` (`FreshPurge`, `FreshRemovedSyncOff`), `removed.go` (`PurgeAccount`, `removedTeamOpen`: a team withheld or closed refused before the hook is asked) and `consent.go` (`syncOffRemoved`); `store/consent.go` (`StopSync`), `store/mailboxevents.go` (`ActorOperator`), `service/consent.go` (`StopMailboxSync`), `api` (`POST /v1/accounts/{id}/sync/stop`) and `cmd/mailserver` (`account sync ID off`); `account/registry.go` (`checkGrant`: `ErrGrantUnproved`, `ReasonUnproved`) and `service/accounts.go` (`fromCompletion`); `web/src/edition.ts` (`sync` drawn with `team`, `copy.keysSection`, `personalKeysOnly`), `ui/sync.ts` (`heldText`, which claims no recovery) and `StoragePanel.vue`, `TeamMailboxSync.vue`, `AddAccountDialog.vue`, `AccessPanel.vue`, `open/SyncText.vue`, `ui/reasons.ts` and the catalogs (`concordância da equipe`, `acuerdo del equipo`) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

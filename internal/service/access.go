@@ -172,7 +172,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 		return errNoWorkspace
 	case p.IsWorkspaceKey() && p.WorkspaceID != "":
 		if workspaceID == p.WorkspaceID {
-			return s.workspaceWithheld(ctx, workspaceID)
+			return s.keyWorkspace(ctx, workspaceID)
 		}
 		return errNoWorkspace
 	case p.IsWorkspaceKey():
@@ -181,7 +181,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 			return E(CodeInternal, "reading the workspace failed", err)
 		}
 		if slices.Contains(reached, workspaceID) {
-			return s.workspaceWithheld(ctx, workspaceID)
+			return s.keyWorkspace(ctx, workspaceID)
 		}
 		return errNoWorkspace
 	}
@@ -195,6 +195,26 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 		return errNoWorkspace
 	}
 	return s.workspaceWithheld(ctx, workspaceID)
+}
+
+// keyWorkspace refuses a key a workspace it reaches that is a team, where
+// teams are withheld (errTeamsWithheld) or where an edition keeps keys to
+// personal workspaces (errTeamKeys): a team's key, or a carried-over key
+// holding a team's mailbox, that a database still holds.
+func (s *Service) keyWorkspace(ctx context.Context, workspaceID string) error {
+	if err := s.workspaceWithheld(ctx, workspaceID); err != nil || !s.keysPersonalOnly {
+		return err
+	}
+	w, err := s.workspaces.Get(ctx, workspaceID)
+	switch {
+	case errors.Is(err, workspace.ErrNotFound):
+		return errNoWorkspace
+	case err != nil:
+		return E(CodeInternal, "reading the workspace failed", err)
+	case s.teamKeysRefused(w):
+		return errTeamKeys
+	}
+	return nil
 }
 
 var errNoWorkspace = E(CodeNotFound, "no such workspace", nil)

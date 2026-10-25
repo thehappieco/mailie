@@ -472,12 +472,15 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 //     (sync_held_at), so that nothing of it syncs until its person turns it
 //     on again (LiftSyncHold), whatever their consent says.
 //
-// A mailbox that was syncing, or could have — a team's or a person's whose
-// consent stood, not already held, live or removed — is journaled
+// A mailbox that was syncing, could have, or kept an index this deletes —
+// a team's whose consent stood, held or not, live or removed; a person's
+// whose consent stood, live and not held yet, or holding an index (a
+// recovered one keeps it while its sync is held) — is journaled
 // sync_paused, and every reader told (none for a removed one, which has
-// none): the actor is nobody's reader. An operator mailbox is journaled for
-// nobody, as SetMailboxSync does. It reports what changed; a mailbox nobody
-// knows is ErrNoSuchMailbox.
+// none): the actor is nobody's reader. A person's mailbox the operator
+// already turned off, which holds nothing more, is not journaled again. An
+// operator mailbox is journaled for nobody, as SetMailboxSync does. It
+// reports what changed; a mailbox nobody knows is ErrNoSuchMailbox.
 func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
@@ -500,9 +503,18 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 		case err != nil:
 			return fmt.Errorf("store: read the mailbox's sync: %w", err)
 		}
+		var indexed bool
+		if err := tx.QueryRowContext(ctx,
+			`SELECT EXISTS (SELECT 1 FROM folders WHERE account_id = ?) OR EXISTS (SELECT 1 FROM messages WHERE account_id = ?)`,
+			accountID, accountID).Scan(&indexed); err != nil {
+			return fmt.Errorf("store: read the mailbox's index: %w", err)
+		}
 		var wasOn bool
 		if owner.Valid {
-			wasOn = person && !held
+			// Live and not held, it could sync now; held (recovered) or
+			// removed, it is told of only when it kept an index this
+			// deletes, so that a second turn-off says nothing again.
+			wasOn = person && (indexed || (!held && !removed))
 			if !removed && !held {
 				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET sync_held_at = ?, updated_at = ? WHERE id = ?`,
 					now, now, accountID); err != nil {

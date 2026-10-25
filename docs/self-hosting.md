@@ -1015,8 +1015,9 @@ kept.
   ([`workspaces.md`](workspaces.md#consents)).
 - **For a binary that embeds the daemon** (nothing changes for `serve`): the freshness hook is also
   asked before a team's owner deletes a removed team mailbox for good or turns its kept index off
-  (`purge`, `removed_sync_off`), and `app.Options.KeysInPersonalWorkspaceOnly` keeps API keys to
-  personal workspaces.
+  (`purge`, `removed_sync_off`), once the rest of the authorization let the act through (a team
+  withheld or closed is refused first), and `app.Options.KeysInPersonalWorkspaceOnly` keeps API
+  keys to personal workspaces, a team's mailbox reached by none.
 
 ```sh
 # Compose, from deploy/:

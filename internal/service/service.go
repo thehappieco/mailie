@@ -96,8 +96,8 @@ type Service struct {
 	// workspaces and the operator's are as they were.
 	teamsWithheld bool
 	// keysPersonalOnly is an edition whose API keys belong to a personal
-	// workspace alone (workspacekeys.go): no key is created in a team, and
-	// none is given more on a team's mailbox.
+	// workspace alone (workspacekeys.go): no key is created in a team, none
+	// is given more on a team's mailbox, and none reaches one.
 	keysPersonalOnly bool
 	// freshness is asked before an act that widens access or touches a
 	// team's shared data (freshness.go); nil asks nothing.
@@ -193,10 +193,13 @@ type Deps struct {
 	// personal workspace alone, whatever teams it offers (its key terms
 	// cover nothing else): creating a key in a team, and raising a flag a
 	// key holds on a team's mailbox, are refused, not_authorized, as
-	// something this server does not offer. Listing a team's keys, revoking
-	// them and taking what they hold away stay, so that whatever a database
-	// holds can still be seen and stopped. False, the default, changes
-	// nothing. Only internal/app sets it, from its Options.
+	// something this server does not offer, and no key reaches a team's
+	// mailbox — a team's key a database still holds, or a carried-over one
+	// holding a team's mailbox, sees none and is refused one by name.
+	// Listing a team's keys, revoking them and taking what they hold away
+	// stay, so that whatever a database holds can still be seen and
+	// stopped. False, the default, changes nothing. Only internal/app sets
+	// it, from its Options.
 	KeysInPersonalWorkspaceOnly bool
 	// Freshness, when set, is asked before an act of a person signed in
 	// that widens who may read a mailbox or touches a team's shared data
@@ -425,6 +428,11 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 	if err := s.mailboxWithheld(ctx, a); err != nil {
 		return account.Account{}, err
 	}
+	if s.keysPersonalOnly && p.IsWorkspaceKey() && teamMailbox(a) {
+		// A team's key, or a carried-over one holding a team's mailbox,
+		// that a database still holds: refused by name, as creating one is.
+		return account.Account{}, errTeamKeys
+	}
 	if err := s.requireFlags(ctx, p, a, need); err != nil {
 		return account.Account{}, err
 	}
@@ -441,7 +449,8 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 // mailboxes it holds something on, read live, whoever holds the principal and
 // for however long. A role reaches no mailbox's index: an owner of a team or
 // of the instance reads nothing by being one. Where teams are withheld, no
-// team's mailbox is seen, by a person or a key.
+// team's mailbox is seen, by a person or a key; where an edition keeps keys
+// to personal workspaces, none is seen by a key, whatever a database holds.
 func (s *Service) visibility(p Principal) account.Visibility {
 	switch {
 	case p.IsInstance():
@@ -449,7 +458,7 @@ func (s *Service) visibility(p Principal) account.Visibility {
 	case p.IsSession():
 		return account.Visibility{UserID: p.UserID, NoTeams: s.teamsWithheld}
 	}
-	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld}
+	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld || s.keysPersonalOnly}
 }
 
 // readable is visibility narrowed to the mailboxes whose index the caller may
