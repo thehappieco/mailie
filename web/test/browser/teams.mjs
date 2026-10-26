@@ -1173,6 +1173,8 @@ for (const { language, mobile, scheme } of only && only !== 'pause' ? [] : pause
     await until(async () => (await text(card(support))).includes(tr('Up to date')), 'the card to say it syncs again')
     await until(async () => (await text(sheet.locator('.team-sync'))).includes('Bea Lima'), 'the team’s agreement recorded by whoever resumed it')
     assert.equal(fake.team.notices.filter(item => item.user === BEA).length, 0, 'the resume withdrew her notice')
+    // No event says so: the page reads her notices again once she resumed it.
+    await until(async () => (await notices.count()) === 0, 'her notice gone from the page once she resumed it')
     await sheet.getByRole('button', { name: tr('Sync now') }).waitFor()
     await closeSheet()
 

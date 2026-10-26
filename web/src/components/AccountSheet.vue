@@ -54,6 +54,8 @@ const emit = defineEmits<{ authorize: [Account] }>()
 
 const dialog = ref<HTMLDialogElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
+/** The Sync section's heading: where focus goes when a pause or a resume leaves no button in place of the one pressed. */
+const syncHeading = ref<HTMLElement | null>(null)
 const titleID = useId()
 const confirmID = useId()
 const confirming = ref(false)
@@ -211,7 +213,7 @@ function authorize() {
 
         <section class="sheet-section sync-section">
           <div class="section-head">
-            <h3>{{ t('Sync') }}</h3>
+            <h3 ref="syncHeading" tabindex="-1">{{ t('Sync') }}</h3>
             <button v-if="syncing && access.read && !paused" class="ghost small" type="button" :disabled="request?.busy" @click="requestSync">
               <AppIcon name="refresh" :size="16" />{{ request?.busy ? t('Requesting…') : t('Sync now') }}
             </button>
@@ -233,7 +235,7 @@ function authorize() {
               <div v-if="sync.last_synced_at"><dt>{{ t('Last sync') }}</dt><dd>{{ stamp(sync.last_synced_at) }}<span class="dim"> · {{ since(sync.last_synced_at) }}</span></dd></div>
               <div v-if="!paused && sync.tier"><dt>{{ t('Sync mode') }}</dt><dd>{{ syncTierLabel(sync.tier) }}</dd></div>
             </dl>
-            <SyncPause :account="account" />
+            <SyncPause :account="account" :return-focus="() => syncHeading" />
             <p v-if="request?.failure" class="alert" role="alert">{{ syncNowProblem }}</p>
             <p v-else-if="request?.requested && !paused" class="hint">{{ t('Sync requested. The counts update as it runs.') }}</p>
             <p v-if="access.read" class="hint">{{ edition().copy.indexHint() }}</p>
@@ -339,6 +341,7 @@ function authorize() {
 .connection-action { margin-top: 18px; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .section-head h3 { margin: 0; }
+.section-head h3:focus { outline: none; }
 .loading-line { display: flex; align-items: center; gap: 8px; }
 .folder-list { list-style: none; margin: 8px 0 0; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
 .folder-list li { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--text-dim); }

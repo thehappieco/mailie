@@ -12,7 +12,10 @@
 // suspended member would read once resumed, which waits for them. Who paused
 // it is said to the team's owners and admins (the access directory), never
 // to a member, who is told an owner or an admin did. The server decides; this
-// says beforehand what it will do.
+// says beforehand what it will do. Once a pause or a resume is done, focus
+// goes to the button that took the place of the one pressed, or, where none
+// did (no pause offered, or a mailbox that does not sync once resumed), to
+// what the sheet gives (returnFocus: its Sync heading).
 import { computed, nextTick, onMounted, ref } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
@@ -29,7 +32,7 @@ import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
 import TeamSyncAgreement from './TeamSyncAgreement.vue'
 
-const props = defineProps<{ account: Account }>()
+const props = defineProps<{ account: Account; returnFocus?: () => HTMLElement | null }>()
 
 const workspace = computed(currentWorkspace)
 const inTeam = computed(() => workspace.value?.kind === 'team')
@@ -56,7 +59,6 @@ const line = computed(() => {
   return name ? t('Sync paused by {name} on {date}.', { name, date: date.value }) : t('Sync paused on {date}.', { date: date.value })
 })
 
-const root = ref<HTMLElement | null>(null)
 const action = ref<HTMLButtonElement | null>(null)
 const dialog = ref<'' | 'pause' | 'resume'>('')
 const busy = ref(false)
@@ -70,10 +72,18 @@ function open(kind: 'pause' | 'resume') {
 }
 function close() { if (!busy.value) dialog.value = '' }
 function reloadPage() { location.reload() }
-/** The button that took the place of the one pressed, once drawn: what focus goes back to. */
+/**
+ * Where focus goes once a dialog closes on a control that is gone, or an act is done: the button that
+ * took the place of the one pressed, or, when none did, the sheet's own target. Never this block's
+ * root, which is hidden once it draws nothing.
+ */
+function focusTarget(): HTMLElement | null {
+  return action.value?.isConnected ? action.value : props.returnFocus?.() ?? null
+}
+/** Once drawn: the button that took the place of the one pressed, or the sheet's target. */
 async function refocus() {
   await nextTick()
-  action.value?.focus({ preventScroll: true })
+  focusTarget()?.focus({ preventScroll: true })
 }
 
 async function pause() {
@@ -108,7 +118,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div ref="root" class="sync-pause" tabindex="-1">
+  <div class="sync-pause">
     <template v-if="paused">
       <p class="dim sync-pause-line">{{ line }}</p>
       <template v-if="mayPause">
@@ -123,7 +133,7 @@ onMounted(() => {
     </template>
     <button v-else-if="mayPause && offered && syncing" ref="action" class="ghost small sync-pause-button" type="button" aria-haspopup="dialog" :disabled="busy" @click="open('pause')"><AppIcon name="pause" :size="16" />{{ t('Pause sync…') }}</button>
 
-    <ConsoleDialog v-if="dialog === 'pause'" :title="t('Pause sync of {email}?', { email: account.email })" :busy="busy" :return-focus="() => root" @close="close">
+    <ConsoleDialog v-if="dialog === 'pause'" :title="t('Pause sync of {email}?', { email: account.email })" :busy="busy" :return-focus="focusTarget" @close="close">
       <p class="dim sync-pause-what">{{ inTeam
         ? t('Mailie stops indexing new mail for this mailbox, for everyone in {team} who reads it, and keeps what it already indexed: they can still search it, open its messages, act on them and send from it. Nothing is deleted, and the others who read it are told. Resume sync to catch up.', { team: teamName })
         : t('Mailie stops indexing new mail for this mailbox and keeps what it already indexed: you can still search it, open its messages, act on them and send from it. Nothing is deleted. Resume sync to catch up.') }}</p>
@@ -135,7 +145,7 @@ onMounted(() => {
       </div>
     </ConsoleDialog>
 
-    <ConsoleDialog v-if="dialog === 'resume'" :title="t('Resume sync for {team}?', { team: teamName })" :subtitle="account.email" :busy="busy" wide :return-focus="() => root" @close="close">
+    <ConsoleDialog v-if="dialog === 'resume'" :title="t('Resume sync for {team}?', { team: teamName })" :subtitle="account.email" :busy="busy" wide :return-focus="focusTarget" @close="close">
       <TeamSyncAgreement :team="teamName" :lead="t('You agree to this text on behalf of {team}: {email} then syncs again under the team’s agreement, for everyone in the team who reads it, from where it stopped.', { team: teamName, email: account.email })" />
       <p v-if="problem && !outdated" class="alert sync-pause-problem" role="alert">{{ describe(problem) }}</p>
       <div class="dialog-actions">
@@ -149,7 +159,6 @@ onMounted(() => {
 
 <style scoped>
 .sync-pause { display: grid; gap: 10px; justify-items: start; margin-top: 12px; }
-.sync-pause:focus { outline: none; }
 .sync-pause:empty { display: none; }
 .sync-pause p { margin: 0; }
 .sync-pause-button { display: inline-flex; align-items: center; gap: 6px; }

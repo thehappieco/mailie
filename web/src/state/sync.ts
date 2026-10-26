@@ -16,6 +16,7 @@ import { edition } from '../edition'
 import { t } from '../ui/i18n'
 import { forgetFolders, forgetIndexedFolders, forgetLiveFolders, loadAccounts, mergeSync, notifySync, refreshAccount } from './accounts'
 import { failure, type Failure } from './failure'
+import { noticesChanged } from './notices'
 import { authorized, identity } from './session'
 import { loadDirectory } from './team'
 import { currentWorkspace, loadWorkspaces } from './workspaces'
@@ -249,9 +250,10 @@ export async function pauseSync(account: Account): Promise<Failure | null> {
  * was shown, which the server records as the team's agreement; a personal
  * mailbox's names none. The folder list read from its index is read again;
  * so is the team's access directory (who agreed, and that nobody paused it
- * any more). A refusal for another revision reads the consent again, so the
- * dialog offers a reload (as switchTeamSync does). Null on success, and when
- * the session changed meanwhile; the failure otherwise.
+ * any more), and the person's notices: the resume withdrew the pause's, theirs
+ * included, which no event says. A refusal for another revision reads the
+ * consent again, so the dialog offers a reload (as switchTeamSync does). Null
+ * on success, and when the session changed meanwhile; the failure otherwise.
  */
 export async function resumeSync(account: Account): Promise<Failure | null> {
   const ok = current()
@@ -263,7 +265,10 @@ export async function resumeSync(account: Account): Promise<Failure | null> {
     // A Sync now refused while it was paused is no longer the news.
     delete syncRequests[account.id]
     forgetFolders(account.id)
-    if (team) void loadDirectory()
+    if (team) {
+      void loadDirectory()
+      noticesChanged()
+    }
     return null
   } catch (error) {
     if (!ok()) return null

@@ -8,16 +8,20 @@
 // nobody reads, or only a suspended member would, offers no Resume; a member
 // is told an owner or an admin paused it, never who, and is offered nothing;
 // a paused mailbox offers no Sync now, and its team's row only turning it
-// off, which says it ends the pause; a recovered mailbox comes back paused,
-// held or off, and says which, and is resumed in an edition that does not
-// offer the pause too; and a pause refused is said in the console's words.
+// off, which says it ends the pause, and says the resume is what agrees
+// again; a resume or a turn-off by a reader told of the pause takes the
+// notice away; a recovered mailbox comes back paused, held or off, and says
+// which, and is resumed in an edition that does not offer the pause too,
+// focus kept in the sheet when nothing takes Resume's place; and a pause
+// refused is said in the console's words.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 import { click, fill, find, flush, page, submit, words } from './dom'
 import { mount, type Mounted } from './mount'
-import type { Account, AccountSync, MailboxAccess, Member, RemovedMailbox, Workspace } from '../src/api/types'
+import type { Account, AccountSync, MailboxAccess, Member, PersonNotice, RemovedMailbox, Workspace } from '../src/api/types'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
+import PersonNotices from '../src/components/PersonNotices.vue'
 import { configureEdition } from '../src/edition'
 import { openEdition } from '../src/open/edition'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
@@ -48,6 +52,10 @@ const mine = (sync: AccountSync = live()): Account => account({ id: 'acc_mine', 
 const shared = (sync: AccountSync = live(), access = full): Account => account({ id: 'acc_shared', email: 'suporte@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access, sync })
 const agreed = (fields: Partial<NonNullable<MailboxAccess['sync']>> = {}): NonNullable<MailboxAccess['sync']> =>
   ({ enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true, ...fields })
+/** What Ana was told when Bea paused the team's mailbox she reads. */
+const pausedNotice = (): PersonNotice => ({
+  id: 'mbe_0000000000000004', kind: 'paused', workspace_id: TEAM, workspace_name: 'Support', account_id: 'acc_shared', mailbox: 'suporte@example.test', at: 1_790_100_000, state: 'live',
+})
 
 interface Seen { path: string; method: string; body: unknown }
 let seen: Seen[] = []
@@ -287,6 +295,50 @@ describe('a recovered mailbox', () => {
     expect(find('.sheet button', 'Pause sync…')).toBeNull()
   })
 
+  it('a resume that leaves no Pause in its place puts focus on the Sync heading, in the sheet', async () => {
+    // No pause offered, or one the mailbox cannot take once resumed (it needs authorization): nothing replaces Resume.
+    for (const [syncPause, state] of [[undefined, 'active'], [true, 'needs_reauth']] as const) {
+      configureEdition({ ...openEdition, syncPause })
+      list = [account({ ...mine(pausedSync()), state })]
+      seen = []
+      await signedIn('member', PERSONAL)
+      await openSheet('acc_mine', false)
+      await click(find('.sheet button', 'Resume sync'))
+      await vi.waitFor(() => expect(sent('POST', '/v1/accounts/acc_mine/sync/resume')).toHaveLength(1))
+      await vi.waitFor(() => expect(find('.sheet button', 'Resume sync')).toBeNull())
+      await flush()
+      expect(find('.sheet button', 'Pause sync…')).toBeNull()
+      const focused = page.activeElement!
+      expect(focused.isConnected).toBe(true)
+      expect(sheet().contains(focused)).toBe(true)
+      expect(focused.tagName).toBe('H3')
+      expect(words(focused)).toBe('Sync')
+      mounted?.unmount()
+      mounted = null
+      await signOut()
+    }
+  })
+
+  it('a team resume that leaves no Pause in its place puts focus on the Sync heading, never on a block that draws nothing', async () => {
+    configureEdition({ ...openEdition, syncPause: undefined })
+    list = [shared(pausedSync())]
+    entries = { acc_shared: entryOf(list[0]!, { paused_at: 1_790_100_000, paused_by: BEA }) }
+    await signedIn('owner', TEAM)
+    await openSheet('acc_shared', true)
+    await click(find('.sheet button', 'Resume sync for Support…'))
+    await click(find('dialog button.primary', 'Resume sync for Support'))
+    await vi.waitFor(() => expect(words(card())).toContain('Up to date'))
+    await flush()
+    expect(find('dialog.console-dialog')).toBeNull()
+    // The pause block draws nothing now, and is hidden (.sync-pause:empty).
+    expect(words(sheet().querySelector('.sync-pause')!)).toBe('')
+    const focused = page.activeElement!
+    expect(focused.isConnected).toBe(true)
+    expect(sheet().contains(focused)).toBe(true)
+    expect(focused.tagName).toBe('H3')
+    expect(words(focused)).toBe('Sync')
+  })
+
   it('a recovered notice says paused, turned off or off, as the mailbox came back', async () => {
     removedList = [kept('acc_paused', 'paused@example.test'), kept('acc_held', 'held@example.test'), kept('acc_off', 'off@example.test')]
     const came: Record<string, AccountSync> = {
@@ -441,6 +493,77 @@ describe('pausing a team mailbox', () => {
     expect(row.querySelector('button[role=switch]')).toBeNull()
     expect(find('.team-sync button', 'Confirm for Support…')).toBeNull()
     expect(find('.team-sync button', 'Turn off…')).not.toBeNull()
+    // It says the resume above is what agrees, never that it keeps syncing or to confirm it here.
+    expect(words(row)).toContain('On for Support since September 21, 2026, under an earlier text of sync, and paused. Resuming its sync agrees to the current text for Support; turning it off deletes its index for everyone who reads it.')
+    expect(words(row)).not.toContain('keeps syncing')
+    expect(words(row)).not.toContain('confirm it')
+  })
+
+  it('a paused team mailbox still tied to whoever connected it says its resume confirms it for the team', async () => {
+    list = [shared(pausedSync())]
+    entries = { acc_shared: entryOf(list[0]!, { sync: agreed({ migrated: true, version: '2026-10-open-sync-3', current: false }), paused_at: 1_790_100_000, paused_by: BEA }) }
+    await signedIn('owner', TEAM)
+    await openSheet('acc_shared', true)
+    const row = find('.team-sync')!
+    expect(words(row)).toContain('On since September 21, 2026 under the agreement Bea Lima gave for their own mailboxes before this server was updated, and paused. It is still tied to them: if they turn their sync off or their account is closed, it stops and its index is deleted. Resuming its sync confirms it for Support, under the current text.')
+    expect(words(row)).not.toContain('to keep it syncing')
+    expect(find('.team-sync button', 'Confirm for Support…')).toBeNull()
+    expect(find('.team-sync button', 'Turn off…')).not.toBeNull()
+    expect(find('.sheet button', 'Resume sync for Support…')).not.toBeNull()
+  })
+
+  it('a reader told of the pause who resumes it no longer sees the notice', async () => {
+    list = [shared(pausedSync())]
+    entries = { acc_shared: entryOf(list[0]!, { paused_at: 1_790_100_000, paused_by: BEA }) }
+    let given = [pausedNotice()]
+    await signedIn('admin', TEAM, ({ path, method }) => {
+      if (path === '/v1/me/notices' && method === 'GET') return json(given)
+      // The resume withdraws the pause's notices in its transaction; no event says so.
+      if (path === '/v1/accounts/acc_shared/sync/resume' && method === 'POST') given = []
+      return failure('not_found', 404)
+    })
+    const notes = mount(PersonNotices)
+    try {
+      await vi.waitFor(() => expect(find('.person-notice', 'suporte@example.test')).not.toBeNull())
+      await openSheet('acc_shared', true)
+      await click(find('.sheet button', 'Resume sync for Support…'))
+      await click(find('dialog button.primary', 'Resume sync for Support'))
+      await vi.waitFor(() => expect(words(card())).toContain('Up to date'))
+      await vi.waitFor(() => expect(find('.person-notices')).toBeNull())
+      expect(sent('GET', '/v1/me/notices')).toHaveLength(2)
+    } finally {
+      notes.unmount()
+    }
+  })
+
+  it('a reader told of the pause who turns its sync off no longer sees the notice', async () => {
+    list = [shared(pausedSync())]
+    entries = { acc_shared: entryOf(list[0]!, { paused_at: 1_790_100_000, paused_by: BEA }) }
+    let given = [pausedNotice()]
+    await signedIn('owner', TEAM, ({ path, method }) => {
+      if (path === '/v1/me/notices' && method === 'GET') return json(given)
+      if (path === '/v1/accounts/acc_shared/sync' && method === 'PUT') {
+        // Turning it off ends the pause, and withdraws its notices with it.
+        given = []
+        list = [shared(syncOff())]
+        const { paused_at: _at, paused_by: _by, ...entry } = entries.acc_shared!
+        entries = { acc_shared: { ...entry, sync: { enabled: false, current: false } } }
+        return json(syncOff())
+      }
+      return failure('not_found', 404)
+    })
+    const notes = mount(PersonNotices)
+    try {
+      await vi.waitFor(() => expect(find('.person-notice', 'suporte@example.test')).not.toBeNull())
+      await openSheet('acc_shared', true)
+      await click(find('.team-sync button', 'Turn off…'))
+      await fill(find('dialog input[name=team-sync-confirm]'), 'suporte@example.test')
+      await submit(find('dialog form.team-sync-confirm'))
+      await vi.waitFor(() => expect(sent('PUT', '/v1/accounts/acc_shared/sync')).toHaveLength(1))
+      await vi.waitFor(() => expect(find('.person-notices')).toBeNull())
+    } finally {
+      notes.unmount()
+    }
   })
 
   it('turning a paused team mailbox off says it ends its pause', async () => {

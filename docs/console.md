@@ -907,7 +907,11 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   pause names whoever recovered it); a member who reads it is told an owner or an admin of the team
   paused it, and that they resume it. While it is paused its team sync offers only turning it off
   (never on, nor confirming an earlier text: the resume is the one way back, and it agrees), whose
-  dialog says it ends the pause too.
+  dialog says it ends the pause too, and an agreement to an earlier text, or one still tied to
+  whoever connected it, says that resuming its sync is what agrees again. Once a pause or a
+  resume is done, focus goes to the button that took the place of the one pressed, or, where none
+  did (the edition offers no pause, or the mailbox does not sync once resumed), to the Sync
+  heading.
 - **A mailbox the server's operator turned off** (`sync.held`, a personal mailbox: `POST
   …/sync/stop`) reads "Turned off" on its card and in its sheet, since when, with no index and
   nothing syncing until its person turns it on again (`{"enabled": true}` alone, "Turn sync on
@@ -921,7 +925,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   it is read, and stays until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery or
   the pause's end, or gone
   with its entry in the server's journal, at 90 days at most. They are read when the console
-  starts, on Refresh, when access changes, and when the stream says `event: notice`; a server
+  starts, on Refresh, when access changes, when the stream says `event: notice`, and after the
+  person resumes a team mailbox or turns its sync off, which withdraws a pause's notices that no
+  event announces; a server
   older than notices (`404`) has none, and a failure to read them is shown nowhere: the next read
   tries again.
 - **Events.** `event: access` reads the list again (once for several, a second later), Storage if

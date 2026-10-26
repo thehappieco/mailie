@@ -28,6 +28,7 @@ import { flagsOf, grantChange } from '../ui/access'
 import { accounts, forgetFolders, loadAccounts, mergeSync, refreshAccount, removed } from './accounts'
 import { failure, type Failure, type Operation } from './failure'
 import { requireAccountKeyHere, sealFromOwn } from './grants'
+import { noticesChanged } from './notices'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
 import { adoptOwnPlace, loadWorkspaces, workspaces } from './workspaces'
@@ -300,9 +301,11 @@ async function followOwnAccess(accountID: string): Promise<void> {
  * admin of it: on, to the text this console showed (the edition's sync
  * revision, never the one the server names), which also gives again an
  * agreement to an earlier text, or one the upgrade carried over; off,
- * deleting its index for everyone who reads it. The card takes the sync the
- * answer says, folders read of the mailbox are read again when next wanted,
- * and the directory, which records who gave the agreement, is read again.
+ * deleting its index for everyone who reads it, and ending a pause. The card
+ * takes the sync the answer says, folders read of the mailbox are read again
+ * when next wanted, and the directory, which records who gave the agreement,
+ * is read again; after a turn-off, so are the person's notices: one of a pause
+ * it ended, theirs included, is withdrawn, which no event says.
  */
 export async function switchTeamSync(accountID: string, on: boolean): Promise<Failure | null> {
   const ok = current()
@@ -312,6 +315,7 @@ export async function switchTeamSync(accountID: string, on: boolean): Promise<Fa
     if (!ok()) return null
     mergeSync(accountID, status)
     forgetFolders(accountID)
+    if (!on) noticesChanged()
   } catch (error) {
     const found = refused(on ? 'team-sync-on' : 'team-sync-off', error, ok)
     if (ok() && found.code === 'not_found') void loadDirectory()

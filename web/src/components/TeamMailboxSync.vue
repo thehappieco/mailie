@@ -55,8 +55,13 @@ const summary = computed(() => {
     case 'on': return giver.value
       ? t('On for {team} since {date}, turned on by {name}. Turning it off deletes its index for everyone who reads it.', values)
       : t('On for {team} since {date}. Turning it off deletes its index for everyone who reads it.', values)
-    case 'on-earlier': return t('On for {team} since {date}, under an earlier text of sync. It keeps syncing: confirm it under the current text, or turn it off.', values)
-    case 'migrated': return t('On since {date} under the agreement {name} gave for their own mailboxes before this server was updated. It is still tied to them: if they turn their sync off or their account is closed, it stops and its index is deleted. Confirm it for {team} to keep it syncing.', values)
+    // Paused, it does not sync and offers no confirming here: resuming it above is the act that agrees again.
+    case 'on-earlier': return paused.value
+      ? t('On for {team} since {date}, under an earlier text of sync, and paused. Resuming its sync agrees to the current text for {team}; turning it off deletes its index for everyone who reads it.', values)
+      : t('On for {team} since {date}, under an earlier text of sync. It keeps syncing: confirm it under the current text, or turn it off.', values)
+    case 'migrated': return paused.value
+      ? t('On since {date} under the agreement {name} gave for their own mailboxes before this server was updated, and paused. It is still tied to them: if they turn their sync off or their account is closed, it stops and its index is deleted. Resuming its sync confirms it for {team}, under the current text.', values)
+      : t('On since {date} under the agreement {name} gave for their own mailboxes before this server was updated. It is still tied to them: if they turn their sync off or their account is closed, it stops and its index is deleted. Confirm it for {team} to keep it syncing.', values)
     // Kept for as long as it stays stopped, and still tied to them: deleting them deletes it too.
     case 'kept': return unreadable.value
       ? t('Stopped since this server was updated, because {name}, who connected it, was disabled on this server then. Its index is kept while it stays stopped, until its sync is turned off, the mailbox is deleted for good, or their account on this server is deleted.', values)
