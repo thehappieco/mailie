@@ -409,10 +409,21 @@ func TestARecoveredMailboxStaysPausedUntilSomeoneWhoMayResumesIt(t *testing.T) {
 		t.Errorf("Carol resuming it: %+v (%v)", st, err)
 	}
 	// A personal one: its person, with no text; turning it on lifts only
-	// the operator's hold, and leaves the pause.
+	// the operator's hold, and leaves the pause. Off is never hers to switch
+	// here: her own consent decides, and the pause and the index stay.
 	st, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &on})
 	if err != nil || !st.Paused {
 		t.Errorf("Ana turning hers on: %+v (%v), want it still paused", st, err)
+	}
+	off := false
+	_, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &off})
+	wantCode(t, "Ana turning hers off here", err, service.CodeBadRequest)
+	st, err = m.svc.SyncStatus(ctx, tm.ana, own)
+	if err != nil || !st.Paused || !st.Enabled {
+		t.Errorf("hers once she asked to turn it off here: %+v (%v), want it still paused", st, err)
+	}
+	if n := indexed(t, m.fixture, own); n != kept[own] {
+		t.Errorf("hers keeps %d messages of its index once she asked to turn it off here, want %d", n, kept[own])
 	}
 	_, err = m.svc.ResumeMailboxSync(ctx, tm.ana, own, service.SyncResumeRequest{Version: m.consent().Sync})
 	wantCode(t, "Ana resuming hers with a text", err, service.CodeBadRequest)
