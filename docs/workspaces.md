@@ -650,7 +650,9 @@ a pause.
   `\Answered` too. Opening a message or an attachment, a live folder listing, searching, sending
   and the storage figures work as before. The account's interactive connection is kept logged in
   between calls, as a worker's is (`InteractiveIdle`), so a paused mailbox holds at most that one
-  connection. Sync now is refused (`409`, "resume it to catch up").
+  connection; it is logged out once the mailbox stops being paused with no worker to take it, and
+  when the daemon stops, a call in flight on it finishing first without holding up the engine's
+  other mailboxes. Sync now is refused (`409`, "resume it to catch up").
 - **What waits for the resume.** What changed on the mail server meanwhile: new mail, flags and
   deletions made in other apps, folders created there (the folder list comes from the kept index;
   a mailbox whose folders were never listed lists them live, writing nothing). A move whose new
@@ -711,9 +713,10 @@ a pause.
 |---|---|---|---|
 | list it, read its card | any grant; or owner or admin of its workspace, by the role | it holds anything on it | operator mailbox |
 | folders, search, read, originals, attachments, events, storage | `read` | `read` | operator mailbox, `read` scope |
-| ask for a sync pass | `read`, `write` scope | `read`, `write` scope | operator mailbox, `write` scope |
-| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent), and off for a removed one, its owners; a personal one: never (its person's own consent decides), but its person lifts a recovery's hold | never | operator mailbox, unrestricted admin key |
-| act | `act`, actions consent, the mailbox syncing | `act`, `write` scope (under its key terms; its creator's actions consent only as the Consents table says), the mailbox syncing | operator mailbox, `write` scope, the mailbox syncing |
+| ask for a sync pass | `read`, `write` scope, the mailbox not paused | `read`, `write` scope, the mailbox not paused | operator mailbox, `write` scope, the mailbox not paused |
+| switch sync on or off | a team mailbox: its owners and admins, signed in (the team's consent; on leaves a pause, off ends it), and off for a removed one, its owners; a personal one: never (its person's own consent decides), but its person lifts the operator's hold (a pause is ended by a resume) | never | operator mailbox, unrestricted admin key |
+| pause or resume its sync | a personal one: its person, signed in; a team mailbox: its owners and admins, signed in, by their role (a resume names the current sync text, and needs someone who reads it), never a member; a pause only where the edition offers it, a resume always | never | operator mailbox, unrestricted admin key |
+| act | `act`, actions consent, the mailbox syncing or paused | `act`, `write` scope (under its key terms; its creator's actions consent only as the Consents table says), the mailbox syncing or paused | operator mailbox, `write` scope, the mailbox syncing or paused |
 | send, read own send records | `send`, send consent | `send`, `send` scope, `MAIL_KEYS_MAY_SEND` (under its key terms; no person's consent) | operator mailbox, `send` scope |
 | re-authorize | manage (owner or admin, or a member holding `manage`) | never | operator mailbox, `admin` scope |
 | remove (repeating its id) | a team's: its owners (an admin, their own link that never connected); a personal one: its person | never | operator mailbox, `admin` scope |
@@ -735,6 +738,7 @@ a pause.
 | change a role or status | anyone's | members' only, never to `admin` or `owner` | no | anyone's |
 | remove a member | anyone, themselves included while another active owner remains | members only, never themselves | no one, not themselves | anyone |
 | link a mailbox; give or withdraw the team's consent to sync it | yes | yes | no | no (operator mailboxes only) |
+| pause or resume a mailbox's sync (a resume gives the team's consent again) | yes | yes | no | no (operator mailboxes only) |
 | remove a mailbox | yes | only their own link that never connected | no | operator mailboxes only |
 | see the removed mailboxes, recover one | yes | no | no | sees every workspace's; recovers operator mailboxes only |
 | delete a removed mailbox for good | yes | no | no | any |
