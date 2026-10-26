@@ -40,6 +40,8 @@ export type IconName =
   | 'reply'
   | 'reply-all'
   | 'forward'
+  | 'pause'
+  | 'play'
 
 // One path per icon on a 24-unit grid, stroked in currentColor at 1.8 with
 // round caps and joins — the sibling console's drawing rules, so the two sets
@@ -85,6 +87,8 @@ const paths: Record<IconName, string> = {
   reply: 'M9 6 3 12l6 6M3 12h11a7 7 0 0 1 7 7',
   'reply-all': 'M8 6l-6 6 6 6m5-12-6 6 6 6m-6-6h8a7 7 0 0 1 7 7',
   forward: 'M15 6l6 6-6 6m6-6H10a7 7 0 0 0-7 7',
+  pause: 'M9 5v14M15 5v14',
+  play: 'M7 4.5v15l12-7.5-12-7.5Z',
 }
 </script>
 

@@ -133,6 +133,15 @@ export interface Edition {
    */
   teams?: boolean
   /**
+   * Whether this server offers pausing one mailbox's sync (the server's
+   * app.Options.SyncPauseOffered, which `serve` sets): the account sheet
+   * offers Pause to those who may. An edition sets it only once the sync text
+   * its people agree to says what a pause does; left out, the sheet offers no
+   * Pause, and still shows a paused mailbox (a recovered one, in any edition)
+   * and offers its Resume.
+   */
+  syncPause?: boolean
+  /**
    * Whether the account section names the person's role on this server (an
    * owner, who brings people onto it, or a member): a self-hosted server's.
    * An edition whose people have no role on the server leaves it out.

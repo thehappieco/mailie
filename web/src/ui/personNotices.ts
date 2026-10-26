@@ -1,5 +1,6 @@
 // The words of a person's notice (state/notices.ts): what someone else did to
-// a mailbox they read, and where the mailbox stands now. One place, because
+// a mailbox they read — removed it, or turned a team mailbox's sync off or
+// paused it — and where the mailbox stands now. One place, because
 // the same words are drawn at the top of the console and said by the live
 // region. The mailbox is named as the server names it: its address while it
 // is kept, a masked hint of it once it is deleted for good. Who did it is
@@ -12,6 +13,11 @@ import { t } from './i18n'
 /** What happened, in the team it happened in when the server names one. */
 function happened(notice: PersonNotice): string {
   const values = { mailbox: notice.mailbox, team: notice.workspace_name }
+  if (notice.kind === 'paused') {
+    return notice.workspace_name
+      ? t('Sync of {mailbox} was paused for {team}. Mailie keeps its index, so you can still search and read it, but indexes nothing new until it is resumed.', values)
+      : t('Sync of {mailbox} was paused. Mailie keeps its index, so you can still search and read it, but indexes nothing new until it is resumed.', values)
+  }
   if (notice.kind === 'sync_off') {
     return notice.workspace_name
       ? t('Sync of {mailbox} was turned off for {team}, and its index was deleted.', values)
@@ -32,9 +38,11 @@ function standing(notice: PersonNotice): string {
         : t('It is kept until {date}, and can be recovered until then.', values)
     }
     case 'deleted': return t('It has since been deleted for good.')
-    case 'live': return notice.kind === 'sync_off'
-      ? notice.workspace_name ? t('An owner or an admin of {team} can turn it on again.', { team: notice.workspace_name }) : ''
-      : t('It has since been recovered.')
+    case 'live':
+      if (notice.kind === 'paused') return notice.workspace_name ? t('An owner or an admin of {team} can resume it.', { team: notice.workspace_name }) : ''
+      return notice.kind === 'sync_off'
+        ? notice.workspace_name ? t('An owner or an admin of {team} can turn it on again.', { team: notice.workspace_name }) : ''
+        : t('It has since been recovered.')
     default: return ''
   }
 }

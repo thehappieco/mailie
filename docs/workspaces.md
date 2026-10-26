@@ -2072,7 +2072,14 @@ Test names state the guarantee. At least:
   `TestAResumedMailboxCatchesUpFromWhatItKept`); the routes'
   (`TestTheSyncPauseRoutesAnswerTheMailboxsSync`, the contract fixtures); the command line's
   (`TestServeOffersPausingOneMailboxsSync`, `TestTheOperatorRecoversAMailboxPausedAndResumesIt`,
-  `TestHeldLinesNameNoActor`); MCP's (`TestListAccountsSaysAPausedMailboxIsSearchableButNotUpdated`).
+  `TestHeldLinesNameNoActor`); MCP's (`TestListAccountsSaysAPausedMailboxIsSearchableButNotUpdated`);
+  and the console's, in `web/test/syncPause.page.spec.ts` (a person pauses and resumes their own
+  mailbox; a team's owner resumes it through the team's sync text, sending the revision shown, or
+  is offered a reload; a team mailbox nobody reads, or only a suspended member would, offers no
+  Resume; a member is offered nothing; a recovered mailbox is resumed in an edition that does not
+  offer the pause; a recovered notice says paused, turned off or off), `sync.spec.ts` (Paused,
+  Turned off and Starting), `notices.page.spec.ts` and `contract.spec.ts` (the five fixtures under
+  their guards).
 
 - Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, the event stream, the long
   poll and storage, and over MCP, which takes keys only,

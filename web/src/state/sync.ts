@@ -10,13 +10,15 @@
 
 import { reactive, watch } from 'vue'
 import * as api from '../api/sync'
-import type { SyncConsent } from '../api/types'
+import type { Account, SyncConsent } from '../api/types'
 import { announce } from '../ui/announce'
 import { edition } from '../edition'
 import { t } from '../ui/i18n'
-import { forgetFolders, forgetIndexedFolders, forgetLiveFolders, loadAccounts, mergeSync, notifySync } from './accounts'
+import { forgetFolders, forgetIndexedFolders, forgetLiveFolders, loadAccounts, mergeSync, notifySync, refreshAccount } from './accounts'
 import { failure, type Failure } from './failure'
 import { authorized, identity } from './session'
+import { loadDirectory } from './team'
+import { currentWorkspace, loadWorkspaces } from './workspaces'
 
 interface ConsentState {
   loaded: boolean
@@ -181,17 +183,17 @@ export async function withdrawConsent(): Promise<boolean> {
 }
 
 /**
- * Turns sync on again for a mailbox of the person's personal workspace that
- * was recovered after it was removed, whose sync is held until they do
- * (docs/workspaces.md, "Removed mailboxes"): {enabled: true} alone, which
- * lifts the hold and nothing more. It syncs under their own agreement, when
- * they have given it, catching up from the index it kept. The card takes the
- * sync the answer says, and the answer is what it became: syncing, or, when
- * they have not agreed to sync, its pause lifted and nothing syncing until
- * they do. Null when the session changed meanwhile. A team mailbox's hold is
- * lifted by turning its sync on for the team (state/team.ts switchTeamSync).
+ * Turns sync on again for a mailbox of the person's personal workspace whose
+ * sync was turned off and is held until they turn it on — the server's
+ * operator's turn-off, or an older hold the upgrade kept (docs/workspaces.md,
+ * "Consents"): {enabled: true} alone, which lifts the hold and nothing more.
+ * It syncs under their own agreement, when they have given it, from no index.
+ * The card takes the sync the answer says, and the answer is what it became:
+ * syncing, or, when they have not agreed to sync, its hold lifted and nothing
+ * syncing until they do. Null when the session changed meanwhile. A paused
+ * mailbox is resumed instead (resumeSync).
  */
-export async function resumeSync(id: string): Promise<{ failure: Failure } | { syncing: boolean } | null> {
+export async function liftHeldSync(id: string): Promise<{ failure: Failure } | { syncing: boolean } | null> {
   const ok = current()
   try {
     const status = await authorized(token => api.setMailboxSync(token, id, { enabled: true }))
@@ -200,11 +202,85 @@ export async function resumeSync(id: string): Promise<{ failure: Failure } | { s
     forgetFolders(id)
     return { syncing: status.enabled }
   } catch (error) {
-    return ok() ? { failure: failure('resume-sync', error) } : null
+    return ok() ? { failure: failure('lift-held-sync', error) } : null
   }
 }
 
-/** Asks the account for a pass now. The reply is the status as it stands; the pass itself shows up through events. */
+/** Whether the mailbox is a team's: the workspace shown is one, and the mailbox is in it. */
+function teamMailbox(account: Account): boolean {
+  const shown = currentWorkspace()
+  return shown?.kind === 'team' && (!account.workspace_id || account.workspace_id === shown.id)
+}
+
+/**
+ * Pauses a mailbox's sync (docs/workspaces.md, "Pausing a mailbox's sync"):
+ * its index is kept, read, searched and acted on, and nothing new is indexed
+ * until it is resumed. Its person pauses a personal mailbox; a team's owners
+ * and admins a team's, whose other readers are told. The card takes the sync
+ * the answer says; a team's access directory is read again (it says who
+ * paused it). Null on success, and when the session changed meanwhile; the
+ * failure otherwise.
+ */
+export async function pauseSync(account: Account): Promise<Failure | null> {
+  const ok = current()
+  const team = teamMailbox(account)
+  try {
+    const status = await authorized(token => api.pauseMailboxSync(token, account.id))
+    if (!ok()) return null
+    mergeSync(account.id, status)
+    // How a Sync now ended says nothing of a mailbox paused since.
+    delete syncRequests[account.id]
+    if (team) void loadDirectory()
+    return null
+  } catch (error) {
+    if (!ok()) return null
+    const found = failure('pause-sync', error)
+    // Gone meanwhile, or the caller's role changed: what the team shows is read again.
+    if (team && found.code === 'not_found') void loadDirectory()
+    if (team && found.code === 'not_authorized') void loadWorkspaces()
+    return found
+  }
+}
+
+/**
+ * Resumes it: it syncs again, catching up from what it kept, or indexing the
+ * last 90 days when it kept nothing. A team mailbox's with the edition's
+ * sync text revision (edition().sync.version), the text the owner or admin
+ * was shown, which the server records as the team's agreement; a personal
+ * mailbox's names none. The folder list read from its index is read again;
+ * so is the team's access directory (who agreed, and that nobody paused it
+ * any more). A refusal for another revision reads the consent again, so the
+ * dialog offers a reload (as switchTeamSync does). Null on success, and when
+ * the session changed meanwhile; the failure otherwise.
+ */
+export async function resumeSync(account: Account): Promise<Failure | null> {
+  const ok = current()
+  const team = teamMailbox(account)
+  try {
+    const status = await authorized(token => api.resumeMailboxSync(token, account.id, team ? edition().sync.version : undefined))
+    if (!ok()) return null
+    mergeSync(account.id, status)
+    // A Sync now refused while it was paused is no longer the news.
+    delete syncRequests[account.id]
+    forgetFolders(account.id)
+    if (team) void loadDirectory()
+    return null
+  } catch (error) {
+    if (!ok()) return null
+    const found = failure('resume-sync', error)
+    if (team && found.code === 'bad_request') void loadConsent()
+    if (team && (found.code === 'not_found' || found.code === 'conflict')) void loadDirectory()
+    if (team && found.code === 'not_authorized') void loadWorkspaces()
+    return found
+  }
+}
+
+/**
+ * Asks the account for a pass now. The reply is the status as it stands; the
+ * pass itself shows up through events. A refusal (conflict) reads the account
+ * again: its sync may have been paused or turned off elsewhere, which no
+ * event announces, and the card then says so.
+ */
 export async function syncNow(id: string): Promise<void> {
   if (syncRequests[id]?.busy) return
   const ok = current()
@@ -216,6 +292,8 @@ export async function syncNow(id: string): Promise<void> {
     syncRequests[id] = { busy: false, failure: null, requested: true }
     announce(t('Sync requested.'))
   } catch (error) {
-    if (ok()) syncRequests[id] = { busy: false, failure: failure('sync-now', error), requested: false }
+    if (!ok()) return
+    syncRequests[id] = { busy: false, failure: failure('sync-now', error), requested: false }
+    if (syncRequests[id].failure?.code === 'conflict') void refreshAccount(id)
   }
 }

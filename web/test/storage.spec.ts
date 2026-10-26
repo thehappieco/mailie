@@ -87,27 +87,37 @@ describe('the Storage section', () => {
     const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
     expect(rows).toEqual([
       'ana@gmail.com Messages 1,284 Size 52 MB',
-      'ana@outlook.example Sync is paused until the account works again. What was indexed is kept. Messages 90 Size 288 kB',
+      'ana@outlook.example Sync waits until the account works again. What was indexed is kept. Messages 90 Size 288 kB',
       'ana@work.example Not synced: nothing from this mailbox is indexed. Messages 0 Size 0 bytes',
     ])
   })
 
-  it('says a mailbox recovered after it was removed keeps what was indexed while its sync is paused', async () => {
+  it('says a paused mailbox keeps what was indexed, a recovered one too, and one paused before its first pass has nothing indexed', async () => {
+    // A recovery comes back paused: its index is kept, counted and read until it is resumed.
     const answer: Storage = {
-      mailboxes: [{ account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 1284, bytes: 52_000_000 }],
+      mailboxes: [
+        { account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 1284, bytes: 52_000_000 },
+        { account_id: 'acc_0000000000000002', email: 'ana@outlook.example', messages: 0, bytes: 0 },
+      ],
       total: { messages: 1284, bytes: 52_000_000 },
     }
     const { accounts, storage } = await signedIn(({ path }) => {
       if (path === '/v1/me/storage') return json(answer)
-      return json([account({ state: 'active', email: 'ana@gmail.com', sync: syncOff({ held: true, held_since: 1_790_000_000 }) })])
+      return json([
+        account({ state: 'active', email: 'ana@gmail.com', sync: syncOff({ enabled: true, state: 'stopped', messages: 1284, paused: true, paused_since: 1_790_000_000 }) }),
+        account({ id: 'acc_0000000000000002', email: 'ana@outlook.example', provider: 'microsoft', state: 'active', sync: syncOff({ enabled: true, paused: true, paused_since: 1_790_000_000 }) }),
+      ])
     })
     await accounts.loadAccounts()
     await storage.loadStorage()
     const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
-    expect(rows).toEqual(['ana@gmail.com Sync is paused until it is turned on again. What was indexed is kept. Messages 1,284 Size 52 MB'])
+    expect(rows).toEqual([
+      'ana@gmail.com Sync is paused until it is resumed. What was indexed is kept. Messages 1,284 Size 52 MB',
+      'ana@outlook.example Sync is paused until it is resumed. Nothing from this mailbox is indexed. Messages 0 Size 0 bytes',
+    ])
   })
 
-  it('says a mailbox whose sync the server’s operator turned off is paused with nothing indexed, never that it was recovered', async () => {
+  it('says a mailbox whose sync the server’s operator turned off is turned off with nothing indexed, never paused nor recovered', async () => {
     // The operator's turn-off (POST /v1/accounts/{id}/sync/stop) holds a person's mailbox once its index is deleted.
     const answer: Storage = {
       mailboxes: [{ account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 0, bytes: 0 }],
@@ -120,7 +130,8 @@ describe('the Storage section', () => {
     await accounts.loadAccounts()
     await storage.loadStorage()
     const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
-    expect(rows).toEqual(['ana@gmail.com Sync is paused until it is turned on again. Nothing from this mailbox is indexed. Messages 0 Size 0 bytes'])
+    expect(rows).toEqual(['ana@gmail.com Sync is turned off until it is turned on again. Nothing from this mailbox is indexed. Messages 0 Size 0 bytes'])
+    expect(rows[0]).not.toContain('paused')
   })
 
   it('reads once more when asked while a read is in flight, and keeps the later answer', async () => {

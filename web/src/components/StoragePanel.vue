@@ -38,24 +38,27 @@ const unusable = computed(() => workspaceUnusable(currentWorkspace()))
 
 /**
  * What a mailbox's figures mean when it is not syncing now, as the accounts
- * list says. Held until someone turns it on: recovered after it was removed,
- * with what it kept counted, or a person's mailbox the server's operator
- * turned off, whose index went; its figures say which, and so does this.
- * Sync off: nothing is indexed, and its zeros say so. Sync on for an account
- * that does not work (waiting for authorization, or refused): the server
- * stops syncing it and keeps its index, so its figures are what was indexed
- * before.
+ * list says. Paused until someone who may resumes it (by them, or by its
+ * recovery): what it indexed is kept and counted, which may be nothing (one
+ * paused or recovered before its first pass), and its figures say which, and
+ * so does this. Held because the server's operator turned it off until its
+ * person turns it on: its index went. Sync off: nothing is indexed, and its
+ * zeros say so. Sync on for an account that does not work (waiting for
+ * authorization, or refused): the server stops syncing it and keeps its
+ * index, so its figures are what was indexed before; it waits, which is not
+ * the pause.
  */
 function note(mailbox: MailboxStorage): string {
   const account = accounts.list.find(item => item.id === mailbox.account_id)
   if (!account) return ''
-  if (account.sync.held) {
+  if (account.sync.paused) {
     return mailbox.messages > 0
-      ? t('Sync is paused until it is turned on again. What was indexed is kept.')
-      : t('Sync is paused until it is turned on again. Nothing from this mailbox is indexed.')
+      ? t('Sync is paused until it is resumed. What was indexed is kept.')
+      : t('Sync is paused until it is resumed. Nothing from this mailbox is indexed.')
   }
+  if (account.sync.held) return t('Sync is turned off until it is turned on again. Nothing from this mailbox is indexed.')
   if (!account.sync.enabled) return t('Not synced: nothing from this mailbox is indexed.')
-  if (account.state !== 'active') return t('Sync is paused until the account works again. What was indexed is kept.')
+  if (account.state !== 'active') return t('Sync waits until the account works again. What was indexed is kept.')
   return ''
 }
 

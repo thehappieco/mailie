@@ -15,16 +15,19 @@
 // typed, never a confirm(): the person writes the address, which also makes
 // them read it, and the server is sent the mailbox's id to confirm. A removed mailbox is kept 30 days,
 // recoverable by the workspace's owners, which the sheet says before; one
-// that never connected is deleted at once. A mailbox recovered after it was
-// removed says its sync is paused: its person turns it on here, and a team's
-// owners and admins in the team's sync below.
+// that never connected is deleted at once. A paused mailbox — paused by
+// someone who may, or recovered after it was removed, which comes back paused
+// — says so, keeps its figures, and is resumed here (SyncPause): by its
+// person, or for a team by its owners and admins, agreeing again for the
+// team; where the edition offers it, a syncing one is paused here too. One
+// the server's operator turned off is held until its person turns it on.
 import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
 import { accounts, closeDetail, loadFolders, removeAccount } from '../state/accounts'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
-import { consent, resumeSync, reviewConsent, syncNow, syncRequests } from '../state/sync'
+import { consent, liftHeldSync, reviewConsent, syncNow, syncRequests } from '../state/sync'
 import { directoryEntry, personName } from '../state/team'
 import { currentWorkspace } from '../state/workspaces'
 import { accessOf, actorName, administers, grantSummary, owns, waitsForKey, workspaceName } from '../ui/access'
@@ -33,12 +36,13 @@ import { describe, describeFolders } from '../ui/errors'
 import { count, since, stamp } from '../ui/format'
 import { t } from '../ui/i18n'
 import { authKindLabel, folderRoleIcon, folderRoleLabel, needsAuthorization, providerIcon, providerName, sortFolders, stateDetail, syncTierLabel } from '../ui/labels'
-import { folderBadge, fromIndex, heldText } from '../ui/sync'
+import { folderBadge, fromIndex, heldText, pausedText } from '../ui/sync'
 import AccessPanel from './AccessPanel.vue'
 import AppIcon from './AppIcon.vue'
 import LiveRegion from './LiveRegion.vue'
 import MailboxKeyPanel from './MailboxKeyPanel.vue'
 import StatusChip from './StatusChip.vue'
+import SyncPause from './SyncPause.vue'
 import SyncStatus from './SyncStatus.vue'
 import TeamMailboxSync from './TeamMailboxSync.vue'
 
@@ -89,13 +93,25 @@ const removable = computed(() => {
 })
 /** An admin of the team, shown that only its owners remove its mailboxes. */
 const ownersRemove = computed(() => admin.value && !removable.value)
-/** Recovered after it was removed: its sync waits until someone who may turns it on. */
+/** Turned off by the server's operator: a personal mailbox's sync, held until its person turns it on again. */
 const held = computed(() => sync.value.held === true)
-/** Its person turns a personal mailbox's held sync on; a team's is turned on for the team (TeamMailboxSync). */
+/** Its person turns a held mailbox on again; no team mailbox is ever held. */
 const resumes = computed(() => held.value && !inTeam.value && access.value.manage)
+/** Paused, by someone who may or by its recovery: its index kept, nothing new indexed until it is resumed (SyncPause). */
+const paused = computed(() => sync.value.paused === true)
 const resuming = ref(false)
 const resumeProblem = ref<Failure | null>(null)
 const request = computed(() => syncRequests[props.account.id])
+/**
+ * Why Sync now was refused. A refusal reads the account again (state/sync.ts
+ * syncNow): one paused elsewhere meanwhile, which no event announces, then
+ * says it is paused, and that a resume, not a pass, catches it up.
+ */
+const syncNowProblem = computed(() => {
+  const problem = request.value?.failure
+  if (!problem) return ''
+  return paused.value && problem.code === 'conflict' ? t('Sync of this mailbox is paused, so Mailie does not sync it now. Resume it to catch up.') : describe(problem)
+})
 const armed = computed(() => typed.value.trim().toLowerCase() === props.account.email.toLowerCase())
 const folders = computed(() => sortFolders(view.value?.list ?? []))
 /** The role badge, unless the folder's own name already says it. */
@@ -139,17 +155,17 @@ async function destroy() {
   await removeAccount(props.account.id)
 }
 function requestSync() { void syncNow(props.account.id) }
-/** Says what lifting the pause did: it syncs again, or, without their agreement to sync, it waits for it. */
+/** Says what lifting the operator's hold did: it syncs again, or, without their agreement to sync, it waits for it. */
 async function resume() {
   if (resuming.value) return
   resuming.value = true
-  const result = await resumeSync(props.account.id)
+  const result = await liftHeldSync(props.account.id)
   resuming.value = false
   resumeProblem.value = result && 'failure' in result ? result.failure : null
   if (!result || 'failure' in result) return
   announce(result.syncing
     ? t('Sync of {email} is on again.', { email: props.account.email })
-    : t('{email} is no longer paused. Nothing of it syncs until you turn on sync.', { email: props.account.email }))
+    : t('{email} is no longer turned off. Nothing of it syncs until you turn on sync.', { email: props.account.email }))
 }
 /** Back to the accounts page, where the consent card is, with the focus on it. */
 function turnOn() {
@@ -196,28 +212,30 @@ function authorize() {
         <section class="sheet-section sync-section">
           <div class="section-head">
             <h3>{{ t('Sync') }}</h3>
-            <button v-if="syncing && access.read" class="ghost small" type="button" :disabled="request?.busy" @click="requestSync">
+            <button v-if="syncing && access.read && !paused" class="ghost small" type="button" :disabled="request?.busy" @click="requestSync">
               <AppIcon name="refresh" :size="16" />{{ request?.busy ? t('Requesting…') : t('Sync now') }}
             </button>
           </div>
-          <!-- Held (recovered after it was removed, or turned off by the server's operator): nothing syncs until someone who may turns it on. -->
+          <!-- Held (a personal mailbox the server's operator turned off): nothing syncs until its person turns it on again. -->
           <template v-if="held">
             <SyncStatus v-if="account.state === 'active'" :account="account" />
             <p v-else class="dim">{{ heldText(account) }}</p>
             <button v-if="resumes" class="ghost small held-resume" type="button" :disabled="resuming" @click="resume"><AppIcon name="refresh" :size="16" />{{ resuming ? t('Turning on…') : t('Turn sync on again') }}</button>
-            <p v-else-if="inTeam && !admin" class="dim">{{ t('The owners and admins of {team} turn it on again, for the team.', { team: teamName }) }}</p>
             <p v-if="resumeProblem" class="alert" role="alert">{{ describe(resumeProblem) }}</p>
           </template>
-          <template v-else-if="syncing">
-            <SyncStatus :account="account" />
+          <!-- Paused or syncing: one block, so that pausing and resuming keep the same controls, and focus with them. -->
+          <template v-else-if="paused || syncing">
+            <SyncStatus v-if="account.state === 'active'" :account="account" />
+            <p v-else class="dim">{{ pausedText(account) }}</p>
             <dl class="facts sync-facts">
               <div><dt>{{ t('Messages indexed') }}</dt><dd>{{ count(sync.messages) }}</dd></div>
-              <div v-if="sync.state === 'initial' && sync.folders_total"><dt>{{ t('Folders finished') }}</dt><dd>{{ t('{done} of {total}', { done: count(sync.folders_synced), total: count(sync.folders_total) }) }}</dd></div>
+              <div v-if="!paused && sync.state === 'initial' && sync.folders_total"><dt>{{ t('Folders finished') }}</dt><dd>{{ t('{done} of {total}', { done: count(sync.folders_synced), total: count(sync.folders_total) }) }}</dd></div>
               <div v-if="sync.last_synced_at"><dt>{{ t('Last sync') }}</dt><dd>{{ stamp(sync.last_synced_at) }}<span class="dim"> · {{ since(sync.last_synced_at) }}</span></dd></div>
-              <div v-if="sync.tier"><dt>{{ t('Sync mode') }}</dt><dd>{{ syncTierLabel(sync.tier) }}</dd></div>
+              <div v-if="!paused && sync.tier"><dt>{{ t('Sync mode') }}</dt><dd>{{ syncTierLabel(sync.tier) }}</dd></div>
             </dl>
-            <p v-if="request?.failure" class="alert" role="alert">{{ describe(request.failure) }}</p>
-            <p v-else-if="request?.requested" class="hint">{{ t('Sync requested. The counts update as it runs.') }}</p>
+            <SyncPause :account="account" />
+            <p v-if="request?.failure" class="alert" role="alert">{{ syncNowProblem }}</p>
+            <p v-else-if="request?.requested && !paused" class="hint">{{ t('Sync requested. The counts update as it runs.') }}</p>
             <p v-if="access.read" class="hint">{{ edition().copy.indexHint() }}</p>
           </template>
           <!-- A team's mailbox syncs under the team's agreement: its owners and admins say where it stands below. -->

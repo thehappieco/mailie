@@ -42,6 +42,8 @@ export const openEdition: Edition = {
   mcp: true,
   // A self-hosted server makes its own teams (the local workspace source).
   teams: true,
+  // Its sync text (SyncText.vue) promises nothing a pause breaks (the server's serve).
+  syncPause: true,
   // Its owners bring people onto it, and its members are the rest.
   serverRole: true,
 }

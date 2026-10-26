@@ -31,10 +31,22 @@
 // it as a count and never asks for them; and once Ana deletes it for good,
 // Carol's marks clear. On desktop and at 320 px, in English and Portuguese.
 //
+// Then a team mailbox's sync paused and resumed (docs/workspaces.md,
+// "Pausing a mailbox's sync"): Ana, an owner, pauses suporte@ after reading
+// what a pause keeps; its card and sheet say Paused, and who paused it; Sync
+// now is offered no more, and she is given no notice of her own act; Bea,
+// who reads it, is told with a notice, and resumes it through the team's sync
+// text, sending its revision, which withdraws her notice; a Sync now on a
+// page that has not seen a pause made elsewhere is refused, and the sheet
+// then says the mailbox is paused; and a mailbox Ana removes and recovers
+// comes back paused, its Resume offered. On desktop and at 320 px, in English
+// and Portuguese.
+//
 // Every pass fails on a page error, a CSP violation, horizontal scrolling
 // and any server message drawn on a screen.
 //
-// QA_ONLY (teams: the passes above; removed: the removed mailbox's), and
+// QA_ONLY (teams: the passes above; removed: the removed mailbox's; pause:
+// the pause's), and
 // QA_ORIGIN, QA_SCREENSHOTS, QA_PLAYWRIGHT_MODULE, QA_BROWSER,
 // QA_BROWSER_EXECUTABLE and QA_BROWSER_CHANNEL as for console.mjs.
 import { mkdir, readdir, readFile } from 'node:fs/promises'
@@ -48,7 +60,7 @@ const engine = process.env.QA_BROWSER || 'chromium'
 const origin = (process.env.QA_ORIGIN || 'http://localhost:5174').replace(/\/$/, '')
 const screenshots = process.env.QA_SCREENSHOTS ? resolve(process.env.QA_SCREENSHOTS) : ''
 const only = process.env.QA_ONLY || ''
-if (!['', 'teams', 'removed'].includes(only)) throw new Error(`teams.mjs: QA_ONLY is teams or removed, not ${only}`)
+if (!['', 'teams', 'removed', 'pause'].includes(only)) throw new Error(`teams.mjs: QA_ONLY is teams, removed or pause, not ${only}`)
 const browser = await playwright[engine].launch({
   headless: true,
   ...(process.env.QA_BROWSER_EXECUTABLE ? { executablePath: process.env.QA_BROWSER_EXECUTABLE } : {}),
@@ -156,6 +168,15 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
    * one once recovered until it is deleted for good.
    */
   const removedAccounts = []
+  /**
+   * The notices of the people who read a team mailbox paused by someone
+   * else (service.PersonNotice, kind paused), until the pause ends; and every
+   * pause, resume and recovery asked, by whom.
+   */
+  const notices = []
+  let noticeSerial = 0
+  calls.pauses = []
+  calls.recovered = []
   calls.access = []
   calls.members = []
   calls.invites = []
@@ -191,10 +212,21 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
   const visibleTeam = (user, workspaceID) => teamAccounts.filter(account => (!workspaceID || account.workspace_id === workspaceID) && any(grantOf(account, user.id)))
   const presentTeam = (account, user) => {
     const held = grantOf(account, user.id)
-    const { consent: _, linked_by: __, target, ...rest } = account
-    const on = syncing(account) && account.state === 'active'
-    const sync = { enabled: syncing(account), running: on, state: on ? 'live' : 'off', folders_synced: on ? 5 : 0, folders_total: on ? 5 : 0, messages: on ? target : 0, initial_progress: on ? 100 : 0, ...(on ? { tier: 'condstore', last_synced_at: now() - 300 } : {}) }
+    const { consent: _, linked_by: __, target, paused, ...rest } = account
+    // A paused mailbox keeps what it indexed and runs no worker (the engine's rule): stopped, its figures kept.
+    const on = syncing(account) && account.state === 'active' && !paused
+    const kept = on || (!!paused && !!account.consent?.enabled_at)
+    const sync = {
+      enabled: syncing(account), running: on, state: on ? 'live' : kept ? 'stopped' : 'off', folders_synced: kept ? 5 : 0, folders_total: kept ? 5 : 0, messages: kept ? target : 0, initial_progress: kept ? 100 : 0,
+      ...(on ? { tier: 'condstore' } : {}), ...(kept ? { last_synced_at: paused?.at ?? now() - 300 } : {}),
+      ...(paused ? { paused: true, paused_since: paused.at } : {}),
+    }
     return { ...rest, sync, actions: { archive: false, trash: true }, access: held, send: held.send ? { available: true, from_name: user.name } : { available: false, reason: 'not_granted' } }
+  }
+  /** A pause ends (a resume, a turn-off, a removal): its notices are withdrawn with it (store.EndPauseTx). */
+  const endPause = account => {
+    account.paused = null
+    for (let i = notices.length - 1; i >= 0; i--) if (notices[i].account_id === account.id) notices.splice(i, 1)
   }
   const presentOwn = (account, user) => ({ ...present(account), workspace_id: PERSONAL[user.id], access: flags({ read: true, act: true, send: true, manage: true }) })
   const listWorkspace = (workspace, user) => {
@@ -225,7 +257,12 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
       created_by: key.created_by, granted_by: item.granted_by, updated_at: item.updated_at,
     })))
   return {
-    grants, members, invites, workspaces, teamAccounts, removedAccounts,
+    grants, members, invites, workspaces, teamAccounts, removedAccounts, notices,
+    /** A pause made elsewhere (another browser): what a page that has not read it since does not know. */
+    pause(accountID, userID) {
+      const account = teamOf(accountID)
+      account.paused = { at: now(), by: userID }
+    },
     /** A workspace whose API keys the core's key routes keep: its owners and admins administer them; Read is given where they read. */
     keyWorkspace(user, id) {
       const me = membership(id, user.id)
@@ -335,6 +372,7 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
             return {
               account_id: account.id, email: account.email, provider: account.provider, state: account.state, linked_by: account.linked_by,
               readers, no_reader: readers === 0, sync: presentConsent(account),
+              ...(account.paused ? { paused_at: account.paused.at, ...(account.paused.by ? { paused_by: account.paused.by } : {}) } : {}),
               grants: [...(grants.get(account.id) ?? new Map()).entries()].map(([userID, held]) => ({ account_id: account.id, user_id: userID, ...held, granted_by: account.linked_by, updated_at: now() })),
               keys: keysOn(account),
             }
@@ -390,10 +428,52 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
           // Nobody could read what it stores, nor be given Read on it: it is turned off, never on.
           if (asked.enabled && readersOf(account).length === 0) return fail(409, 'conflict')
           account.consent = asked.enabled ? { enabled_at: now(), enabled_by: user.id, version: asked.version } : null
+          // Turning it off ends a pause; turning it on records the agreement and leaves it.
+          if (!asked.enabled) endPause(account)
           return json(presentTeam(account, user).sync)
         }
         if (method === 'GET') return json(presentTeam(account, user).sync)
-        if (method === 'POST') return held.read && syncing(account) ? json(presentTeam(account, user).sync, 202) : fail(409, 'conflict')
+        // A paused mailbox runs no pass (errSyncPaused).
+        if (method === 'POST') {
+          calls.syncNow.push(account.id)
+          return held.read && syncing(account) && !account.paused ? json(presentTeam(account, user).sync, 202) : fail(409, 'conflict')
+        }
+      }
+      // Pausing a team mailbox's sync, and resuming it: its owners and admins, by their role (service.PauseMailboxSync).
+      const pauseMatch = path.match(/^\/v1\/accounts\/([^/]+)\/sync\/(pause|resume)$/)
+      if (pauseMatch && method === 'POST' && teamOf(pauseMatch[1])) {
+        const account = teamOf(pauseMatch[1])
+        if (!any(grantOf(account, user.id))) return fail(404, 'not_found')
+        const asked = body()
+        calls.pauses.push({ act: pauseMatch[2], account: account.id, user: user.id, body: asked })
+        if (!managesByRole(account.workspace_id, user.id)) return fail(403, 'not_authorized')
+        if (pauseMatch[2] === 'pause') {
+          if (!account.consent?.enabled_at) return fail(409, 'conflict')
+          if (!account.paused) {
+            account.paused = { at: now(), by: user.id }
+            // Every other reader is told; whoever paused it never is.
+            for (const reader of readersOf(account).filter(id => id !== user.id)) {
+              notices.push({ user: reader, id: `mbe_${String(++noticeSerial).padStart(16, '0')}`, kind: 'paused', workspace_id: account.workspace_id, workspace_name: workspaces.get(account.workspace_id).name, account_id: account.id, mailbox: account.email, at: now(), state: 'live' })
+            }
+          }
+          return json(presentTeam(account, user).sync)
+        }
+        // A team's resume names the current text and gives the team's agreement again, by whoever resumes it.
+        if (asked.version !== VERSIONS.sync) return fail(400, 'bad_request')
+        if (readersOf(account).length === 0) return fail(409, 'conflict')
+        if (account.paused) {
+          endPause(account)
+          account.consent = { enabled_at: now(), enabled_by: user.id, version: asked.version }
+        }
+        return json(presentTeam(account, user).sync)
+      }
+      // A person's notices: what someone else did to a mailbox they read.
+      if (path === '/v1/me/notices' && method === 'GET') return json(notices.filter(item => item.user === user.id).map(({ user: _, ...item }) => item))
+      const dismiss = path.match(/^\/v1\/me\/notices\/([^/]+)$/)
+      if (dismiss && method === 'DELETE') {
+        const index = notices.findIndex(item => item.user === user.id && item.id === dismiss[1])
+        if (index >= 0) notices.splice(index, 1)
+        return route.fulfill({ status: 204 })
       }
       if (path === '/v1/accounts' && method === 'GET') {
         const where = query.get('workspace') ?? ''
@@ -413,6 +493,19 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
         // Whoever links it reads, acts on and sends from it.
         grants.set(id, new Map([[user.id, flags({ read: true, act: true, send: true })]]))
         return json({ account: presentTeam(account, user) }, 201)
+      }
+      // Recovering a removed team mailbox: its owners' alone; back paused, by whoever recovered it, where its agreement stands.
+      const recover = path.match(/^\/v1\/accounts\/([^/]+)\/recover$/)
+      const recovering = recover && removedAccounts.find(entry => entry.account.id === recover[1])
+      if (recovering && method === 'POST') {
+        if (membership(recovering.account.workspace_id, user.id)?.role !== 'owner') return fail(404, 'not_found')
+        calls.recovered.push({ user: user.id, account: recovering.account.id })
+        if (readersOf(recovering.account).length === 0) return fail(409, 'conflict')
+        removedAccounts.splice(removedAccounts.indexOf(recovering), 1)
+        const account = recovering.account
+        teamAccounts.push(account)
+        account.paused = account.consent?.enabled_at ? { at: now(), by: user.id } : null
+        return json(presentTeam(account, user))
       }
       // Deleting a removed team mailbox for good: its owners' alone, anyone else told it does not exist.
       // Its grants go with it, and with them the protection it kept for its last reader.
@@ -439,6 +532,8 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
           if (role !== 'owner' && !(role === 'admin' && !account.connected && account.linked_by === user.id)) return fail(403, 'not_authorized')
           if (query.get('confirm') !== account.id) return fail(400, 'bad_request')
           teamAccounts.splice(teamAccounts.indexOf(account), 1)
+          // A removal ends its pause (store.EndPauseTx).
+          endPause(account)
           // What keys held on it goes at once (service.Removal).
           for (const key of keys) key.mailboxes = key.mailboxes.filter(item => item.account_id !== account.id)
           if (!account.connected) {
@@ -563,7 +658,7 @@ const passes = [
   { language: 'pt-BR', mobile: false, scheme: 'light', full: false },
   { language: 'de-DE', mobile: true, scheme: 'light', full: false },
 ]
-for (const { language, mobile, scheme, full: everything } of only === 'removed' ? [] : passes) {
+for (const { language, mobile, scheme, full: everything } of only && only !== 'teams' ? [] : passes) {
   const words = WORDS[language]
   const tr = (key, values) => say(language, key, values)
   const team = 'Atendimento'
@@ -878,7 +973,7 @@ const removedPasses = [
   { language: 'pt-BR', mobile: false, scheme: 'dark' },
   { language: 'pt-BR', mobile: true, scheme: 'light' },
 ]
-for (const { language, mobile, scheme } of only === 'teams' ? [] : removedPasses) {
+for (const { language, mobile, scheme } of only && only !== 'removed' ? [] : removedPasses) {
   const tr = (key, values) => say(language, key, values)
   const team = 'Atendimento'
   const archive = 'arquivo@atendimento.example'
@@ -984,6 +1079,147 @@ for (const { language, mobile, scheme } of only === 'teams' ? [] : removedPasses
     failures.push(`teams removed ${label}: ${error.message}`)
     console.log(`FAIL teams removed ${label}: ${error.stack}`)
     if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-teams-removed-${label}.png`) }).catch(() => {})
+  } finally {
+    fake.close()
+    await context.close()
+  }
+}
+
+// --- a team mailbox's sync paused and resumed ---------------------------------
+// Ana, an owner, pauses suporte@, which Bea and she read: Paused on its card
+// and in its sheet, who paused it, no Sync now, and no notice for her own
+// act; Bea is told with a notice, and resumes it through the team's sync
+// text, which withdraws it; a Sync now on a page that has not read a pause
+// made elsewhere is refused, and the sheet then says it is paused; and
+// arquivo@, removed and recovered, comes back paused with its Resume.
+const pausePasses = [
+  { language: 'en-US', mobile: false, scheme: 'light' },
+  { language: 'en-US', mobile: true, scheme: 'dark' },
+  { language: 'pt-BR', mobile: false, scheme: 'dark' },
+]
+for (const { language, mobile, scheme } of only && only !== 'pause' ? [] : pausePasses) {
+  const tr = (key, values) => say(language, key, values)
+  const team = 'Atendimento'
+  const support = 'suporte@atendimento.example'
+  const archive = 'arquivo@atendimento.example'
+  const label = `${language}-${mobile ? '320' : 'desktop'}-${scheme}`
+  const viewport = mobile ? { width: 320, height: 720 } : { width: 1360, height: 900 }
+  const { context, page, fake, errors, shot, openSection, chooseWorkspace, plain, card, sheet, openSheet, closeSheet, signIn, signOut } = await begin({ language, mobile, scheme, viewport, label, options: { archive: true } })
+  const text = async locator => plain(await locator.innerText())
+  const notices = page.locator('.person-notices .person-notice')
+  const pauses = act => fake.calls.pauses.filter(call => call.act === act)
+  /** An element alone, for the record: what the pass looked at. */
+  const capture = async (locator, name) => { if (screenshots) await locator.screenshot({ path: resolve(screenshots, `pause-${name}-${label}.png`) }) }
+  try {
+    await page.goto(origin + '/')
+    await signIn('ana@example.test')
+    await chooseWorkspace(TEAM)
+    await card(support).waitFor()
+
+    // Ana pauses suporte@ after reading what a pause keeps, and what waits for the resume.
+    await openSheet(support)
+    await sheet.getByRole('button', { name: tr('Sync now') }).waitFor()
+    await sheet.getByRole('button', { name: tr('Pause sync…') }).click()
+    const pause = page.getByRole('dialog', { name: tr('Pause sync of {email}?', { email: support }) })
+    await pause.getByText(tr('Mailie stops indexing new mail for this mailbox, for everyone in {team} who reads it, and keeps what it already indexed: they can still search it, open its messages, act on them and send from it. Nothing is deleted, and the others who read it are told. Resume sync to catch up.', { team })).waitFor()
+    await pause.getByText(tr('While it is paused, what changes on the mail server — new mail, messages moved or deleted there — shows in Mailie only once sync is resumed, and a message there may not open until then.')).waitFor()
+    await shot('pause-dialog')
+    await capture(pause.locator('.dialog-frame'), 'dialog')
+    await pause.getByRole('button', { name: tr('Pause sync'), exact: true }).click()
+    await pause.waitFor({ state: 'detached' })
+    assert.deepEqual(pauses('pause').map(call => [call.user, call.body]), [[ANA, {}]], 'the pause names no text')
+    await until(async () => (await text(card(support))).includes(tr('Paused')), 'the card to say Paused')
+    // Who paused it, from the access directory read again, to the team's owners and admins.
+    await until(async () => (await text(sheet.locator('.sync-pause-line'))).includes('Ana Souza'), 'the sheet to say who paused it')
+    assert.equal(await sheet.getByRole('button', { name: tr('Sync now') }).count(), 0, 'no Sync now while it is paused')
+    await sheet.getByRole('button', { name: tr('Resume sync for {team}…', { team }) }).waitFor()
+    assert.equal(await sheet.getByRole('button', { name: tr('Pause sync…') }).count(), 0, 'no second pause')
+    assert.ok((await text(sheet.locator('.team-sync'))).includes(tr('Turn off…')), 'its team row offers turning it off alone')
+    assert.equal(await sheet.locator('.team-sync button[role=switch]').count(), 0, 'and no switch to turn it on')
+    await sheet.locator('.sync-pause').scrollIntoViewIfNeeded()
+    await shot('paused-sheet')
+    await closeSheet()
+    await card(support).scrollIntoViewIfNeeded()
+    await shot('paused-card')
+    await capture(card(support), 'card')
+    // Whoever paused it is never told: no notice, now or once the page reads them again.
+    assert.equal(await notices.count(), 0, 'no notice for her own pause')
+    await page.reload()
+    await card(support).waitFor()
+    assert.ok((await text(card(support))).includes(tr('Paused')), 'still paused after a reload')
+    assert.equal(await notices.count(), 0, 'still no notice for her own pause')
+
+    // Bea, who reads it, is told; and resumes it through the team's sync text, which withdraws her notice.
+    await signOut()
+    await signIn('bea@example.test')
+    const told = `${tr('Sync of {mailbox} was paused for {team}. Mailie keeps its index, so you can still search and read it, but indexes nothing new until it is resumed.', { mailbox: support, team })} ${tr('An owner or an admin of {team} can resume it.', { team })}`
+    await notices.first().waitFor()
+    assert.equal(await notices.count(), 1, 'one notice, for the pause')
+    assert.ok((await text(notices.first())).startsWith(told), 'the reader is told it was paused, its index kept, and who resumes it')
+    assert.ok(!(await text(notices.first())).includes('Ana Souza'), 'never who paused it')
+    await shot('pause-notice')
+    await chooseWorkspace(TEAM)
+    await card(support).waitFor()
+    await openSheet(support)
+    await sheet.getByRole('button', { name: tr('Resume sync for {team}…', { team }) }).click()
+    const resume = page.getByRole('dialog', { name: tr('Resume sync for {team}?', { team }) })
+    await resume.getByText(tr('You agree to this text on behalf of {team}: {email} then syncs again under the team’s agreement, for everyone in the team who reads it, from where it stopped.', { team, email: support })).waitFor()
+    await resume.locator('.consent-text').waitFor()
+    await shot('resume-dialog')
+    await capture(resume.locator('.dialog-frame'), 'resume-dialog')
+    await resume.getByRole('button', { name: tr('Resume sync for {team}', { team }), exact: true }).click()
+    await resume.waitFor({ state: 'detached' })
+    assert.deepEqual(pauses('resume').map(call => [call.user, call.body]), [[BEA, { version: VERSIONS.sync }]], 'the resume sends the revision of the text shown')
+    await until(async () => (await text(card(support))).includes(tr('Up to date')), 'the card to say it syncs again')
+    await until(async () => (await text(sheet.locator('.team-sync'))).includes('Bea Lima'), 'the team’s agreement recorded by whoever resumed it')
+    assert.equal(fake.team.notices.filter(item => item.user === BEA).length, 0, 'the resume withdrew her notice')
+    await sheet.getByRole('button', { name: tr('Sync now') }).waitFor()
+    await closeSheet()
+
+    // Paused elsewhere meanwhile: this page still offers Sync now, the server refuses it, and the sheet then says it is paused.
+    fake.team.pause(SUPPORT, ANA)
+    const passes = fake.calls.syncNow.length
+    await openSheet(support)
+    await sheet.getByRole('button', { name: tr('Sync now') }).click()
+    await sheet.getByText(tr('Sync of this mailbox is paused, so Mailie does not sync it now. Resume it to catch up.')).waitFor()
+    assert.equal(fake.calls.syncNow.length, passes + 1, 'one pass asked, and refused')
+    await until(async () => (await text(card(support))).includes(tr('Paused')), 'the card read again, paused')
+    assert.equal(await sheet.getByRole('button', { name: tr('Sync now') }).count(), 0, 'no Sync now once it is known paused')
+    await sheet.locator('.sync-section').scrollIntoViewIfNeeded()
+    await shot('sync-now-refused')
+    await closeSheet()
+
+    // A removed mailbox recovered comes back paused, its Resume offered to its owners and admins.
+    await signOut()
+    await signIn('ana@example.test')
+    await chooseWorkspace(TEAM)
+    await openSheet(archive)
+    await sheet.locator('.danger-zone').getByRole('button', { name: tr('Remove account…') }).click()
+    await sheet.locator('.danger-zone input').fill(archive)
+    await sheet.locator('.sheet-footer').getByRole('button', { name: tr('Remove'), exact: true }).click()
+    await sheet.waitFor({ state: 'detached' })
+    const removedItem = page.locator('.removed-mailboxes .removed-item').filter({ hasText: archive })
+    await removedItem.getByRole('button', { name: tr('Recover') }).click()
+    await page.getByText(tr('{email} was recovered. Its sync stays paused until it is resumed.', { email: archive })).first().waitFor()
+    assert.deepEqual(fake.calls.recovered, [{ user: ANA, account: ARCHIVE }], 'recovered by its owner')
+    await until(async () => (await text(card(archive))).includes(tr('Paused')), 'the recovered card to say Paused')
+    await card(archive).scrollIntoViewIfNeeded()
+    await shot('recovered-card')
+    await capture(card(archive), 'recovered-card')
+    await openSheet(archive)
+    await sheet.getByRole('button', { name: tr('Resume sync for {team}…', { team }) }).click()
+    const again = page.getByRole('dialog', { name: tr('Resume sync for {team}?', { team }) })
+    await again.getByRole('button', { name: tr('Resume sync for {team}', { team }), exact: true }).click()
+    await again.waitFor({ state: 'detached' })
+    assert.deepEqual(pauses('resume').at(-1), { act: 'resume', account: ARCHIVE, user: ANA, body: { version: VERSIONS.sync } }, 'the recovered mailbox resumed with the text shown')
+    await until(async () => (await text(card(archive))).includes(tr('Up to date')), 'the recovered mailbox to sync again')
+    await closeSheet()
+    assert.deepEqual(errors, [], 'no page, script or CSP errors')
+    console.log(`ok teams pause ${label}`)
+  } catch (error) {
+    failures.push(`teams pause ${label}: ${error.message}`)
+    console.log(`FAIL teams pause ${label}: ${error.stack}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-teams-pause-${label}.png`) }).catch(() => {})
   } finally {
     fake.close()
     await context.close()

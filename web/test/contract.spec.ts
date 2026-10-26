@@ -112,6 +112,11 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['removed_mailboxes', value => isRemovedMailboxList(value, true)],
   ['notices', value => isPersonNoticeList(value, true)],
   ['account_recovered', value => isAccount(value, true)],
+  ['sync_paused', value => isAccountSync(value, true)],
+  ['account_paused', value => isAccount(value, true)],
+  ['access_paused', value => isMailboxAccessList(value, true)],
+  ['notices_paused', value => isPersonNoticeList(value, true)],
+  ['sync_resumed', value => isAccountSync(value, true)],
 ]
 
 describe('the HTTP contract the Go handlers answer with', () => {
@@ -708,5 +713,62 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(isAccountSync(held, true)).toBe(true)
     expect(isAccountSync({ ...held, enabled: true }, true)).toBe(false)
     expect(isAccountSync({ ...held, held_since: undefined }, true)).toBe(false)
+  })
+
+  it('says since when a mailbox’s sync is paused, never beside a hold', () => {
+    const paused = fixture('sync_paused') as AccountSync
+    expect(paused).toMatchObject({ paused: true, enabled: true })
+    expect(paused.paused_since).toBeGreaterThan(0)
+    expect(paused).not.toHaveProperty('held')
+    // The account says the same as the answer to the pause.
+    const account = fixture('account_paused') as Account
+    expect(account.sync).toEqual(paused)
+    expect(account.id).toBe((fixture('access_paused') as MailboxAccess[]).find(item => item.paused_at !== undefined)?.account_id)
+    // No other account is paused.
+    for (const name of ['account', 'account_icloud', 'account_syncing', 'account_waiting', 'account_recovered']) expect((fixture(name) as Account).sync, name).not.toHaveProperty('paused')
+    expect(isAccountSync({ ...paused, paused_since: undefined }, true)).toBe(false)
+    expect(isAccountSync({ ...paused, paused: undefined }, true)).toBe(false)
+    expect(isAccountSync({ ...paused, held: true, held_since: paused.paused_since }, true)).toBe(false)
+    // Only ever true.
+    expect(isAccountSync({ ...paused, paused: false }, false)).toBe(false)
+  })
+
+  it('says a resume’s answer is not paused, its agreement standing', () => {
+    const resumed = fixture('sync_resumed') as AccountSync
+    expect(resumed.enabled).toBe(true)
+    expect(resumed).not.toHaveProperty('paused')
+    expect(resumed).not.toHaveProperty('paused_since')
+    expect(resumed).not.toHaveProperty('held')
+  })
+
+  it('says in the access directory who paused a mailbox and when, and nothing of a mailbox that is not paused', () => {
+    const list = fixture('access_paused') as MailboxAccess[]
+    const paused = list.filter(item => item.paused_at !== undefined)
+    expect(paused).toHaveLength(1)
+    const [entry] = paused as [MailboxAccess]
+    expect(entry.paused_at).toBe((fixture('sync_paused') as AccountSync).paused_since)
+    // The owner who paused it, by the id the directory names its members by: here, who linked it.
+    expect(entry.paused_by).toMatch(/^usr_[0-9a-f]{16}$/)
+    expect(entry.paused_by).toBe(entry.linked_by)
+    // Its agreement stands: a pause is not a consent.
+    expect(entry.sync).toMatchObject({ enabled: true, current: true })
+    for (const other of list.filter(item => item !== entry)) expect(other, other.account_id).not.toHaveProperty('paused_by')
+    // Who paused it is said only beside when.
+    expect(isMailboxAccessList([{ ...entry, paused_at: undefined }], true)).toBe(false)
+    expect(isMailboxAccessList([{ ...entry, paused_by: undefined }], true)).toBe(true)
+    // No other directory names a pause.
+    for (const item of fixture('access') as MailboxAccess[]) expect(item, item.account_id).not.toHaveProperty('paused_at')
+  })
+
+  it('tells a reader of a team mailbox it was paused as a notice about a live mailbox', () => {
+    const notices = fixture('notices_paused') as PersonNotice[]
+    const notice = notices.find(item => item.kind === 'paused')!
+    expect(notice).toMatchObject({ state: 'live', account_id: (fixture('account_paused') as Account).id })
+    expect(notice.workspace_name).toBeTruthy()
+    expect(notice.mailbox).toContain('@')
+    expect(notice).not.toHaveProperty('recoverable_until')
+    // A removal and a deletion withdraw a pause's notices: it is never about a mailbox that is not live.
+    expect(isPersonNoticeList([{ ...notice, state: 'deleted' }], true)).toBe(false)
+    expect(isPersonNoticeList([{ ...notice, state: 'removed', recoverable_until: notice.at + 30 * 86_400 }], true)).toBe(false)
   })
 })

@@ -15,8 +15,9 @@
 // A team nothing can be used in (closed, or not offered by this server) shows
 // why instead of its mailboxes, which reach nobody. Below the cards, the
 // workspace's owners see its removed mailboxes, kept 30 days, to recover or
-// delete for good (RemovedMailboxes); a mailbox recovered says on its card
-// that its sync is paused until someone who may turns it on.
+// delete for good (RemovedMailboxes); a mailbox says on its card that its
+// sync is paused until someone who may resumes it (a recovered one too), or
+// held because the server's operator turned it off.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { Account } from '../api/types'
 import { edition } from '../edition'
@@ -66,8 +67,10 @@ const owner = computed(() => workspaces.supported && owns(shown.value) && !unusa
 const askConsent = computed(() => accounts.loaded && !inTeam.value && accounts.list.length > 0 && needsConsent() && !consent.dismissed)
 /** Syncing: active, and its agreement to sync stands. */
 const syncing = (account: Account) => account.state === 'active' && account.sync.enabled
-/** Active and recovered, its sync held until someone who may turns it on: its card says so. */
+/** Active, its sync held because the server's operator turned it off, until its person turns it on: its card says so. */
 const held = (account: Account) => account.state === 'active' && account.sync.held === true
+/** Active, its sync paused (by someone who may, or by its recovery) until it is resumed: its card says so. */
+const paused = (account: Account) => account.state === 'active' && account.sync.paused === true
 /** A team mailbox nobody can read: the directory its owners and admins read says so. */
 const nobodyReads = (account: Account) => admin.value && !!directoryEntry(account.id)?.no_reader
 const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: teamName.value }) : t('Your mailboxes'))
@@ -179,7 +182,7 @@ const personalKeysOnly = edition().personalKeysOnly === true
           <div v-if="syncing(account) && account.sync.last_synced_at"><dt>{{ t('Last sync') }}</dt><dd>{{ since(account.sync.last_synced_at) }}</dd></div>
           <div v-if="account.access" class="grant"><dt>{{ t('Your access') }}</dt><dd>{{ grantSummary(account.access) }}</dd></div>
         </dl>
-        <SyncStatus v-if="syncing(account) || held(account)" :account="account" />
+        <SyncStatus v-if="syncing(account) || held(account) || paused(account)" :account="account" />
         <p v-else class="account-note" :class="stateTone(account.state)"><AppIcon name="info" :size="15" />{{ stateDetail(account) }}</p>
         <p v-if="nobodyReads(account)" class="account-note bad"><AppIcon name="alert" :size="15" />{{ t('Nobody can read this mailbox any more, so it does not sync. An owner of the team can remove it, and delete it for good to connect it again.') }}</p>
         <p v-else-if="waitsForKey(account)" class="account-note warn"><AppIcon name="key" :size="15" />{{ inTeam ? t('You hold Read on this mailbox, but are waiting for its key. Anyone who reads it can hand it to you.') : t('This mailbox is waiting for its key. Create a new one from its details to read it again.') }}</p>

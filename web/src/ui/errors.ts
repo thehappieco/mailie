@@ -141,8 +141,21 @@ function specific(failure: Failure): string | undefined {
     case 'dismiss-notice':
       if (code === 'unavailable' || code === 'internal') return t('Could not dismiss this notice. Try again in a moment.')
       return undefined
-    case 'resume-sync':
+    case 'lift-held-sync':
       if (code === 'not_found') return t('This mailbox no longer exists.')
+      return undefined
+    case 'pause-sync':
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      // Its consent is off, or the server's operator turned it off: nothing is kept to pause.
+      if (code === 'conflict') return t('This mailbox’s sync is off, so there is nothing to pause.')
+      if (code === 'not_authorized') return t('Only the person whose mailbox it is pauses or resumes its sync; for a team’s mailbox, its owners and admins.')
+      return undefined
+    case 'resume-sync':
+      // The console asked about an older text than the server's.
+      if (code === 'bad_request') return edition().sync.changedWhileOpen()
+      if (code === 'not_found' || code === 'not_authorized') return specific({ op: 'pause-sync', code })
+      // Nobody reads it now: one only a suspended member would read waits for them, which its card says.
+      if (code === 'conflict') return t('Nobody in the team reads this mailbox now, so its sync cannot be resumed until someone does.')
       return undefined
     case 'folders':
       if (code === 'not_authorized') return t('You do not have read access to this mailbox. It comes only from an owner or an admin of the team who reads it.')

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // The person's notices, above every section of the console (state/notices.ts):
 // a mailbox they read that someone else removed, or a team mailbox whose sync
-// someone else turned off, deleting its index — in whichever workspace it
-// happened, since they concern the person, not the workspace shown. Each
-// stays until they dismiss it, a recovery withdraws it or the server's journal
-// lets it go (90 days at most), and is said once through the live region when
-// it is first read. Read when the console starts; the event stream says when
+// someone else turned off, deleting its index, or paused, keeping it — in
+// whichever workspace it happened, since they concern the person, not the
+// workspace shown. Each stays until they dismiss it, a recovery or the
+// pause's end withdraws it or the server's journal lets it go (90 days at
+// most), and is said once through the live region when it is first read. Read when the console starts; the event stream says when
 // there is a new one.
 import { onMounted } from 'vue'
 import { dismissPersonNotice, loadNotices, notices } from '../state/notices'
@@ -21,7 +21,7 @@ onMounted(() => { if (!notices.loaded && !notices.loading) void loadNotices() })
 <template>
   <ul v-if="notices.list.length" class="person-notices" :aria-label="t('Notices')">
     <li v-for="notice in notices.list" :key="notice.id" class="note person-notice">
-      <AppIcon :name="notice.kind === 'sync_off' ? 'eye-off' : 'trash'" :size="17" />
+      <AppIcon :name="notice.kind === 'sync_off' ? 'eye-off' : notice.kind === 'paused' ? 'pause' : 'trash'" :size="17" />
       <span class="grow">
         <span class="person-notice-text">{{ personNoticeText(notice) }}</span>
         <small>{{ stamp(notice.at) }}</small>

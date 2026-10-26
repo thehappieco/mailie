@@ -15,7 +15,12 @@ export function noticeText(notice: Notice): string {
     case 'removed': return notice.keptUntil
       ? t('{email} was removed. Mailie keeps it until {date}: until then it can be recovered, under Removed mailboxes.', { email: notice.email, date: dayStamp(notice.keptUntil) })
       : t('{email} was removed from Mailie.', { email: notice.email })
-    case 'recovered': return t('{email} was recovered. Its sync stays paused until it is turned on.', { email: notice.email })
+    // As it came back: paused where its consent stands, held by the server's operator's turn-off, off where its consent is off.
+    case 'recovered': switch (notice.sync) {
+      case 'paused': return t('{email} was recovered. Its sync stays paused until it is resumed.', { email: notice.email })
+      case 'held': return t('{email} was recovered. Its sync stays off until it is turned on again.', { email: notice.email })
+      default: return t('{email} was recovered. Its sync is off until it is turned on.', { email: notice.email })
+    }
     case 'purged': return t('{email} was deleted for good.', { email: notice.email })
     case 'failed': return notice.email ? t('{email} was not connected. {reason}', { email: notice.email, reason: describe(notice.failure) }) : describe(notice.failure)
     case 'sync-on': return t('Sync is on. Mailie is indexing your mailboxes, starting with the last 90 days.')

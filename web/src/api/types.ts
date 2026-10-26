@@ -240,16 +240,27 @@ export interface AccountSync {
   error_class?: string
   next_retry_at?: number
   /**
-   * A mailbox whose sync waits, whatever its agreement says, until someone
-   * who may turns it on: its person for a personal mailbox, an owner or an
-   * admin of a team for a team's. Held by a recovery (its index kept), or,
-   * for a person's mailbox, by the server's operator turning its sync off
-   * (its index deleted); the server says which by neither. Only ever true,
-   * never beside enabled; held_since says since when. Absent from a daemon
+   * A personal mailbox whose sync the operator turned off, and since when:
+   * nothing syncs until its person turns it on again, never beside enabled
+   * nor paused. The server's operator's turn-off deleted its index; a hold
+   * an upgrade kept, over no index, reads the same, so the words name
+   * nobody. Only ever true; held_since says since when. Absent from a daemon
    * older than removed mailboxes.
    */
   held?: true
   held_since?: number
+  /**
+   * A mailbox whose sync is paused, by someone who may (POST
+   * /v1/accounts/{id}/sync/pause) or by its recovery: nothing new is
+   * indexed, and what was indexed stays, read, searched and acted on, until
+   * it is resumed (…/sync/resume) or its consent ends. Its consent stood when
+   * it was paused, so enabled keeps its meaning; what it kept may be nothing
+   * (messages 0), and a resume then indexes the last 90 days. Only ever
+   * true, never beside held; paused_since says since when. Who paused it is
+   * in the access directory. Absent from a daemon older than pauses.
+   */
+  paused?: true
+  paused_since?: number
 }
 /** A person's answer about sync, and the revision of the text the server asks about. */
 export interface SyncConsent { consented: boolean; version?: string; consented_at?: number; current_version: string }
@@ -641,6 +652,15 @@ export interface MailboxAccess {
   state: AccountState | (string & {})
   linked_by?: string
   sync?: MailboxConsent
+  /**
+   * The mailbox's sync paused, when (paused_at) and by whom (paused_by:
+   * "usr_…", "key:<prefix>" or "cli", whoever paused or recovered it;
+   * absent once that person is deleted, and for a pause an upgrade made of a
+   * recovery's hold). Both absent when it is not paused, and from a daemon
+   * older than pauses.
+   */
+  paused_at?: number
+  paused_by?: string
   /** Absent from a daemon older than the last-reader rule. */
   readers?: number
   no_reader?: boolean
@@ -653,7 +673,8 @@ export interface MailboxAccess {
 /**
  * The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on
  * to the sync text revision shown; and, from a personal mailbox's person,
- * {enabled: true} alone, which lifts a recovery's hold and nothing more.
+ * {enabled: true} alone, which lifts the hold of the operator's turn-off and
+ * nothing more (a pause is ended by POST …/sync/resume).
  */
 export interface MailboxSyncRequest { enabled: boolean; version?: string }
 /**
@@ -672,7 +693,7 @@ export interface Removal { account_id: string; purged: boolean; purge_after?: nu
  * many people would read it again. A team mailbox nobody would read
  * (no_reader) is not recovered: it is deleted for good and connected again.
  * One that only someone suspended on the server would read, once resumed,
- * is not no_reader: it waits for them, and is recovered with its sync held.
+ * is not no_reader: it waits for them, and is recovered paused, resumed once someone reads it.
  */
 export interface RemovedMailbox {
   id: string
@@ -688,14 +709,19 @@ export interface RemovedMailbox {
   /** A team mailbox nobody would read once recovered, someone suspended who would once resumed aside. Absent from an older daemon, where readers alone says. */
   no_reader?: boolean
 }
-/** What a person's notice is about: a mailbox they read removed, or a team mailbox's sync turned off. */
-export type NoticeKind = 'removed' | 'sync_off'
+/**
+ * What a person's notice is about: a mailbox they read removed, a team
+ * mailbox's sync turned off (its index deleted), or a team mailbox's sync
+ * paused (its index kept), each by someone else.
+ */
+export type NoticeKind = 'removed' | 'sync_off' | 'paused'
 /** Where the mailbox a notice is about stands now: removed (kept, recoverable), deleted for good, or live. */
 export type NoticeStanding = 'removed' | 'deleted' | 'live'
 /**
  * One of a person's notices (GET /v1/me/notices): something someone else
- * did to a mailbox they read, kept until they dismiss it, a recovery
- * withdraws it, or the journal entry it belongs to goes (90 days at most).
+ * did to a mailbox they read, kept until they dismiss it, a recovery (of a
+ * removal) or the pause's end (of a pause) withdraws it, or the journal
+ * entry it belongs to goes (90 days at most).
  * mailbox is its
  * address while it is kept, and a masked hint of it ("a…@example.com"), or
  * its name, once it is deleted for good; workspace_name is a team's, absent
@@ -750,7 +776,7 @@ export const accountStates: readonly AccountState[] = ['pending_auth', 'active',
 export const flowKinds: readonly FlowKind[] = ['web', 'loopback', 'pasted', 'device']
 export const syncStates: readonly SyncState[] = ['off', 'initial', 'live', 'backoff', 'stopped']
 export const archiveReasons: readonly ArchiveReason[] = ['all_mail_hidden']
-export const noticeKinds: readonly NoticeKind[] = ['removed', 'sync_off']
+export const noticeKinds: readonly NoticeKind[] = ['removed', 'sync_off', 'paused']
 export const noticeStandings: readonly NoticeStanding[] = ['removed', 'deleted', 'live']
 export const keyScopes: readonly KeyScope[] = ['read', 'write', 'send']
 export const keyOrigins: readonly KeyOrigin[] = ['person', 'person-all']
@@ -934,14 +960,17 @@ export function isAccountActions(v: unknown, strict = false): v is AccountAction
 }
 
 export function isAccountSync(v: unknown, strict = false): v is AccountSync {
-  return record(v) && known(v, ['enabled', 'running', 'state', 'tier', 'folders_synced', 'folders_total', 'messages', 'initial_progress', 'last_synced_at', 'error_class', 'next_retry_at', 'held', 'held_since'], strict)
+  return record(v) && known(v, ['enabled', 'running', 'state', 'tier', 'folders_synced', 'folders_total', 'messages', 'initial_progress', 'last_synced_at', 'error_class', 'next_retry_at', 'held', 'held_since', 'paused', 'paused_since'], strict)
     && flag(v.enabled) && flag(v.running) && (strict ? oneOf(syncStates)(v.state) : filled(v.state, 32))
     && optional(v.tier, x => text(x, 32)) && counter(v.folders_synced) && counter(v.folders_total) && counter(v.messages)
     && counter(v.initial_progress) && v.initial_progress <= 100
     && optional(v.last_synced_at, seconds) && optional(v.error_class, x => text(x, 64)) && optional(v.next_retry_at, seconds)
     && optional(v.held, x => x === true) && optional(v.held_since, seconds)
+    && optional(v.paused, x => x === true) && optional(v.paused_since, seconds)
     // A hold says since when, and holds a sync that is not enabled.
     && (!strict || ((v.held === true) === (v.held_since !== undefined) && (v.held !== true || v.enabled === false)))
+    // A pause says since when, and is never beside a hold.
+    && (!strict || ((v.paused === true) === (v.paused_since !== undefined) && !(v.paused === true && v.held === true)))
 }
 
 export function isSyncConsent(v: unknown, strict = false): v is SyncConsent {
@@ -1188,9 +1217,12 @@ export function isMailboxKey(v: unknown, strict = false): v is MailboxKey {
 }
 
 export function isMailboxAccess(v: unknown, strict = false): v is MailboxAccess {
-  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'readers', 'no_reader', 'epoch', 'grants', 'keys'], strict)
+  return record(v) && known(v, ['account_id', 'email', 'provider', 'state', 'linked_by', 'sync', 'paused_at', 'paused_by', 'readers', 'no_reader', 'epoch', 'grants', 'keys'], strict)
     && pathID(v.account_id) && filled(v.email, 320) && word(providerIDs, strict)(v.provider) && word(accountStates, strict)(v.state)
     && optional(v.linked_by, actor) && optional(v.sync, x => isMailboxConsent(x, strict)) && optional(v.epoch, epochOf)
+    && optional(v.paused_at, seconds) && optional(v.paused_by, actor)
+    // Who paused it is said only of a mailbox that is paused.
+    && (!strict || v.paused_by === undefined || v.paused_at !== undefined)
     // Nobody holds the key of a mailbox that has none.
     && (!strict || v.epoch !== undefined || (Array.isArray(v.grants) && v.grants.every(grant => !(grant as Grant).sealed)))
     // The daemon that writes the fixtures always says; an older one may not.
@@ -1249,6 +1281,8 @@ export function isPersonNotice(v: unknown, strict = false): v is PersonNotice {
     && optional(v.recoverable_until, seconds)
     // Only a mailbox removed and kept says until when it is recovered, and it always does.
     && (!strict || ((v.state === 'removed') === (v.recoverable_until !== undefined)))
+    // A removal and a deletion withdraw a pause's notices: one is always about a live mailbox.
+    && (!strict || v.kind !== 'paused' || v.state === 'live')
 }
 
 export function isPersonNoticeList(v: unknown, strict = false): v is PersonNotice[] {

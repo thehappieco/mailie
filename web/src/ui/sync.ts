@@ -20,15 +20,16 @@ export interface SyncView {
 
 /**
  * syncView describes a syncing account: one that is active and whose owner
- * turned sync on; and an active one whose sync is held until someone who may
- * turns it on (recovered after it was removed, or a person's mailbox the
- * server's operator turned off). Anything else is described by its account
- * state (labels.stateDetail), and this answers null.
+ * turned sync on; and an active one whose sync is paused (by someone who
+ * may, or by its recovery), or held because the server's operator turned it
+ * off until its person turns it on. Anything else is described by its
+ * account state (labels.stateDetail), and this answers null.
  */
 export function syncView(account: Account, now = Date.now()): SyncView | null {
   const sync = account.sync
   if (account.state !== 'active') return null
-  if (sync.held) return { tone: 'warn', label: t('Paused'), detail: heldText(account) }
+  if (sync.held) return { tone: 'warn', label: t('Turned off'), detail: heldText(account) }
+  if (sync.paused) return { tone: 'off', label: t('Paused'), detail: pausedText(account) }
   if (!sync.enabled) return null
   switch (sync.state) {
     case 'initial':
@@ -43,7 +44,7 @@ export function syncView(account: Account, now = Date.now()): SyncView | null {
       // No worker holds the account. With a failure on record, that is what
       // to say; without one it is a gap the engine closes on its own (a
       // restart, a worker not picked up yet), not something that went wrong.
-      if (!sync.error_class) return { tone: 'off', label: t('Paused'), detail: t('Mailie resumes syncing this mailbox shortly.') }
+      if (!sync.error_class) return { tone: 'off', label: t('Starting'), detail: t('Mailie picks this mailbox up again shortly.') }
       return { tone: 'bad', label: t('Stopped'), detail: syncErrorText(sync.error_class) }
     case 'off':
       // Permitted and active, but no worker holds it yet: the engine picks
@@ -54,19 +55,37 @@ export function syncView(account: Account, now = Date.now()): SyncView | null {
   }
 }
 
-/** Whether an account's sync is held: nothing syncs until someone who may turns it on. */
+/** Whether an account's sync is held: the server's operator turned it off, until its person turns it on. */
 export function syncHeld(account: Pick<Account, 'sync'>): boolean {
   return account.sync.held === true
 }
 
+/** Whether an account's sync is paused: its index kept, nothing new indexed until it is resumed. */
+export function syncPaused(account: Pick<Account, 'sync'>): boolean {
+  return account.sync.paused === true
+}
+
 /**
- * Why a held mailbox does not sync, and since when. The server says that it
- * is held, never why: a recovery holds it with its index kept, and the
- * server's operator holds a person's mailbox once it deleted its index
- * (POST /v1/accounts/{id}/sync/stop), so the words claim neither.
+ * A held mailbox, and since when. Only a personal mailbox is held, by the
+ * server's operator's turn-off, which deleted its index, or by an older hold
+ * an upgrade kept over no index; the server says that it is held, never by
+ * whom, so the words name nobody.
  */
 export function heldText(account: Pick<Account, 'sync'>): string {
-  return t('Paused since {date}: nothing syncs until it is turned on again.', { date: dayStamp(account.sync.held_since) })
+  return t('Turned off since {date}: Mailie keeps no index of this mailbox, and nothing of it syncs until you turn it on again.', { date: dayStamp(account.sync.held_since) })
+}
+
+/**
+ * A paused mailbox, since when, and what it kept: what was indexed stays
+ * searched and read, or, for one paused (or removed and recovered) before
+ * its first pass, nothing is indexed and a resume indexes the last 90 days.
+ * The figures say which (messages, as the storage panel reads them).
+ */
+export function pausedText(account: Pick<Account, 'sync'>): string {
+  const date = dayStamp(account.sync.paused_since)
+  return account.sync.messages > 0
+    ? t('Paused since {date}. Mailie keeps what it indexed, so it can still be searched and read, but indexes nothing new until sync is resumed.', { date })
+    : t('Paused since {date}. Nothing of this mailbox is indexed: once sync is resumed, Mailie indexes the last 90 days.', { date })
 }
 
 /** What went wrong, from the short class the server reports (provider.Class). */

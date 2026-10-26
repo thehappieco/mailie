@@ -39,6 +39,23 @@ export async function setMailboxSync(token: string, id: string, body: MailboxSyn
   return checked(await request(`/v1/accounts/${segment(id)}/sync`, { token, method: 'PUT', body, timeoutMS: WITHDRAW_TIMEOUT_MS }), isAccountSync)
 }
 
+/**
+ * Pauses a mailbox's sync, its index kept (its person, or a team's owners
+ * and admins): nothing new is indexed until it is resumed.
+ */
+export async function pauseMailboxSync(token: string, id: string): Promise<AccountSync> {
+  return checked(await request(`/v1/accounts/${segment(id)}/sync/pause`, { token, body: {} }), isAccountSync)
+}
+
+/**
+ * Ends a mailbox's pause: it syncs again, catching up from what it kept. A
+ * team mailbox's resume names the sync text shown (version), and agrees to
+ * it on the team's behalf; a personal mailbox's names none.
+ */
+export async function resumeMailboxSync(token: string, id: string, version?: string): Promise<AccountSync> {
+  return checked(await request(`/v1/accounts/${segment(id)}/sync/resume`, { token, body: version ? { version } : {} }), isAccountSync)
+}
+
 /** Asks for a pass soon. The answer (202) is the status as it stands, not the pass's outcome. */
 export async function triggerSync(token: string, id: string): Promise<AccountSync> {
   return checked(await request(`/v1/accounts/${segment(id)}/sync`, { token, body: {} }), isAccountSync)

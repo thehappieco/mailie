@@ -25,6 +25,10 @@ const syncOffNotice: PersonNotice = {
   id: 'mbe_0000000000000002', kind: 'sync_off', workspace_id: 'wsp_000000000000bbbb', workspace_name: 'Support', account_id: 'acc_shared',
   mailbox: 'suporte@example.test', at: 1_790_000_500, state: 'live',
 }
+const pausedNotice: PersonNotice = {
+  id: 'mbe_0000000000000004', kind: 'paused', workspace_id: 'wsp_000000000000bbbb', workspace_name: 'Support', account_id: 'acc_shared',
+  mailbox: 'suporte@example.test', at: 1_790_000_900, state: 'live',
+}
 const deletedNotice: PersonNotice = {
   id: 'mbe_0000000000000003', kind: 'removed', workspace_id: 'wsp_000000000000cccc', account_id: 'acc_gone', mailbox: 'v…@example.test', at: 1_789_000_000, state: 'deleted',
 }
@@ -82,6 +86,20 @@ describe('a person’s notices', () => {
     ])
     // Above the section, in the console's frame, whatever the section shown.
     expect(find('.console-content .person-notices')).not.toBeNull()
+  })
+
+  it('tells a reader a team mailbox was paused, that its index is kept, and that its owners and admins can resume it', async () => {
+    given = [pausedNotice]
+    await signedIn()
+    const told = 'Sync of suporte@example.test was paused for Support. Mailie keeps its index, so you can still search and read it, but indexes nothing new until it is resumed. An owner or an admin of Support can resume it.'
+    await vi.waitFor(() => expect(shown()).toEqual([told]))
+    // Said once through the live region, as every notice; never who paused it, and never that the index was deleted.
+    expect(announcement.value).toBe(told)
+    expect(told).not.toContain('deleted')
+    // Its own icon: a pause, not a removal nor a turn-off.
+    expect(find('.person-notice')!.querySelector('svg path')!.getAttribute('d')).toBe('M9 5v14M15 5v14')
+    await click(find('.person-notice button'))
+    await vi.waitFor(() => expect(dismissed).toEqual([pausedNotice.id]))
   })
 
   it('says each notice once, however often they are read, and dismisses one for good', async () => {

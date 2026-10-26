@@ -47,6 +47,9 @@ export const STREAM_POLL_INTERVAL_MS = 15_000
 
 export interface FolderView { loading: boolean; loaded: boolean; list: Folder[]; failure: Failure | null }
 
+/** The state a recovered mailbox's sync came back in. */
+export type RecoveredSync = 'paused' | 'held' | 'off'
+
 export type Notice =
   /** syncing: the new mailbox starts syncing at once, under its person's agreement or its team's. */
   | { kind: 'connected'; email: string; syncing: boolean }
@@ -56,8 +59,12 @@ export type Notice =
    * that keeps nothing), or gone already.
    */
   | { kind: 'removed'; email: string; keptUntil?: number }
-  /** A removed mailbox recovered by its owner, its sync held until it is turned on. */
-  | { kind: 'recovered'; email: string }
+  /**
+   * A removed mailbox recovered by its owner, its sync paused until it is
+   * resumed, off while its consent is off, or held by the server's
+   * operator's turn-off: sync says which, as the recovered account does.
+   */
+  | { kind: 'recovered'; email: string; sync: RecoveredSync }
   /** A removed mailbox deleted for good by its owner. */
   | { kind: 'purged'; email: string }
   | { kind: 'failed'; email: string; failure: Failure }
@@ -435,8 +442,9 @@ export function refreshRemoved(): void {
 }
 
 /**
- * Recovers a removed mailbox: it is back in the list, its sync held until
- * someone who may turns it on. Refused once its 30 days are over, in a closed
+ * Recovers a removed mailbox: it is back in the list, its sync paused until
+ * someone who may resumes it (off where its consent is off, held where the
+ * server's operator turned it off). Refused once its 30 days are over, in a closed
  * team, and for a team mailbox nobody who could read it is left to read
  * (conflict); gone meanwhile (not_found), the list is read again.
  */
@@ -451,7 +459,7 @@ export async function recoverRemoved(id: string): Promise<boolean> {
     if (!current()) return false
     removed.list = removed.list.filter(item => item.id !== id)
     upsert(recovered)
-    notify({ kind: 'recovered', email: recovered.email || email })
+    notify({ kind: 'recovered', email: recovered.email || email, sync: recovered.sync.paused ? 'paused' : recovered.sync.held ? 'held' : 'off' })
     return true
   } catch (error) {
     if (!current()) return false

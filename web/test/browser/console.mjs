@@ -1282,15 +1282,15 @@ for (const { language, mobile, scheme, scope, chosen, served = true, sends = tru
 // --- storage ------------------------------------------------------------------------
 // What each mailbox takes up in the index, read when the section is first
 // shown: a mailbox whose account needs authorizing again keeps what was
-// indexed and says sync is paused; the totals add up; an owner is told the
+// indexed and says sync waits for it; the totals add up; an owner is told the
 // database's size; Refresh reads it again as the first sync of a new mailbox
 // runs; turning sync off in Account reads it again without a Refresh, and
 // every mailbox then says nothing is indexed. Only GET.
 
 const STORAGE_TEXT = {
-  'en-US': { section: 'Storage', openMenu: 'Open menu', byMailbox: 'By mailbox', indexed: 'Messages indexed', database: 'Database on disk', refresh: 'Refresh', notSynced: 'Not synced: nothing from this mailbox is indexed.', paused: 'Sync is paused until the account works again. What was indexed is kept.' },
-  'pt-BR': { section: 'Armazenamento', openMenu: 'Abrir menu', byMailbox: 'Por caixa de email', indexed: 'Mensagens indexadas', database: 'Banco de dados em disco', refresh: 'Atualizar', notSynced: 'Não sincronizada: nada desta caixa de email está indexado.', paused: 'A sincronização está pausada até a conta voltar a funcionar. O que foi indexado é mantido.' },
-  'de-DE': { section: 'Speicher', openMenu: 'Menü öffnen', byMailbox: 'Nach Postfach', indexed: 'Indexierte Nachrichten', database: 'Datenbank auf der Festplatte', refresh: 'Aktualisieren', notSynced: 'Nicht synchronisiert: Aus diesem Postfach ist nichts indexiert.', paused: 'Die Synchronisierung ist pausiert, bis das Konto wieder funktioniert. Bereits Indexiertes bleibt erhalten.' },
+  'en-US': { section: 'Storage', openMenu: 'Open menu', byMailbox: 'By mailbox', indexed: 'Messages indexed', database: 'Database on disk', refresh: 'Refresh', notSynced: 'Not synced: nothing from this mailbox is indexed.', waits: 'Sync waits until the account works again. What was indexed is kept.' },
+  'pt-BR': { section: 'Armazenamento', openMenu: 'Abrir menu', byMailbox: 'Por caixa de email', indexed: 'Mensagens indexadas', database: 'Banco de dados em disco', refresh: 'Atualizar', notSynced: 'Não sincronizada: nada desta caixa de email está indexado.', waits: 'A sincronização aguarda até a conta voltar a funcionar. O que foi indexado é mantido.' },
+  'de-DE': { section: 'Speicher', openMenu: 'Menü öffnen', byMailbox: 'Nach Postfach', indexed: 'Indexierte Nachrichten', database: 'Datenbank auf der Festplatte', refresh: 'Aktualisieren', notSynced: 'Nicht synchronisiert: Aus diesem Postfach ist nichts indexiert.', waits: 'Die Synchronisierung wartet, bis das Konto wieder funktioniert. Was indexiert wurde, bleibt erhalten.' },
 }
 
 for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
@@ -1338,7 +1338,7 @@ for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
     assert.match((await figures('suporte@example.test'))[0], /^1[.,]284$/)
     // The Microsoft mailbox needs authorizing: sync is paused, and what it indexed before is kept and counted.
     const microsoft = section.locator('.storage-list li').filter({ hasText: 'ana.souza@example.test' })
-    await microsoft.getByText(text.paused).waitFor()
+    await microsoft.getByText(text.waits).waitFor()
     assert.equal(await microsoft.getByText(text.notSynced).count(), 0, 'a mailbox whose index is kept never says nothing is indexed')
     assert.equal((await figures('ana.souza@example.test'))[0], '90')
     assert.equal(await section.getByText(text.notSynced).count(), 0, 'every mailbox here syncs')
@@ -1371,7 +1371,7 @@ for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
     await until(async () => (await section.getByText(text.notSynced).count()) === 4, 'every mailbox to say nothing is indexed')
     for (const email of emails.concat('nova@example.test')) assert.equal((await figures(email))[0], '0', `${email} has nothing indexed`)
     assert.equal(await overview.locator('article').nth(1).locator('strong').innerText(), '0', 'nor in total')
-    assert.equal(await section.getByText(text.paused).count(), 0, 'nothing is paused once sync is off')
+    assert.equal(await section.getByText(text.waits).count(), 0, 'nothing waits once sync is off')
     await shot('storage-sync-off')
     assert.ok(methods.every(method => method === 'GET'), 'Storage only reads')
     assert.deepEqual(daemon.calls.unoffered, [], 'no request to the mail or sending routes')

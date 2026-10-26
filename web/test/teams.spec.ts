@@ -301,33 +301,43 @@ describe('mailboxes in a team', () => {
     expect(text(anonymous)).not.toContain('turned on by')
   })
 
-  it('says a team mailbox recovered after it was removed is paused until an owner or an admin turns it on again for the team', async () => {
-    const recovered = account({ ...managed, id: 'acc_recovered', sync: { ...syncing(), enabled: false, running: false, state: 'off', held: true, held_since: 1_790_000_000 } })
+  it('says a team mailbox recovered after it was removed is paused, and offers its owners and admins resuming it for the team, never turning it on', async () => {
+    // A recovery pauses it: its index kept, its agreement standing, nothing syncing until it is resumed.
+    const recovered = account({ ...managed, id: 'acc_recovered', sync: syncing({ running: false, state: 'stopped', paused: true, paused_since: 1_790_000_000 }) })
     const consent = { enabled: true, enabled_at: 1_790_000_000, enabled_by: BEA, version: SYNC_TEXT_VERSION, current: true }
     for (const role of ['owner', 'admin']) {
       showing(TEAM, [personal, support(role)])
       Object.assign(accounts, { list: [recovered], loaded: true, workspace: TEAM })
-      teamState([anaMember({ role }), beaMember({ last_reader_of: [recovered.id] })], [entryOf(recovered, { sync: consent })])
-      // Its card: paused, whatever its agreement says.
+      teamState([anaMember({ role }), beaMember({ last_reader_of: [recovered.id] })], [entryOf(recovered, { sync: consent, paused_at: 1_790_000_000, paused_by: BEA })])
+      // Its card: paused, since when, and what it kept.
       const card = text(await render(AccountsPanel))
       expect(card, role).toContain('Paused')
       expect(card, role).toContain('Paused since ')
-      expect(card, role).not.toContain('Messages indexed')
-      // Its sheet: turning it on again for the team, to the current text, in place of the switch.
+      expect(card, role).toContain('Mailie keeps what it indexed, so it can still be searched and read')
+      expect(card, role).toContain('Messages indexed 1,284')
+      // Its sheet: who paused it (a recovery names whoever recovered it), and resuming it for the team.
       const html = await render(AccountSheet, { account: recovered })
-      expect(text(html), role).toContain('nothing syncs until an owner or an admin of Support turns it on again for the team, to the current sync text.')
-      expect(text(html), role).toContain('Turn on again for Support…')
+      expect(text(html), role).toContain('Sync paused by Bea Lima on ')
+      expect(text(html), role).toContain('Resume sync for Support…')
+      // The team's row offers only turning it off: no switch, no turning on nor confirming while it is paused.
       expect(html, role).not.toContain('role="switch"')
+      expect(text(html), role).toContain('Turn off…')
+      expect(text(html), role).not.toContain('Confirm for Support…')
       expect(text(html), role).not.toContain('Turn sync on again')
+      expect(text(html), role).not.toContain('Sync now')
+      expect(text(html), role).not.toContain('Pause sync…')
     }
-    // A member who reads it is told who turns it on.
+    // A member who reads it is told that an owner or an admin paused it, never who, and who resumes it.
     showing(TEAM, [personal, support('member')])
     const read = { ...recovered, access: { ...none, read: true } }
     Object.assign(accounts, { list: [read], loaded: true, workspace: TEAM })
     const member = text(await render(AccountSheet, { account: read }))
     expect(member).toContain('Paused since ')
-    expect(member).toContain('The owners and admins of Support turn it on again, for the team.')
-    expect(member).not.toContain('Turn sync on again')
+    expect(member).toContain('Sync paused by an owner or an admin of Support on ')
+    expect(member).toContain('The owners and admins of Support resume it, for the team.')
+    expect(member).not.toContain('Bea Lima')
+    expect(member).not.toContain('Resume sync')
+    expect(member).not.toContain('Sync now')
   })
 })
 

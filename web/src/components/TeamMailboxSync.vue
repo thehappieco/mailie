@@ -11,13 +11,14 @@
 // confirming it for the team in place of the switch. A mailbox nobody can
 // read says it does not sync, and offers no way to turn it on, which the
 // server refuses: nobody could be given Read on it again. Only turning it off
-// is offered, while something of it is still on or kept. A mailbox recovered
-// after it was removed is paused whatever its agreement says (sync.held):
-// turning it on again for the team, to the current text, lifts that. The
-// server decides; this says beforehand what it will do.
+// is offered, while something of it is still on or kept. A paused mailbox
+// (paused by an owner or an admin, or by its recovery) is resumed above
+// (SyncPause), which gives the team's agreement to the current text again;
+// here only turning it off is offered while it is paused, which ends the
+// pause too. The agreement's text is TeamSyncAgreement, which the resume
+// shows as well. The server decides; this says beforehand what it will do.
 import { computed, onMounted, ref, useId } from 'vue'
 import type { Account } from '../api/types'
-import { edition } from '../edition'
 import type { Failure } from '../state/failure'
 import { consent, consentTextOutdated, loadConsent } from '../state/sync'
 import { directoryEntry, loadDirectory, loadMembers, personName, switchTeamSync, team } from '../state/team'
@@ -30,10 +31,10 @@ import { t } from '../ui/i18n'
 import AppIcon from './AppIcon.vue'
 import ConsoleDialog from './ConsoleDialog.vue'
 import PermissionRow from './PermissionRow.vue'
+import TeamSyncAgreement from './TeamSyncAgreement.vue'
 
 const props = defineProps<{ account: Account }>()
 
-const text = edition().sync
 const teamName = computed(() => workspaceName(currentWorkspace()))
 const entry = computed(() => directoryEntry(props.account.id))
 const record = computed(() => entry.value?.sync)
@@ -43,17 +44,13 @@ const since = computed(() => record.value?.enabled_at ? dayStamp(record.value.en
 const outdated = computed(consentTextOutdated)
 /** Nobody can read it, nor be given Read on it: it can be turned off, never on. */
 const unreadable = computed(() => !!entry.value?.no_reader)
-/** Recovered after it was removed: nothing syncs until it is turned on again for the team. */
-const held = computed(() => props.account.sync.held === true)
+/** Paused, by an owner or an admin or by its recovery: resumed above, never turned on or confirmed here. */
+const paused = computed(() => props.account.sync.paused === true)
 
 const summary = computed(() => {
   if (!entry.value) return team.directory.failure ? '' : t('Checking…')
   // A migrated agreement names whoever it is tied to; once they were deleted, nobody.
   const values = { team: teamName.value, date: since.value, name: giver.value || t('someone no longer in the team') }
-  if (held.value) {
-    return t('Paused since it was recovered on {date}: nothing syncs until an owner or an admin of {team} turns it on again for the team, to the current sync text. It then catches up from what it kept.',
-      { team: teamName.value, date: dayStamp(props.account.sync.held_since) })
-  }
   switch (standing.value) {
     case 'on': return giver.value
       ? t('On for {team} since {date}, turned on by {name}. Turning it off deletes its index for everyone who reads it.', values)
@@ -69,12 +66,13 @@ const summary = computed(() => {
 })
 /**
  * An agreement that stands but should be given again: in place of the switch, giving it again or turning it off.
- * For a mailbox nobody can read, only turning off what is still on or kept.
+ * For a mailbox nobody can read, only turning off what is still on or kept. While it is paused, only turning
+ * it off: the resume above is the one way back, and it agrees.
  */
-const paused = computed(() => {
-  const again = held.value ? !!record.value?.enabled : standing.value === 'migrated' || standing.value === 'on-earlier'
+const alternate = computed(() => {
+  if (paused.value) return record.value?.enabled ? { off: t('Turn off…') } : null
+  const again = standing.value === 'migrated' || standing.value === 'on-earlier'
   if (unreadable.value) return again || standing.value === 'kept' ? { off: t('Turn off…') } : null
-  if (held.value) return again ? { agree: t('Turn on again for {team}…', { team: teamName.value }), off: t('Turn off…') } : null
   return again ? { agree: t('Confirm for {team}…', { team: teamName.value }), off: t('Turn off…') } : null
 })
 
@@ -87,7 +85,7 @@ const armed = computed(() => typed.value.trim().toLowerCase() === props.account.
 const readers = computed(() => entry.value?.readers ?? 0)
 
 function open(kind: 'on' | 'off') {
-  if (busy.value || !entry.value || (kind === 'on' && unreadable.value)) return
+  if (busy.value || !entry.value || (kind === 'on' && (unreadable.value || paused.value))) return
   problem.value = null
   typed.value = ''
   dialog.value = kind
@@ -121,7 +119,7 @@ onMounted(() => {
 <template>
   <div class="team-sync">
     <PermissionRow name="team-sync" icon="users" :label="t('Sync for {team}', { team: teamName })" :summary="summary"
-      :on="!!record?.enabled" :disabled="!entry || busy || (unreadable && !record?.enabled)" :paused="paused" :busy="busy"
+      :on="!!record?.enabled" :disabled="!entry || busy || ((unreadable || paused) && !record?.enabled)" :paused="alternate" :busy="busy"
       :failure="team.directory.failure ? describe(team.directory.failure) : ''"
       @toggle="toggle" @agree="open('on')" @off="open('off')" @retry="loadDirectory" />
     <!-- The record of what was agreed to, beside who and when: the revision of the text. -->
@@ -129,11 +127,7 @@ onMounted(() => {
     <p v-if="unreadable" class="note team-sync-note"><AppIcon name="eye-off" :size="15" /><span>{{ t('Nobody in {team} can read this mailbox, so it does not sync, and its sync cannot be turned on: Read is given only by someone who reads it.', { team: teamName }) }}</span></p>
 
     <ConsoleDialog v-if="dialog === 'on'" :title="t('Turn on sync for {team}?', { team: teamName })" :subtitle="account.email" :busy="busy" wide @close="close">
-      <p v-if="outdated" class="dim team-sync-outdated">{{ text.changedWhileOpen() }}</p>
-      <template v-else>
-        <p class="team-sync-lead">{{ t('You agree to this text on behalf of {team}: {email} then syncs under the team’s agreement, for everyone in the team who reads it.', { team: teamName, email: account.email }) }}</p>
-        <component :is="text.component" :team="teamName" />
-      </template>
+      <TeamSyncAgreement :team="teamName" :lead="t('You agree to this text on behalf of {team}: {email} then syncs under the team’s agreement, for everyone in the team who reads it.', { team: teamName, email: account.email })" />
       <p v-if="problem && !outdated" class="alert team-sync-problem" role="alert">{{ describe(problem) }}</p>
       <div class="dialog-actions">
         <button class="ghost" type="button" :disabled="busy" @click="close">{{ t('Cancel') }}</button>
@@ -146,6 +140,7 @@ onMounted(() => {
       <form class="form-stack team-sync-confirm" autocomplete="off" @submit.prevent="change">
         <p class="dim">{{ t('Mailie stops syncing {email} and deletes everything it indexed for it: the details of every message, the folder list and its counts, and the log of changes. The mailbox stays connected, and nothing changes at its email provider.', { email: account.email }) }}</p>
         <p class="note">{{ t('The index is deleted for everyone in {team} who reads it: {count} now.', { team: teamName, count: count(readers) }) }}</p>
+        <p v-if="account.sync.paused" class="note">{{ t('This also ends its pause.') }}</p>
         <label :for="typedID">{{ t('Type {address} to confirm', { address: account.email }) }}</label>
         <input :id="typedID" v-model="typed" name="team-sync-confirm" autocomplete="off" :spellcheck="false" autocapitalize="off" inputmode="email" :placeholder="account.email" :disabled="busy" />
         <p v-if="problem" class="alert" role="alert">{{ describe(problem) }}</p>
@@ -163,8 +158,6 @@ onMounted(() => {
 .team-sync-version { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .team-sync-note { display: flex; align-items: flex-start; gap: 7px; margin: 0; font-size: 13px; line-height: 1.5; }
 .team-sync-note .app-icon { flex: none; margin-top: 2px; }
-.team-sync-lead { margin: 0 0 12px; font-size: 13px; line-height: 1.55; color: var(--text); font-weight: 600; }
-.team-sync-outdated { margin: 0 0 12px; }
 .team-sync-problem { margin: 14px 0 0; }
 .team-sync-confirm p { margin: 0; }
 .team-sync-confirm input { color: var(--text); background: var(--bg-input); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; width: 100%; }

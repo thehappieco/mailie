@@ -213,6 +213,75 @@ describe('asking for a sync', () => {
   })
 })
 
+describe('the words of an account’s sync', () => {
+  const words = async (sync: Account['sync'], state: Account['state'] = 'active') => {
+    const { syncView } = await import('../src/ui/sync')
+    const { stateDetail } = await import('../src/ui/labels')
+    const shown = account({ state, sync })
+    return { view: syncView(shown, Date.UTC(2026, 8, 22)), detail: stateDetail(shown) }
+  }
+
+  it('a paused mailbox reads Paused, since when, and that its index is kept', async () => {
+    const { view, detail } = await words(syncing({ running: false, state: 'stopped', paused: true, paused_since: 1_790_000_000 }))
+    expect(view).toEqual({ tone: 'off', label: 'Paused', detail: 'Paused since September 21, 2026. Mailie keeps what it indexed, so it can still be searched and read, but indexes nothing new until sync is resumed.' })
+    expect(detail).toBe('Connected. Sync is paused.')
+    // Paused whatever else it says: its agreement may not hold now (nobody reads it, its person is off).
+    expect((await words(syncOff({ paused: true, paused_since: 1_790_000_000, messages: 4 }))).view?.label).toBe('Paused')
+  })
+
+  it('a paused mailbox that kept no index says nothing is indexed and that a resume indexes the last 90 days', async () => {
+    const { view } = await words(syncOff({ enabled: true, paused: true, paused_since: 1_790_000_000 }))
+    expect(view?.detail).toBe('Paused since September 21, 2026. Nothing of this mailbox is indexed: once sync is resumed, Mailie indexes the last 90 days.')
+  })
+
+  it('a held mailbox reads Turned off, never Paused, and names nobody', async () => {
+    const { view, detail } = await words(syncOff({ held: true, held_since: 1_790_000_000 }))
+    expect(view).toEqual({ tone: 'warn', label: 'Turned off', detail: 'Turned off since September 21, 2026: Mailie keeps no index of this mailbox, and nothing of it syncs until you turn it on again.' })
+    expect(detail).toBe('Connected. Sync is off.')
+    expect(JSON.stringify(view)).not.toMatch(/[Pp]aused|operator|recovered/)
+  })
+
+  it('a mailbox no worker holds yet reads Starting, never Paused', async () => {
+    const { view } = await words(syncing({ running: false, state: 'stopped' }))
+    expect(view).toEqual({ tone: 'off', label: 'Starting', detail: 'Mailie picks this mailbox up again shortly.' })
+  })
+
+  it('pauses and resumes a personal mailbox with no text named, taking the sync each answer carries', async () => {
+    const live = syncing({ state: 'live', initial_progress: 100 })
+    const paused = { ...live, running: false, state: 'stopped', paused: true as const, paused_since: 1_790_000_000 }
+    let current: Account = account({ state: 'active', sync: live })
+    const { accounts, sync, fetch } = await signedIn(({ path, method }) => {
+      if (path === '/v1/accounts') return json([current])
+      if (path === '/v1/accounts/acc_0000000000000001/sync/pause' && method === 'POST') { current = { ...current, sync: paused }; return json(paused) }
+      if (path === '/v1/accounts/acc_0000000000000001/sync/resume' && method === 'POST') { current = { ...current, sync: live }; return json(live) }
+      return failure('not_found', 404)
+    })
+    await accounts.loadAccounts()
+    expect(await sync.pauseSync(accounts.accounts.list[0]!)).toBeNull()
+    expect(accounts.accounts.list[0]!.sync).toEqual(paused)
+    expect(await sync.resumeSync(accounts.accounts.list[0]!)).toBeNull()
+    expect(accounts.accounts.list[0]!.sync).toEqual(live)
+    for (const path of ['/v1/accounts/acc_0000000000000001/sync/pause', '/v1/accounts/acc_0000000000000001/sync/resume']) {
+      const [post] = calls(fetch, 'POST', path)
+      expect(JSON.parse(String(post![1]!.body)), path).toEqual({})
+    }
+    // Neither turns sync on: a pause is not a consent.
+    expect(calls(fetch, 'PUT', '/v1/accounts/acc_0000000000000001/sync')).toEqual([])
+  })
+
+  it('explains a pause refused for a mailbox whose sync is off, and a resume refused for one nobody reads', async () => {
+    const { sync } = await signedIn(({ path }) => path.endsWith('/pause') || path.endsWith('/resume') ? failure('conflict', 409) : failure('not_found', 404))
+    const { describe: describeFailure } = await import('../src/ui/errors')
+    const pause = await sync.pauseSync(account({ state: 'active' }))
+    expect(pause).toEqual({ op: 'pause-sync', code: 'conflict' })
+    expect(describeFailure(pause!)).toBe('This mailbox’s sync is off, so there is nothing to pause.')
+    const resume = await sync.resumeSync(account({ state: 'active' }))
+    expect(describeFailure(resume!)).toBe('Nobody in the team reads this mailbox now, so its sync cannot be resumed until someone does.')
+    expect(describeFailure({ op: 'pause-sync', code: 'not_authorized' })).toBe('Only the person whose mailbox it is pauses or resumes its sync; for a team’s mailbox, its owners and admins.')
+    expect(describeFailure({ op: 'resume-sync', code: 'not_authorized' })).toBe('Only the person whose mailbox it is pauses or resumes its sync; for a team’s mailbox, its owners and admins.')
+  })
+})
+
 function localStorage_(): Record<string, string> {
   try { return { ...globalThis.localStorage } } catch { return {} }
 }

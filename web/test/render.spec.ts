@@ -449,13 +449,15 @@ describe('sync, as the console shows it', () => {
     expect(html).not.toContain('something_new')
   })
 
-  it('calls a mailbox no worker holds yet paused, not failed, when nothing went wrong', async () => {
+  it('calls a mailbox no worker holds yet starting, never paused nor failed, when nothing went wrong', async () => {
     signIn()
     consented()
     Object.assign(accounts, { list: [account({ state: 'active', sync: syncing({ state: 'stopped', running: false }) })], loaded: true })
     const html = await render(AccountsPanel)
-    expect(html).toContain('Paused')
-    expect(html).toContain('Mailie resumes syncing this mailbox shortly.')
+    expect(html).toContain('Starting')
+    expect(html).toContain('Mailie picks this mailbox up again shortly.')
+    // "Paused" names only a pause.
+    expect(html).not.toContain('Paused')
     expect(html).not.toContain('failed')
     expect(html).not.toContain('Stopped')
   })

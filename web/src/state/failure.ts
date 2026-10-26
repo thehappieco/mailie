@@ -19,7 +19,8 @@ export interface Operations {
   'load-accounts': true; 'load-providers': true; 'add-account': true; 'test-login': true; 'test-login-icloud': true
   'start-auth': true; 'wait-auth': true; 'complete-auth': true; 'remove-account': true; 'folders': true
   'load-removed': true; 'recover-mailbox': true; 'purge-mailbox': true; 'load-notices': true; 'dismiss-notice': true
-  'sync-consent': true; 'grant-sync': true; 'withdraw-sync': true; 'sync-now': true; 'resume-sync': true
+  'sync-consent': true; 'grant-sync': true; 'withdraw-sync': true; 'sync-now': true; 'lift-held-sync': true
+  'pause-sync': true; 'resume-sync': true
   'actions-consent': true; 'grant-actions': true; 'withdraw-actions': true
   'load-keys': true; 'create-key': true; 'revoke-key': true; 'change-key-access': true; 'load-key-sends': true; 'load-my-keys': true
   'load-storage': true

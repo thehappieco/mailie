@@ -13,9 +13,10 @@
 // who reads it, and tells the others who read it. Owners and admins see each
 // team mailbox's card, never its mail. A removed mailbox is kept 30 days
 // with its index, read and synced by nobody, recoverable by its workspace's
-// owners (a person's own for their personal workspace) and held off until
-// someone who may turns its sync on; then it is deleted for good (docs/
-// workspaces.md, "Removed mailboxes"). Closing a person's account removes their personal mailboxes and the
+// owners (a person's own for their personal workspace), and comes back
+// paused until someone who may resumes it, which the text calls turning its
+// sync on (a team's resume agrees to this same text); then it is deleted for
+// good (docs/workspaces.md, "Removed mailboxes"). Closing a person's account removes their personal mailboxes and the
 // teams they were the only member of; and a team mailbox the upgrade left
 // syncing under its linker's own agreement stops with it until the team
 // agrees (migration 0011): the text says both, since it is what is agreed to.

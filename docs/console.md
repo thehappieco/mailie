@@ -80,7 +80,10 @@ sidebar's name; the open edition's is the server's "Console"), its sections as d
 workspace shown's, or with `scope: 'person'` the person's own, where the breadcrumb names no
 workspace; the API keys section is the workspace's), a few sentences it words its own
 way, whether to show how to connect over MCP, whether people make and run teams on this server
-(`teams`: the open edition's, for the local workspace source), whether the account section names
+(`teams`: the open edition's, for the local workspace source), whether the account sheet offers
+pausing one mailbox's sync (`syncPause`: an opt-in the open edition sets, as the server's
+`app.Options.SyncPauseOffered`, which `serve` sets; left out, the sheet offers no Pause and still
+shows a paused mailbox, a recovered one included, and its Resume, which is never hidden), whether the account section names
 the person's role on this server (`serverRole`, the open edition's), and optional extras (a
 byline, legal components, more translations, its own look, the languages it offers and where the
 theme and the language are kept, below). The core's own sentences never name the frame: they say
@@ -870,19 +873,46 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   owners only (`owns`: the person of their personal workspace, an active owner of a team; nobody
   else's console asks for them): each removed mailbox of the workspace shown
   (`GET /v1/workspaces/{id}/removed-mailboxes`), who removed it and when, until when it is kept, in
-  a team how many people would read it again, and whether its index went with its sync. Recover
-  (`POST …/recover`) brings its card back, its sync paused; one nobody in the team who could read
+  a team how many people would read it again, and whether its index went with its sync (once
+  recovered, a resume or a turn-on starts it over from the last 90 days). Recover
+  (`POST …/recover`) brings its card back, its sync paused, off or turned off as the answer says,
+  and the notice says which; one nobody in the team who could read
   it is left to read (`no_reader`) offers no recovery, which the server refuses, and says to delete
   it for good and connect it again, while one that only someone suspended on the server would read,
-  once resumed, offers it and says so. Delete for good asks for its address typed and sends its id
+  once resumed, offers it and says that its sync is resumed once someone reads it. Delete for good asks for its address typed and sends its id
   (`POST …/purge` `{confirm}`); already gone counts as done. The list is shown only while there is
   one, or while it could not be read, and is read again on Refresh, after a removal, and when
   access changes. A server older than removed mailboxes (`404`) has none.
-- **A mailbox recovered** (`sync.held`) says on its card and in its sheet that its sync is paused
-  since its recovery, whatever its consent says, until someone who may turns it on: its person, in
-  the sheet of a personal mailbox, which sends `{"enabled": true}` alone; a team's owners and
-  admins, in its team sync, turning it on again for the team to the current sync text, in place of
-  the switch; a member who reads it is told they do.
+- **A mailbox recovered** comes back paused (`sync.paused`) where its consent stands, and is one
+  paused mailbox like any other (below), resumed by the same people; one whose consent was off
+  comes back off (a personal one offers turning sync on, a team's its team sync), and one the
+  server's operator turned off comes back turned off. The notice the recovery gives says which of
+  the three (`notices.ts`, from the answer's `sync`).
+- **A paused mailbox** (`sync.paused`; `components/SyncPause.vue` in the sheet's Sync section)
+  reads "Paused" on its card and in its sheet, since when, and what it kept: what it indexed is
+  still searched and read, but nothing new is indexed until it is resumed, or, with nothing
+  indexed (`messages` 0: paused or recovered before its first pass), that a resume indexes the
+  last 90 days. Its figures stay (Messages indexed, Last sync), Sync now is not offered, and the
+  storage section says the same. Its person pauses and resumes a personal mailbox (`POST
+  …/sync/pause`, `…/sync/resume` with no body); a team's owners and admins, by their role, a
+  team's. Pause asks first, saying what the pause keeps and that what changes on the mail server
+  meanwhile shows only once sync is resumed, and for a team that its other readers are told; it is
+  offered only where the edition offers it (`syncPause`) and while the mailbox syncs. A team's
+  Resume shows the edition's sync text for the team and sends its revision (`{"version"}`), the
+  team's agreement given again, through the dialog the team's turn-on shares
+  (`components/TeamSyncAgreement.vue`); a server that already asks about another text is offered
+  a reload. A team mailbox nobody can read offers no Resume (its team sync says why), and one only
+  a suspended member would read once resumed offers none either and says it waits for them. Its
+  owners and admins are told who paused it, from the access directory (`paused_by`; a recovery's
+  pause names whoever recovered it); a member who reads it is told an owner or an admin of the team
+  paused it, and that they resume it. While it is paused its team sync offers only turning it off
+  (never on, nor confirming an earlier text: the resume is the one way back, and it agrees), whose
+  dialog says it ends the pause too.
+- **A mailbox the server's operator turned off** (`sync.held`, a personal mailbox: `POST
+  …/sync/stop`) reads "Turned off" on its card and in its sheet, since when, with no index and
+  nothing syncing until its person turns it on again (`{"enabled": true}` alone, "Turn sync on
+  again"), naming nobody. The worker-less `stopped` state with no error reads "Starting", so
+  "Paused" names only a pause.
 - **Notices** (`components/PersonNotices.vue`, in the console's frame above every section, every
   edition's): the person's notices (`GET /v1/me/notices`), in whichever workspace they happened —
   a mailbox they read removed, or a team mailbox's sync turned off or paused, by someone else —

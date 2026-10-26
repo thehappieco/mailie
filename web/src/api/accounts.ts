@@ -72,7 +72,7 @@ export async function listRemoved(token: string, workspace: string, signal?: Abo
   return checked(await request(`/v1/workspaces/${segment(workspace)}/removed-mailboxes`, { token, signal }), isRemovedMailboxList)
 }
 
-/** Recovers a removed mailbox within its 30 days: the answer is the mailbox, live again, its sync held until it is turned on. */
+/** Recovers a removed mailbox within its 30 days: the answer is the mailbox, live again, its sync paused until it is resumed (or off, or held). */
 export async function recoverAccount(token: string, id: string): Promise<Account> {
   return checked(await request(`/v1/accounts/${segment(id)}/recover`, { token, body: {} }), isAccount)
 }

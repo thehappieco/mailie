@@ -4,8 +4,9 @@
 // its address typed and sends its id to confirm; removing one says until when
 // it is kept and lists it; a link refused for an address removed and kept
 // offers its owner recovering it, or deleting it for good and connecting it
-// again; and a personal mailbox recovered is turned on again by its person,
-// and one the server's operator held is said to be paused, never recovered.
+// again; and a personal mailbox recovered is resumed by its person, while one
+// the server's operator turned off is said to be turned off, never paused nor
+// recovered, and is turned on again by its person.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { click, fill, find, flush, submit, words } from './dom'
@@ -31,10 +32,10 @@ const support = (role: string): Workspace => ({ id: TEAM, kind: 'team', source: 
 const kept = (id: string, email: string, fields: Partial<RemovedMailbox> = {}): RemovedMailbox => ({
   id, workspace_id: TEAM, email, provider: 'imap', removed_at: 1_790_000_000, removed_by: BEA, purge_after: 1_790_000_000 + 30 * DAY, index_kept: true, readers: 2, no_reader: false, ...fields,
 })
-/** A mailbox recovered, as the server answers it: live again, its sync held. */
+/** A mailbox recovered, as the server answers it: live again, its sync paused with what it kept, its consent standing. */
 const recovered = (item: RemovedMailbox): Account => account({
   id: item.id, email: item.email, provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: item.workspace_id, access: full,
-  sync: syncOff({ held: true, held_since: 1_790_100_000 }),
+  sync: syncOff({ enabled: true, state: item.index_kept ? 'stopped' : 'off', messages: item.index_kept ? 840 : 0, paused: true, paused_since: 1_790_100_000 }),
 })
 
 interface Seen { path: string; method: string; body: unknown }
@@ -113,7 +114,7 @@ describe('the removed mailboxes of a workspace', () => {
     expect(old.querySelectorAll('button').map(button => words(button))).toEqual(['Delete for good…'])
     // Only someone suspended would read it, once resumed: it waits for them, and is recovered.
     const waiting = find('.removed-item', 'waiting@example.test')!
-    expect(words(waiting)).toContain('Nobody in Support reads it now, but someone suspended on this server would once resumed: it can be recovered, and its sync turned on once someone reads it.')
+    expect(words(waiting)).toContain('Nobody in Support reads it now, but someone suspended on this server would once resumed: it can be recovered, and its sync is resumed once someone reads it.')
     expect(words(waiting)).not.toContain('cannot be recovered')
     expect(waiting.querySelectorAll('button').map(button => words(button))).toEqual(['Recover', 'Delete for good…'])
 
@@ -122,7 +123,8 @@ describe('the removed mailboxes of a workspace', () => {
     await vi.waitFor(() => expect(words(find('.removed-mailboxes')!)).not.toContain('billing@example.test'))
     const card = find('.account-card', 'billing@example.test')!
     expect(words(card)).toContain('Paused since ')
-    expect(words()).toContain('billing@example.test was recovered. Its sync stays paused until it is turned on.')
+    expect(words(card)).toContain('Mailie keeps what it indexed, so it can still be searched and read')
+    expect(words()).toContain('billing@example.test was recovered. Its sync stays paused until it is resumed.')
   })
 
   it('deletes one for good only once its address is typed, sending its id to confirm', async () => {
@@ -217,7 +219,7 @@ describe('connecting an address removed and kept', () => {
     await click(find('dialog .dialog-actions button', 'Recover'))
     await vi.waitFor(() => expect(sent('POST', '/v1/accounts/acc_billing/recover')).toHaveLength(1))
     await vi.waitFor(() => expect(accounts.list.map(item => item.id)).toEqual(['acc_billing']))
-    expect(accounts.list[0]!.sync.held).toBe(true)
+    expect(accounts.list[0]!.sync.paused).toBe(true)
     expect(sent('POST', '/v1/accounts')).toHaveLength(1)
   })
 
@@ -251,8 +253,45 @@ describe('connecting an address removed and kept', () => {
 })
 
 describe('a personal mailbox recovered', () => {
-  it('is turned on again by its person, with nothing but enabled sent', async () => {
+  it('is resumed by its person, with no text named, and syncs again', async () => {
     const mine = recovered(kept('acc_mine', 'ana@gmail.example', { workspace_id: PERSONAL }))
+    list = [mine]
+    await signedIn('member', PERSONAL, ({ path, method }) => {
+      if (path === '/v1/accounts/acc_mine/sync/resume' && method === 'POST') {
+        list = [{ ...mine, sync: syncing({ state: 'live', initial_progress: 100 }) }]
+        return json(list[0]!.sync)
+      }
+      if (path === '/v1/me/sync-consent') return json({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION })
+      return failure('not_found', 404)
+    })
+    await Promise.all([loadAccounts(), loadConsent()])
+    mounted = mount(AccountsPanel)
+    await flush()
+    expect(words(find('.account-card')!)).toContain('Paused since ')
+    expect(removed.loaded).toBe(true)
+    openDetail('acc_mine')
+    await flush()
+    const sheet = words(find('.sheet')!)
+    expect(sheet).toContain('Connected. Sync is paused.')
+    expect(sheet).toContain('Sync paused on ')
+    // Neither the operator's hold's button nor Sync now: the pause is resumed.
+    expect(find('.sheet button', 'Turn sync on again')).toBeNull()
+    expect(find('.sheet button', 'Sync now')).toBeNull()
+    await click(find('.sheet button', 'Resume sync'))
+    await vi.waitFor(() => expect(sent('POST', '/v1/accounts/acc_mine/sync/resume').map(request => request.body)).toEqual([{}]))
+    await vi.waitFor(() => expect(words(find('.account-card')!)).toContain('New mail is indexed as it arrives.'))
+    expect(words(find('.account-card')!)).not.toContain('Paused since')
+    expect(find('.sheet button', 'Resume sync')).toBeNull()
+    expect(sent('PUT', '/v1/accounts/acc_mine/sync')).toEqual([])
+    expect(announcement.value).toBe('Sync of ana@gmail.example is resumed.')
+  })
+
+  it('says a mailbox the server’s operator turned off is turned off, never paused nor recovered, and its person turns it on again', async () => {
+    // The operator's turn-off (POST /v1/accounts/{id}/sync/stop) holds a person's mailbox, her consent kept, its index deleted.
+    const mine = account({
+      id: 'acc_mine', email: 'ana@gmail.example', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: PERSONAL, access: full,
+      sync: syncOff({ held: true, held_since: 1_790_100_000 }),
+    })
     list = [mine]
     await signedIn('member', PERSONAL, ({ path, method }) => {
       if (path === '/v1/accounts/acc_mine/sync' && method === 'PUT') {
@@ -265,48 +304,32 @@ describe('a personal mailbox recovered', () => {
     await Promise.all([loadAccounts(), loadConsent()])
     mounted = mount(AccountsPanel)
     await flush()
-    expect(words(find('.account-card')!)).toContain('Paused since ')
-    expect(removed.loaded).toBe(true)
-    openDetail('acc_mine')
-    await flush()
-    expect(words(find('.sheet')!)).toContain('Connected. Sync is paused.')
-    await click(find('.sheet button', 'Turn sync on again'))
-    await vi.waitFor(() => expect(sent('PUT', '/v1/accounts/acc_mine/sync').map(request => request.body)).toEqual([{ enabled: true }]))
-    await vi.waitFor(() => expect(words(find('.account-card')!)).toContain('Indexing the last 90 days, newest first.'))
-    expect(words(find('.account-card')!)).not.toContain('Paused since')
-    expect(find('.sheet button', 'Turn sync on again')).toBeNull()
-    expect(announcement.value).toBe('Sync of ana@gmail.example is on again.')
-  })
-
-  it('says a mailbox the server’s operator held, never removed, is paused, without saying it was recovered', async () => {
-    // The operator's turn-off (POST /v1/accounts/{id}/sync/stop) holds a person's mailbox, her consent kept, its index deleted.
-    const mine = account({
-      id: 'acc_mine', email: 'ana@gmail.example', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: PERSONAL, access: full,
-      sync: syncOff({ held: true, held_since: 1_790_100_000 }),
-    })
-    list = [mine]
-    await signedIn('member', PERSONAL, ({ path }) => {
-      if (path === '/v1/me/sync-consent') return json({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION })
-      return failure('not_found', 404)
-    })
-    await Promise.all([loadAccounts(), loadConsent()])
-    mounted = mount(AccountsPanel)
-    await flush()
     const card = words(find('.account-card')!)
-    expect(card).toContain('Paused since ')
-    expect(card).toContain('nothing syncs until it is turned on again.')
+    expect(card).toContain('Turned off since ')
+    expect(card).toContain('Mailie keeps no index of this mailbox, and nothing of it syncs until you turn it on again.')
+    expect(card).not.toContain('Paused')
     expect(card).not.toContain('recovered')
     openDetail('acc_mine')
     await flush()
     const sheet = words(find('.sheet')!)
-    expect(sheet).toContain('Paused since ')
+    expect(sheet).toContain('Connected. Sync is off.')
+    expect(sheet).not.toContain('Paused')
     expect(sheet).not.toContain('recovered')
     expect(sheet).not.toContain('What was indexed is kept')
-    expect(find('.sheet button', 'Turn sync on again')).not.toBeNull()
+    expect(find('.sheet button', 'Resume sync')).toBeNull()
+    await click(find('.sheet button', 'Turn sync on again'))
+    await vi.waitFor(() => expect(sent('PUT', '/v1/accounts/acc_mine/sync').map(request => request.body)).toEqual([{ enabled: true }]))
+    await vi.waitFor(() => expect(words(find('.account-card')!)).toContain('Indexing the last 90 days, newest first.'))
+    expect(words(find('.account-card')!)).not.toContain('Turned off since')
+    expect(find('.sheet button', 'Turn sync on again')).toBeNull()
+    expect(announcement.value).toBe('Sync of ana@gmail.example is on again.')
   })
 
-  it('says, to a person who has not agreed to sync, that lifting the pause syncs nothing until they turn sync on', async () => {
-    const mine = recovered(kept('acc_mine', 'ana@gmail.example', { workspace_id: PERSONAL }))
+  it('says, to a person who has not agreed to sync, that lifting the operator’s hold syncs nothing until they turn sync on', async () => {
+    const mine = account({
+      id: 'acc_mine', email: 'ana@gmail.example', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: PERSONAL, access: full,
+      sync: syncOff({ held: true, held_since: 1_790_100_000 }),
+    })
     list = [mine]
     await signedIn('member', PERSONAL, ({ path, method }) => {
       // As the daemon answers: the hold lifted, and nothing syncing without her agreement.
@@ -323,7 +346,7 @@ describe('a personal mailbox recovered', () => {
     openDetail('acc_mine')
     await flush()
     await click(find('.sheet button', 'Turn sync on again'))
-    await vi.waitFor(() => expect(announcement.value).toBe('ana@gmail.example is no longer paused. Nothing of it syncs until you turn on sync.'))
+    await vi.waitFor(() => expect(announcement.value).toBe('ana@gmail.example is no longer turned off. Nothing of it syncs until you turn on sync.'))
     expect(words(find('.sheet')!)).toContain('Sync is off. Nothing from this mailbox is stored.')
     expect(find('.sheet button', 'Turn on sync…')).not.toBeNull()
   })
