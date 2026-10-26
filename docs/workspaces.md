@@ -442,21 +442,28 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   (below). A team mailbox's sync turned off tells its readers the same way — by an owner or an
   admin, or by the person a migrated consent was still bound to ([Consents](#consents)) — but
   whoever turned it off, and so does the operator's turn-off of any mailbox's sync, a personal
-  one's included (below). A recovery withdraws the notices of the removal it undoes. A person's event
+  one's included (below), and a team mailbox's sync paused by an owner or an admin
+  ([Pausing a mailbox's sync](#pausing-a-mailboxs-sync)). A recovery withdraws the notices of the
+  removal it undoes, and the end of a pause its pause's. A removal ends the mailbox's pause, and a
+  removed mailbox is never paused: its recovery pauses it again. A person's event
   stream says when they are given one (`Stream.NewNotices`), and a key has none.
 - **Recovering it**, within its 30 days, is for its workspace's owners — a team's active owners, a
   personal mailbox's person, the operator for an operator mailbox (`RecoverAccount`). It comes back
   with its credentials, index, key, consent, and the readers who still qualify — an active member
   holding `read` and, on a mailbox that has a key, a grant at its current epoch — and without what
-  keys held. Its sync is **held** (`accounts.sync_held_at`, `sync.held` on its card) until someone
-  who may turns it on: its person for a personal mailbox (`PUT /v1/accounts/{id}/sync`
-  `{"enabled": true}`, which takes no version and only lifts the hold), an owner or an admin for a
-  team's, to the current sync text, the operator for an operator mailbox. It then catches up from
-  the index it kept. A team mailbox nobody who could read it is left to read is not recovered
+  keys held. Its sync is **paused** (`accounts.sync_paused_at`, `sync.paused` on its card, by
+  whoever recovered it) until someone who may resumes it, where its consent stands (a personal
+  one's, its person's), with whatever index it kept, maybe none; off otherwise; one the operator
+  turned off stays held — and its index is read, searched and acted on meanwhile
+  ([Pausing a mailbox's sync](#pausing-a-mailboxs-sync)). Its person resumes a personal mailbox,
+  an owner or an admin a team's, agreeing again to the current sync text, the operator an operator
+  mailbox; it then catches up from the index it kept, or indexes the last 90 days when it kept
+  none. The recovery gives no pause notice and no `paused` entry: its `recovered` entry stands for
+  it. A team mailbox nobody who could read it is left to read is not recovered
   (`409`): it is deleted for good and linked again, which gives the linker `read`. One that only a
   person suspended by an extension would read, once resumed, waits for them as a live one does
-  (`no_reader` false in the list): it is recovered, its sync held, and turned on only once someone
-  reads it. Since a removed mailbox keeps protecting its last reader, only a change no protection
+  (`no_reader` false in the list): it is recovered paused, and resumed only once someone reads
+  it. Since a removed mailbox keeps protecting its last reader, only a change no protection
   refuses leaves one with nobody. Nothing is recovered in a closed team (`409`), nor once its 30
   days are over (`409`).
 - **Deleting it for good** before its 30 days are over is for the same owners, repeating its id
@@ -491,7 +498,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   password has nothing to revoke: their stored credential is deleted, and lapses.
 - **The journal** (`mailbox_events`, with who read the mailbox then, `mailbox_event_readers`):
   removals, with the end they recorded (`purge_after`), syncs turned off, recoveries, deletions for
-  good and strandings (migration 0021), each written in the transaction that makes it, never with
+  good and strandings (migration 0021), and a team mailbox's sync paused by a person (`paused`) and
+  any team pause ended by a resume (`resumed`, migration 0025), each written in the transaction
+  that makes it, never with
   the address, and kept 90 days. A mailbox is named by its display name, unless that holds an
   address or the local part of its own (three characters or more, without regard to case:
   "Support" for `support@…` is no name), and by a masked hint. A **stranding** is a team mailbox,
@@ -508,12 +517,15 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   that they removed a mailbox still kept — at once, unless an external directory follows them, in
   which case the journal keeps their name until an extension releases them, 90 days at most.
 
-| | Remove | See the removed ones, recover | Delete for good | Turn a recovered one's sync on |
+| | Remove | See the removed ones, recover | Delete for good | Resume a recovered one |
 |---|---|---|---|---|
 | Personal mailbox | its person | its person | its person; the operator | its person |
 | Team mailbox | an active owner | its active owners | its active owners; the operator | its owners and admins, to the current sync text |
 | Operator mailbox | an instance key, `admin` scope | an unrestricted instance admin key | the same | the same |
 | A link that never connected | its owners, or whoever linked it: deleted at once | — | — | — |
+
+One that came back off is turned on by the same people, and one the operator turned off by its
+person.
 
 ### Consents
 
@@ -536,10 +548,11 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
 - Any owner or admin turns it off (`{"enabled": false}`): the same transaction deletes the
   mailbox's index for every reader — its messages, folders and events — and tells each of them but
   whoever turned it off, with a notice ([Removed mailboxes](#removed-mailboxes)); the service
-  compacts and scrubs. Either way, on or off, it lifts the hold a recovery put on its sync.
+  compacts and scrubs, and ends a pause. Turning it on records the agreement and leaves a pause,
+  which a resume ends.
 - A person's withdrawal of their own sync consent deletes the index of **their personal
-  mailboxes only**; it never reaches a team's (but for a migrated consent still bound to them,
-  below).
+  mailboxes only**, and ends their pauses; it never reaches a team's (but for a migrated consent
+  still bound to them, below).
 - Disabling, removing or closing a person does not stop a team mailbox of a team others are in,
   nor remove it: it is the team's — but for a migrated consent still bound to them, below, and a
   mailbox only they read, which no reader is left for. Disabling a person stops their personal
@@ -560,10 +573,12 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   The same transaction deletes its index, as any turn-off does (`store.StopSync`). A mailbox that
   names no person loses its consent: a team's owners or admins give it again, to the current sync
   text, as after any turn-off, and nothing holds it. A personal one keeps its person's consent,
-  which covers their other mailboxes, and is held instead (`sync_held_at`, as after a recovery)
-  until they turn it on again (`PUT /v1/accounts/{id}/sync` `{"enabled": true}`); the console
-  says it is paused since then, never that it was recovered, since the server says only that it is
-  held. Everyone who read it is told with a notice ([Removed mailboxes](#removed-mailboxes)) — of a
+  which covers their other mailboxes, and is held instead (`sync_held_at`), live or removed, the
+  only hold made since migration 0025 (one it could not attribute to a recovery stays): a recovery
+  pauses, and keeps this hold. It stays held until its person turns it on again
+  (`PUT /v1/accounts/{id}/sync` `{"enabled": true}`); the console says it is turned off since then,
+  naming nobody, since the server says only that it is held. It ends a pause first. Everyone who
+  read it is told with a notice ([Removed mailboxes](#removed-mailboxes)) — of a
   personal mailbox, its person, whenever it could sync or kept an index this deletes, a recovered
   one held with its index included, and once: a second turn-off that deletes nothing says nothing
   again; the journal names the actor `operator` (`store.ActorOperator`), which is nobody's person
@@ -590,7 +605,8 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   for the team, or off, or removes it; deleting the linker deletes that index, and disabling them
   again changes nothing. The daemon lists these at start; one only the disabled linker read is
   listed as read by nobody instead, and can only be removed or turned off.
-- **An index that stays while its mailbox does not sync is read, never acted on**: kept stopped, or
+- **An index that stays while its mailbox does not sync is read, never acted on** — but for a
+  paused one, whose index follows actions (the index rule ignores a pause): kept stopped, or
   read by nobody but a key that holds it. No row of it can change, so an action there would change
   the server and leave the index contradicting it; it is refused with `409` before the server is
   touched, when it is accepted and again on the connection before each command. Sending writes
@@ -598,6 +614,94 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   `\Answered`.
 - The From name is the **sender's** profile name (`fromName` reads the caller), so an account's
   `send.from_name` is per caller. A key, instance or workspace, sends under the address alone.
+
+### Pausing a mailbox's sync
+
+A mailbox's sync is **paused** (migration 0025; `accounts.sync_paused_at`, `sync_paused_by`) when
+someone who may stops it and keeps what it indexed: nothing new is fetched for the index, and what
+it holds stays, read, searched and followed by actions, with no time limit, until it is resumed. A
+pause is not a consent: turning sync off, which deletes the index, stays a separate act, and ends
+a pause.
+
+- **Who.** A personal mailbox's person, signed in; a team mailbox's active owners and admins,
+  signed in, by their role (never a member's stored `manage` flag, which is the mailbox's card);
+  an operator mailbox's operator, with an unrestricted instance admin key. Nobody else: a key, a
+  workspace's or a restricted instance key, and a team member are refused (`403`), whatever the
+  mailbox's state, and the operator never pauses a person's or a team's mailbox (`404`: their
+  tools reach those only through the deleting turn-off). The same people resume it. The role is
+  checked first, read-only, before anything about the mailbox is decided, and again in the write.
+- **What it needs.** A live mailbox whose consent stands — its person's for a personal mailbox, its
+  own (`sync_enabled_at`, a migrated one included) for a team's or an operator mailbox — and whose
+  sync the operator's turn-off does not hold (`409`). The account's state is not asked: a mailbox
+  needing authorization may be paused. Pausing a paused mailbox, or resuming one that is not, is a
+  no-op (`200`, nothing written).
+- **A team mailbox's resume agrees for the team.** `POST …/sync/resume` names `version`, the
+  current sync text (`400` for another or none), and records the team's agreement to it, by the
+  resumer, now (`sync_enabled_at`, `_by`, `sync_consent_version`; a consent migration 0011 bound to
+  its linker is confirmed by it), on every resume. Someone must read it (`409` otherwise): one only
+  a suspended member would read waits for them. A personal or an operator mailbox's resume takes no
+  version (`400` with one) and records nothing. Turning a team mailbox on records the agreement
+  and leaves a pause: the resume is the one act that ends it.
+- **What stops, and what keeps working.** The engine's rule (`store.SyncEligible`,
+  `SyncEligibleAccounts`, `RequireSyncEligibleTx`: the index rule and not paused) stops the
+  worker: no IDLE, no passes, and a batch in flight when the pause commits stores nothing. The
+  index rule (`store.IndexFollows`, `RequireIndexFollowsTx`) ignores a pause: an action's result
+  is recorded at once (`ApplyActionFlags`, `ApplyActionMove`, `ApplyActionReturn`), a reply's
+  `\Answered` too. Opening a message or an attachment, a live folder listing, searching, sending
+  and the storage figures work as before. The account's interactive connection is kept logged in
+  between calls, as a worker's is (`InteractiveIdle`), so a paused mailbox holds at most that one
+  connection. Sync now is refused (`409`, "resume it to catch up").
+- **What waits for the resume.** What changed on the mail server meanwhile: new mail, flags and
+  deletions made in other apps, folders created there (the folder list comes from the kept index;
+  a mailbox whose folders were never listed lists them live, writing nothing). A move whose new
+  place the server does not report (no UIDPLUS) leaves its folder at once and shows in its new one
+  at the resume. A folder renumbered on the server, or left behind by a resync the pause cut,
+  answers `409` "this mailbox's sync is paused, and the mail server changed this folder since;
+  resume sync to catch up" (`errPausedBehind`, never `errMessageBusy`'s "try again shortly"), and
+  so does an action's folder gone. A send whose outcome is unknown is settled by the first pass
+  after the resume, which indexes its copy in Sent; a pause longer than 30 days lets the sweep
+  delete the record still unknown, as every record.
+- **The resume catches up** from the kept cursors: each folder's mail above its stored high mark,
+  whatever its date; flags and deletions reconciled (CONDSTORE or the UID diff); a backfill
+  continued from its cursor; a folder new on the server synced from its own window. A paused
+  mailbox that kept no index indexes its last 90 days, as a first sync does.
+- **What starts and ends a pause.** It starts with a person's pause and with a recovery, which
+  pauses a mailbox whose consent stands, naming whoever recovered it, with no notice and no
+  `paused` entry (its `recovered` entry stands for it); one whose consent is off comes back off,
+  and one the operator turned off stays held ([Removed mailboxes](#removed-mailboxes)). It ends,
+  in the transaction that does it, its notices withdrawn, with a resume, a person's withdrawal of
+  their sync consent (their personal mailboxes), a team's or an operator mailbox's sync turned
+  off, the operator's turn-off (before the hold or the withdrawal it makes), a consent bound by
+  migration 0011 stopped with its person, a removal, and a deletion for good
+  (`store.EndPauseTx`). It is kept through a suspension, a disable (the person's mailboxes stop
+  for `person_off` and keep their pause), a team closed or reopened, teams withheld, the
+  account's state, losing every reader, changes of grants and members, an external directory's
+  documents, a team's sync turned on again, a person's consent given to a new revision, and the
+  edition's gate. The schema holds the rest: only a live mailbox that nothing holds is paused, a
+  team's or an operator mailbox only while its consent stands (`accounts_pause_consent`), a
+  pause is recorded whole and once (its moment never moves; its actor is only forgotten), and
+  only a personal mailbox is held (`accounts_held_personal`). What a pause keeps may be nothing
+  (paused, or removed and recovered, before its first pass).
+- **The journal and the notices.** A team mailbox's pause by a person is journaled (`paused`, no
+  cause) with who read it then, and tells each of them but the actor with a notice (`kind`
+  `paused`), withdrawn by the pause's end; every team resume is journaled (`resumed`, no cause),
+  telling nobody. Every other end of a team pause is the entry of the act that ends it
+  (`sync_paused`, `removed`, `purged`). A personal mailbox's pause and an operator mailbox's are
+  not journaled, as their turn-offs are not; the snapshot (`paused`) says whether one stands. A
+  pause's notice goes with its entry at 90 days, while the pause has no time limit: the
+  mailbox's card says it is paused, and since when.
+- **Who paused it** is in the access directory (`paused_at`, `paused_by`), which only owners,
+  admins and the operator read, never on the card every member reads; forgotten when that person
+  is deleted (`workspace.DeletePersonTx`), the pause kept.
+- **Freshness.** Where workspaces come from a directory elsewhere, a team mailbox's pause and
+  resume ask the hook (`team_sync`), after the read-only role check (and for a resume the reader
+  check) and outside the write, which checks again. A personal or an operator mailbox's ask
+  nothing, nor does a recovery.
+- **The edition opts in.** `app.Options.SyncPauseOffered`, which `serve` sets, offers a person's
+  pause; left unset, every pause is `403` ("not offered on this server"), while a recovery still
+  pauses and every resume works, so a pause never outlives the edition that offered it.
+- **The command line** pauses and resumes an operator mailbox
+  (`mailserver account sync ID pause|resume`), and `account recover` says what it came back as.
 
 ## Who may do what
 
@@ -961,7 +1065,8 @@ see it, assuming that never changes. With grants it does:
   taken a mailbox, or revoked. A role never gives `read`, so a role change
   moves nothing a stream carries; an owner's or an admin's stream carries a team mailbox's events
   only while they hold `read` on it. Switching a team mailbox's sync off deletes its events with
-  its index; nothing journals the switch itself. One daemon writes the database (the lock),
+  its index; nothing journals the switch itself. Pausing a mailbox's sync deletes nothing and
+  publishes nothing; its message events stop until it is resumed. One daemon writes the database (the lock),
   so a counter in memory sees every change; the `--bootstrap` commands run with the daemon stopped.
 - Each subscription keeps the set of mailboxes the caller can read and the epoch it read it at.
   Before deciding on an event, if the epoch moved, it reads the set again (one query). Events are
@@ -1054,9 +1159,11 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `DELETE /v1/workspaces/{id}/apikeys/{prefix}/accounts/{account_id}` | owner or admin, signed in | `204`: the mailbox is out of the key |
 | `GET /v1/workspaces/{id}/apikeys/{prefix}/sends` | owner or admin, signed in | `[SendStatus]`, the key's sends from the workspace's mailboxes, newest first (at most 200) |
 | `GET /v1/workspaces/{id}/removed-mailboxes` | a personal workspace's person, a team's active owners, signed in (an admin or a member: `403`); the operator, any workspace's | `[RemovedMailbox]`, the oldest removal first |
-| `POST /v1/accounts/{id}/recover` | its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | `Account`, live again, `sync.held` until someone who may turns it on; `409` past its 30 days, in a closed team, or for a team mailbox nobody who could read it is left to read; `404` for everyone else |
+| `POST /v1/accounts/{id}/recover` | its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | `Account`, live again, `sync.paused` until someone who may resumes it (off where its consent is off; `sync.held` where the operator's turn-off holds a personal one); `409` past its 30 days, in a closed team, or for a team mailbox nobody who could read it is left to read; `404` for everyone else |
 | `POST /v1/accounts/{id}/purge` | its owners, as above; the operator, any workspace's | `{confirm}`, the id repeated, or `400` and nothing deleted → `204` (150 s): deleted for good; a live mailbox `409` |
-| `POST /v1/accounts/{id}/sync/stop` | the operator, any workspace's mailbox, live or removed (anyone else: `403`) | no body → `AccountSync` (150 s): its sync turned off and its index deleted, its readers told; a personal mailbox `held` until its person turns it on, a team's consent withdrawn ([Consents](#consents)) |
+| `POST /v1/accounts/{id}/sync/stop` | the operator, any workspace's mailbox, live or removed (anyone else: `403`) | no body → `AccountSync` (150 s): its sync turned off and its index deleted, its readers told, its pause ended; a personal mailbox `held` until its person turns it on, a team's consent withdrawn ([Consents](#consents)) |
+| `POST /v1/accounts/{id}/sync/pause` | a personal mailbox's person, a team's owners and admins, signed in; the operator for an operator mailbox | no body → `AccountSync` (`paused`, `paused_since`); `409` held or consent off; `403` where the edition does not offer the pause ([Pausing a mailbox's sync](#pausing-a-mailboxs-sync)) |
+| `POST /v1/accounts/{id}/sync/resume` | the same people, in every edition | `{"version"}` for a team mailbox (the current sync text, recorded as the team's agreement; `400` otherwise; `409` nobody reads it), no body otherwise → `AccountSync` |
 | `GET /v1/me/notices` | session (a key: `403`) | `[PersonNotice]`, the newest first |
 | `DELETE /v1/me/notices/{id}` | session | `204`; one the person does not have, `404` |
 | `GET /v1/me/apikeys` | session | `[WorkspaceKey]`: the keys the person created, in every workspace |
@@ -1075,7 +1182,7 @@ Changed routes:
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected; answers `Removal` (`200`, `204` before 0020) |
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's) |
-| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on lifts a recovery's hold too; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while a recovery holds it |
+| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
 | `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)); a key's are that key's |
@@ -1216,9 +1323,10 @@ mailserver user invite --email EMAIL [--role owner|member]                      
 mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
 mailserver account remove  ID [--yes]           # an operator mailbox: kept 30 days, recoverable
 mailserver account removed [--workspace ID]     # the operator workspace's by default; any workspace's
-mailserver account recover ID                   # an operator mailbox, its sync held until `account sync ID on`
+mailserver account recover ID                   # an operator mailbox, its sync paused until `account sync ID resume` (off, if it was off, until `account sync ID on`)
 mailserver account purge   ID [--yes]           # a removed mailbox of any workspace, deleted for good
 mailserver account sync    ID off [--yes]       # any workspace's mailbox, removed too: sync off, index deleted
+mailserver account sync    ID pause|resume      # an operator mailbox: index kept
 ```
 
 - `workspace close` and `reopen` take a local team only; `workspace list` notes a closed one
@@ -1237,8 +1345,9 @@ mailserver account sync    ID off [--yes]       # any workspace's mailbox, remov
   deleted at once. `account removed` lists a workspace's removed mailboxes (the operator workspace's
   without `--workspace`), with who removed each, until when it is kept, whether its index is kept
   and how many people would read it again; `account recover` recovers an operator mailbox only (a
-  person's or a team's is its owners' to recover, in the console), whose sync `account sync ID on`
-  then switches on again; `account purge` deletes a removed mailbox of any workspace for good, after
+  person's or a team's is its owners' to recover, in the console), and says what its sync came
+  back as: paused until `account sync ID resume`, or off until `account sync ID on`;
+  `account purge` deletes a removed mailbox of any workspace for good, after
   asking (`--yes` does not), to erase one when its person asks. `account sync ID off` turns any
   workspace's mailbox's sync off and deletes its index, after asking, removed ones too: a team's
   owners or admins, or a personal mailbox's person, turn it on again ([Consents](#consents)). See
@@ -1843,6 +1952,39 @@ workspace and only it, a person's deletion marking every workspace they were in 
 schema's cascade, a local workspace never marked, a mark only rising, and an outer `INSERT OR
 IGNORE` still marking.
 
+## Migration 0025
+
+`0025_paused_mailboxes.sql`, a **rebuild** (the journal's second, after 0021; `migrate --dry-run`
+says so): `accounts.sync_paused_at` and `sync_paused_by`, and `mailbox_events` rebuilt to admit
+the kinds `paused` and `resumed`, with no cause, `notices_to_readers` admitting `paused` (never
+`resumed`). The triggers it adds hold a pause: a mailbox is linked unpaused, a pause is recorded
+whole and once (its moment never moves; its actor is only cleared, when that person is deleted),
+only a live mailbox that nothing holds is paused, a team's or an operator mailbox only while its
+consent stands (`accounts_pause_consent`), and only a personal mailbox is held
+(`accounts_held_personal`); `accounts_change_update` now watches `sync_paused_at`.
+
+It also turns the **recoveries' holds** into what a recovery does now. A hold is the act that set
+its moment, and the two kinds are told apart by what the code allows and, where that is not
+enough, by the journal: a hold on a mailbox that names no person (a team's or an operator mailbox)
+is a recovery's, since the operator's turn-off of such a mailbox held nothing; so is one over an
+index (a folder or a message), since the operator's turn-off deleted the index in the transaction
+that held, and nothing writes a held mailbox's index; and a personal hold over no index is a
+recovery's when a `recovered` entry of the mailbox bears its moment with no turn-off by the
+operator journaled after it. A recovery's hold becomes, on a live mailbox whose consent stands,
+its pause at the hold's moment, naming nobody (who recovered it is not on the row), and nothing on
+a live one whose consent is off or on a removed one (its next recovery decides). Every other hold
+stays — the operator's, or a recovery's whose entry the 90-day sweep took, over no index either
+way — and reads "turned off until its person turns it on", naming nobody. A removed personal
+mailbox the operator turned off while it was removed, which was not held then, is held at the
+moment of that turn-off when the journal shows it after its last removal. What stays imprecise: a
+recovery's hold older than the journal's 90 days stays a hold, and a personal mailbox the operator
+turned off, then removed and recovered before 0025, is converted as the recovery's, since that
+recovery's hold had replaced the operator's moment. `accounts_change_update` is dropped before the
+conversion and written again after it, so the conversion marks no followed workspace. Schema 25
+refuses every older binary: the way back is the backup taken before. The tests in
+`internal/store/migrate_twentyfive_test.go` hold every table's rows, the journal's high-water mark
+and its triggers, the conversion case by case, and each new trigger.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -1907,6 +2049,30 @@ with no children of its own, is the one exception, named in the test).
 ## Tests
 
 Test names state the guarantee. At least:
+
+- Pausing one mailbox's sync (migration 0025): the migration's in
+  `internal/store/migrate_twentyfive_test.go` (`TestMigrationTwentyFiveRebuildsTheJournalAndPausesOnlyWhatARecoveryHeld`,
+  `TestMigrationTwentyFiveTurnsARecoverysHoldIntoItsPauseAndKeepsTheOperators`, and one per trigger);
+  the store's in `syncpause_test.go` and `syncpause_index_test.go`
+  (`TestAPausedMailboxIsNotSyncedButItsIndexStillFollowsActions`,
+  `TestASyncBatchInFlightWhenThePauseCommitsStoresNothing`,
+  `TestEveryEndOfAConsentEndsThePauseAndWithdrawsItsNotices`,
+  `TestATeamResumeRecordsTheTeamsAgreementByTheResumer`); the account's
+  (`TestARecoveredMailboxComesBackPausedByWhoeverRecoveredIt`,
+  `TestARecoveredMailboxWhoseConsentIsOffComesBackOff`, `TestARecoveryKeepsTheOperatorsHold`,
+  `TestAPausedMailboxsConsentAlwaysStands`); the workspace's
+  (`TestDeletingAPersonForgetsWhoPausedAMailboxAndKeepsThePause`); the service's
+  (`TestATeamsOwnersAndAdminsPauseAndResumeItsMailboxButAMemberCannot`,
+  `TestATeamResumeNamesTheCurrentSyncTextAndAgreesForTheTeam`,
+  `TestAPausedMailboxIsStillSearchedOpenedActedOnAndSentFrom`,
+  `TestAFolderBehindTheServerOnAPausedMailboxSaysResumeSyncToCatchUp`,
+  `TestAnEditionThatDoesNotOfferThePauseRefusesItAndNeverARecoveryOrAResume`, the freshness sites
+  `PauseMailboxSync` and `ResumeMailboxSync`); the engine's
+  (`TestAPausedMailboxHasNoWorkerAndKeepsItsInteractiveConnectionBetweenCalls`,
+  `TestAResumedMailboxCatchesUpFromWhatItKept`); the routes'
+  (`TestTheSyncPauseRoutesAnswerTheMailboxsSync`, the contract fixtures); the command line's
+  (`TestServeOffersPausingOneMailboxsSync`, `TestTheOperatorRecoversAMailboxPausedAndResumesIt`,
+  `TestHeldLinesNameNoActor`); MCP's (`TestListAccountsSaysAPausedMailboxIsSearchableButNotUpdated`).
 
 - Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, the event stream, the long
   poll and storage, and over MCP, which takes keys only,
@@ -2551,5 +2717,6 @@ Test names state the guarantee. At least:
 | 0021 to 0023 (following an external directory, storage) | `internal/store/migrations/0021_stranded_mailboxes.sql` (a rebuild), `0022_directories.sql`, `0023_workspace_changes.sql` and their tests; `store/mailboxevents.go` (strandings, causes, the lost person, a removal's end, `MailboxLabel`), `consent.go` (`bound_stopped`), `readers.go` (`HeldReaderSQL`), `directory.go`, `extstate.go`, `changes.go`; `workspace/strand.go` (`Stranding`, `JournalStrandedTx`), `people.go` (a followed person's name kept in the journal until released); `auth/closure.go` (a deleted person's directory rows marked gone); `account/removal.go` and `store.go` (a link that never connected, deleted in a workspace from another source, journaled) |
 | Following an external directory, its documents | `internal/workspace/mirror.go` (`ValidExternalID`, `MirrorWorkspaceTx`, `ReplacePersonalTx`, `MirrorMemberTx`, `EndMembershipTx` and its holds, `HeldMembershipsTx`, `PersonalReplacementBlocks`), `reader.go` (`StrandCandidatesTx`), `members.go` (`Member.Held`), `source.go` (`Platform` made real); `auth` (`ExternalSignIn.PersonCreatedTx`, `IdentityUser`, `ResumeTx`, `RevokeSessionsStartedBeforeTx`, `Keys.RevokeCreatedBeforeTx`; a disable, `DisableBy` naming its actor, and a forced reset journal what they strand); `store/directory.go` (the listings and the sweep); `service/directory.go` (the documents, the directory's calls, a closed person forgotten and released), `external.go` (the document at sign-in), `closure.go` (`removePerson`: a deletion journals what it strands); `app/sweep.go` (`SweepDirectory`) |
 | Following an external directory, what it reads | `internal/store` (`ReadTx`, `PauseSQL` beside the sync rule, `KeptWaitingSQL`, `journalreads.go`: the journal per workspace with its readers and a key's creator, its head, the followed workspaces); `workspace/snapshot.go` (`SnapshotTx`); `service/snapshot.go` (`AccessSnapshot`), `journal.go` (`MailboxJournal`, `MailboxJournalHead`, `FollowedWorkspaces`, `WorkspaceChanges`, the extension state), `freshness.go` (`Freshness` and its thirteen call sites in `workspaces.go`, `mailboxkeys.go`, `workspacekeys.go`, `accounts.go`, `consent.go`, `actions.go`, `send.go`, `removed.go`); `app` (`Options.Freshness`, `Deps.State`, the start line of personal workspaces a document would not replace); `account/revoke.go` (a Google grant revoked once its mailbox is deleted for good) and `registry.go`, `removal.go`, `store.go` (the token opened in the deleting transaction); `web/src/state/failure.ts` (`Failure.retryAfter`), `workspaces.ts` (`workspaceVanished`), `accounts.ts` and `storage.ts` |
+| Pausing one mailbox's sync | `internal/store/migrations/0025_paused_mailboxes.sql` (a rebuild) and its tests; `store/eligibility.go` (the index rule and the engine's rule, `IndexFollows`, `PausedAccounts`, `ConsentStandsSQL`, `PausePaused` last in `PauseSQL`), `syncpause.go` (`PauseSync`, `ResumeSync`, `EndPauseTx`), `consent.go` (`agreeSyncTx`; every end of a consent ends a pause; `StopSync` holds a removed personal mailbox too), `mailboxevents.go` (`paused`, `resumed`), `actions.go` (the action recordings on the index rule); `account/store.go` (`SyncPausedAt`, `SyncPausedBy`), `removal.go` (a removal ends a pause, a recovery pauses); `workspace/grants.go` (`Pause` in the directory), `people.go` (who paused, forgotten); `service/syncpause.go` (`PauseMailboxSync`, `ResumeMailboxSync`, `SyncResumeRequest`, the gate `Deps.SyncPauseOffered`), `sync.go` (`paused`, `paused_since`; Sync now refused), `actions.go` and `messages.go` (`indexFollows` on the index rule; `busy`, `errPausedBehind`), `removed.go` (a recovery reconciles), `notices.go` (`paused`), `snapshot.go` (`PausePaused`, `SnapshotPauses`), `workspaces.go` (`paused_at`, `paused_by`), `freshness.go`; `sync/manager.go` and `interactive.go` (the paused set, the kept slot); `app` (`Options.SyncPauseOffered`); `api` (`…/sync/pause`, `…/sync/resume`) and the fixtures; `cmd/mailserver` (`serveOptions`, `account sync ID pause|resume`, the recover, list and held lines, `access list`); `mcp/text.go`; the console's (implementer B: `web/src/components/SyncPause.vue`, `TeamSyncAgreement.vue` and the rest, [`console.md`](console.md)) |
 | Teams ready behind an edition's gate | `service/workspacekeys.go` (`Deps.KeysInPersonalWorkspaceOnly`, `errTeamKeys`), `service.go` (`visibility`, `authorizeAccount`: no key reaches a team's mailbox), `access.go` (`keyWorkspace`) and `app` (`Options.KeysInPersonalWorkspaceOnly`); `service/freshness.go` (`FreshPurge`, `FreshRemovedSyncOff`), `removed.go` (`PurgeAccount`, `removedTeamOpen`: a team withheld or closed refused before the hook is asked) and `consent.go` (`syncOffRemoved`); `store/consent.go` (`StopSync`), `store/mailboxevents.go` (`ActorOperator`), `service/consent.go` (`StopMailboxSync`), `api` (`POST /v1/accounts/{id}/sync/stop`) and `cmd/mailserver` (`account sync ID off`); `account/registry.go` (`checkGrant`: `ErrGrantUnproved`, `ReasonUnproved`) and `service/accounts.go` (`fromCompletion`); `web/src/edition.ts` (`sync` drawn with `team`, `copy.keysSection`, `personalKeysOnly`), `ui/sync.ts` (`heldText`, which claims no recovery) and `StoragePanel.vue`, `TeamMailboxSync.vue`, `AddAccountDialog.vue`, `AccessPanel.vue`, `open/SyncText.vue`, `ui/reasons.ts` and the catalogs (`concordância da equipe`, `acuerdo del equipo`) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |

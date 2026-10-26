@@ -885,10 +885,11 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   the switch; a member who reads it is told they do.
 - **Notices** (`components/PersonNotices.vue`, in the console's frame above every section, every
   edition's): the person's notices (`GET /v1/me/notices`), in whichever workspace they happened —
-  a mailbox they read removed, or a team mailbox's sync turned off, by someone else — naming the
-  mailbox as the server does (its address while kept, a masked hint once deleted) and where it
-  stands now, never who did it. Each is said once through the live region the first time it is
-  read, and stays until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery, or gone
+  a mailbox they read removed, or a team mailbox's sync turned off or paused, by someone else —
+  naming the mailbox as the server does (its address while kept, a masked hint once deleted) and
+  where it stands now, never who did it. Each is said once through the live region the first time
+  it is read, and stays until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery or
+  the pause's end, or gone
   with its entry in the server's journal, at 90 days at most. They are read when the console
   starts, on Refresh, when access changes, and when the stream says `event: notice`; a server
   older than notices (`404`) has none, and a failure to read them is shown nowhere: the next read
@@ -1015,15 +1016,17 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/accounts` | admin (a session counts) | add a mailbox (45 s); `workspace_id` names a team the caller owns or administers, and `sync_consent_version` (the current sync text) gives the team's consent with the link; a person sends the mailbox's first key, `public_key`, `namespace` and `grant`, with a fresh step-up |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | admin: a team's owner (an admin, their own link that never connected), a personal mailbox's person, the operator for its own | remove it → `Removal` `{account_id, purged, purge_after?}`: kept 30 days with its index, recoverable until `purge_after`, then deleted for good; one that never connected is deleted at once (`purged`); without the id repeated, `400` and nothing removed |
 | `GET /v1/workspaces/{id}/removed-mailboxes` | admin: a personal workspace's person, a team's owners, signed in (an admin or a member: `403`); the operator, any workspace's | `[RemovedMailbox]`, the oldest removal first ([`workspaces.md`](workspaces.md#removed-mailboxes)) |
-| `POST /v1/accounts/{id}/recover` | admin: its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | → `Account`, live again, its `sync.held` until someone who may turns it on; `409` once its 30 days are over, in a closed team, and for a team mailbox nobody who could read it is left to read; anyone else is told it does not exist (`404`) |
+| `POST /v1/accounts/{id}/recover` | admin: its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | → `Account`, live again, its `sync.paused` until someone who may resumes it (or off, where its consent is off, or `sync.held`, where the operator's turn-off holds it); `409` once its 30 days are over, in a closed team, and for a team mailbox nobody who could read it is left to read; anyone else is told it does not exist (`404`) |
 | `POST /v1/accounts/{id}/purge` | admin: its owners, as above; the operator, any workspace's | `{confirm: <id>}` → 204 (150 s): a removed mailbox deleted for good, compacting what held its index; a live one `409`; without the id repeated, `400` and nothing deleted |
 | `POST /v1/accounts/{id}/oauth/start` | admin, manage | start (or restart) its authorization; the flow is the caller's |
 | `POST /v1/accounts/oauth/callback` | admin, manage | `{redirect_url}` → `Account` (45 s); only the flow's starter |
 | `GET /v1/accounts/{id}/folders` | read, `read` | folders, from the index or from the server |
 | `GET /v1/accounts/{id}/sync` | read | `AccountSync` |
 | `POST /v1/accounts/{id}/sync` | write, `read` | ask for a pass now → `AccountSync` (202) |
-| `PUT /v1/accounts/{id}/sync` | a team mailbox: its owners and admins, signed in; an operator mailbox: unrestricted instance admin key; a personal mailbox: its person, `{"enabled": true}` only | `{enabled, version?}` → `AccountSync`: the team's consent (on: `version` the current sync text) or the operator's switch; off deletes the index for everyone; on also lifts a recovery's hold, and from a personal mailbox's person does only that (no `version`; anything else `400`); `409` to turn on a team mailbox nobody can read; a removed team mailbox's owners turn it off, deleting the index it kept |
-| `POST /v1/accounts/{id}/sync/stop` | unrestricted instance admin key (anyone else: `403`) | the operator's turn-off of any workspace's mailbox, live or removed → `AccountSync` (150 s): its index deleted, its readers told; a team's consent withdrawn, a personal mailbox `held` until its person turns it on ([`workspaces.md`](workspaces.md#consents)) |
+| `PUT /v1/accounts/{id}/sync` | a team mailbox: its owners and admins, signed in; an operator mailbox: unrestricted instance admin key; a personal mailbox: its person, `{"enabled": true}` only | `{enabled, version?}` → `AccountSync`: the team's consent (on: `version` the current sync text) or the operator's switch; off deletes the index for everyone, and ends a pause; on never ends a pause, and from a personal mailbox's person only lifts the operator's hold (no `version`; anything else `400`); `409` to turn on a team mailbox nobody can read; a removed team mailbox's owners turn it off, deleting the index it kept |
+| `POST /v1/accounts/{id}/sync/stop` | unrestricted instance admin key (anyone else: `403`) | the operator's turn-off of any workspace's mailbox, live or removed → `AccountSync` (150 s): its index deleted, its readers told; a team's consent withdrawn, a personal mailbox `held` until its person turns it on, a pause ended ([`workspaces.md`](workspaces.md#consents)) |
+| `POST /v1/accounts/{id}/sync/pause` | admin: a personal mailbox's person, a team's owners and admins, signed in; the operator for an operator mailbox (anyone else: `403`) | no body → `AccountSync` (`paused`, `paused_since`): its sync paused, its index kept; `409` when it is held or its consent is off; `403` where the edition does not offer the pause ([`workspaces.md`](workspaces.md#pausing-a-mailboxs-sync)) |
+| `POST /v1/accounts/{id}/sync/resume` | admin: the same people, in every edition | `{"version"}` for a team mailbox, the current sync text, recorded as the team's agreement (`400` otherwise; `409` nobody reads it); no body for a personal or an operator mailbox (`400` with a version) → `AccountSync` |
 | `GET/POST/DELETE /v1/me/sync-consent` | see [Sync](#sync-and-consent) | the person's consent to sync |
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
@@ -1370,8 +1373,8 @@ off deletes what was stored. Whose consent it is depends on whose mailbox it is:
   switches it on, `mailserver account sync ID on` (`PUT /v1/accounts/{id}/sync {"enabled": true}`,
   unrestricted instance admin key). `off` asks for confirmation and deletes its index. For a
   person's mailbox the route answers `400` to the person, but for `{"enabled": true}`, which lifts
-  the hold of their mailbox recovered after it was removed and nothing more, and `404` to everyone
-  else: nobody decides for its person, not the operator either.
+  the hold the operator's turn-off put on their mailbox and nothing more (a pause is ended by
+  `POST …/sync/resume`), and `404` to everyone else: nobody decides for its person, not the operator either.
 - **The rule the engine reads** (`internal/store/eligibility.go`): the account is `active` and, for
   a personal mailbox, its person is active and has consented; for a team mailbox, the team's
   consent stands and someone reads it; for an operator mailbox, the operator switched it on.
@@ -1397,10 +1400,12 @@ Every account in the JSON has `sync`, the `AccountSync` that `GET /v1/accounts/{
 | `last_synced_at` | the last pass without error (unix) |
 | `error_class` | a short class of the last failure (`needs_reauth`, `auth_failed`, `connection_closed`, `rate_limited`, …), never the server's text |
 | `next_retry_at` | when an account in backoff tries again |
-| `held` / `held_since` | a mailbox recovered after it was removed, and since when: nothing syncs, `enabled` false whatever its consent says, until someone who may turns it on (`PUT …/sync`); absent otherwise |
+| `held` / `held_since` | a personal mailbox whose sync was turned off and is held, and since when (the server's operator's turn-off; a hold migration 0025 could not attribute to a recovery): nothing syncs, `enabled` false, until its person turns it on (`PUT …/sync`); absent otherwise |
+| `paused` / `paused_since` | a mailbox whose sync is paused, by someone who may or by its recovery, and since when: nothing new is indexed, what was is read, searched and acted on, until it is resumed (`POST …/sync/resume`); its consent stands, so `enabled` keeps its meaning; what it kept may be nothing (`messages` 0), and a resume then indexes the last 90 days; never beside `held`; absent otherwise |
 
 `POST /v1/accounts/{id}/sync` answers `202`, or `409` when sync is off for the account, it needs
-authorizing, the engine has not picked it up yet, or the daemon runs without an engine.
+authorizing, the engine has not picked it up yet, the daemon runs without an engine, or it is
+paused.
 
 `GET /v1/accounts/{id}/folders` answers from the index once sync is allowed and has listed the
 folders: the counts (`messages`, `unseen`) are what is indexed, and each folder has `sync_state`
@@ -1629,7 +1634,7 @@ for a person who never answered, which tells the two apart; a withdrawal made be
 reads as never answered. The open console asks again either way; an edition that asks for a
 permission only the first time leaves a person who withdrew it alone. Without sync there is no
 index, and without an index no message to act on; an index that stays while sync is stopped is not
-acted on either (point 6 below).
+acted on either, but for a paused mailbox's (point 6 below).
 
 ### Who may act
 
@@ -1646,8 +1651,10 @@ Decided in `internal/service`, before any connection, in this order:
    otherwise). Asked again, the key still live, before each command.
 4. **A mailbox of the operator workspace**: an instance key with `write`.
 5. The account must be usable: `needs_reauth`, `pending_auth` and `disabled` are `409`.
-6. The mailbox must be syncing, so that the index can follow what the server does. A team mailbox
-   kept stopped since migration 0011 keeps its index for its readers, and one nobody reads any more
+6. The mailbox must be syncing or paused, so that the index can follow what the server does: a
+   paused mailbox's index follows what is done through Mailie (the index rule, which ignores a
+   pause), and what the server changed meanwhile waits for the resume (`409` on a folder the
+   server changed since). A team mailbox kept stopped since migration 0011 keeps its index for its readers, and one nobody reads any more
    keeps it for a key that holds it, but no row of it can change: an action there is `409` before
    the server is touched. Asked again, with the rest, on the connection before each command; when
    sync stops between that and the recording (an owner or an admin turning the team's sync off,

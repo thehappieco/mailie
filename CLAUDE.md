@@ -47,7 +47,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   choice too) keeps API keys to personal workspaces: creating a key in a team and raising what a
   key holds on a team's mailbox are `not_authorized` (`errTeamKeys`), and no key reaches a team's
   mailbox (one a database still holds included: listed nowhere, refused by name), while listing a
-  team's keys, revoking them and taking away stay. `Options.NameFollowsIdentity` (never set by `serve`) names a
+  team's keys, revoking them and taking away stay. `Options.SyncPauseOffered` (set by `serve`, for
+  the open edition; another binary sets it only once its sync text says what a pause does) offers
+  a person's pause of one mailbox's sync: left unset, the core refuses every such pause
+  (`not_authorized`), never a recovery's pause nor a resume, so an edition offers it by opting in,
+  never by forgetting to withhold it. `Options.NameFollowsIdentity` (never set by `serve`) names a
   person linked to an external identity as the provider names them at every sign-in
   (`SignInExternal`, in its
   transaction; an empty name leaves them none), never at a step-up nor from anywhere else, and
@@ -64,17 +68,22 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 - `internal/lockfile` — the data directory's lock: two daemons on one database corrupt the index.
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
-  `PRAGMA user_version`, FTS5. The mailbox journal (`mailboxevents.go`, migrations 0020 and 0021,
-  a rebuild): `mailbox_events` (`removed` with its `purge_after`, `sync_paused` with the `cause`
+  `PRAGMA user_version`, FTS5. The mailbox journal (`mailboxevents.go`, migrations 0020, 0021 and
+  0025, the last two rebuilds): `mailbox_events` (`removed` with its `purge_after`, `sync_paused` with the `cause`
   `bound_stopped` when a consent stopped with its person, `recovered`, `purged`, and `stranded`, a
-  team mailbox its one reader lost with no protection asked, with its `cause` and `lost_user`),
+  team mailbox its one reader lost with no protection asked, with its `cause` and `lost_user`, and
+  `paused` and `resumed`, a team mailbox's sync paused by a person with its index kept, and any
+  team pause ended by a resume (never a cause; a turn-off stays `sync_paused`; a recovery's pause
+  is its `recovered` entry; every other end of a team pause is journaled by the act that ends it,
+  `sync_paused`, `removed` or `purged`),
   written in the transaction that does it with who read the mailbox then (`mailbox_event_readers`),
   never an address (a label, `MailboxLabel`, never one holding the address's local part, which
   0021's copy left out of the older entries too, and a masked hint, forgotten when it is deleted
   for good), kept 90 days, read per workspace from a
-  cursor by an extension (`mailbox_events_workspace`); and `notices`, a row per reader of a removal
-  or a sync turned off, never for whoever acted nor of a stranding (a trigger), until dismissed,
-  withdrawn by a recovery, or gone with its journal entry. For an extension that follows an
+  cursor by an extension (`mailbox_events_workspace`); and `notices`, a row per reader of a removal,
+  a sync turned off or a person's pause, never for whoever acted nor of a stranding or a resume (a
+  trigger), until dismissed, withdrawn by a recovery or by the pause's end, or gone with its
+  journal entry, a pause's at 90 days though the pause has no time limit (its card says it). For an extension that follows an
   external directory (migrations 0022 and 0023; empty on a self-hosted server): `directories`
   (generation, confirmation, reset count, cursor, published-through, one row per issuer, going back
   only with a reset), `directory_people` (what a directory said of a person, keyed by issuer and
@@ -87,8 +96,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   of every change its snapshot shows, only rising). What an extension reads of them: the journal
   per workspace from a cursor, with its readers and a key's creator (`JournalOf`, `JournalHead`),
   the workspaces from another source (`FollowedWorkspaces`), and why a mailbox does not sync
-  (`PauseSQL`, one order of causes beside `syncEligible`, empty exactly when it may sync, held to
-  `SyncEligible` by test), all in one read when it must be (`ReadTx`, a deferred BEGIN on the
+  (`PauseSQL`, one order of causes beside the engine's rule, a pause, `paused`, last, empty
+  exactly when it may sync, held to `SyncEligible` by test), all in one read when it must be (`ReadTx`, a deferred BEGIN on the
   query-only pool).
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
@@ -173,12 +182,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `imapclient` and `go-mail`.
 - `internal/mime` — a lenient parser over go-message; parts ↔ IMAP sections.
 - `internal/account` — accounts, their encrypted credentials, OAuth flows and the registry of
-  token sources. Removing a mailbox keeps it 30 days (`removal.go`; `removed_at`, `purge_after`):
+  token sources. Removing a mailbox keeps it 30 days (`removal.go`; `removed_at`, `purge_after`),
+  ending its pause first (`store.EndPauseTx`), as every deletion for good does:
   `Get` and `Visibility` leave it out, so nothing finds, dials or refreshes it (`Registry.Mailbox`
   builds one only through `Get`, and caches none built while a removal let go of it), and only
   `GetRemoved`/`ListRemoved` read it; what keys held on it and its consent attempts go at once. A
-  recovery clears the removal and holds its sync (`sync_held_at`) until someone who may turns it
-  on. The hourly sweep, at start too, deletes it for good past its 30 days, never early, a closed
+  recovery clears the removal and pauses its sync (`sync_paused_at`, by whoever recovered it; no
+  notice, its `recovered` entry the record) until someone who may resumes it, where its consent
+  stands (`store.ConsentStandsSQL`: a personal one's, its person's), with whatever index it kept,
+  and off otherwise, and keeps the hold the operator's turn-off put on a personal one
+  (`sync_held_at`; migration 0025 made the recoveries' holds it could tell apart, by the code or
+  the journal, what a recovery does now). The hourly sweep, at start too, deletes it for good past its 30 days, never early, a closed
   team's included (`PurgeExpired`); a link that never connected (no credentials) is deleted at
   once, and so are the removed mailboxes that go with a person closed, their journal entries with
   them (a never-connected link in a workspace from another source is journaled `purged` instead,
@@ -216,7 +230,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   wait, are enrolled and hold the key at its epoch; the people a team mailbox cannot lose. It
   decides nothing. See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
-  `interactive`).
+  `interactive`); a paused mailbox has no worker and keeps only its interactive session, logged in
+  between calls as a worker's is (`store.PausedAccounts`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
   concrete struct, not an interface. `directory.go` is what an extension that follows an external
   directory calls, with no principal and from no transport: a person's document applied in one
@@ -232,7 +247,7 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   recovered, its kept last readers protected, until it is deleted for good). `freshness.go`: the
   hook (`Deps.Freshness`) asked before thirteen acts of a person signed in — a key sealed to
   someone, flags raised for a person or a key, a key created, a link into a team, a team mailbox's
-  consent started again, its sync switched, an action on it or a send from it, and, by an owner, a
+  consent started again, its sync switched, paused or resumed, an action on it or a send from it, and, by an owner, a
   removed team mailbox deleted for good (`FreshPurge`) or its sync turned off
   (`FreshRemovedSyncOff`) — after the read-only authorization (a team withheld or closed refused
   first) and outside every write; the write,
@@ -360,7 +375,7 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - **Events.** Journal and state change in the same transaction; publish only after the commit.
   Replay always comes from the `events` table — there is no history in memory. The mailbox journal
   (`mailbox_events`) is written the same way, in the transaction that removes, recovers, deletes for
-  good, turns sync off or strands, and is not a record of `events`, which a deletion for good takes
+  good, turns sync off, pauses or resumes a team mailbox's sync, or strands, and is not a record of `events`, which a deletion for good takes
   with the mailbox. It is an extension's outbox, read per workspace from a cursor; which workspaces
   from another source changed is marked by triggers in the same transaction (`workspace_changes`).
   A notice never goes to whoever acted, and a stream says `event: notice` (no `id`) only after the
@@ -498,12 +513,13 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   linker stops. The operator turns any mailbox's sync off (`StopMailboxSync`,
   `POST /v1/accounts/{id}/sync/stop`, `account sync ID off`), in any workspace, live or removed,
   a closed or withheld team's included: its index deleted in that transaction, a team's consent
-  withdrawn (its owners and admins give it again), a personal one held (`sync_held_at`) until its
-  person turns it on, its readers told and journaled with the actor `operator`
+  withdrawn (its owners and admins give it again), a personal one held (`sync_held_at`), live or removed, until
+  its person turns it on, a recovery keeping that hold, its readers told and journaled with the actor `operator`
   (`store.ActorOperator`) whenever it could sync or kept an index it deletes (a recovered personal
-  one, held, included), never twice for nothing. A recovered one syncs nothing,
-  whatever its consent says, until someone who may turns it on (`sync_held_at`): its person, a
-  team's owners and admins at the current sync text, the operator. A team consent migration 0011
+  one, paused, included), never twice for nothing. A recovered one comes back paused
+  (`sync_paused_at`) where its consent stands, off otherwise, its index usable at once, and syncs
+  nothing until someone who may resumes it: its person, a team's owners and admins at the current
+  sync text (a resume records the team's agreement again), the operator. A team consent migration 0011
   copied from its linker (`sync_enabled_via = 'migration'`) stays bound to them until confirmed:
   their withdrawal, disable or deletion stops it and deletes its index, telling its other readers
   (closing them is refused without force while someone else reads it, or would once it is
@@ -521,7 +537,24 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   instead, so no text says a person's own switch stops a key created since 0012. The revisions come
   from
   `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts
-  (`web/src/open/versions.ts`).
+  (`web/src/open/versions.ts`). **A pause is not a consent.** A personal mailbox's person, a team
+  mailbox's owners and admins by their role (freshness `FreshTeamSync`), and the operator an
+  operator mailbox's, pause one mailbox's sync (`POST …/sync/pause`; `sync_paused_at`,
+  `sync_paused_by`, migration 0025) while its consent stands and nothing holds it, where the
+  edition offers it (`Options.SyncPauseOffered`); a recovery pauses it too. The engine syncs
+  nothing of it (`SyncEligible`, the engine's rule), and its index stays, read, searched and
+  followed by actions (`IndexFollows`, the index rule), with no time limit. The same people resume
+  it (`POST …/sync/resume`, in every edition); a team mailbox's resume names the current sync text
+  and records the team's agreement to it, by the resumer, now, as turning it on does, and needs a
+  reader; turning a team mailbox on records the agreement and leaves a pause. A resume, every end
+  of its consent (a withdrawal, a turn-off, the operator's, a bound consent stopped), a removal
+  and a deletion for good end it, withdrawing its notices; a paused mailbox's consent always
+  stands (the schema for a team's or an operator mailbox, the code for a personal one), the schema
+  keeps a removed or held mailbox unpaused and a hold on personal mailboxes alone, and what a
+  pause keeps may be nothing (a resume then indexes the last 90 days). Who paused it is forgotten
+  with that person. Readers, grants and every protection ignore it. What the index has not caught
+  up with while paused (a folder renumbered or resynced, an unknown send) waits for the resume
+  (`errPausedBehind`, never `errMessageBusy`).
 - **Errors.** Sentinels `errors.New("pkg: ...")`, always `errors.Is`/`errors.As`. The API answers
   `{code, message}` with seven fixed codes and never says which credential failed. What an
   extension calls keeps the cause of each refusal for `errors.Is` (`service.ErrNotFollowing`,

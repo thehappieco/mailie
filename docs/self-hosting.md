@@ -1019,6 +1019,36 @@ kept.
   withheld or closed is refused first), and `app.Options.KeysInPersonalWorkspaceOnly` keeps API
   keys to personal workspaces, a team's mailbox reached by none.
 
+### Pausing one mailbox's sync (migration 0025)
+
+A **rebuild** of the journal (the third migration to rebuild a table, after 0008 and 0021, and the
+journal's second; `mailserver migrate --dry-run` says so) and two columns of `accounts` (`sync_paused_at`, `sync_paused_by`). Every row is kept, but for
+the holds it converts. **Back up first**, with the commands below: an older binary refuses schema
+25, and going back is that copy.
+
+- **A recovered mailbox's hold becomes its pause**, with the hold's moment, where its consent
+  stands, and goes where it is off: the mailbox's kept index is read, searched and acted on at
+  once, and someone who may resumes it. A personal mailbox the operator turned off stays held, and
+  so does a personal hold over no index the journal does not show to be a recovery's (one older
+  than 90 days); a removed personal mailbox the operator turned off is held, so that its recovery
+  keeps it turned off ([`workspaces.md`](workspaces.md#migration-0025)).
+- **A mailbox's sync can be paused**, its index kept, by its person, a team's owners and admins
+  (for the team; its other readers are told), or the operator for an operator mailbox, and resumed
+  by the same people; a team mailbox's resume agrees again, for the team, to the current sync text
+  ([`workspaces.md`](workspaces.md#pausing-a-mailboxs-sync)). A recovery now pauses a mailbox
+  whose consent stands, instead of holding it.
+- **For scripts:** `POST /v1/accounts/{id}/sync/pause` and `…/sync/resume` (`{"version"}` for a
+  team mailbox, the current sync text); `sync.paused` and `paused_since` on every account; `held`
+  now means "held until its person turns it on" (the operator's turn-off, or such an older hold);
+  `PUT /v1/accounts/{id}/sync {"enabled": true}` no longer brings a recovered mailbox back: resume
+  it; `GET /v1/workspaces/{id}/access` answers `paused_at` and `paused_by`; a notice may be of kind
+  `paused`; `POST /v1/accounts/{id}/sync` (sync now) answers `409` while paused; a recovered
+  mailbox is searchable and acted on at once.
+- **The command line:** `mailserver account sync ID pause|resume`, for an operator mailbox;
+  `account recover` says whether it came back paused or off.
+- **The console** shows one "Paused" state, with Resume (a team's through the sync text), and the
+  operator's turn-off as "Turned off". The open sync text does not change.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
