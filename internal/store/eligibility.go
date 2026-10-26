@@ -8,7 +8,8 @@ import (
 )
 
 // ErrNotEligible is an account the engine may not store anything for: not
-// active, or nobody has agreed to its mail being indexed.
+// active, or nobody has agreed to its mail being indexed, or, for the
+// engine, its sync is paused.
 var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 
 // syncEligible is the one rule for whether an account's mail may be indexed,
@@ -41,17 +42,22 @@ var ErrNotEligible = errors.New("store: the account is not eligible to sync")
 // catches up once the team reopens.
 //
 // Nor does a removed mailbox (removed_at, migration 0020), kept with its
-// index for a recovery, nor one whose sync is held (sync_held_at) until
-// someone who may turns it on — a recovered one, which catches up from the
-// index it kept, or a personal one the operator turned off (StopSync): both are in syncPermitted, so neither reads as
-// switched on anywhere.
+// index for a recovery, nor one the operator turned off (sync_held_at, a
+// personal mailbox, held until its person turns it on); a recovered one is
+// paused instead (sync_paused_at), which the engine's rule refuses and the
+// index rule does not. Both a removal and a hold are in syncPermitted, so
+// neither reads as switched on anywhere.
+//
+// A pause (sync_paused_at, migration 0025) is not part of this rule: the
+// engine's rule adds it (engineRule), and the index stays writable for
+// actions (indexRule).
 //
 // sync_enabled_at never stands in for a person's consent: nobody turns sync
 // on for somebody else's personal mailbox, and a withdrawal stops it whatever
 // that column says.
 //
 // Where the edition withholds teams (Options.TeamsWithheld), no team's
-// mailbox is eligible either (notATeams): Store.eligibleRule adds it.
+// mailbox is eligible either (notATeams): Store.indexRule adds it.
 var syncEligible = `a.state = 'active' AND ` + OpenWorkspaceSQL("a.workspace_id") + ` AND ` + syncPermitted
 
 // notATeams is that the mailbox, aliased a, is not a team's: what an
@@ -60,13 +66,34 @@ var syncEligible = `a.state = 'active' AND ` + OpenWorkspaceSQL("a.workspace_id"
 // edition that offers teams syncs it again.
 var notATeams = `NOT EXISTS (SELECT 1 FROM workspaces tw WHERE tw.id = a.workspace_id AND tw.kind = 'team')`
 
-// eligibleRule is the rule this store holds accounts to: the one above, and,
-// where the edition withholds teams, not a team's mailbox.
-func (s *Store) eligibleRule() string {
+// notPaused is that nobody paused the mailbox's sync, aliased a
+// (sync_paused_at, migration 0025).
+var notPaused = `a.sync_paused_at = 0`
+
+// indexRule is the rule the index is written under for what someone asks
+// now (an action's recording): syncEligible, and, where the edition
+// withholds teams, not a team's mailbox. A pause does not change it.
+func (s *Store) indexRule() string {
 	if s.teamsWithheld {
 		return syncEligible + ` AND ` + notATeams
 	}
 	return syncEligible
+}
+
+// engineRule is the rule the sync engine holds accounts to: the index rule,
+// and not paused.
+func (s *Store) engineRule() string { return s.indexRule() + ` AND ` + notPaused }
+
+// ConsentStandsSQL is that the consent a mailbox, aliased a, syncs under
+// stands: its person's for a personal mailbox (users.sync_consent_at,
+// whatever their status), its own for a team's or an operator mailbox
+// (sync_enabled_at, a consent migration 0011 bound to its linker included).
+// A pause starts only where it stands (PauseSync, account.recoverRemoved),
+// and every end of it ends the pause first, so a paused mailbox's consent
+// always stands.
+func ConsentStandsSQL(a string) string {
+	return `CASE WHEN ` + a + `.owner_user_id IS NOT NULL THEN EXISTS (SELECT 1 FROM users u WHERE u.id = ` + a +
+		`.owner_user_id AND u.sync_consent_at <> 0) ELSE ` + a + `.sync_enabled_at <> 0 END`
 }
 
 // syncPermitted is the consent half of the rule, as a boolean expression over
@@ -100,9 +127,9 @@ const (
 	PauseNeedsReauth = "needs_reauth"
 	// PauseError is a mailbox in error, or disabled.
 	PauseError = "error"
-	// PauseHeld is a recovered mailbox whose sync is held until someone who
-	// may turns it on, or a personal one the operator turned off until its
-	// person does.
+	// PauseHeld is a personal mailbox whose sync was turned off and is held
+	// until its person turns it on: the operator's turn-off (StopSync), or a
+	// hold migration 0025 could not attribute to a recovery.
 	PauseHeld = "held"
 	// PausePersonOff is a personal mailbox whose person is not active, or a
 	// team mailbox whose consent migration 0011 bound to a person who is
@@ -113,19 +140,29 @@ const (
 	PauseConsentOff = "consent_off"
 	// PauseNoReader is a team mailbox nobody reads.
 	PauseNoReader = "no_reader"
+	// PausePaused is a mailbox whose sync is paused, its index kept: by
+	// someone who may, or by its recovery.
+	PausePaused = "paused"
 )
 
+// pausedOrNone is the last cause of every branch of PauseSQL: a pause, or
+// nothing.
+const pausedOrNone = `CASE WHEN a.sync_paused_at <> 0 THEN '` + PausePaused + `' ELSE '' END`
+
 // PauseSQL is why a mailbox, aliased a, does not sync, as an expression: empty
-// exactly when it may (the rule above, syncEligible, with the edition's
-// withholding of teams when withheld), and otherwise the first of these that
-// holds, in one order, from the same fragments: removed (PauseRemoved), a
-// closed team (OpenWorkspaceSQL), a team where teams are withheld, the
-// account's state (pending_auth, needs_reauth, error for error and
-// disabled), its sync held by a recovery, and then its consent — a personal
-// mailbox's person not active or not consenting, an operator mailbox not
-// switched on, a team mailbox not switched on, bound to a person who is not
-// active (boundToSomeoneOff) or with nobody who reads it (hasReader). What an
-// extension reports of a mailbox it does not sync is this.
+// exactly when it may (the engine's rule, engineRule: syncEligible, with the
+// edition's withholding of teams when withheld, and not paused), and
+// otherwise the first of these that holds, in one order, from the same
+// fragments: removed (PauseRemoved), a closed team (OpenWorkspaceSQL), a
+// team where teams are withheld, the account's state (pending_auth,
+// needs_reauth, error for error and disabled), its sync held by the
+// operator's turn-off of a personal mailbox, and then its consent — a
+// personal mailbox's person not active or not consenting, an operator
+// mailbox not switched on, a team mailbox not switched on, bound to a
+// person who is not active (boundToSomeoneOff) or with nobody who reads it
+// (hasReader) — and last a pause (sync_paused_at), a person's or a
+// recovery's: empty exactly when the engine's rule holds. What an extension
+// reports of a mailbox it does not sync is this.
 func PauseSQL(withheld bool) string {
 	teams := ``
 	if withheld {
@@ -144,11 +181,13 @@ func PauseSQL(withheld bool) string {
 			THEN '` + PausePersonOff + `'
 		WHEN NOT EXISTS (SELECT 1 FROM users u WHERE u.id = a.owner_user_id AND u.sync_consent_at <> 0)
 			THEN '` + PauseConsentOff + `'
-		ELSE '' END
-	WHEN a.workspace_id = 'wsp_operator' THEN CASE WHEN a.sync_enabled_at = 0 THEN '` + PauseConsentOff + `' ELSE '' END
+		ELSE ` + pausedOrNone + ` END
+	WHEN a.workspace_id = 'wsp_operator' THEN CASE WHEN a.sync_enabled_at = 0 THEN '` + PauseConsentOff + `' ELSE ` +
+		pausedOrNone + ` END
 	WHEN a.sync_enabled_at = 0 THEN '` + PauseConsentOff + `'
 	WHEN ` + boundToSomeoneOff + ` THEN '` + PausePersonOff + `'
 	WHEN NOT ` + hasReader + ` THEN '` + PauseNoReader + `'
+	WHEN a.sync_paused_at <> 0 THEN '` + PausePaused + `'
 	ELSE '' END)`
 }
 
@@ -162,12 +201,26 @@ var hasSuspendedReader = `EXISTS (SELECT 1 FROM mailbox_access r WHERE r.account
 	SuspendedReaderSQL("r") + `)`
 
 // SyncEligibleAccounts lists every account the engine should be syncing,
-// oldest first.
+// oldest first: the engine's rule, which a pause refuses.
 func (s *Store) SyncEligibleAccounts(ctx context.Context) ([]string, error) {
-	//nolint:gosec // G202: syncEligible is built from constants alone (ReaderSQL's fragments); nothing is interpolated
-	rows, err := s.r.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+s.eligibleRule()+` ORDER BY a.created_at, a.id`)
+	return s.accountsUnder(ctx, s.engineRule(), "list accounts eligible to sync")
+}
+
+// PausedAccounts lists the accounts whose index still follows (indexRule)
+// and whose sync someone paused, oldest first: the ones the engine runs no
+// worker for and keeps an interactive connection open for between calls
+// (sync.Manager). Each is in IndexFollows and not in SyncEligibleAccounts.
+func (s *Store) PausedAccounts(ctx context.Context) ([]string, error) {
+	return s.accountsUnder(ctx, s.indexRule()+` AND a.sync_paused_at <> 0`, "list the paused accounts")
+}
+
+// accountsUnder lists the accounts, aliased a, a rule built from constants
+// holds, oldest first.
+func (s *Store) accountsUnder(ctx context.Context, rule, what string) ([]string, error) {
+	//nolint:gosec // G202: the rules are built from constants alone (ReaderSQL's fragments); nothing is interpolated
+	rows, err := s.r.QueryContext(ctx, `SELECT a.id FROM accounts a WHERE `+rule+` ORDER BY a.created_at, a.id`)
 	if err != nil {
-		return nil, fmt.Errorf("store: list accounts eligible to sync: %w", err)
+		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
 	//nolint:errcheck // read-only query
 	defer func() { _ = rows.Close() }()
@@ -175,32 +228,53 @@ func (s *Store) SyncEligibleAccounts(ctx context.Context) ([]string, error) {
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("store: list accounts eligible to sync: %w", err)
+			return nil, fmt.Errorf("store: %s: %w", what, err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("store: list accounts eligible to sync: %w", err)
+		return nil, fmt.Errorf("store: %s: %w", what, err)
 	}
 	return ids, nil
 }
 
-// SyncEligible reports whether one account should be syncing. An account
-// that does not exist is not.
+// SyncEligible reports whether one account should be syncing: the engine's
+// rule, which a pause refuses. An account that does not exist is not.
 func (s *Store) SyncEligible(ctx context.Context, accountID string) (bool, error) {
-	return syncEligibleOn(ctx, s.r, s.eligibleRule(), accountID)
+	return syncEligibleOn(ctx, s.r, s.engineRule(), accountID)
+}
+
+// IndexFollows reports whether an account's index may be written for what
+// someone asks now: the engine's rule but for a pause (indexRule). An action
+// on a paused mailbox is recorded in its index; an account that does not
+// exist does not.
+func (s *Store) IndexFollows(ctx context.Context, accountID string) (bool, error) {
+	return syncEligibleOn(ctx, s.r, s.indexRule(), accountID)
+}
+
+// RequireIndexFollowsTx fails with ErrNotEligible unless the account's index
+// may be written for an action, inside the caller's transaction: the action
+// recordings start with it, as every sync batch starts with
+// RequireSyncEligibleTx.
+func (s *Store) RequireIndexFollowsTx(ctx context.Context, tx *sql.Tx, accountID string) error {
+	return requireRule(ctx, tx, s.indexRule(), accountID)
 }
 
 // RequireSyncEligibleTx fails with ErrNotEligible unless the account may be
-// synced, inside the caller's transaction.
+// synced, inside the caller's transaction: the engine's rule, which a pause
+// refuses.
 //
-// Every transaction that writes to the index starts with this. The database
-// has one writer, so a withdrawal of consent — or an account being disabled
-// or removed — and a sync batch are ordered: once the withdrawal commits, no
-// batch that was already on its way can store another row, however late its
-// worker notices it has been stopped.
+// Every transaction the engine writes to the index starts with this. The
+// database has one writer, so a withdrawal of consent — or an account being
+// disabled, removed or paused — and a sync batch are ordered: once the
+// withdrawal commits, no batch that was already on its way can store another
+// row, however late its worker notices it has been stopped.
 func (s *Store) RequireSyncEligibleTx(ctx context.Context, tx *sql.Tx, accountID string) error {
-	ok, err := syncEligibleOn(ctx, tx, s.eligibleRule(), accountID)
+	return requireRule(ctx, tx, s.engineRule(), accountID)
+}
+
+func requireRule(ctx context.Context, tx *sql.Tx, rule, accountID string) error {
+	ok, err := syncEligibleOn(ctx, tx, rule, accountID)
 	if err != nil {
 		return err
 	}

@@ -16,5 +16,16 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return app.Run(ctx, cfg, logger, app.Options{Version: version, MCPStdio: *mcpStdio})
+	return app.Run(ctx, cfg, logger, serveOptions(version, *mcpStdio))
+}
+
+// serveOptions are the open edition's: what `serve` runs the daemon with.
+func serveOptions(version string, mcpStdio bool) app.Options {
+	return app.Options{
+		Version:  version,
+		MCPStdio: mcpStdio,
+		// The open edition offers pausing one mailbox's sync: its sync text
+		// (web/src/open/SyncText.vue) promises nothing a pause breaks.
+		SyncPauseOffered: true,
+	}
 }

@@ -489,14 +489,32 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	// Removed mailboxes, after everything else, so their ids take no number
 	// another fixture has. Ana removes the team's billing mailbox, which
 	// carol reads too: it is kept 30 days, and carol is told. Ana, an owner
-	// of the team, lists its removed mailboxes and recovers it, its sync held
-	// until someone who may turns it on. Her Gmail, which never connected,
-	// is deleted at once.
+	// of the team, lists its removed mailboxes and recovers it, its sync
+	// paused until someone who may resumes it, or, as here, off: its team
+	// never agreed to sync it. Her Gmail, which never connected, is deleted
+	// at once.
 	capture("removal", http.StatusOK, http.MethodDelete, "/v1/accounts/"+billingID+"?confirm="+billingID, token, "")
 	capture("notices", http.StatusOK, http.MethodGet, "/v1/me/notices", carolToken, "")
 	capture("removed_mailboxes", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/removed-mailboxes", token, "")
-	capture("account_held", http.StatusOK, http.MethodPost, "/v1/accounts/"+billingID+"/recover", token, "")
+	capture("account_recovered", http.StatusOK, http.MethodPost, "/v1/accounts/"+billingID+"/recover", token, "")
 	capture("removal_purged", http.StatusOK, http.MethodDelete, "/v1/accounts/"+gmail+"?confirm="+gmail, token, "")
+
+	// Ana pauses the team's shared mailbox, which bea reads again once
+	// resumed: its sync stops and its index stays; the access directory says
+	// who paused it, bea is told, and ana resumes it, agreeing again for the
+	// team to the current sync text, which withdraws bea's notice. After the
+	// removals, so the pause's journal entry takes no number another fixture
+	// has.
+	if _, err := h.users.Resume(t.Context(), beaID); err != nil {
+		t.Fatal(err)
+	}
+	beaToken := authtest.SignIn(t, h.users, "bea@example.com")
+	capture("sync_paused", http.StatusOK, http.MethodPost, "/v1/accounts/"+sharedID+"/sync/pause", token, "")
+	capture("account_paused", http.StatusOK, http.MethodGet, "/v1/accounts/"+sharedID, token, "")
+	capture("access_paused", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/access", token, "")
+	capture("notices_paused", http.StatusOK, http.MethodGet, "/v1/me/notices", beaToken, "")
+	capture("sync_resumed", http.StatusOK, http.MethodPost, "/v1/accounts/"+sharedID+"/sync/resume", token,
+		`{"version":"`+service.DefaultSyncConsentVersion+`"}`)
 
 	// Ana takes her consents to actions and to sending back, after everything
 	// that acts or sends: each answer says when.
@@ -709,7 +727,7 @@ func (n *normalizer) normalizeString(key, v string, inFlow bool) string {
 			return "fixed-oauth-state"
 		}
 	case "id", "account_id", "account_ids", "workspace_id", "linked_by", "user_id", "granted_by", "created_by",
-		"enabled_by", "last_reader_of", "removed_by":
+		"enabled_by", "last_reader_of", "removed_by", "paused_by":
 		return n.id(v)
 	case "message_id":
 		// The Message-ID a send generates: a random UUID at the sender's

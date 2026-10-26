@@ -17,7 +17,9 @@
 // follow the provider's (NameFollowsIdentity); for an edition that does not
 // offer team workspaces yet, the one that withholds them (TeamsWithheld);
 // for one whose API keys belong to personal workspaces alone, the one that
-// refuses a team's (KeysInPersonalWorkspaceOnly); and, for a binary whose workspaces come from a directory elsewhere, the
+// refuses a team's (KeysInPersonalWorkspaceOnly); for one whose sync text
+// says what pausing one mailbox's sync does, the one that offers it
+// (SyncPauseOffered, which `serve` sets); and, for a binary whose workspaces come from a directory elsewhere, the
 // question asked before an act that widens access (Freshness). Nothing else
 // of the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
@@ -112,6 +114,16 @@ type Options struct {
 	// daemon sets it: there is no environment variable, and `serve` never
 	// does.
 	KeysInPersonalWorkspaceOnly bool
+	// SyncPauseOffered offers a person's pause of one mailbox's sync (POST
+	// /v1/accounts/{id}/sync/pause). `serve` sets it, for the open edition,
+	// whose sync text a pause breaks nothing of; a binary that embeds the
+	// daemon sets it only once the sync text its people agree to says what a
+	// pause does, and left unset the core refuses every person's pause
+	// (not_authorized), while a recovery still pauses and a resume still ends
+	// a pause: an edition offers the pause by opting in, never by forgetting
+	// to withhold it. The service decides it, for every transport; there is
+	// no environment variable.
+	SyncPauseOffered bool
 	// Freshness, when set, is asked before an act of a person signed in that
 	// widens who may read a mailbox or touches a team's shared data
 	// (service.Freshness): an extension that follows the directory the
@@ -347,6 +359,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		logger.Info("API keys belong to personal workspaces only in this edition: none is created in a team, " +
 			"none is given more on a team's mailbox, and none reaches one")
 	}
+	if !opts.SyncPauseOffered {
+		logger.Info("pausing one mailbox's sync is not offered in this edition: a person's pause is refused; " +
+			"a recovery still pauses, and a resume still ends a pause")
+	}
 	svc := service.New(service.Deps{
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,
@@ -356,6 +372,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
 		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
 		Freshness:                   opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
+		SyncPauseOffered: opts.SyncPauseOffered,
 	})
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err

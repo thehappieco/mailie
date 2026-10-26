@@ -302,8 +302,11 @@ func TestRecoveringIsAnOwnersWithinThirtyDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if recovered.ID != tm.shared || !recovered.Sync.Held || recovered.Sync.Enabled {
-		t.Errorf("the recovered mailbox: %+v, want it held", recovered)
+	// Its sync was turned off before its removal: it comes back off,
+	// neither paused nor held (a recovery pauses only where the consent
+	// stands).
+	if recovered.ID != tm.shared || recovered.Sync.Held || recovered.Sync.Paused || recovered.Sync.Enabled {
+		t.Errorf("the recovered mailbox: %+v, want it off", recovered)
 	}
 	if _, err := f.svc.GetAccount(ctx, tm.bea, tm.shared); err != nil {
 		t.Errorf("Bea does not see the recovered mailbox: %v", err)
@@ -334,7 +337,7 @@ func TestRecoveringIsAnOwnersWithinThirtyDays(t *testing.T) {
 	}
 }
 
-func TestARecoveredMailboxStaysOffUntilSomeoneWhoMayTurnsItOn(t *testing.T) {
+func TestARecoveredMailboxStaysPausedUntilSomeoneWhoMayResumesIt(t *testing.T) {
 	m := newMailFixture(t)
 	tm := newSupportTeam(t, m.fixture)
 	carol := tm.join(t, m.fixture, "carol@example.com", workspace.RoleAdmin)
@@ -370,8 +373,8 @@ func TestARecoveredMailboxStaysOffUntilSomeoneWhoMayTurnsItOn(t *testing.T) {
 		}
 	}
 
-	// Recovered, each keeps its index and syncs nothing until it is turned
-	// on, whatever its consent says.
+	// Recovered, each keeps its index and syncs nothing until it is
+	// resumed, its consent standing.
 	for _, id := range []string{shared, own, ops} {
 		if m.eligible(t, id) {
 			t.Errorf("%s syncs as soon as it is recovered", id)
@@ -381,41 +384,50 @@ func TestARecoveredMailboxStaysOffUntilSomeoneWhoMayTurnsItOn(t *testing.T) {
 		}
 	}
 	st, err := m.svc.SyncStatus(ctx, tm.bea, shared)
-	if err != nil || st.Enabled || !st.Held || st.HeldSince == 0 {
-		t.Errorf("its sync, as Bea sees it: %+v (%v), want it held", st, err)
+	if err != nil || !st.Enabled || st.Held || !st.Paused || st.PausedSince == 0 {
+		t.Errorf("its sync, as Bea sees it: %+v (%v), want it paused", st, err)
 	}
 	err = m.svc.TriggerSync(ctx, tm.ana, shared)
-	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), "recovered") {
-		t.Errorf("asking a held mailbox to sync: %v", err)
+	if service.CodeOf(err) != service.CodeConflict || !strings.Contains(service.MessageOf(err), "paused") {
+		t.Errorf("asking a paused mailbox to sync: %v", err)
 	}
 
-	// A team's: its owners and admins turn it on, to the current text; a
-	// member, whatever they manage, does not.
+	// A team's: its owners and admins resume it, agreeing to the current
+	// text; a member, whatever they manage, does not. Turning it on records
+	// the agreement and leaves the pause.
 	on := true
 	_, err = m.svc.SetMailboxSync(ctx, tm.bea, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
 	wantCode(t, "Bea turning it on", err, service.CodeNotAuthorized)
+	_, err = m.svc.ResumeMailboxSync(ctx, tm.bea, shared, service.SyncResumeRequest{Version: m.consent().Sync})
+	wantCode(t, "Bea resuming it", err, service.CodeNotAuthorized)
 	st, err = m.svc.SetMailboxSync(ctx, carol, shared, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
-	if err != nil || !st.Enabled || st.Held {
-		t.Errorf("Carol turning it on: %+v (%v)", st, err)
+	if err != nil || !st.Paused || st.Held {
+		t.Errorf("Carol turning it on: %+v (%v), want it still paused", st, err)
 	}
-	// A personal one: its person, with no text.
-	_, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &on, Version: m.consent().Sync})
-	wantCode(t, "Ana turning hers on with a text", err, service.CodeBadRequest)
-	off := false
-	_, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &off})
-	wantCode(t, "Ana turning hers off here", err, service.CodeBadRequest)
+	st, err = m.svc.ResumeMailboxSync(ctx, carol, shared, service.SyncResumeRequest{Version: m.consent().Sync})
+	if err != nil || st.Paused || !st.Enabled {
+		t.Errorf("Carol resuming it: %+v (%v)", st, err)
+	}
+	// A personal one: its person, with no text; turning it on lifts only
+	// the operator's hold, and leaves the pause.
 	st, err = m.svc.SetMailboxSync(ctx, tm.ana, own, service.MailboxSyncRequest{Enabled: &on})
-	if err != nil || !st.Enabled || st.Held {
-		t.Errorf("Ana turning hers on: %+v (%v)", st, err)
+	if err != nil || !st.Paused {
+		t.Errorf("Ana turning hers on: %+v (%v), want it still paused", st, err)
+	}
+	_, err = m.svc.ResumeMailboxSync(ctx, tm.ana, own, service.SyncResumeRequest{Version: m.consent().Sync})
+	wantCode(t, "Ana resuming hers with a text", err, service.CodeBadRequest)
+	st, err = m.svc.ResumeMailboxSync(ctx, tm.ana, own, service.SyncResumeRequest{})
+	if err != nil || st.Paused || !st.Enabled {
+		t.Errorf("Ana resuming hers: %+v (%v)", st, err)
 	}
 	// An operator mailbox: the operator.
-	st, err = m.svc.SetMailboxSync(ctx, admin(), ops, switchSync(true))
-	if err != nil || !st.Enabled || st.Held {
-		t.Errorf("the operator turning its own on: %+v (%v)", st, err)
+	st, err = m.svc.ResumeMailboxSync(ctx, admin(), ops, service.SyncResumeRequest{})
+	if err != nil || st.Paused || !st.Enabled {
+		t.Errorf("the operator resuming its own: %+v (%v)", st, err)
 	}
 	for _, id := range []string{shared, own, ops} {
 		if !m.eligible(t, id) {
-			t.Errorf("%s does not sync once turned on", id)
+			t.Errorf("%s does not sync once resumed", id)
 		}
 		if n := indexed(t, m.fixture, id); n != kept[id] {
 			t.Errorf("%s catches up from %d messages, want the %d it kept", id, n, kept[id])
@@ -496,8 +508,10 @@ func TestARemovedMailboxOnlyASuspendedPersonWouldReadWaitsForThemAndIsRecovered(
 	tm := newKeysTeam(t, f)
 	ctx := t.Context()
 	f.connect(t, tm.shared)
-	// Bea alone reads it, and is suspended while it is removed.
+	// Bea alone reads it, under the team's consent, and is suspended while
+	// it is removed.
 	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	tm.syncOn(t, f, tm.shared)
 	f.exec(t, `DELETE FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.ana.UserID)
 	f.removed(t, tm.ana, tm.shared)
 	f.suspend(t, tm.bea.UserID)
@@ -511,17 +525,17 @@ func TestARemovedMailboxOnlyASuspendedPersonWouldReadWaitsForThemAndIsRecovered(
 	if err != nil {
 		t.Fatalf("recovering the mailbox Bea would read once resumed: %v", err)
 	}
-	if !recovered.Sync.Held || recovered.Sync.Enabled {
-		t.Errorf("the recovered mailbox: %+v, want its sync held", recovered.Sync)
+	if !recovered.Sync.Paused || recovered.Sync.Held || recovered.Sync.Enabled {
+		t.Errorf("the recovered mailbox: %+v, want its sync paused", recovered.Sync)
 	}
-	// Its sync is turned on only once someone reads it.
-	on := true
-	turnOn := service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync}
-	_, err = f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, turnOn)
-	wantCode(t, "turning its sync on while Bea is suspended", err, service.CodeConflict)
+	// Its sync is resumed only once someone reads it.
+	resume := service.SyncResumeRequest{Version: f.consent().Sync}
+	_, err = f.svc.ResumeMailboxSync(ctx, tm.ana, tm.shared, resume)
+	wantCode(t, "resuming its sync while Bea is suspended", err, service.CodeConflict)
 	f.resume(t, tm.bea.UserID)
-	if status, err := f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, turnOn); err != nil || status.Held {
-		t.Errorf("turning its sync on once Bea is resumed: %+v, %v", status, err)
+	if status, err := f.svc.ResumeMailboxSync(ctx, tm.ana, tm.shared, resume); err != nil || status.Paused ||
+		!status.Enabled {
+		t.Errorf("resuming its sync once Bea is resumed: %+v, %v", status, err)
 	}
 }
 

@@ -231,8 +231,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// A mailbox's own consent to sync: a team mailbox's, which its owners
 	// and admins give or withdraw on the team's behalf, and an operator
 	// mailbox's switch. Switching off deletes its index, as withdrawing
-	// consent does. Switching on also lifts a recovery's hold, a personal
-	// mailbox's by its person.
+	// consent does. Switching on lifts the operator's hold of a personal
+	// mailbox, by its person, and never ends a pause: …/sync/resume does.
 	mux.Handle("PUT /v1/accounts/{id}/sync",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setMailboxSync))
 	// The operator's turn-off of any mailbox's sync, in any workspace, live
@@ -242,6 +242,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// refuses everyone else.
 	mux.Handle("POST /v1/accounts/{id}/sync/stop",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.stopMailboxSync))
+	// A mailbox's sync paused, its index kept, and resumed, by its person, a
+	// team's owners and admins, or the operator for an operator mailbox; the
+	// service decides who (PauseMailboxSync). A team mailbox's resume names
+	// the sync text it agrees to, as turning it on does.
+	mux.Handle("POST /v1/accounts/{id}/sync/pause", h.authenticated(auth.ScopeAdmin, opts(), h.pauseMailboxSync))
+	mux.Handle("POST /v1/accounts/{id}/sync/resume", h.authenticated(auth.ScopeAdmin, opts(), h.resumeMailboxSync))
 
 	// The event stream has no route timeout: it lasts as long as the client
 	// stays. The long poll's is the longest wait it accepts, plus room to

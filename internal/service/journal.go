@@ -31,11 +31,15 @@ type JournalEntry struct {
 	Seq int64
 	// ID is "mbe_" and 16 hex digits: the entry's own, once.
 	ID string
-	// Kind is removed, sync_paused, recovered, purged or stranded.
+	// Kind is removed, sync_paused, recovered, purged, stranded, paused or
+	// resumed (a team mailbox's sync paused by a person, its index kept, and
+	// a team pause ended by a resume; a recovery's pause is its recovered
+	// entry).
 	Kind string
 	// Cause is a stranding's (membership_ended, forgotten, disabled,
 	// deleted, reset) and a sync turned off's (empty, or bound_stopped when
-	// the consent bound to a person stopped with them); empty otherwise.
+	// the consent bound to a person stopped with them); empty otherwise, a
+	// pause and a resume having none.
 	Cause                               string
 	WorkspaceID, AccountID, Label, Hint string
 	At                                  time.Time

@@ -10,22 +10,26 @@ import (
 
 // A person's notices (docs/workspaces.md, "Removed mailboxes").
 //
-// When a mailbox is removed, or a team mailbox's sync is turned off — by an
-// owner or an admin, or by the person its consent was still bound to — every
-// person who read it then, but whoever did it, is told, with a notice they
-// see in the console until they dismiss it, or until its journal entry goes
-// (store.MailboxJournalRetention, 90 days). A notice names the mailbox by its
-// address while it is kept, and by a masked hint of it ("a…@example.com")
-// once it is deleted for good, and says where it stands now: removed, until
-// when it is recovered; deleted; or live again. A recovery withdraws the
-// notices of the removal it undoes. A notice is a person's: a key has none.
+// When a mailbox is removed, or a team mailbox's sync is turned off or paused
+// — by an owner or an admin, or turned off by the person its consent was
+// still bound to — every person who read it then, but whoever did it, is
+// told, with a notice they see in the console until they dismiss it, or
+// until its journal entry goes (store.MailboxJournalRetention, 90 days). A
+// notice names the mailbox by its address while it is kept, and by a masked
+// hint of it ("a…@example.com") once it is deleted for good, and says where
+// it stands now: removed, until when it is recovered; deleted; or live
+// again. A recovery withdraws the notices of the removal it undoes, and the
+// end of a pause its pause's; a recovery's own pause tells nobody. A notice
+// is a person's: a key has none.
 
 // PersonNotice is one of a person's notices.
 type PersonNotice struct {
 	// ID names it, to dismiss it.
 	ID string `json:"id"`
 	// Kind is what happened: "removed", a mailbox removed; "sync_off", a
-	// team mailbox's sync turned off, its index deleted.
+	// team mailbox's sync turned off, its index deleted; "paused", a team
+	// mailbox's sync paused by an owner or an admin, its index kept (its
+	// state always "live": a removal and a deletion withdraw it).
 	Kind string `json:"kind"`
 	// WorkspaceID and WorkspaceName are where the mailbox was: the name is
 	// absent for a personal workspace, and once the team is gone.
@@ -48,6 +52,7 @@ type PersonNotice struct {
 const (
 	noticeRemoved = "removed"
 	noticeSyncOff = "sync_off"
+	noticePaused  = "paused"
 
 	mailboxRemoved = "removed"
 	mailboxDeleted = "deleted"
@@ -78,8 +83,11 @@ func presentNotice(n store.Notice) PersonNotice {
 		ID: n.Event.ID, Kind: noticeRemoved, WorkspaceID: n.Event.WorkspaceID, WorkspaceName: n.WorkspaceName,
 		AccountID: n.Event.AccountID, At: n.Event.At,
 	}
-	if n.Event.Kind == store.MailboxSyncPaused {
+	switch n.Event.Kind {
+	case store.MailboxSyncPaused:
 		out.Kind = noticeSyncOff
+	case store.MailboxPaused:
+		out.Kind = noticePaused
 	}
 	switch {
 	case !n.Kept:

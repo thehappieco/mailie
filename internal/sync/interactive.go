@@ -17,10 +17,11 @@ var _ account.ConnectionSlot = (*Manager)(nil).InPlaceOfInteractive
 //
 // The engine owns it whether or not a worker runs for the account, so an
 // account never has more than one, and never more than three connections in
-// all. With a worker it is reused while callers keep coming and logged out
-// after Options.InteractiveIdle unused. Without one — sync off, not consented,
-// or not started yet — it is opened for one call and logged out right after,
-// which is what the service did on its own before the engine existed.
+// all. With a worker, or while its sync is paused, it is reused while callers
+// keep coming and logged out after Options.InteractiveIdle unused. Without
+// either — sync off, not consented, or not started yet — it is opened for one
+// call and logged out right after, which is what the service did on its own
+// before the engine existed.
 type slot struct {
 	m  *Manager
 	id string
@@ -128,10 +129,13 @@ func (m *Manager) closeInteractive(id string) {
 	s.drop()
 }
 
-func (m *Manager) hasWorker(id string) bool {
+// keepsSlot reports whether an account's interactive connection is kept
+// between calls: a worker holds the account, or its sync is paused while its
+// index still follows.
+func (m *Manager) keepsSlot(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.workers[id] != nil
+	return m.workers[id] != nil || m.paused[id]
 }
 
 // run is Interactive with the slot held.
@@ -171,7 +175,7 @@ func (s *slot) run(ctx context.Context, fn func(context.Context, provider.Sessio
 	case <-s.sess.Closed():
 		s.drop()
 	default:
-		if s.m.hasWorker(s.id) {
+		if s.m.keepsSlot(s.id) {
 			s.timer = time.AfterFunc(s.m.opts.InteractiveIdle, s.expire)
 		} else {
 			s.drop()

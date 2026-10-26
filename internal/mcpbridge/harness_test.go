@@ -72,6 +72,7 @@ func newMailie(t *testing.T, o mcp.HTTPOptions) *mailie {
 	engine := &lendingEngine{boxes: map[string]*providertest.FakeMailbox{}}
 	svc := service.New(service.Deps{
 		Accounts: registry, Keys: auth.NewKeys(db), Users: auth.NewUsers(db), Store: db, Bus: bus, Sync: engine, Log: logger,
+		SyncPauseOffered: true,
 	})
 	m := &mailie{t: t, store: db, bus: bus, engine: engine, tools: mcp.New(svc, logger, "test"), opts: o, logs: logs}
 	m.handler = m.tools.HTTPHandler(o)

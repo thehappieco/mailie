@@ -21,7 +21,11 @@ func accountsText(accounts []service.Account) string {
 	fmt.Fprintf(&b, "%s:\n", plural(len(accounts), "mailbox", "mailboxes"))
 	for _, a := range accounts {
 		sync := "sync off (not searchable)"
-		if a.Sync.Enabled {
+		switch {
+		case a.Sync.Enabled && a.Sync.Paused:
+			// "sync on" would tell a model new mail becomes searchable.
+			sync = "sync paused (searchable; new mail is not indexed until it is resumed)"
+		case a.Sync.Enabled:
 			sync = "sync on"
 		}
 		fmt.Fprintf(&b, "- %s: %s (%s), %s, %s", a.ID, a.Email, a.Provider, a.State, sync)

@@ -872,6 +872,9 @@ func TestOnlyARebuildMayDropAReferencedTable(t *testing.T) {
 		if m.version == 21 && !m.rebuild {
 			t.Error("0021 rebuilds mailbox_events and is not marked as a rebuild")
 		}
+		if m.version == 25 && !m.rebuild {
+			t.Error("0025 rebuilds mailbox_events and is not marked as a rebuild")
+		}
 	}
 }
 

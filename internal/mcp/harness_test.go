@@ -81,6 +81,8 @@ func newHarness(t *testing.T) *harness {
 	users := auth.NewUsers(db)
 	svc := service.New(service.Deps{
 		Accounts: registry, Keys: auth.NewKeys(db), Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
+		// As serve does.
+		SyncPauseOffered: true,
 	})
 	return &harness{
 		t: t, store: db, bus: bus, svc: svc, users: users, engine: engine, logs: logs,

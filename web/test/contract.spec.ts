@@ -111,7 +111,7 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['removal_purged', value => isRemoval(value, true)],
   ['removed_mailboxes', value => isRemovedMailboxList(value, true)],
   ['notices', value => isPersonNoticeList(value, true)],
-  ['account_held', value => isAccount(value, true)],
+  ['account_recovered', value => isAccount(value, true)],
 ]
 
 describe('the HTTP contract the Go handlers answer with', () => {
@@ -696,14 +696,17 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(isPersonNoticeList([{ ...removed, kind: 'renamed' }], true)).toBe(false)
   })
 
-  it('holds a recovered mailbox’s sync, never enabled while it is, and says since when', () => {
-    const held = fixture('account_held') as Account
-    expect(held.sync).toMatchObject({ enabled: false, held: true })
-    expect(held.sync.held_since).toBeGreaterThan(0)
-    expect(held.id).toBe((fixture('removal') as Removal).account_id)
+  it('brings a recovered mailbox back off when its team never agreed to sync it, neither held nor paused', () => {
+    const recovered = fixture('account_recovered') as Account
+    expect(recovered.sync).toMatchObject({ enabled: false })
+    expect(recovered.sync).not.toHaveProperty('held')
+    expect(recovered.sync).not.toHaveProperty('paused')
+    expect(recovered.id).toBe((fixture('removal') as Removal).account_id)
     // Every other account says nothing of a hold.
     for (const name of ['account', 'account_icloud', 'account_syncing']) expect((fixture(name) as Account).sync, name).not.toHaveProperty('held')
-    expect(isAccountSync({ ...held.sync, enabled: true }, true)).toBe(false)
-    expect(isAccountSync({ ...held.sync, held_since: undefined }, true)).toBe(false)
+    const held = { ...recovered.sync, held: true as const, held_since: 1 }
+    expect(isAccountSync(held, true)).toBe(true)
+    expect(isAccountSync({ ...held, enabled: true }, true)).toBe(false)
+    expect(isAccountSync({ ...held, held_since: undefined }, true)).toBe(false)
   })
 })

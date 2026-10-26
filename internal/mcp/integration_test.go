@@ -93,7 +93,7 @@ func TestAnAssistantReadsAndWaitsOnDovecotAndNothingIsMarkedRead(t *testing.T) {
 	}()
 	svc := service.New(service.Deps{
 		Accounts: registry, Keys: auth.NewKeys(db), Users: auth.NewUsers(db), Store: db, Bus: bus, Sync: engine,
-		Log: logger,
+		Log: logger, SyncPauseOffered: true,
 	})
 
 	// The operator's mailbox: an instance key reaches it through a tool.

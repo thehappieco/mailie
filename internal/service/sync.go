@@ -98,15 +98,28 @@ type AccountSync struct {
 	// an operator mailbox, the operator switched it on. Sync runs only for an
 	// enabled account that is also active. Never while it is held.
 	Enabled bool `json:"enabled"`
-	// Held is a mailbox recovered after it was removed, or a personal one
-	// whose sync the operator turned off (StopMailboxSync), whose sync waits
-	// for someone who may to turn it on (PUT /v1/accounts/{id}/sync),
-	// whatever its consent says: its person for a personal mailbox, an owner
-	// or an admin for a team's, the operator for an operator mailbox.
-	// HeldSince is when it was held. It then catches up from the index it
-	// kept, or starts over from none.
+	// Held is a personal mailbox whose sync was turned off and is held until
+	// its person turns it on again (PUT /v1/accounts/{id}/sync), whatever
+	// their consent says, with no index: it then starts over from the last
+	// 90 days. HeldSince is when. Since migration 0025 the operator's
+	// turn-off (StopMailboxSync) holds, which deleted the index; a hold 0025
+	// found and could not attribute to a recovery stays too, over no index. A
+	// recovery no longer holds: a recovered mailbox is paused, or off. Never
+	// beside Paused.
 	Held      bool  `json:"held,omitempty"`
 	HeldSince int64 `json:"held_since,omitempty"`
+	// Paused is a mailbox whose sync is paused, by someone who may (POST
+	// /v1/accounts/{id}/sync/pause) or by its recovery: nothing new is
+	// indexed, and what was indexed stays, read, searched and acted on, until
+	// it is resumed (…/sync/resume) or its consent ends. PausedSince is when.
+	// Its consent stood when it was paused or recovered, and every end of a
+	// consent ends the pause; Enabled keeps its meaning (false while its
+	// person is not active, or nobody reads a team's). What it kept may be
+	// nothing (Messages 0: paused or removed before its first pass), and a
+	// resume then indexes the last 90 days. Never beside Held. Who paused it
+	// is in the access directory.
+	Paused      bool  `json:"paused,omitempty"`
+	PausedSince int64 `json:"paused_since,omitempty"`
 	// Running is whether a worker holds the account now.
 	Running bool `json:"running"`
 	// State is "off" (not enabled, not active, or no sync engine on this
@@ -150,7 +163,7 @@ func presentSync(enabled bool, st SyncStatus) AccountSync {
 // syncOf asks the engine where an account's sync stands. An account the
 // engine is not running, or a daemon without an engine, is off — which is an
 // answer, not a failure: listing accounts must not break because one of them
-// is not syncing. A recovery's hold is the account's own to say.
+// is not syncing. A hold or a pause is the account's own to say.
 func (s *Service) syncOf(ctx context.Context, a account.Account, enabled bool) (AccountSync, error) {
 	if s.sync == nil {
 		return withHold(AccountSync{Enabled: enabled, State: syncOff}, a), nil
@@ -165,11 +178,14 @@ func (s *Service) syncOf(ctx context.Context, a account.Account, enabled bool) (
 	return withHold(presentSync(enabled, st), a), nil
 }
 
-// withHold says on an account's sync that a recovery, or the operator's
-// turn-off, holds it.
+// withHold says on an account's sync that the operator's turn-off holds it,
+// or that it is paused.
 func withHold(st AccountSync, a account.Account) AccountSync {
 	if !a.SyncHeldAt.IsZero() {
 		st.Held, st.HeldSince = true, a.SyncHeldAt.Unix()
+	}
+	if !a.SyncPausedAt.IsZero() {
+		st.Paused, st.PausedSince = true, a.SyncPausedAt.Unix()
 	}
 	return st
 }
@@ -189,7 +205,7 @@ func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string)
 
 // TriggerSync asks for a pass over every synced folder of the account soon,
 // and returns without waiting for it: anybody who may read it, with the
-// write scope.
+// write scope. A paused mailbox is resumed first (errSyncPaused).
 func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string) error {
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeWrite, accountID, needRead)
 	if err != nil {
@@ -207,6 +223,9 @@ func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string
 	}
 	if !enabled {
 		return errSyncOff(a)
+	}
+	if !a.SyncPausedAt.IsZero() {
+		return errSyncPaused
 	}
 	if s.sync == nil {
 		return ErrSyncUnavailable
@@ -227,12 +246,12 @@ var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server",
 // errSyncOff is an account that may not sync: for a personal mailbox, one
 // whose person has not consented; for a team mailbox, one its owners and
 // admins have not turned on; for an operator mailbox, one the operator has
-// not switched on; and any of them recovered, whose sync is held until it is
-// turned on again.
+// not switched on; and a personal one the operator turned off, held until
+// its person turns it on.
 func errSyncOff(a account.Account) error {
 	switch {
 	case !a.SyncHeldAt.IsZero():
-		return E(CodeConflict, "sync is paused since this mailbox was recovered; turn it on to catch up", nil)
+		return E(CodeConflict, "sync of this mailbox is held until its person turns it on again", nil)
 	case a.WorkspaceID == workspace.OperatorID:
 		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", nil)
 	case a.OwnerUserID == "":

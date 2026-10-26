@@ -130,7 +130,8 @@ func SoleMemberTeamsTx(ctx context.Context, tx *sql.Tx, userID string) ([]string
 // what they gave keys, on the mailbox keys their browser wrote, on the
 // mailboxes they linked and on the team consents to sync they gave, which
 // stay, with their date and revision, the workspace's, on the mailboxes they
-// removed, which stay removed until recovered or deleted for good, and in
+// removed, which stay removed until recovered or deleted for good, on the
+// mailboxes they paused or recovered, which stay paused, and in
 // the journal of what was done to mailboxes, which keeps what they did, and
 // the mailboxes stranded from them, without saying who — unless an external
 // directory follows them (store.MarkDirectoryPersonGoneTx), which keeps
@@ -157,6 +158,7 @@ func DeletePersonTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, e
 		{"forget who agreed to sync", `UPDATE accounts SET sync_enabled_by = '', sync_enabled_via = ''
 		   WHERE sync_enabled_by = ?`},
 		{"forget who removed mailboxes", `UPDATE accounts SET removed_by = '' WHERE removed_by = ?`},
+		{"forget who paused mailboxes", `UPDATE accounts SET sync_paused_by = '' WHERE sync_paused_by = ?`},
 	} {
 		if _, err := tx.ExecContext(ctx, step.query, userID); err != nil {
 			return nil, fmt.Errorf("workspace: %s: %w", step.what, err)

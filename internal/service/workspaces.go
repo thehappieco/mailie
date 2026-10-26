@@ -167,6 +167,14 @@ type MailboxAccess struct {
 	// workspace's; an operator mailbox's switch. Absent for a personal
 	// mailbox, which syncs under its person's own consent.
 	Sync *MailboxConsent `json:"sync,omitempty"`
+	// PausedAt and PausedBy are the mailbox's sync paused, when and by whom:
+	// "usr_…", "key:<prefix>" or "cli", whoever paused or recovered it,
+	// absent once that person is deleted and for a pause migration 0025 made
+	// of a recovery's hold; both absent when it is not paused. Only its
+	// owners, admins and the operator read them here, never its card: the
+	// server never tells a reader who acted.
+	PausedAt int64  `json:"paused_at,omitempty"`
+	PausedBy string `json:"paused_by,omitempty"`
 	// Readers counts who reads it now, by the one rule (docs/key-scheme.md
 	// section 12.13): active members, active on the instance, holding read,
 	// and, on a mailbox that has a key, a grant at its current epoch. Keys
@@ -832,6 +840,9 @@ func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) (
 			AccountID: mb.AccountID, Email: mb.Email, Provider: mb.Provider, State: mb.State,
 			LinkedBy: mb.LinkedBy, Readers: mb.Readers, NoReader: mb.NoReader, Epoch: mb.Epoch,
 			Grants: make([]Grant, 0, len(mb.Grants)), Keys: make([]MailboxKey, 0, len(mb.Keys)),
+		}
+		if !mb.Pause.At.IsZero() {
+			shown.PausedAt, shown.PausedBy = mb.Pause.At.Unix(), mb.Pause.By
 		}
 		for _, k := range mb.Keys {
 			shown.Keys = append(shown.Keys, MailboxKey{

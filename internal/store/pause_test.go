@@ -72,7 +72,10 @@ func TestAPauseIsEmptyExactlyWhenTheMailboxMaySync(t *testing.T) {
 		{"one in error", `UPDATE accounts SET state = 'error' WHERE id = 'acc_t3'`},
 		{"one disabled", `UPDATE accounts SET state = 'disabled' WHERE id = 'acc_0000000000000002'`},
 		{"every one active again", `UPDATE accounts SET state = 'active'`},
-		{"one held", `UPDATE accounts SET sync_held_at = 950 WHERE id = 'acc_t2'`},
+		// The operator's hold, of a personal mailbox: Owner's own.
+		{"one held", `UPDATE accounts SET sync_held_at = 950 WHERE id = 'acc_0000000000000002'`},
+		{"one paused", `UPDATE accounts SET sync_paused_at = 955, sync_paused_by = 'usr_0000000000000001'
+			WHERE id = 'acc_t1'`},
 		{"one removed", `UPDATE accounts SET removed_at = 960, removed_by = 'cli', purge_after = 960 + 2592000
 			WHERE id = 'acc_t3'`},
 		{"a team closed", `UPDATE workspaces SET closed_at = 970 WHERE id = 'wsp_t1'`},
@@ -87,6 +90,7 @@ func TestAPauseIsEmptyExactlyWhenTheMailboxMaySync(t *testing.T) {
 			WHERE workspace_id = 'wsp_operator'`},
 		{"a team mailbox's readers losing read", `UPDATE mailbox_access SET read = 0, act = 0 WHERE account_id = 'acc_t1'`},
 		{"the person resumed", `UPDATE users SET status = 'active', suspended_at = 0 WHERE id = 'usr_0000000000000001'`},
+		{"its pause ended", `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = 'acc_t1'`},
 	} {
 		f.accepted(step.what, f.exec(step.query))
 		check(step.what)
@@ -121,17 +125,20 @@ func TestThePauseTableIsOneOrderForEveryCause(t *testing.T) {
 		{PausePendingAuth, `UPDATE accounts SET state = 'needs_reauth' WHERE id = 'acc_px'`},
 		{PauseNeedsReauth, `UPDATE accounts SET state = 'error' WHERE id = 'acc_px'`},
 		{PauseError, `UPDATE accounts SET state = 'active' WHERE id = 'acc_px'`},
-		{PauseHeld, `UPDATE accounts SET sync_held_at = 0 WHERE id = 'acc_px'`},
-		{PauseConsentOff, `UPDATE accounts SET sync_enabled_at = 900 WHERE id = 'acc_px'`},
+		// A team mailbox is never held, and is paused only while its
+		// consent stands: the pause comes with it.
+		{PauseConsentOff, `UPDATE accounts SET sync_enabled_at = 900, sync_paused_at = 945, sync_paused_by = '` + bea + `'
+			WHERE id = 'acc_px'`},
 		{PausePersonOff, `UPDATE accounts SET sync_enabled_via = '', sync_enabled_by = 'usr_0000000000000001'
 			WHERE id = 'acc_px'`},
 		{PauseNoReader, `UPDATE mailbox_access SET read = 1 WHERE account_id = 'acc_px'`},
+		{PausePaused, `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = 'acc_px'`},
 		{"", ""},
 	}
 	// Every cause at once: the state first, since a removal is recorded
 	// whole and once.
 	for _, q := range []string{
-		`UPDATE accounts SET state = 'pending_auth', sync_held_at = 940, sync_enabled_at = 0,
+		`UPDATE accounts SET state = 'pending_auth', sync_enabled_at = 0,
 			sync_enabled_via = 'migration', sync_enabled_by = 'usr_0000000000000005' WHERE id = 'acc_px'`,
 		`UPDATE workspaces SET closed_at = 950 WHERE id = 'wsp_px'`,
 		`UPDATE accounts SET removed_at = 960, removed_by = 'cli', purge_after = 960 + 2592000 WHERE id = 'acc_px'`,
@@ -160,14 +167,19 @@ func TestThePauseTableIsOneOrderForEveryCause(t *testing.T) {
 		t.Errorf("a disabled mailbox's pause is %q, want %q", got, PauseError)
 	}
 
-	// A personal mailbox: its person not active, then not consenting.
-	// The seed: acc_3 is Bea's own.
+	// A personal mailbox: held by the operator's turn-off, its person not
+	// active, then not consenting, then paused. The seed: acc_3 is Bea's
+	// own.
 	const own = "acc_0000000000000003"
 	f.accepted("Bea consents", f.exec(`UPDATE users SET sync_consent_at = 0 WHERE id = ?`, bea))
 	f.accepted("Bea suspended", f.exec(`UPDATE users SET status = 'disabled', suspended_at = 990 WHERE id = ?`, bea))
+	f.accepted("Bea's own held", f.exec(`UPDATE accounts SET sync_held_at = 985 WHERE id = ?`, own))
 	for _, step := range []struct{ pause, lift string }{
+		{PauseHeld, `UPDATE accounts SET sync_held_at = 0, sync_paused_at = 992, sync_paused_by = '` + bea + `'
+			WHERE id = '` + own + `'`},
 		{PausePersonOff, `UPDATE users SET status = 'active', suspended_at = 0 WHERE id = '` + bea + `'`},
 		{PauseConsentOff, `UPDATE users SET sync_consent_at = 995, sync_consent_version = 'sync-1' WHERE id = '` + bea + `'`},
+		{PausePaused, `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = '` + own + `'`},
 		{"", ""},
 	} {
 		if got := pause(false, own); got != step.pause {
@@ -182,13 +194,19 @@ func TestThePauseTableIsOneOrderForEveryCause(t *testing.T) {
 		}
 	}
 
-	// An operator mailbox: switched off, then on. The seed: acc_5.
+	// An operator mailbox: switched off, then on and paused, then resumed.
+	// The seed: acc_5.
 	const ops = "acc_0000000000000005"
 	f.accepted("the operator's off", f.exec(`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '' WHERE id = ?`, ops))
 	if got := pause(false, ops); got != PauseConsentOff {
 		t.Errorf("the operator's mailbox, off: %q, want %q", got, PauseConsentOff)
 	}
-	f.accepted("the operator's on", f.exec(`UPDATE accounts SET sync_enabled_at = 900, sync_enabled_by = 'cli' WHERE id = ?`, ops))
+	f.accepted("the operator's on and paused", f.exec(`UPDATE accounts SET sync_enabled_at = 900, sync_enabled_by = 'cli',
+		sync_paused_at = 905, sync_paused_by = 'cli' WHERE id = ?`, ops))
+	if got := pause(true, ops); got != PausePaused {
+		t.Errorf("the operator's mailbox, paused, with teams withheld: %q, want %q", got, PausePaused)
+	}
+	f.accepted("the operator's resumed", f.exec(`UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = ?`, ops))
 	if got := pause(true, ops); got != "" {
 		t.Errorf("the operator's mailbox, on, with teams withheld: %q, want none", got)
 	}

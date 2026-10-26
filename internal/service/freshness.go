@@ -45,7 +45,8 @@ const (
 	FreshLink FreshKind = "link"
 	// FreshReauthorize: a team mailbox's consent started again.
 	FreshReauthorize FreshKind = "reauthorize"
-	// FreshTeamSync: a team mailbox's sync switched on or off.
+	// FreshTeamSync: a team mailbox's sync switched on or off, paused or
+	// resumed.
 	FreshTeamSync FreshKind = "team_sync"
 	// FreshActions: an action on a team mailbox's messages. (FreshAct is
 	// the act itself.)

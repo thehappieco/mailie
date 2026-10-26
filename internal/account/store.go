@@ -124,10 +124,19 @@ type Account struct {
 	RemovedAt  time.Time
 	RemovedBy  string
 	PurgeAfter time.Time
-	// SyncHeldAt is when a recovery held the mailbox's sync, zero when
-	// nothing holds it: a held mailbox syncs nothing until someone who may
-	// turns it on again.
+	// SyncHeldAt is when a personal mailbox's sync was held, zero when it is
+	// not: nothing of it syncs until its person turns it on again. Since
+	// migration 0025 only the operator's turn-off holds (store.StopSync); a
+	// hold 0025 could not attribute to a recovery stays too, over no index.
 	SyncHeldAt time.Time
+	// SyncPausedAt is when the mailbox's sync was paused, zero when it is not
+	// (migration 0025): by someone who may, or by a recovery. Nothing new is
+	// indexed and its index stays usable until it is resumed. SyncPausedBy
+	// is who paused it, or recovered it: "usr_…", "key:<prefix>" or "cli";
+	// empty once that person is deleted, and for a pause migration 0025 made
+	// of a recovery's hold.
+	SyncPausedAt time.Time
+	SyncPausedBy string
 	// Connected is a mailbox that connected once: something to sign in to
 	// it with was stored (a credentials row). One that never did holds
 	// nothing, and removing it deletes it for good at once instead of
@@ -328,7 +337,7 @@ const accountColumns = `id, workspace_id, email, display_name, provider, auth_ki
 	sync_tier, sync_tier_resolved, save_sent_copy, initial_days, folder_overrides, state, state_reason,
 	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at,
 	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration',
-	removed_at, removed_by, purge_after, sync_held_at,
+	removed_at, removed_by, purge_after, sync_held_at, sync_paused_at, sync_paused_by,
 	EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = accounts.id)`
 
 // OAuth clients an account's grant can come from.
@@ -908,10 +917,15 @@ type purge struct {
 //     hook left with none — which would read as every account — is deleted.
 //   - The mailbox journal names them without a foreign key too, so that it
 //     outlives them: their entries forget the mailboxes' names, and the
-//     deletion is journaled; or, as p says, the entries go with them.
+//     deletion is journaled; or, as p says, the entries go with them. A
+//     pause's notices are withdrawn first (store.EndPauseTx), in a
+//     workspace from another source whose journal stays.
 func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, p purge) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
+	}
+	if err := store.EndPauseTx(ctx, tx, ids, p.at.Unix()); err != nil {
+		return 0, err
 	}
 	if p.forget {
 		if err := store.DeleteMailboxEventsTx(ctx, tx, ids); err != nil {
@@ -1474,7 +1488,7 @@ func scanAccount(row scanner) (Account, error) {
 		a                                   Account
 		kind, overrides                     string
 		lastOK, nextRetry, created, updated int64
-		removed, purgeAfter, held           int64
+		removed, purgeAfter, held, paused   int64
 		saveSent                            int
 	)
 	err := row.Scan(&a.ID, &a.WorkspaceID, &a.Email, &a.DisplayName, &kind, &a.AuthKind, &a.IMAPHost, &a.IMAPPort,
@@ -1483,7 +1497,7 @@ func scanAccount(row scanner) (Account, error) {
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
 		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated,
 		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated,
-		&removed, &a.RemovedBy, &purgeAfter, &held, &a.Connected)
+		&removed, &a.RemovedBy, &purgeAfter, &held, &paused, &a.SyncPausedBy, &a.Connected)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, err
@@ -1499,6 +1513,7 @@ func scanAccount(row scanner) (Account, error) {
 	a.RemovedAt = unixOrZero(removed)
 	a.PurgeAfter = unixOrZero(purgeAfter)
 	a.SyncHeldAt = unixOrZero(held)
+	a.SyncPausedAt = unixOrZero(paused)
 	a.FolderOverrides = map[string]string{}
 	if strings.TrimSpace(overrides) != "" {
 		if err := json.Unmarshal([]byte(overrides), &a.FolderOverrides); err != nil {

@@ -143,8 +143,7 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 	}
 
 	// Recovered, it is used again, by those who still qualify.
-	f.exec(t, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0, sync_held_at = unixepoch()
-		WHERE id = ?`, tm.shared)
+	f.exec(t, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0 WHERE id = ?`, tm.shared)
 	if a := accessOf(t, f, tm.bea, tm.shared); !a.Access.Read {
 		t.Errorf("recovered, Bea holds %+v on it", a.Access)
 	}

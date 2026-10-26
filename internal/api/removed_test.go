@@ -68,18 +68,20 @@ func TestRemovingRecoveringAndDeletingForGoodAreThinRoutesOverTheService(t *test
 	}
 
 	// A member is told it does not exist; its owner recovers it, its sync
-	// held until someone who may turns it on.
+	// paused, its team's consent standing, until someone who may resumes it.
 	status(http.MethodPost, "/v1/accounts/"+tm.shared+"/recover", tm.bea, "", http.StatusNotFound)
 	var recovered struct {
 		ID   string `json:"id"`
 		Sync struct {
-			Enabled   bool  `json:"enabled"`
-			Held      bool  `json:"held"`
-			HeldSince int64 `json:"held_since"`
+			Enabled     bool  `json:"enabled"`
+			Held        bool  `json:"held"`
+			Paused      bool  `json:"paused"`
+			PausedSince int64 `json:"paused_since"`
 		} `json:"sync"`
 	}
 	decodeInto(t, status(http.MethodPost, "/v1/accounts/"+tm.shared+"/recover", tm.ana, "", http.StatusOK), &recovered)
-	if recovered.ID != tm.shared || recovered.Sync.Enabled || !recovered.Sync.Held || recovered.Sync.HeldSince == 0 {
+	if recovered.ID != tm.shared || !recovered.Sync.Enabled || recovered.Sync.Held || !recovered.Sync.Paused ||
+		recovered.Sync.PausedSince == 0 {
 		t.Errorf("the recovery answered %+v", recovered)
 	}
 	if got := listed(tm.ana); len(got) != 0 {

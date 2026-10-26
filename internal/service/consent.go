@@ -110,9 +110,9 @@ func (s *Service) GrantSyncConsent(ctx context.Context, p Principal, version str
 // WithdrawSyncConsent takes the signed-in person's consent back: the
 // mailboxes of their personal workspace stop syncing and everything indexed
 // for them is deleted — the messages' metadata, their folders and the events
-// about them — from the database files as well as its tables. So does a team
-// mailbox whose consent is still bound to theirs; any other team mailbox is
-// the team's, and carries on.
+// about them — from the database files as well as its tables, and their
+// pauses end. So does a team mailbox whose consent is still bound to theirs;
+// any other team mailbox is the team's, and carries on.
 //
 // The withdrawal and the deletion are one transaction, and the engine
 // re-checks consent inside each of its own, so nothing it was in the middle
@@ -344,7 +344,7 @@ func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
 // field out. Version, to switch a team mailbox's on, must be the current
 // revision of the sync text, which the owner or admin was shown; an operator
 // mailbox takes none. For a personal mailbox, only its person switches it on,
-// with no version, and only to lift a recovery's hold.
+// with no version, and only to lift the operator's hold.
 type MailboxSyncRequest struct {
 	Enabled *bool  `json:"enabled"`
 	Version string `json:"version,omitempty"`
@@ -353,8 +353,9 @@ type MailboxSyncRequest struct {
 // SetMailboxSync switches sync on or off for a mailbox on its own consent,
 // recording who switched it on, when and to which revision. Switching it off
 // deletes what was indexed for it, for everyone who read it, and tells each
-// of them but whoever switched it off with a notice. Switching on lifts the
-// hold a recovery put on a mailbox's sync, and so does switching off.
+// of them but whoever switched it off with a notice. Switching on records the
+// agreement and leaves a pause, which a resume ends (ResumeMailboxSync);
+// switching off ends it, as every turn-off does.
 //
 //   - A team mailbox: an owner or an admin of the team signed in, giving or
 //     withdrawing the team's consent; on, to the current sync text, and only
@@ -366,8 +367,8 @@ type MailboxSyncRequest struct {
 //     operator's decision, like closing someone's account.
 //   - A personal mailbox has none: its person decides, by consenting in the
 //     console, and nobody may decide for them. Its person turns it on only
-//     to lift a recovery's hold, after which it syncs under their consent as
-//     it stands.
+//     to lift the hold the operator's turn-off put on it (StopMailboxSync),
+//     after which it syncs under their consent as it stands, from no index.
 //
 // Whoever does not see the mailbox is told it does not exist.
 func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID string, req MailboxSyncRequest) (AccountSync, error) {
@@ -466,8 +467,9 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 }
 
 // liftPersonalHold is SetMailboxSync for a personal mailbox: its person turns
-// it on to lift a recovery's hold, or the operator's (StopMailboxSync), and
-// nothing else is theirs to switch here.
+// it on to lift the hold the operator's turn-off put on it
+// (StopMailboxSync), and nothing else is theirs to switch here: a pause is
+// ended by a resume.
 func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.Account, on bool, version string) (AccountSync, error) {
 	if !on || !p.IsSession() || p.UserID != a.OwnerUserID {
 		return AccountSync{}, E(CodeBadRequest,
@@ -485,7 +487,8 @@ func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.A
 		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
 	}
 	if lifted {
-		s.log.Info("a recovered mailbox's sync turned on again", "account", a.ID, "by", p.Actor())
+		s.log.Info("a personal mailbox's sync turned on again by its person after the operator's turn-off",
+			"account", a.ID, "by", p.Actor())
 		s.reconcile(a.ID)
 	}
 	return s.currentSync(ctx, a.ID)
@@ -558,7 +561,8 @@ func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Acc
 // What it does is the store's (StopSync): a mailbox that names no person
 // loses its consent, which a team's owners or admins may give again, to the
 // current text, as after any turn-off; a personal one keeps its person's
-// consent and is held until they turn it on again. Everyone who read it is
+// consent and is held, live or removed, until they turn it on again; a
+// pause ends first. Everyone who read it is
 // told with a notice, as of any turn-off, and the journal names the
 // operator (store.ActorOperator), never a person or a key. Where an edition
 // withholds teams it stops a team's mailbox all the same: it uses nothing of

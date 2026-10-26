@@ -64,6 +64,9 @@ type serviceOptions struct {
 	keysMayNotSend bool
 	// teamsWithheld is an edition that does not offer team workspaces.
 	teamsWithheld bool
+	// pauseWithheld is an edition that does not offer a person's pause of
+	// one mailbox's sync: every other harness offers it, as serve does.
+	pauseWithheld bool
 }
 
 // newService wires the real service to a temporary database, because testing
@@ -104,6 +107,7 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		KeysMayNotSend:     o.keysMayNotSend,
 		ExternalSignInOnly: o.externalSignInOnly,
 		TeamsWithheld:      o.teamsWithheld,
+		SyncPauseOffered:   !o.pauseWithheld,
 	})
 }
 

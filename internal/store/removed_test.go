@@ -10,10 +10,11 @@ import (
 	"time"
 )
 
-// A removed mailbox, and one whose sync a recovery holds, as the rules this
-// package decides see them (migration 0020).
+// A removed mailbox, one a recovery paused and one the operator's turn-off
+// holds, as the rules this package decides see them (migrations 0020 and
+// 0025).
 
-func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
+func TestARemovedHeldOrPausedMailboxIsNeverEligibleToSync(t *testing.T) {
 	// The seed: acc_0000000000000003 is Bea's own, under her
 	// consent; acc_t1 a mailbox of the team wsp_t1, under its consent, which
 	// Bea and Fay read; acc_0000000000000005 an operator mailbox, switched
@@ -22,7 +23,9 @@ func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
 	ctx := context.Background()
 	f.accepted("the operator's switched on", f.exec(`UPDATE accounts SET sync_enabled_at = 800, sync_enabled_by = 'cli'
 		WHERE id = 'acc_0000000000000005'`))
-	eligible := func(id string) bool {
+	// eligible reads the engine's rule every way it is read, and the
+	// consent half (SyncPermitted), which a pause does not change.
+	eligible := func(id string, paused bool) bool {
 		t.Helper()
 		ok, err := f.s.SyncEligible(ctx, id)
 		if err != nil {
@@ -36,10 +39,15 @@ func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		follows, err := f.s.IndexFollows(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
 		inTx := f.s.Write(ctx, func(tx *sql.Tx) error { return f.s.RequireSyncEligibleTx(ctx, tx, id) })
-		if slices.Contains(all, id) != ok || permitted[id] != ok || (inTx == nil) != ok {
-			t.Fatalf("%s: eligible %t, listed %t, permitted %t, in a transaction %v: the rules disagree",
-				id, ok, slices.Contains(all, id), permitted[id], inTx)
+		if slices.Contains(all, id) != ok || permitted[id] != (ok || paused) || follows != (ok || paused) ||
+			(inTx == nil) != ok {
+			t.Fatalf("%s: eligible %t, listed %t, permitted %t, followed %t, in a transaction %v: the rules disagree",
+				id, ok, slices.Contains(all, id), permitted[id], follows, inTx)
 		}
 		if inTx != nil && !errors.Is(inTx, ErrNotEligible) {
 			t.Fatalf("%s: %v, want ErrNotEligible", id, inTx)
@@ -47,31 +55,42 @@ func TestARemovedOrHeldMailboxIsNeverEligibleToSync(t *testing.T) {
 		return ok
 	}
 	for _, id := range []string{"acc_0000000000000003", "acc_t1", "acc_0000000000000005"} {
-		if !eligible(id) {
+		if !eligible(id, false) {
 			t.Fatalf("%s does not sync before anything happened to it", id)
 		}
 		f.remove(id, "usr_0000000000000001", 900)
-		if eligible(id) {
+		if eligible(id, false) {
 			t.Errorf("%s syncs while it is removed", id)
 		}
-		// Recovered, it is held until someone turns it on, which keeps
-		// its consent as it was.
+		// Recovered, it is paused until someone resumes it, which keeps
+		// its consent as it was, and its index followed.
 		f.accepted("recovered", f.exec(`UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
-			sync_held_at = 950 WHERE id = ?`, id))
-		if eligible(id) {
-			t.Errorf("%s syncs while a recovery holds it", id)
+			sync_paused_at = 950, sync_paused_by = 'usr_0000000000000001' WHERE id = ?`, id))
+		if eligible(id, true) {
+			t.Errorf("%s syncs while a recovery paused it", id)
 		}
-		// What the engine writes of a sync it is not allowed is dropped.
-		if err := f.s.RecordSyncOK(ctx, id, time.Unix(5000, 0)); err != nil {
-			t.Fatal(err)
+		f.accepted("resumed", f.exec(`UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = ?`, id))
+		if !eligible(id, false) {
+			t.Errorf("%s does not sync once resumed", id)
 		}
-		if n := queryInt(t, f.s, `SELECT last_ok_at FROM accounts WHERE id = ?`, id); n == 5000 {
-			t.Errorf("%s recorded a sync pass while held", id)
-		}
-		f.accepted("turned on", f.exec(`UPDATE accounts SET sync_held_at = 0 WHERE id = ?`, id))
-		if !eligible(id) {
-			t.Errorf("%s does not sync once turned on again", id)
-		}
+	}
+	// A personal mailbox the operator turned off is held until its person
+	// turns it on.
+	const own = "acc_0000000000000003"
+	f.accepted("held", f.exec(`UPDATE accounts SET sync_held_at = 960 WHERE id = ?`, own))
+	if eligible(own, false) {
+		t.Errorf("%s syncs while the operator's turn-off holds it", own)
+	}
+	// What the engine writes of a sync it is not allowed is dropped.
+	if err := f.s.RecordSyncOK(ctx, own, time.Unix(5000, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if n := queryInt(t, f.s, `SELECT last_ok_at FROM accounts WHERE id = ?`, own); n == 5000 {
+		t.Errorf("%s recorded a sync pass while held", own)
+	}
+	f.accepted("turned on", f.exec(`UPDATE accounts SET sync_held_at = 0 WHERE id = ?`, own))
+	if !eligible(own, false) {
+		t.Errorf("%s does not sync once turned on again", own)
 	}
 }
 
@@ -126,7 +145,7 @@ func TestARemovedMailboxHasNoReader(t *testing.T) {
 		t.Errorf("the removed mailbox keeps %d read flags, want the 2 it had", n)
 	}
 	f.accepted("recovered", f.exec(`UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
-		sync_held_at = 950 WHERE id = 'acc_t1'`))
+		sync_paused_at = 950 WHERE id = 'acc_t1'`))
 	if got := readers(); !slices.Equal(got, []string{"usr_0000000000000002"}) {
 		t.Errorf("recovered, its readers are %v", got)
 	}
@@ -361,7 +380,8 @@ func TestANoticeShowsTheMailboxAsItStandsUntilItsReaderDismissesIt(t *testing.T)
 // journal journals kind, done to account by actor at at, as the repository
 // does: who reads the mailbox is read first, and a removal or a recovery is
 // recorded on the mailbox's row before its entry, which reads a removal's end
-// from there. It returns the entry's id.
+// from there; a recovery pauses the mailbox where its consent stands and
+// nothing holds it. It returns the entry's id.
 func (f seededSchema) journal(kind MailboxEventKind, account, actor string, at int64, notify bool) string {
 	f.t.Helper()
 	ctx := context.Background()
@@ -376,8 +396,11 @@ func (f seededSchema) journal(kind MailboxEventKind, account, actor string, at i
 			_, err = tx.ExecContext(ctx, `UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ?
 				WHERE id = ? AND removed_at = 0`, at, actor, at+thirtyDays, account)
 		case MailboxRecovered:
+			stands := `sync_held_at = 0 AND ` + ConsentStandsSQL("accounts")
 			_, err = tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
-				sync_held_at = ? WHERE id = ? AND removed_at <> 0`, at, account)
+				sync_paused_at = CASE WHEN `+stands+` THEN ?1 ELSE 0 END,
+				sync_paused_by = CASE WHEN `+stands+` THEN ?2 ELSE '' END
+				WHERE id = ?3 AND removed_at <> 0`, at, actor, account)
 		}
 		if err != nil {
 			return err

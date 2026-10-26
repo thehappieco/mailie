@@ -36,11 +36,11 @@ func removeBySQL(t *testing.T, db *store.Store, accountID string) {
 }
 
 // recoverBySQL recovers a removed mailbox as the repository will, its sync
-// held.
+// paused where its consent stands.
 func recoverBySQL(t *testing.T, db *store.Store, accountID string) {
 	t.Helper()
-	exec(t, db, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0, sync_held_at = 950 WHERE id = ?`,
-		accountID)
+	exec(t, db, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
+		sync_paused_at = CASE WHEN `+store.ConsentStandsSQL("accounts")+` THEN 950 ELSE 0 END WHERE id = ?`, accountID)
 }
 
 func exec(t *testing.T, db *store.Store, query string, args ...any) {

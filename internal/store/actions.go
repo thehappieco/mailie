@@ -48,9 +48,10 @@ type ActionFlags struct {
 
 // ApplyActionFlags writes what a STORE echoed, announcing message.flags for
 // every row whose flags changed: the ones the store named and, with Shared,
-// their copies in other folders.
+// their copies in other folders. The account's index may be written for it
+// (RequireIndexFollowsTx: a paused mailbox's is).
 func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags) ([]events.Event, error) {
-	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireIndexFollowsTx(ctx, tx, b.AccountID); err != nil {
 		return nil, err
 	}
 	folder, err := indexFolder(ctx, tx, b.AccountID, b.FolderID, b.UIDValidity)
@@ -253,9 +254,10 @@ type ActionMoveResult struct {
 // MoveMemory by its old id, so moving it back can find it.
 //
 // Every source UID is remembered as moved (moves.go), whatever became of its
-// row.
+// row. The account's index may be written for it (RequireIndexFollowsTx: a
+// paused mailbox's is).
 func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (ActionMoveResult, error) {
-	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireIndexFollowsTx(ctx, tx, b.AccountID); err != nil {
 		return ActionMoveResult{}, err
 	}
 	from, err := folderOn(ctx, tx, b.AccountID, b.FromFolderID)
@@ -428,9 +430,10 @@ type ActionReturn struct {
 // synced, or copied back, under a new id — its old row is gone, or stays
 // where it is — and announces it as a row that moved in, never as new mail.
 // A message the destination already holds under that UID keeps the row it
-// has. It returns the row's id.
+// has. It returns the row's id. The account's index may be written for it
+// (RequireIndexFollowsTx: a paused mailbox's is).
 func (s *Store) ApplyActionReturn(ctx context.Context, tx *sql.Tx, b ActionReturn) (int64, []events.Event, error) {
-	if err := s.RequireSyncEligibleTx(ctx, tx, b.AccountID); err != nil {
+	if err := s.RequireIndexFollowsTx(ctx, tx, b.AccountID); err != nil {
 		return 0, nil, err
 	}
 	to, err := indexFolder(ctx, tx, b.AccountID, b.ToFolderID, b.UIDValidity)

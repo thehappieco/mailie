@@ -12,12 +12,12 @@
   "auth_kind": "password",
   "connected": true,
   "created_at": 1790000000,
-  "email": "billing@mail.example",
-  "id": "acc_0000000000000006",
+  "email": "support@mail.example",
+  "id": "acc_0000000000000005",
   "mailbox_key": {
     "epoch": 1,
-    "namespace": "00000000-0000-4000-a000-000000000004",
-    "public_key": "ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg"
+    "namespace": "00000000-0000-4000-a000-000000000003",
+    "public_key": "PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw8PDw"
   },
   "provider": "imap",
   "save_sent_copy": true,
@@ -27,13 +27,13 @@
   },
   "state": "active",
   "sync": {
-    "enabled": false,
+    "enabled": true,
     "folders_synced": 0,
     "folders_total": 0,
-    "held": true,
-    "held_since": 1790000000,
     "initial_progress": 0,
     "messages": 0,
+    "paused": true,
+    "paused_since": 1790000000,
     "running": false,
     "state": "off"
   },

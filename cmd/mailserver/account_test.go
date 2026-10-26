@@ -215,25 +215,21 @@ func TestTheOperatorRemovesRecoversAndDeletesForGoodFromTheCommandLine(t *testin
 		t.Errorf("account removed lists %q", row)
 	}
 
-	// Recovered, its sync held until the operator switches it on.
-	if _, said := command("recover", kept); !strings.Contains(said, "recovered ops@mail.example") ||
+	// Recovered, its sync off as it was: the operator never switched it on
+	// (TestTheOperatorRecoversAMailboxPausedAndResumesIt recovers one that
+	// was on).
+	if _, said := command("recover", kept); !strings.Contains(said, "recovered ops@mail.example; its sync is off") ||
 		!strings.Contains(said, "account sync "+kept+" on") {
 		t.Errorf("account recover said %q", said)
 	}
-	if purgeAfter, held, _ := removal(t, db, kept); purgeAfter != 0 || held == 0 {
+	if purgeAfter, held, _ := removal(t, db, kept); purgeAfter != 0 || held != 0 {
 		t.Errorf("after the recovery: purge_after %d, sync held at %d", purgeAfter, held)
 	}
 	if row := listedRow(); row != "" {
 		t.Errorf("a recovered mailbox is still listed: %q", row)
 	}
-	if out, _ := command("sync", kept, "status"); !strings.HasPrefix(out, "sync held since ") {
-		t.Errorf("account sync status of a held mailbox said %q", out)
-	}
 	if out, _ := command("sync", kept, "on"); !strings.HasPrefix(out, "sync on") {
 		t.Errorf("account sync on said %q", out)
-	}
-	if _, held, _ := removal(t, db, kept); held != 0 {
-		t.Error("switching sync on left the recovery's hold")
 	}
 
 	// Deleting for good takes a removed mailbox.
@@ -398,5 +394,139 @@ func TestAnAccountCommandReadsItsFlagsBeforeOrAfterTheID(t *testing.T) {
 	yes = fs.Bool("yes", false, "")
 	if rest, err := parseInterspersed(fs, []string{"acc_00000000000000b1"}); err != nil || *yes || len(rest) != 1 {
 		t.Errorf("account remove ID: yes %v, arguments %q (%v)", *yes, rest, err)
+	}
+}
+
+// commandOf runs an account command against cfg and fails the test on an
+// error.
+func commandOf(t *testing.T, cfg config.Config) func(args ...string) (stdout, stderr string) {
+	return func(args ...string) (string, string) {
+		t.Helper()
+		stdout, stderr, err := captureOutput(t, func() error { return accountCommand(t.Context(), cfg, args) })
+		if err != nil {
+			t.Fatalf("account %s: %v", strings.Join(args, " "), err)
+		}
+		return stdout, stderr
+	}
+}
+
+// pausedAt is when a mailbox's sync was paused, 0 when it is not.
+func pausedAt(t *testing.T, db *store.Store, id string) int64 {
+	t.Helper()
+	var at int64
+	if err := db.Reader().QueryRowContext(t.Context(), `SELECT sync_paused_at FROM accounts WHERE id = ?`, id).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	return at
+}
+
+func TestAccountSyncPausesAndResumesAnOperatorMailbox(t *testing.T) {
+	cfg, db := realDaemon(t)
+	const ops = "acc_00000000000000e1"
+	linkOperatorMailbox(t, db, ops, "ops@mail.example", true)
+	command := commandOf(t, cfg)
+	command("sync", ops, "on")
+	if out, _ := command("sync", ops, "pause"); out != "sync paused; its index is kept, not updated, until "+
+		"`mailserver account sync "+ops+" resume`\n" {
+		t.Errorf("account sync pause said %q", out)
+	}
+	if pausedAt(t, db, ops) == 0 {
+		t.Fatal("the mailbox is not paused")
+	}
+	if out, _ := command("sync", ops, "status"); !strings.HasPrefix(out, "sync paused since ") ||
+		!strings.Contains(out, "`mailserver account sync "+ops+" resume` resumes it") {
+		t.Errorf("account sync status of a paused mailbox said %q", out)
+	}
+	if out, _ := command("sync", ops, "resume"); !strings.HasPrefix(out, "sync on") {
+		t.Errorf("account sync resume said %q", out)
+	}
+	if pausedAt(t, db, ops) != 0 {
+		t.Error("the mailbox is still paused")
+	}
+	if err := accountCommand(t.Context(), cfg, []string{"sync", ops, "rest"}); !errors.Is(err, errUsage) ||
+		!strings.Contains(err.Error(), "pause|resume") {
+		t.Errorf("an unknown sync command: %v", err)
+	}
+}
+
+func TestAccountListNotesAPausedMailbox(t *testing.T) {
+	cfg, db := realDaemon(t)
+	const ops = "acc_00000000000000e2"
+	linkOperatorMailbox(t, db, ops, "ops@mail.example", true)
+	command := commandOf(t, cfg)
+	command("sync", ops, "on")
+	command("sync", ops, "pause")
+	out, _ := command("list")
+	since := stamp(pausedAt(t, db, ops))
+	if !strings.Contains(out, "sync paused since "+since) {
+		t.Errorf("account list said %q, without the pause since %s", out, since)
+	}
+}
+
+func TestTheOperatorRecoversAMailboxPausedAndResumesIt(t *testing.T) {
+	cfg, db := realDaemon(t)
+	const ops = "acc_00000000000000e3"
+	linkOperatorMailbox(t, db, ops, "ops@mail.example", true)
+	command := commandOf(t, cfg)
+	command("sync", ops, "on")
+	command("remove", ops, "--yes")
+	if _, said := command("recover", ops); said != "recovered ops@mail.example; its sync is paused until "+
+		"`mailserver account sync "+ops+" resume`\n" {
+		t.Errorf("account recover said %q", said)
+	}
+	if _, held, _ := removal(t, db, ops); held != 0 || pausedAt(t, db, ops) == 0 {
+		t.Errorf("after the recovery: held at %d, paused at %d", held, pausedAt(t, db, ops))
+	}
+	if out, _ := command("sync", ops, "resume"); !strings.HasPrefix(out, "sync on") {
+		t.Errorf("account sync resume said %q", out)
+	}
+}
+
+func TestRecoverSaysWhatTheMailboxCameBackAs(t *testing.T) {
+	for _, c := range []struct {
+		name, sync, said string
+	}{
+		{"paused", `{"paused":true,"paused_since":1}`, "its sync is paused until `mailserver account sync acc_1 resume`"},
+		{"off", `{"enabled":false}`, "its sync is off until `mailserver account sync acc_1 on`"},
+		{"held", `{"held":true,"held_since":1}`, "its sync is held until its person turns it on"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg, _ := fakeDaemon(t, func(w http.ResponseWriter) {
+				_, _ = w.Write([]byte(`{"id":"acc_1","email":"ops@mail.example","sync":` + c.sync + `}`))
+			})
+			_, said, err := captureOutput(t, func() error { return accountCommand(t.Context(), cfg, []string{"recover", "acc_1"}) })
+			if err != nil || !strings.Contains(said, "recovered ops@mail.example; "+c.said) {
+				t.Errorf("account recover said %q (%v), want %q", said, err, c.said)
+			}
+		})
+	}
+}
+
+func TestHeldLinesNameNoActor(t *testing.T) {
+	held := `{"enabled":false,"state":"off","held":true,"held_since":1793000000}`
+	cfg, _ := fakeDaemon(t, func(w http.ResponseWriter) { _, _ = w.Write([]byte(held)) })
+	out, _, err := captureOutput(t, func() error { return accountCommand(t.Context(), cfg, []string{"sync", "acc_1", "status"}) })
+	if err != nil || out != "sync held since "+stamp(1793000000)+": turned off until its person turns it on again\n" {
+		t.Errorf("account sync status of a held mailbox said %q (%v)", out, err)
+	}
+	cfg, _ = fakeDaemon(t, func(w http.ResponseWriter) {
+		_, _ = w.Write([]byte(`[{"id":"acc_1","email":"ana@mail.example","provider":"imap","auth_kind":"password",
+			"state":"active","sync":` + held + `}]`))
+	})
+	out, _, err = captureOutput(t, func() error { return accountCommand(t.Context(), cfg, []string{"list"}) })
+	if err != nil || !strings.Contains(out, "sync held: turned off until its person turns it on") {
+		t.Errorf("account list of a held mailbox said %q (%v)", out, err)
+	}
+	cfg, _ = fakeDaemon(t, func(w http.ResponseWriter) { _, _ = w.Write([]byte(held)) })
+	out, _, err = captureOutput(t, func() error {
+		return accountCommand(t.Context(), cfg, []string{"sync", "acc_1", "off", "--yes"})
+	})
+	if err != nil || out != "sync off, its index deleted; held until its person turns it on again\n" {
+		t.Errorf("account sync off of a person's mailbox said %q (%v)", out, err)
+	}
+	for _, line := range []string{out} {
+		if strings.Contains(line, "operator") || strings.Contains(line, "recovered") {
+			t.Errorf("a held line names an actor: %q", line)
+		}
 	}
 }

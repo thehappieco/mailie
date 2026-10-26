@@ -97,13 +97,16 @@ func TestEveryChangeToWhatASnapshotShowsMarksItsWorkspace(t *testing.T) {
 		{"a person's sync consent", `UPDATE users SET sync_consent_at = 950 WHERE id = 'usr_0000000000000006'`},
 		{"a removal", `UPDATE accounts SET removed_at = 900, removed_by = 'directory', purge_after = 900 + 2592000
 			WHERE id = 'acc_a2'`},
-		{"a recovery", `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0, sync_held_at = 950
-			WHERE id = 'acc_a2'`},
-		{"a hold on its sync lifted", `UPDATE accounts SET sync_held_at = 0 WHERE id = 'acc_a2'`},
+		// acc_a2 has no team consent: a recovery leaves it neither held
+		// nor paused.
+		{"a recovery", `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0 WHERE id = 'acc_a2'`},
 		{"an account's state", `UPDATE accounts SET state = 'needs_reauth' WHERE id = 'acc_a1'`},
 		{"an account's name", `UPDATE accounts SET display_name = 'Orders' WHERE id = 'acc_a1'`},
 		{"a team's consent", `UPDATE accounts SET sync_enabled_at = 960, sync_enabled_by = 'usr_0000000000000002'
 			WHERE id = 'acc_a1'`},
+		{"a pause", `UPDATE accounts SET sync_paused_at = 965, sync_paused_by = 'usr_0000000000000002'
+			WHERE id = 'acc_a1'`},
+		{"its pause ended", `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = 'acc_a1'`},
 		{"a consent bound to a person", `UPDATE accounts SET sync_enabled_via = 'migration' WHERE id = 'acc_a1'`},
 		{"a closure", `UPDATE workspaces SET closed_at = 970 WHERE id = 'ext_a'`},
 		{"a reopening", `UPDATE workspaces SET closed_at = 0 WHERE id = 'ext_a'`},

@@ -112,6 +112,20 @@ func (w *freshWorld) box(t *testing.T, email string) string {
 	return w.teamBox(t, dirTeamID, w.ana.UserID, email)
 }
 
+// syncedBox is a team mailbox Ana reads, which connected once, under the
+// team's consent to sync.
+func (w *freshWorld) syncedBox(t *testing.T, email string) string {
+	t.Helper()
+	box := w.box(t, email)
+	w.connect(t, box)
+	on := true
+	if _, err := w.svc.SetMailboxSync(t.Context(), w.ana, box,
+		service.MailboxSyncRequest{Enabled: &on, Version: w.consent().Sync}); err != nil {
+		t.Fatal(err)
+	}
+	return box
+}
+
 // removedBox is a team mailbox Ana reads, which connected once, removed by
 // her and kept: with the team's consent to sync and an index, when synced.
 func (w *freshWorld) removedBox(t *testing.T, email string, synced bool) string {
@@ -309,6 +323,39 @@ var freshSites = map[string]freshSite{
 			unchanged: func(t *testing.T) {
 				if n := w.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, box); n != 0 {
 					t.Error("the team's consent to sync was given")
+				}
+			},
+		}
+	}},
+	"PauseMailboxSync": {func(t *testing.T, w *freshWorld) freshCase {
+		box := w.syncedBox(t, "support@team.example.com")
+		return freshCase{
+			do: func() error {
+				_, err := w.svc.PauseMailboxSync(t.Context(), w.ana, box)
+				return err
+			},
+			want: service.FreshAct{Kind: service.FreshTeamSync, ActorID: w.ana.UserID, WorkspaceID: dirTeamID, AccountID: box},
+			unchanged: func(t *testing.T) {
+				if n := w.count(t, `SELECT sync_paused_at FROM accounts WHERE id = ?`, box); n != 0 {
+					t.Error("the team mailbox's sync was paused")
+				}
+			},
+		}
+	}},
+	"ResumeMailboxSync": {func(t *testing.T, w *freshWorld) freshCase {
+		box := w.syncedBox(t, "support@team.example.com")
+		if _, err := w.svc.PauseMailboxSync(t.Context(), w.ana, box); err != nil {
+			t.Fatal(err)
+		}
+		return freshCase{
+			do: func() error {
+				_, err := w.svc.ResumeMailboxSync(t.Context(), w.ana, box, service.SyncResumeRequest{Version: w.consent().Sync})
+				return err
+			},
+			want: service.FreshAct{Kind: service.FreshTeamSync, ActorID: w.ana.UserID, WorkspaceID: dirTeamID, AccountID: box},
+			unchanged: func(t *testing.T) {
+				if n := w.count(t, `SELECT sync_paused_at FROM accounts WHERE id = ?`, box); n == 0 {
+					t.Error("the team mailbox's sync was resumed")
 				}
 			},
 		}
@@ -746,6 +793,14 @@ func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtStartOAuth(t *testing
 
 func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtSetMailboxSync(t *testing.T) {
 	failsAt(t, "SetMailboxSync")
+}
+
+func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtPauseMailboxSync(t *testing.T) {
+	failsAt(t, "PauseMailboxSync")
+}
+
+func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtResumeMailboxSync(t *testing.T) {
+	failsAt(t, "ResumeMailboxSync")
 }
 
 func TestAFreshnessThatEndsTheActorsMembershipFailsTheActAtPurgeAccount(t *testing.T) {

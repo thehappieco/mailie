@@ -51,7 +51,8 @@ import (
 //     answer never came leaves the index to the passes, which the action
 //     asks for. A mailbox whose index can no longer follow — one that is not
 //     syncing while its index stays, as a team mailbox migration 0011 kept
-//     stopped does for its readers — is not changed at all (indexFollows).
+//     stopped does for its readers — is not changed at all (indexFollows); a
+//     paused one is, and its index follows.
 //   - Nothing is logged about a message but its account, its id and its
 //     folder's id: never a subject, an address or a folder's name.
 
@@ -396,14 +397,15 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 		if err != nil {
 			return account.Account{}, nil, E(CodeInternal, "reading the message failed", err)
 		}
-		if _, err := visible(row.AccountID); err != nil {
+		of, err := visible(row.AccountID)
+		if err != nil {
 			return account.Account{}, nil, err
 		}
 		switch {
 		case row.Vanished:
 			return account.Account{}, nil, errMessageGone
 		case row.Stale:
-			return account.Account{}, nil, errMessageBusy
+			return account.Account{}, nil, busy(of, nil)
 		}
 		targets = append(targets, actionTarget{row: row})
 	}
@@ -437,23 +439,24 @@ func (s *Service) actionTargets(ctx context.Context, p Principal, ids []int64, a
 }
 
 // indexFollows refuses an action on a mailbox whose index may no longer be
-// written: one that is not eligible to sync (store.SyncEligible). Some keep
-// their index all the same — a team mailbox migration 0011 kept stopped for
-// its readers, or one nobody reads any more that a key still holds — but no
-// row of it can change (store.Store.RequireSyncEligibleTx). An action there would
-// change the server, fail to record what it did, and leave the index
-// contradicting the server with no pass to set it right, so the server is not
-// touched.
+// written: one that is not eligible to sync but for a pause
+// (store.IndexFollows): a paused mailbox's index follows what someone asks,
+// a recovered one's included. Some keep their index all the same — a team
+// mailbox migration 0011 kept stopped for its readers, or one nobody reads
+// any more that a key still holds — but no row of it can change
+// (store.Store.RequireIndexFollowsTx). An action there would change the
+// server, fail to record what it did, and leave the index contradicting the
+// server with no pass to set it right, so the server is not touched.
 //
 // It is asked when an action is accepted, and again on the connection before
 // each command that changes the mailbox (stillMayAct). What is left is the
 // moment between that and the recording, which actionFailed answers.
 func (s *Service) indexFollows(ctx context.Context, a account.Account) error {
-	eligible, err := s.store.SyncEligible(ctx, a.ID)
+	follows, err := s.store.IndexFollows(ctx, a.ID)
 	switch {
 	case err != nil:
 		return E(CodeInternal, "reading whether the mailbox syncs failed", err)
-	case !eligible:
+	case !follows:
 		return errNotSyncing
 	}
 	return nil
@@ -1244,9 +1247,12 @@ func (s *Service) actionFailed(ctx context.Context, a account.Account, what stri
 		// mailbox stopped syncing between the last check and the write.
 		return E(CodeConflict, errStoppedSyncing.Message, err)
 	case errors.Is(err, store.ErrUIDValidityMismatch), errors.Is(err, provider.ErrUIDValidityChanged):
-		return E(CodeConflict, errMessageBusy.Message, err)
+		return busy(a, err)
 	case errors.Is(err, provider.ErrMessageGone):
 		return E(CodeNotFound, errMessageGone.Message, err)
+	case errors.Is(err, provider.ErrFolderNotFound) && !a.SyncPausedAt.IsZero():
+		// No pass catches up while the mailbox is paused.
+		return E(CodeConflict, errPausedBehind.Message, err)
 	case errors.Is(err, provider.ErrFolderNotFound):
 		return E(CodeConflict, "a folder this needs is no longer on the server; the next sync will catch up", err)
 	case errors.Is(err, provider.ErrUnsupported):

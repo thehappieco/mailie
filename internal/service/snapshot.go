@@ -35,7 +35,15 @@ const (
 	PauseConsentOff  SnapshotPause = store.PauseConsentOff
 	PausePersonOff   SnapshotPause = store.PausePersonOff
 	PauseNoReader    SnapshotPause = store.PauseNoReader
+	PausePaused      SnapshotPause = store.PausePaused
 )
+
+// SnapshotPauses are every cause a snapshot reports: what an extension maps
+// one by one (its tests hold every one to a reason).
+func SnapshotPauses() []SnapshotPause {
+	return []SnapshotPause{PauseTeamClosed, PauseWithheld, PausePendingAuth, PauseNeedsReauth, PauseError, PauseHeld,
+		PauseConsentOff, PausePersonOff, PauseNoReader, PausePaused}
+}
 
 // The bounds of a snapshot (ErrSnapshotTooLarge past them).
 const (

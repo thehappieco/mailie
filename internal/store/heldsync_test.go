@@ -8,41 +8,44 @@ import (
 	"testing"
 )
 
-// What a recovery's hold and the notices of a sync turned off do to the
-// rules this package decides (migration 0020).
+// What the operator's hold, a pause and the notices of a sync turned off do
+// to the rules this package decides (migrations 0020 and 0025).
 
-func TestSwitchingATeamMailboxOffTellsItsOtherReadersAndEitherWayLiftsAHold(t *testing.T) {
+func TestSwitchingATeamMailboxOffTellsItsOtherReadersAndEndsItsPause(t *testing.T) {
 	// The seed: acc_t1 is a mailbox of the team wsp_t1, under
 	// its consent, which Bea (usr_2) and Fay (usr_6) read;
 	// acc_0000000000000005 is an operator mailbox.
 	f := newSchemaLatest(t)
 	ctx := context.Background()
 	const owner, bea, fay = "usr_0000000000000001", "usr_0000000000000002", "usr_0000000000000006"
-	held := func(id string) bool {
+	paused := func(id string) bool {
 		t.Helper()
-		return queryInt(t, f.s, `SELECT sync_held_at FROM accounts WHERE id = ?`, id) != 0
+		return queryInt(t, f.s, `SELECT sync_paused_at FROM accounts WHERE id = ?`, id) != 0
 	}
-	hold := func(id string) {
+	pause := func(id string) {
 		t.Helper()
-		f.accepted("held", f.exec(`UPDATE accounts SET sync_held_at = 950 WHERE id = ?`, id))
+		f.accepted("paused", f.exec(`UPDATE accounts SET sync_paused_at = 950, sync_paused_by = 'cli' WHERE id = ?`, id))
 	}
 
-	// On, at the revision it already has, a held mailbox is let go.
+	// On, at the revision it already has, a paused mailbox stays paused:
+	// a resume ends a pause, never a turn-on. The first turn-on confirms
+	// the consent migration 0011 bound to its linker; the second changes
+	// nothing.
 	version := queryStrings(t, f.s, `SELECT sync_consent_version FROM accounts WHERE id = 'acc_t1'`)[0]
-	hold("acc_t1")
+	pause("acc_t1")
 	switched, err := f.s.SetMailboxSync(ctx, "acc_t1", true, owner, version, nil)
-	if err != nil || !switched.Changed || len(switched.Told) != 0 || held("acc_t1") {
-		t.Fatalf("turning the held mailbox on: %+v (%v), held %v", switched, err, held("acc_t1"))
+	if err != nil || !switched.Changed || len(switched.Told) != 0 || !paused("acc_t1") {
+		t.Fatalf("turning the paused mailbox on: %+v (%v), paused %v", switched, err, paused("acc_t1"))
 	}
-	if switched, err := f.s.SetMailboxSync(ctx, "acc_t1", true, owner, version, nil); err != nil || switched.Changed {
-		t.Errorf("turning it on again: %+v (%v), want nothing changed", switched, err)
+	if switched, err := f.s.SetMailboxSync(ctx, "acc_t1", true, owner, version, nil); err != nil || switched.Changed ||
+		!paused("acc_t1") {
+		t.Errorf("turning it on again: %+v (%v), paused %v, want nothing changed", switched, err, paused("acc_t1"))
 	}
 
-	// Off, by Bea: Fay is told, Bea is not, and a hold goes too.
-	hold("acc_t1")
+	// Off, by Bea: Fay is told, Bea is not, and the pause ends.
 	switched, err = f.s.SetMailboxSync(ctx, "acc_t1", false, bea, "", nil)
-	if err != nil || !switched.Changed || !slices.Equal(switched.Told, []string{fay}) || held("acc_t1") {
-		t.Fatalf("Bea turning it off: %+v (%v), held %v", switched, err, held("acc_t1"))
+	if err != nil || !switched.Changed || !slices.Equal(switched.Told, []string{fay}) || paused("acc_t1") {
+		t.Fatalf("Bea turning it off: %+v (%v), paused %v", switched, err, paused("acc_t1"))
 	}
 	if got := queryStrings(t, f.s, `SELECT e.kind || ' ' || e.actor || ' ' || r.user_id || ' ' || (n.user_id IS NOT NULL)
 		FROM mailbox_events e JOIN mailbox_event_readers r ON r.event_seq = e.seq
@@ -65,9 +68,9 @@ func TestSwitchingATeamMailboxOffTellsItsOtherReadersAndEitherWayLiftsAHold(t *t
 	// nothing here.
 	f.accepted("the operator's switched on", f.exec(`UPDATE accounts SET sync_enabled_at = 800, sync_enabled_by = 'cli'
 		WHERE id = 'acc_0000000000000005'`))
-	hold("acc_0000000000000005")
+	pause("acc_0000000000000005")
 	if switched, err := f.s.SetMailboxSync(ctx, "acc_0000000000000005", false, "cli", "", nil); err != nil ||
-		!switched.Changed || len(switched.Told) != 0 || held("acc_0000000000000005") {
+		!switched.Changed || len(switched.Told) != 0 || paused("acc_0000000000000005") {
 		t.Errorf("the operator turning its mailbox off: %+v (%v)", switched, err)
 	}
 

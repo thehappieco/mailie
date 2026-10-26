@@ -23,8 +23,10 @@ import (
 // last reader). What keys held on it goes at once — what an instance key
 // was restricted to and what a workspace key held — and so do the consent
 // attempts under way on it; nothing of that comes back. Within those days it
-// may be recovered, which clears the removal and holds its sync until
-// someone who may turns it on; after them it is deleted for good by the
+// may be recovered, which clears the removal and pauses its sync until
+// someone who may resumes it, where its consent stands (or, for a personal
+// mailbox the operator turned off, keeps it held until its person turns it
+// on); after them it is deleted for good by the
 // hourly sweep (PurgeExpired), or before by whoever may. A mailbox that never
 // connected — nothing was ever stored to authenticate with — is deleted for
 // good at once instead: there is nothing in it to keep. In a local workspace
@@ -64,7 +66,9 @@ type RemoveCheck func(tx *sql.Tx, neverConnected bool) error
 // remove removes a live mailbox, as actor ("usr_…", "key:<prefix>", "cli"),
 // after check (nil checks nothing): kept for RemovedKeptFor, or deleted for
 // good at once when it never connected. ErrNotFound for a mailbox nobody
-// knows, or one already removed.
+// knows, or one already removed. A removal ends the mailbox's pause, and
+// withdraws its notices (store.EndPauseTx): a removed mailbox is never
+// paused; its recovery pauses it again.
 func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveCheck) (Removal, error) {
 	at := r.now().UTC().Truncate(time.Second)
 	out := Removal{AccountID: id}
@@ -83,6 +87,9 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 			if err := check(tx, neverConnected); err != nil {
 				return err
 			}
+		}
+		if err := store.EndPauseTx(ctx, tx, []string{id}, at.Unix()); err != nil {
+			return err
 		}
 		// Its consent attempts end either way: a redirect that comes back
 		// later finds nothing, and the registry stops what it runs for them.
@@ -143,10 +150,12 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 }
 
 // recoverRemoved recovers a removed mailbox, as actor, after check (nil
-// checks nothing): its removal is cleared and its sync held (sync_held_at)
-// until someone who may turns it on. It comes back with everything it kept —
-// credentials, index, key, consent, and its readers who still qualify — and
-// without what keys held on it. ErrNotFound for a mailbox nobody knows,
+// checks nothing): its removal is cleared and its sync paused
+// (sync_paused_at, by actor) until someone who may resumes it, with whatever
+// index it kept, where its consent stands (store.ConsentStandsSQL), and off
+// otherwise; a hold the operator's turn-off put on a personal one is kept.
+// It comes back with everything it kept — credentials, index, key, consent,
+// and its readers who still qualify — and without what keys held on it. ErrNotFound for a mailbox nobody knows,
 // ErrNotRemoved for a live one, ErrRemovalOver once its 30 days are over,
 // workspace.ErrClosed in a closed team, and ErrNoReaderLeft for a team
 // mailbox nobody who could read it is left to read, now or once resumed.
@@ -179,15 +188,23 @@ func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check
 		if err := workspace.RequireOpenTx(ctx, tx, workspaceID); err != nil {
 			return err
 		}
+		// Paused where its consent stands and nothing holds it, whatever
+		// index it kept; off otherwise, its index gone with the turn-off or
+		// the withdrawal; a hold the operator's turn-off put on it is kept.
+		pauses := `sync_held_at = 0 AND ` + store.ConsentStandsSQL("accounts")
+		//nolint:gosec // G202: ConsentStandsSQL is built from constants alone; nothing is interpolated
 		if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
-			  sync_held_at = ?, updated_at = ? WHERE id = ? AND removed_at <> 0`, at.Unix(), at.Unix(), id); err != nil {
+			  sync_paused_at = CASE WHEN `+pauses+` THEN ?1 ELSE 0 END,
+			  sync_paused_by = CASE WHEN `+pauses+` THEN ?2 ELSE '' END,
+			  updated_at = ?1
+			WHERE id = ?3 AND removed_at <> 0`, at.Unix(), actor, id); err != nil {
 			return fmt.Errorf("account: recover: %w", err)
 		}
 		// A team mailbox syncs for its readers, and read passes only from
 		// someone who reads it: with none left, it is deleted for good and
 		// linked again instead. One a suspended person would read once
-		// resumed waits for them, as a live one does: its sync stays held,
-		// and is turned on only once someone reads it.
+		// resumed waits for them, as a live one does: it stays paused, and
+		// is resumed only once someone reads it.
 		if workspace.Kind(kind) == workspace.KindTeam {
 			readable, err := workspace.HasReaderTx(ctx, tx, id)
 			if err == nil && !readable {
@@ -434,8 +451,10 @@ func (r *Registry) Remove(ctx context.Context, accountID, actor string, check Re
 }
 
 // Recover recovers a removed mailbox, as actor, after check (nil checks
-// nothing), and returns it: live again, its sync held until someone who may
-// turns it on. See recoverRemoved for what refuses it.
+// nothing), and returns it: live again, its sync paused until someone who
+// may resumes it (or off, where its consent is off, or held, where the
+// operator's turn-off holds a personal one). See recoverRemoved for what
+// refuses it.
 func (r *Registry) Recover(ctx context.Context, accountID, actor string, check func(*sql.Tx) error) (Account, error) {
 	if err := r.repo.recoverRemoved(ctx, accountID, actor, check); err != nil {
 		return Account{}, err

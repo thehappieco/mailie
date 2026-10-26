@@ -474,6 +474,7 @@ func GrantLinkTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID
 func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string) ([]MailboxAccess, error) {
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT a.id, a.email, a.provider, a.state, a.linked_by, w.kind,
 		       a.sync_enabled_at, a.sync_enabled_by, a.sync_consent_version, a.sync_enabled_via = 'migration',
+		       a.sync_paused_at, a.sync_paused_by,
 		       (SELECT count(*) FROM mailbox_access g WHERE g.account_id = a.id AND `+store.ReaderSQL("g")+`),
 		       EXISTS (SELECT 1 FROM mailbox_access g WHERE g.account_id = a.id AND `+store.SuspendedReaderSQL("g")+`),
 		       coalesce(`+store.CurrentEpochSQL("a.id")+`, 0)
@@ -488,16 +489,18 @@ func (r *Repository) directoryMailboxes(ctx context.Context, workspaceID string)
 	var out []MailboxAccess
 	for rows.Next() {
 		var (
-			mb        MailboxAccess
-			kind      Kind
-			at        int64
-			suspended bool
+			mb         MailboxAccess
+			kind       Kind
+			at, paused int64
+			suspended  bool
 		)
 		if err := rows.Scan(&mb.AccountID, &mb.Email, &mb.Provider, &mb.State, &mb.LinkedBy, &kind,
-			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &mb.Readers, &suspended, &mb.Epoch); err != nil {
+			&at, &mb.Sync.By, &mb.Sync.Version, &mb.Sync.Migrated, &paused, &mb.Pause.By,
+			&mb.Readers, &suspended, &mb.Epoch); err != nil {
 			return nil, fmt.Errorf("workspace: list the directory: %w", err)
 		}
 		mb.Sync.At = unix(at)
+		mb.Pause.At = unix(paused)
 		// A mailbox a suspended person alone would read waits for them: it
 		// is read again once they are resumed.
 		mb.NoReader = kind == KindTeam && mb.Readers == 0 && !suspended
@@ -524,6 +527,9 @@ type MailboxAccess struct {
 	// workspace's, or an operator mailbox's switch. Zero for a personal
 	// mailbox, which syncs under its person's.
 	Sync Consent
+	// Pause is the mailbox's sync paused, and by whom: zero At when it is
+	// not paused.
+	Pause Pause
 	// Readers counts who reads it now, by the one rule (store.ReaderSQL):
 	// active members, active on the instance, holding read, and on a
 	// mailbox that has a key a grant at its current epoch.
@@ -543,6 +549,16 @@ type MailboxAccess struct {
 	// Keys are the live keys holding something on it: what each holds, who
 	// created it and who gave it last.
 	Keys []MailboxKey
+}
+
+// Pause is a mailbox's sync paused (migration 0025), as the directory shows
+// it. A zero At is not paused.
+type Pause struct {
+	At time.Time
+	// By is whoever paused it, or recovered it: "usr_…", "key:<prefix>" or
+	// "cli"; empty once that person is deleted, and for a pause migration
+	// 0025 made of a recovery's hold.
+	By string
 }
 
 // Consent is a mailbox's own consent to sync, as the directory shows it. A

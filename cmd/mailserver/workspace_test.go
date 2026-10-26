@@ -37,7 +37,7 @@ func realDaemon(t *testing.T) (config.Config, *store.Store) {
 	h := &api.Handler{
 		Service: service.New(service.Deps{
 			Accounts: registry, Keys: auth.NewKeys(db), Users: auth.NewUsers(db), Store: db, Log: logger,
-			PublicURL: "https://console.example",
+			PublicURL: "https://console.example", SyncPauseOffered: true,
 		}),
 		Limits: ratelimit.DefaultAuth(nil), SignInLimits: ratelimit.DefaultSignIn(nil), Log: logger,
 	}
@@ -251,5 +251,38 @@ func TestTheCommandLineClosesOnlyALocalTeam(t *testing.T) {
 		workspaceCommand(ctx, cfg, []string{"close", "--workspace", "wsp_0000000000000000"}), "not_found")
 	if err := workspaceCommand(ctx, cfg, []string{"close"}); err == nil || !strings.Contains(err.Error(), "--workspace") {
 		t.Errorf("close without --workspace: %v", err)
+	}
+}
+
+func TestAccessListSaysWhoPausedAMailbox(t *testing.T) {
+	cfg, db := realDaemon(t)
+	ctx := t.Context()
+	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
+	team, err := workspace.NewRepository(db, nil).CreateTeam(ctx, "Support", ana.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const shared = "acc_00000000000000f1"
+	if _, err := account.NewRepository(db, daemonKeyring(t)).Create(ctx, account.Account{
+		ID: shared, WorkspaceID: team.ID, Email: "support@mail.example", Provider: provider.KindIMAP,
+		AuthKind: "password", IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example",
+		SMTPPort: 465, SMTPTLS: "implicit", LoginUser: "support@mail.example", State: account.StateActive,
+	}, ana.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Writer().ExecContext(ctx, `UPDATE accounts SET sync_enabled_at = unixepoch(), sync_enabled_by = ?,
+		sync_consent_version = 'sync-1' WHERE id = ?`, ana.ID, shared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.PauseSync(ctx, shared, ana.ID, nil); err != nil {
+		t.Fatal(err)
+	}
+	var at int64
+	if err := db.Reader().QueryRowContext(ctx, `SELECT sync_paused_at FROM accounts WHERE id = ?`, shared).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := captureOutput(t, func() error { return accessCommand(ctx, cfg, []string{"list", "--workspace", team.ID}) })
+	if err != nil || !strings.Contains(out, "paused since "+stamp(at)+" by ana@example.com") {
+		t.Errorf("access list said %q (%v)", out, err)
 	}
 }

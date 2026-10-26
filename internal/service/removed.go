@@ -34,9 +34,12 @@ import (
 // mailboxes, to erase one when its person asks them to, and never recovers
 // one of a person or a team: that is their owners' to decide. A recovered
 // mailbox comes back with its credentials, its index, its key, its consent
-// and its readers who still qualify, and nothing a key held; its sync stays
-// held until someone who may turns it on (SetMailboxSync), and it then
-// catches up from the index it kept.
+// and its readers who still qualify, and nothing a key held; its sync
+// paused, where its consent stands, until someone who may resumes it
+// (ResumeMailboxSync), which for a team records the team's agreement again,
+// and it then catches up from the index it kept, or indexes the last 90
+// days when it kept none; one whose consent is off comes back off, and a
+// personal one the operator turned off held.
 
 // RemovedMailbox is a removed mailbox, as its owners see it.
 type RemovedMailbox struct {
@@ -60,7 +63,8 @@ type RemovedMailbox struct {
 	// NoReader is a team mailbox nobody would read once recovered: it is not
 	// recovered, but deleted for good and linked again. One that only a
 	// person suspended on the server would read, once resumed, is not: it
-	// waits for them, recovered with its sync held until someone reads it.
+	// waits for them, recovered paused, and resumed only once someone reads
+	// it.
 	NoReader bool `json:"no_reader"`
 }
 
@@ -144,8 +148,10 @@ func (s *Service) removedScope(ctx context.Context, p Principal, workspaceID str
 }
 
 // RecoverAccount recovers a removed mailbox within its 30 days, for its
-// workspace's owners, and returns it: live again, its sync held until
-// someone who may turns it on. Nothing a key held on it comes back. Refused,
+// workspace's owners, and returns it: live again, its sync paused until
+// someone who may resumes it, or off, or held, as the recovery found it. The
+// engine is told, so that it keeps the paused mailbox's interactive
+// connection between calls. Nothing a key held on it comes back. Refused,
 // conflict, in a closed team, once its 30 days are over, and for a team
 // mailbox nobody who could read it is left to read.
 func (s *Service) RecoverAccount(ctx context.Context, p Principal, id string) (Account, error) {
@@ -163,8 +169,9 @@ func (s *Service) RecoverAccount(ctx context.Context, p Principal, id string) (A
 		return Account{}, fromRemoved(err, "recovering the mailbox failed")
 	}
 	s.accessChanged()
-	s.log.Info("removed mailbox recovered; its sync is held until it is turned on", "account", a.ID,
-		"workspace", a.WorkspaceID, "by", p.Actor())
+	s.log.Info("removed mailbox recovered", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor(),
+		"paused", !recovered.SyncPausedAt.IsZero(), "held", !recovered.SyncHeldAt.IsZero())
+	s.reconcile(a.ID)
 	return s.present(ctx, p, recovered)[0], nil
 }
 

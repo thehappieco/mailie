@@ -102,6 +102,9 @@ type Service struct {
 	// freshness is asked before an act that widens access or touches a
 	// team's shared data (freshness.go); nil asks nothing.
 	freshness Freshness
+	// syncPauseOffered is an edition that offers a person's pause of one
+	// mailbox's sync (Deps.SyncPauseOffered).
+	syncPauseOffered bool
 }
 
 // Deps is what the service needs.
@@ -206,6 +209,12 @@ type Deps struct {
 	// (freshness.go). nil, the default, asks nothing. Only internal/app
 	// sets it, from its Options.
 	Freshness Freshness
+	// SyncPauseOffered is an edition that offers a person's pause of one
+	// mailbox's sync: its people agree to a sync text that a pause makes no
+	// promise of false. Unset, PauseMailboxSync is not_authorized for
+	// everyone; a recovery still pauses and a resume still ends a pause.
+	// Only internal/app sets it, from its Options.
+	SyncPauseOffered bool
 }
 
 // New builds the service.
@@ -261,6 +270,7 @@ func New(d Deps) *Service {
 		teamsWithheld:       d.TeamsWithheld,
 		keysPersonalOnly:    d.KeysInPersonalWorkspaceOnly,
 		freshness:           d.Freshness,
+		syncPauseOffered:    d.SyncPauseOffered,
 	}
 }
 

@@ -2,7 +2,9 @@
 //
 // One Manager per daemon; one worker per account that may sync — the account
 // is active and its owner consented, or, for an account nobody owns, the
-// operator switched it on (store.SyncEligibleAccounts is the one rule). A
+// operator switched it on, and nobody paused it (store.SyncEligibleAccounts
+// is the one rule); a paused account keeps only its interactive connection,
+// between calls (store.PausedAccounts). A
 // worker holds at most three connections, each with a fixed job: "sync" runs
 // folder passes one after another, "idle" sits in IDLE on the inbox and only
 // ever says "look again", and "interactive" is opened on demand for the
@@ -76,8 +78,11 @@ type Manager struct {
 	workers  map[string]*worker
 	stopping map[string]chan struct{} // done channels of workers told to stop
 	pending  map[string]bool          // accounts to reconcile
-	slots    map[string]*slot         // interactive connections, by account
-	wg       sync.WaitGroup
+	// paused are the accounts whose index still follows and whose sync is
+	// paused: no worker, their interactive slot kept between calls.
+	paused map[string]bool
+	slots  map[string]*slot // interactive connections, by account
+	wg     sync.WaitGroup
 }
 
 var (
@@ -102,6 +107,7 @@ func New(d Deps, o Options) *Manager {
 		workers:  map[string]*worker{},
 		stopping: map[string]chan struct{}{},
 		pending:  map[string]bool{},
+		paused:   map[string]bool{},
 		slots:    map[string]*slot{},
 	}
 }
@@ -194,7 +200,7 @@ func (m *Manager) takePending() []string {
 }
 
 // reconcile starts or stops one account's worker to match whether it may
-// sync now.
+// sync now, and keeps or lets go of its interactive slot when it is paused.
 func (m *Manager) reconcile(ctx context.Context, id string) {
 	eligible, err := m.store.SyncEligible(ctx, id)
 	if err != nil {
@@ -203,10 +209,36 @@ func (m *Manager) reconcile(ctx context.Context, id string) {
 		}
 		return
 	}
+	// Not eligible, an account whose index still follows is a paused one:
+	// the engine's rule is the index rule and not paused.
+	paused := false
+	if !eligible {
+		if paused, err = m.store.IndexFollows(ctx, id); err != nil {
+			if ctx.Err() == nil {
+				m.log.Warn("checking whether an account is paused failed", "account", id, "err", err)
+			}
+			return
+		}
+	}
+	var release []string
+	defer func() {
+		for _, id := range release {
+			m.closeInteractive(id)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return
+	}
+	if m.paused[id] && !paused && !eligible {
+		// No longer paused, and no worker: its slot is logged out.
+		release = append(release, id)
+	}
+	if paused {
+		m.paused[id] = true
+	} else {
+		delete(m.paused, id)
 	}
 	w := m.workers[id]
 	switch {
@@ -234,10 +266,33 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 	for _, id := range ids {
 		eligible[id] = true
 	}
+	// A read that fails leaves the paused set as it was.
+	pausedIDs, pausedErr := m.store.PausedAccounts(ctx)
+	if pausedErr != nil && ctx.Err() == nil {
+		m.log.Warn("listing the paused accounts failed", "err", pausedErr)
+	}
+	var release []string
+	defer func() {
+		for _, id := range release {
+			m.closeInteractive(id)
+		}
+	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return
+	}
+	if pausedErr == nil {
+		paused := make(map[string]bool, len(pausedIDs))
+		for _, id := range pausedIDs {
+			paused[id] = true
+		}
+		for id := range m.paused {
+			if !paused[id] && !eligible[id] {
+				release = append(release, id)
+			}
+		}
+		m.paused = paused
 	}
 	for id := range m.workers {
 		if !eligible[id] {

@@ -1,0 +1,12 @@
+[
+  {
+    "account_id": "acc_0000000000000005",
+    "at": 1790000000,
+    "id": "mbe_0000000000000002",
+    "kind": "paused",
+    "mailbox": "support@mail.example",
+    "state": "live",
+    "workspace_id": "wsp_0000000000000002",
+    "workspace_name": "Support"
+  }
+]

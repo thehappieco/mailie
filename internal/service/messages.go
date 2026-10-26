@@ -786,9 +786,19 @@ func (s *Service) readableMessage(ctx context.Context, p Principal, id int64) (a
 	case row.Vanished:
 		return account.Account{}, store.MessageRow{}, errMessageGone
 	case row.Stale:
-		return account.Account{}, store.MessageRow{}, errMessageBusy
+		return account.Account{}, store.MessageRow{}, busy(a, nil)
 	}
 	return a, row, nil
+}
+
+// busy is the conflict of a message whose folder the index has not caught up
+// with: the engine finds it again in a moment, or, on a paused mailbox, once
+// sync is resumed (errPausedBehind).
+func busy(a account.Account, err error) error {
+	if !a.SyncPausedAt.IsZero() {
+		return E(CodeConflict, errPausedBehind.Message, err)
+	}
+	return E(CodeConflict, errMessageBusy.Message, err)
 }
 
 // readyToRead refuses, before any connection, an account whose mailbox
@@ -838,8 +848,9 @@ func (s *Service) fetchFromServer(ctx context.Context, a account.Account, row st
 		return E(CodeNotFound, errMessageGone.Message, err)
 	case errors.Is(err, provider.ErrUIDValidityChanged):
 		// The folder was renumbered under the index: the UID names nothing
-		// now, but the sync engine's resync gives the message its new one.
-		return E(CodeConflict, errMessageBusy.Message, err)
+		// now, but the sync engine's resync gives the message its new one,
+		// once a paused mailbox is resumed.
+		return busy(a, err)
 	case errors.Is(err, provider.ErrTooLarge):
 		// The caller says which limit.
 		return err

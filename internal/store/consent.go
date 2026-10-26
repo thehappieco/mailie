@@ -96,8 +96,9 @@ func (s *Store) GrantSyncConsent(ctx context.Context, userID, version string) (S
 // WithdrawSyncConsent takes a person's consent back and deletes everything
 // indexed for the mailboxes of their personal workspace, in one transaction,
 // together with the team mailboxes whose consent is still bound to theirs
-// (StopBoundTx), and returns every mailbox it stopped. A team mailbox under
-// its workspace's own consent is not theirs to stop: it is the team's.
+// (StopBoundTx), and returns every mailbox it stopped. Their pauses end with
+// it (EndPauseTx): a paused mailbox's consent always stands. A team mailbox
+// under its workspace's own consent is not theirs to stop: it is the team's.
 //
 // The engine re-checks eligibility inside every transaction that writes to
 // the index (RequireSyncEligibleTx), and the database has one writer, so a
@@ -123,6 +124,9 @@ func (s *Store) WithdrawSyncConsent(ctx context.Context, userID string) ([]strin
 		if err != nil {
 			return err
 		}
+		if err := EndPauseTx(ctx, tx, owned, now); err != nil {
+			return err
+		}
 		if err := ForgetIndexTx(ctx, tx, owned); err != nil {
 			return err
 		}
@@ -146,9 +150,19 @@ func (s *Store) WithdrawSyncConsent(ctx context.Context, userID string) ([]strin
 // that person agreed to promised when they turn sync off, are disabled or are
 // deleted. Each is journaled as a sync turned off by that person, whose cause
 // says the consent stopped with them (CauseBoundStopped), and every other
-// reader is told (JournalMailboxTx). It returns them. Callers compact and
-// scrub once the transaction has committed (and ForgetMoves).
+// reader is told (JournalMailboxTx). Their pauses end first (EndPauseTx),
+// with their notices, before their consent does: the schema keeps a team
+// mailbox paused only while its consent stands. It returns them. Callers
+// compact and scrub once the transaction has committed (and ForgetMoves).
 func StopBoundTx(ctx context.Context, tx *sql.Tx, userID string, now int64) ([]string, error) {
+	bound, err := queryIDs(ctx, tx, `SELECT id FROM accounts WHERE sync_enabled_via = 'migration' AND sync_enabled_by = ?
+		ORDER BY id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: list the team mailboxes bound to a person: %w", err)
+	}
+	if err := EndPauseTx(ctx, tx, bound, now); err != nil {
+		return nil, err
+	}
 	ids, err := queryIDs(ctx, tx, `UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '',
 		  sync_consent_version = '', sync_enabled_via = '', updated_at = ?
 		WHERE sync_enabled_via = 'migration' AND sync_enabled_by = ? RETURNING id`, now, userID)
@@ -369,13 +383,14 @@ type MailboxConsent struct {
 	Migrated bool
 }
 
-// MailboxSyncSwitch is what switching a mailbox's own sync did.
+// MailboxSyncSwitch is what switching a mailbox's own sync, pausing it or
+// resuming it did.
 type MailboxSyncSwitch struct {
-	// Changed is anything changed: a consent recorded or withdrawn, or a
-	// recovery's hold lifted.
+	// Changed is anything changed: a consent recorded or withdrawn, a pause
+	// started or ended, or a hold put on or lifted.
 	Changed bool
-	// Told are the readers a team mailbox's sync turned off told, with a
-	// notice: everyone who read it then but whoever turned it off.
+	// Told are the readers a team mailbox's sync turned off or paused told,
+	// with a notice: everyone who read it then but whoever acted.
 	Told []string
 }
 
@@ -385,28 +400,31 @@ type MailboxSyncSwitch struct {
 // transaction (nil checks nothing): where the caller's authority is re-read.
 //
 // Switching on a mailbox that is already on records the new consent when its
-// revision changes, it is a migrated one being confirmed, which detaches it
-// from the person it was bound to, or a recovery holds its sync, which it
-// lifts; otherwise nothing changes. A removed mailbox is never switched on
-// (ErrNoMailboxConsent). Switching off deletes what was indexed for it, in
-// the same transaction, as withdrawing consent does for a person's mailboxes,
-// a migrated consent's kept index included, and lifts a hold, which an off
-// mailbox does not need; a team mailbox's that was on, or bound to a person,
-// is journaled, and every reader but whoever turned it off is told
-// (JournalMailboxTx). It reports what changed.
+// revision changes, or it is a migrated one being confirmed, which detaches
+// it from the person it was bound to (agreeSyncTx); otherwise nothing
+// changes, and it never ends a pause, which a resume does (ResumeSync). A
+// removed mailbox is never switched on (ErrNoMailboxConsent). Switching off
+// deletes what was indexed for it, in the same transaction, as withdrawing
+// consent does for a person's mailboxes, a migrated consent's kept index
+// included, and ends its pause (EndPauseTx); a team mailbox's that was on,
+// or bound to a person, is journaled, and every reader but whoever turned it
+// off is told (JournalMailboxTx). It reports what changed.
 func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, by, version string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
 	err := s.Write(ctx, func(tx *sql.Tx) error {
+		// A mailbox that names no person is never held since migration 0025
+		// (accounts_held_personal): only the operator's turn-off of a
+		// personal mailbox holds.
 		var (
-			c                   MailboxConsent
-			held, removed, team bool
+			c             MailboxConsent
+			removed, team bool
 		)
 		err := tx.QueryRowContext(ctx,
-			`SELECT a.sync_enabled_at, a.sync_consent_version, a.sync_enabled_via = 'migration', a.sync_held_at <> 0,
+			`SELECT a.sync_enabled_at, a.sync_consent_version, a.sync_enabled_via = 'migration',
 			        a.removed_at <> 0, EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.kind = 'team')
 			   FROM accounts a WHERE a.id = ? AND a.owner_user_id IS NULL`, accountID,
-		).Scan(&c.At, &c.Version, &c.Migrated, &held, &removed, &team)
+		).Scan(&c.At, &c.Version, &c.Migrated, &removed, &team)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoMailboxConsent
@@ -422,23 +440,22 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 			switch {
 			case removed:
 				return ErrNoMailboxConsent
-			case c.At != 0 && c.Version == version && !c.Migrated && !held:
+			case c.At != 0 && c.Version == version && !c.Migrated:
 				return nil
 			}
 			out.Changed = true
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE accounts SET sync_enabled_at = ?, sync_enabled_by = ?, sync_consent_version = ?,
-				   sync_enabled_via = '', sync_held_at = 0, updated_at = ? WHERE id = ?`,
-				now, by, version, now, accountID); err != nil {
-				return fmt.Errorf("store: switch sync on: %w", err)
-			}
-			return nil
+			return agreeSyncTx(ctx, tx, accountID, by, version, now)
 		}
+		// A paused team or operator mailbox was on, the schema says
+		// (accounts_pause_consent), so no pause ends unseen.
 		wasOn := c.At != 0 || c.Migrated
-		out.Changed = wasOn || held
+		out.Changed = wasOn
+		if err := EndPauseTx(ctx, tx, []string{accountID}, now); err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '', sync_consent_version = '',
-			   sync_enabled_via = '', sync_held_at = 0, updated_at = ? WHERE id = ?`, now, accountID); err != nil {
+			   sync_enabled_via = '', updated_at = ? WHERE id = ?`, now, accountID); err != nil {
 			return fmt.Errorf("store: switch sync off: %w", err)
 		}
 		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {
@@ -456,6 +473,21 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 	return out, err
 }
 
+// agreeSyncTx records, inside the caller's transaction, a mailbox's own
+// consent to sync given now by by, to version: what switching a team's or an
+// operator mailbox on writes (SetMailboxSync) and what a team mailbox's
+// resume writes (ResumeSync). A consent migration 0011 bound to its linker is
+// confirmed by it, which detaches it from them.
+func agreeSyncTx(ctx context.Context, tx *sql.Tx, accountID, by, version string, now int64) error {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE accounts SET sync_enabled_at = ?, sync_enabled_by = ?, sync_consent_version = ?,
+		   sync_enabled_via = '', updated_at = ? WHERE id = ?`,
+		now, by, version, now, accountID); err != nil {
+		return fmt.Errorf("store: record the mailbox's consent to sync: %w", err)
+	}
+	return nil
+}
+
 // StopSync turns a mailbox's sync off by the operator's decision, whatever
 // its workspace and wherever it stands — a person's, a team's (a closed one,
 // one an edition withholds, the operator's), live or removed — and deletes
@@ -464,23 +496,27 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 // the journal names (ActorOperator).
 //
 //   - A mailbox that names no person loses its consent, as SetMailboxSync
-//     off does, and a hold with it: a team's owners or admins turn it on
-//     again, to the current text, as after any turn-off, and the operator
-//     an operator mailbox's.
+//     off does: a team's owners or admins turn it on again, to the current
+//     text, as after any turn-off, and the operator an operator mailbox's.
 //   - A personal mailbox keeps its person's consent, which is theirs and
-//     covers their other mailboxes; a live one is held instead
-//     (sync_held_at), so that nothing of it syncs until its person turns it
-//     on again (LiftSyncHold), whatever their consent says.
+//     covers their other mailboxes; it is held instead (sync_held_at), live
+//     or removed, so that nothing of it syncs until its person turns it on
+//     again (LiftSyncHold), whatever their consent says, and a recovery
+//     keeps that hold.
+//
+// It ends a pause first (EndPauseTx), withdrawing its notices: the schema
+// holds no paused mailbox, and no paused team or operator mailbox with its
+// consent off.
 //
 // A mailbox that was syncing, could have, or kept an index this deletes —
-// a team's whose consent stood, held or not, live or removed; a person's
-// whose consent stood, live and not held yet, or holding an index (a
-// recovered one keeps it while its sync is held) — is journaled
-// sync_paused, and every reader told (none for a removed one, which has
-// none): the actor is nobody's reader. A person's mailbox the operator
-// already turned off, which holds nothing more, is not journaled again. An
-// operator mailbox is journaled for nobody, as SetMailboxSync does. It
-// reports what changed; a mailbox nobody knows is ErrNoSuchMailbox.
+// a team's whose consent stood, live or removed; a person's whose consent
+// stood, live and not held yet, or holding an index (a recovered one,
+// paused, keeps it) — is journaled sync_paused, and every reader told (none
+// for a removed one, which has none): the actor is nobody's reader. A
+// person's mailbox the operator already turned off, which holds nothing
+// more, is not journaled again. An operator mailbox is journaled for nobody,
+// as SetMailboxSync does. It reports what changed; a mailbox nobody knows is
+// ErrNoSuchMailbox.
 func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
@@ -509,13 +545,19 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 			accountID, accountID).Scan(&indexed); err != nil {
 			return fmt.Errorf("store: read the mailbox's index: %w", err)
 		}
+		// Before the hold and the consent: the schema refuses a hold on a
+		// paused mailbox, and a paused team mailbox with no consent.
+		if err := EndPauseTx(ctx, tx, []string{accountID}, now); err != nil {
+			return err
+		}
 		var wasOn bool
 		if owner.Valid {
-			// Live and not held, it could sync now; held (recovered) or
-			// removed, it is told of only when it kept an index this
-			// deletes, so that a second turn-off says nothing again.
+			// Live and not held, it could sync now; removed, it is told of
+			// only when it kept an index this deletes, so that a second
+			// turn-off says nothing again.
 			wasOn = person && (indexed || (!held && !removed))
-			if !removed && !held {
+			if !held {
+				// Live or removed: a recovery keeps the hold.
 				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET sync_held_at = ?, updated_at = ? WHERE id = ?`,
 					now, now, accountID); err != nil {
 					return fmt.Errorf("store: hold the mailbox's sync: %w", err)
@@ -524,10 +566,10 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 			}
 		} else {
 			wasOn = c.At != 0 || c.Migrated
-			out.Changed = wasOn || held
+			out.Changed = wasOn
 			if _, err := tx.ExecContext(ctx,
 				`UPDATE accounts SET sync_enabled_at = 0, sync_enabled_by = '', sync_consent_version = '',
-				   sync_enabled_via = '', sync_held_at = 0, updated_at = ? WHERE id = ?`, now, accountID); err != nil {
+				   sync_enabled_via = '', updated_at = ? WHERE id = ?`, now, accountID); err != nil {
 				return fmt.Errorf("store: switch sync off: %w", err)
 			}
 		}
@@ -557,30 +599,41 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 // read it then, and tells each of them but the actor; it returns who it
 // told.
 func journalSyncPausedTx(ctx context.Context, tx *sql.Tx, accountID, actor, cause string, now int64) ([]string, error) {
-	readers, err := MailboxReadersTx(ctx, tx, accountID)
+	return journalTellingTx(ctx, tx, MailboxEvent{
+		Kind: MailboxSyncPaused, AccountID: accountID, Actor: actor, At: now, Cause: cause,
+	}, true)
+}
+
+// journalTellingTx journals ev inside the caller's transaction with who read
+// the mailbox then (MailboxReadersTx), and, with notify, tells each of them
+// but ev's actor; it returns who it told, none without notify.
+func journalTellingTx(ctx context.Context, tx *sql.Tx, ev MailboxEvent, notify bool) ([]string, error) {
+	readers, err := MailboxReadersTx(ctx, tx, ev.AccountID)
 	if err != nil {
 		return nil, err
 	}
-	if _, _, err := JournalMailboxTx(ctx, tx, MailboxEvent{
-		Kind: MailboxSyncPaused, AccountID: accountID, Actor: actor, At: now, Cause: cause,
-	}, readers, true); err != nil {
+	if _, _, err := JournalMailboxTx(ctx, tx, ev, readers, notify); err != nil {
 		return nil, err
+	}
+	if !notify {
+		return nil, nil
 	}
 	told := make([]string, 0, len(readers))
 	for _, id := range readers {
-		if id != actor {
+		if id != ev.Actor {
 			told = append(told, id)
 		}
 	}
 	return told, nil
 }
 
-// LiftSyncHold lifts the hold a recovery, or the operator's turn-off of a
-// personal mailbox (StopSync), put on a live mailbox's sync (sync_held_at),
-// which then syncs again under its consent as it stands: a
-// personal mailbox's person's, which only they lift it for. check runs first
-// in the transaction (nil checks nothing). It reports whether a hold was
-// lifted; a mailbox nobody knows, or a removed one, is ErrNoSuchMailbox.
+// LiftSyncHold lifts the hold the operator's turn-off of a personal mailbox
+// (StopSync) put on its sync (sync_held_at), once it is live, which then
+// syncs again under its person's consent as it stands, from no index: only
+// its person lifts it. A pause is not a hold, and stays (ResumeSync ends
+// it). check runs first in the transaction (nil checks nothing). It reports
+// whether a hold was lifted; a mailbox nobody knows, or a removed one, is
+// ErrNoSuchMailbox.
 func (s *Store) LiftSyncHold(ctx context.Context, accountID string, check func(*sql.Tx) error) (bool, error) {
 	now := s.now().Unix()
 	lifted := false
@@ -615,8 +668,9 @@ func (s *Store) LiftSyncHold(ctx context.Context, accountID string, check func(*
 // SyncPermitted reports, for each account named, whether sync is allowed for
 // it: a personal mailbox's person is active and consented; a team mailbox
 // has its workspace's consent and a reader; an operator mailbox was switched
-// on. A removed mailbox is not, and neither is one whose sync a recovery
-// holds until someone turns it on. Whether the account is also active — the rest of the engine's rule —
+// on. A removed mailbox is not, and neither is one the operator's turn-off
+// holds until its person turns it on. A pause is not part of it: a paused
+// mailbox's consent stands. Whether the account is also active — the rest of the engine's rule —
 // is the caller's to read from the account itself. An account that does not
 // exist is absent from the map.
 func (s *Store) SyncPermitted(ctx context.Context, accountIDs []string) (map[string]bool, error) {

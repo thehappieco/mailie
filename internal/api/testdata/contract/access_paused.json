@@ -1,0 +1,136 @@
+[
+  {
+    "account_id": "acc_0000000000000005",
+    "email": "support@mail.example",
+    "epoch": 1,
+    "grants": [
+      {
+        "account_id": "acc_0000000000000005",
+        "act": true,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000001"
+      },
+      {
+        "account_id": "acc_0000000000000005",
+        "act": false,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000003"
+      }
+    ],
+    "keys": [
+      {
+        "act": true,
+        "created_by": "usr_0000000000000001",
+        "granted_by": "usr_0000000000000001",
+        "name": "Support bot",
+        "prefix": "0a0b0c04",
+        "read": true,
+        "scope": "write",
+        "send": false,
+        "updated_at": 1790000000
+      }
+    ],
+    "linked_by": "usr_0000000000000001",
+    "no_reader": false,
+    "paused_at": 1790000000,
+    "paused_by": "usr_0000000000000001",
+    "provider": "imap",
+    "readers": 2,
+    "state": "active",
+    "sync": {
+      "current": true,
+      "enabled": true,
+      "enabled_at": 1790000000,
+      "enabled_by": "usr_0000000000000001",
+      "version": "2026-10-open-sync-4"
+    }
+  },
+  {
+    "account_id": "acc_0000000000000006",
+    "email": "billing@mail.example",
+    "epoch": 1,
+    "grants": [
+      {
+        "account_id": "acc_0000000000000006",
+        "act": true,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000001"
+      },
+      {
+        "account_id": "acc_0000000000000006",
+        "act": false,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": false,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000002"
+      }
+    ],
+    "keys": [],
+    "linked_by": "usr_0000000000000001",
+    "no_reader": false,
+    "provider": "imap",
+    "readers": 2,
+    "state": "active",
+    "sync": {
+      "current": false,
+      "enabled": false
+    }
+  },
+  {
+    "account_id": "acc_0000000000000007",
+    "email": "orders@mail.example",
+    "epoch": 1,
+    "grants": [
+      {
+        "account_id": "acc_0000000000000007",
+        "act": true,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": true,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000001"
+      },
+      {
+        "account_id": "acc_0000000000000007",
+        "act": false,
+        "granted_by": "usr_0000000000000001",
+        "manage": false,
+        "read": true,
+        "sealed": true,
+        "send": false,
+        "updated_at": 1790000000,
+        "user_id": "usr_0000000000000003"
+      }
+    ],
+    "keys": [],
+    "linked_by": "usr_0000000000000001",
+    "no_reader": false,
+    "provider": "imap",
+    "readers": 2,
+    "state": "active",
+    "sync": {
+      "current": false,
+      "enabled": false
+    }
+  }
+]

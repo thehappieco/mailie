@@ -123,9 +123,9 @@ func TestTheOperatorHoldsAPersonsMailboxUntilTheyTurnItOnAgainAndKeepsTheirConse
 }
 
 func TestTheOperatorTellsAPersonWhoseRecoveredMailboxKeptItsIndexOnce(t *testing.T) {
-	// A recovered mailbox is held and keeps its index until its person
-	// turns it on: the operator's turn-off deletes that index, and says so,
-	// once.
+	// A recovered mailbox is paused and keeps its index until its person
+	// resumes it: the operator's turn-off ends the pause, deletes that index
+	// and holds it, and says so, once.
 	f := newFixture(t)
 	ctx := t.Context()
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
@@ -136,15 +136,15 @@ func TestTheOperatorTellsAPersonWhoseRecoveredMailboxKeptItsIndexOnce(t *testing
 	}
 	f.seedIndex(t, mine, "Quartz")
 	f.removed(t, ana, mine)
-	if _, err := f.svc.RecoverAccount(ctx, ana, mine); err != nil {
-		t.Fatal(err)
+	if recovered, err := f.svc.RecoverAccount(ctx, ana, mine); err != nil || !recovered.Sync.Paused {
+		t.Fatalf("recovering: %+v (%v), want it paused", recovered.Sync, err)
 	}
 	if f.indexed(t, mine) == 0 {
 		t.Fatal("the recovered mailbox did not keep its index")
 	}
 
-	if st := f.operatorStopped(t, mine); !st.Held {
-		t.Errorf("Ana's recovered mailbox after the operator's turn-off: %+v, want it held", st)
+	if st := f.operatorStopped(t, mine); !st.Held || st.Paused {
+		t.Errorf("Ana's recovered mailbox after the operator's turn-off: %+v, want it held, its pause ended", st)
 	}
 	if !operatorPaused(t, f, mine) {
 		t.Errorf("the journal holds %q, want the operator's sync_paused", f.journalOf(t, mine))

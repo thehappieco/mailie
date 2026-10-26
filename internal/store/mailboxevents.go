@@ -17,14 +17,16 @@ import (
 )
 
 // The journal of what was done to mailboxes, and the notices it gives their
-// readers (migrations 0020 and 0021; docs/workspaces.md, "Removed
-// mailboxes").
+// readers (migrations 0020, 0021 and 0025; docs/workspaces.md, "Removed
+// mailboxes" and "Pausing a mailbox's sync").
 //
-// A removal, a sync turned off, a recovery, a deletion for good and a
-// stranding are each written in the transaction that makes them, with who
-// read the mailbox then; a removal and a sync turned off tell each of those
-// readers but the person who did it, with a notice they see in the console
-// until they dismiss it. The journal never holds an address: a mailbox is
+// A removal, a sync turned off, a recovery, a deletion for good, a
+// stranding, and a team mailbox's sync paused and resumed are each written
+// in the transaction that makes them, with who read the mailbox then; a
+// removal, a sync turned off and a pause tell each of those readers but the
+// person who did it, with a notice they see in the console until they
+// dismiss it, withdrawn by a recovery (its removal's) or by the end of a
+// pause (its pause's). The journal never holds an address: a mailbox is
 // named by its label (its display name, unless that holds an address or its
 // local part, MailboxLabel) and a masked hint of its address. Deleted for
 // good, it loses its label, and its hint once no notice still to be read
@@ -44,9 +46,12 @@ const (
 	// then deleted for good.
 	MailboxRemoved MailboxEventKind = "removed"
 	// MailboxSyncPaused is a mailbox's sync turned off, its index deleted: by
-	// whoever may, or by a person stopping the consent bound to them.
+	// whoever may, or by a person stopping the consent bound to them (named
+	// after the contract's item.sync_paused; a pause that keeps the index is
+	// MailboxPaused).
 	MailboxSyncPaused MailboxEventKind = "sync_paused"
-	// MailboxRecovered is a removed mailbox recovered, its sync held.
+	// MailboxRecovered is a removed mailbox recovered, its sync paused where
+	// its consent stands: the recovery's pause has no entry of its own.
 	MailboxRecovered MailboxEventKind = "recovered"
 	// MailboxPurged is a mailbox deleted for good.
 	MailboxPurged MailboxEventKind = "purged"
@@ -55,10 +60,19 @@ const (
 	// person who did lost it (LostUser, Cause). Nobody is told of it in the
 	// console; an extension reads it.
 	MailboxStranded MailboxEventKind = "stranded"
+	// MailboxPaused is a team mailbox's sync paused by whoever may, its index
+	// kept, until it is resumed or its consent ends (migration 0025). Its
+	// other readers are told. Not a turn-off: that is MailboxSyncPaused,
+	// whose index is deleted.
+	MailboxPaused MailboxEventKind = "paused"
+	// MailboxResumed is a team mailbox's pause ended by a resume. Nobody is
+	// told.
+	MailboxResumed MailboxEventKind = "resumed"
 )
 
 // Why an entry was written: a stranding's cause, always one of the first
-// five, and a sync turned off's, empty but for CauseBoundStopped.
+// five, and a sync turned off's, empty but for CauseBoundStopped. A pause and
+// a resume have no cause.
 const (
 	// CauseMembershipEnded is a membership an external directory ended.
 	CauseMembershipEnded = "membership_ended"
@@ -79,8 +93,10 @@ const (
 )
 
 // Notifies reports whether the readers of a mailbox are told when this is
-// done to it: a removal and a sync turned off.
-func (k MailboxEventKind) Notifies() bool { return k == MailboxRemoved || k == MailboxSyncPaused }
+// done to it: a removal, a sync turned off and a pause.
+func (k MailboxEventKind) Notifies() bool {
+	return k == MailboxRemoved || k == MailboxSyncPaused || k == MailboxPaused
+}
 
 // MailboxEvent is one entry of the journal.
 type MailboxEvent struct {
@@ -104,7 +120,7 @@ type MailboxEvent struct {
 	At int64
 	// Cause is why: a stranding's (CauseMembershipEnded … CauseReset), and
 	// a sync turned off's, empty or CauseBoundStopped; empty on every other
-	// kind.
+	// kind, a pause and a resume included.
 	Cause string
 	// LostUser is the person a stranding lost, empty once forgotten: at
 	// their deletion, or, when an external directory follows them, at their
@@ -234,8 +250,8 @@ func MailboxReadersTx(ctx context.Context, tx *sql.Tx, accountID string) ([]stri
 // A stranding names the person it lost (ErrNoLostPerson), who must still
 // exist: readers name people. readers are who read the mailbox then
 // (MailboxReadersTx). With notify, each of them but the actor gets a notice,
-// of a removal or a sync turned off only (ErrNotNotifying). It returns the
-// event's seq and id.
+// of a removal, a sync turned off or a pause only (ErrNotNotifying). It
+// returns the event's seq and id.
 func JournalMailboxTx(ctx context.Context, tx *sql.Tx, ev MailboxEvent, readers []string, notify bool) (int64, string, error) {
 	if notify && !ev.Kind.Notifies() {
 		return 0, "", fmt.Errorf("%w: %s", ErrNotNotifying, ev.Kind)

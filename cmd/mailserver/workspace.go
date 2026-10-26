@@ -316,8 +316,15 @@ func accessList(ctx context.Context, cfg config.Config, args []string) error {
 		if mb.NoReader {
 			grants = append(grants, "nobody can read it")
 		}
+		sync := syncNote(mb.Sync)
+		if mb.PausedAt != 0 {
+			sync += "; paused since " + stamp(mb.PausedAt)
+			if mb.PausedBy != "" {
+				sync += " by " + name(mb.PausedBy)
+			}
+		}
 		//nolint:errcheck // checked by Flush
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", mb.AccountID, mb.Email, mb.State, syncNote(mb.Sync),
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", mb.AccountID, mb.Email, mb.State, sync,
 			name(mb.LinkedBy), orDash(strings.Join(grants, ", ")))
 	}
 	return w.Flush()

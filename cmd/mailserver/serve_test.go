@@ -385,3 +385,14 @@ func TestTheDaemonSaysNothingOfClosedTeamsWhereNoneIs(t *testing.T) {
 		t.Errorf("the start speaks of closed teams where none is:\n%s", logs)
 	}
 }
+
+func TestServeOffersPausingOneMailboxsSync(t *testing.T) {
+	// The open edition's sync text promises nothing a pause breaks; another
+	// binary opts in only once its own does.
+	for _, stdio := range []bool{false, true} {
+		opts := serveOptions("test", stdio)
+		if !opts.SyncPauseOffered || opts.MCPStdio != stdio || opts.Version != "test" {
+			t.Errorf("serve runs with %+v", opts)
+		}
+	}
+}

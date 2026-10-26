@@ -59,7 +59,9 @@ type accountJSON struct {
 	SyncTier    string `json:"sync_tier"`
 	LastError   string `json:"last_error"`
 	Sync        struct {
-		Held bool `json:"held"`
+		Held        bool  `json:"held"`
+		Paused      bool  `json:"paused"`
+		PausedSince int64 `json:"paused_since"`
 	} `json:"sync"`
 }
 
@@ -298,7 +300,10 @@ func accountList(ctx context.Context, cfg config.Config, args []string) error {
 			note = a.LastError
 		}
 		if note == "" && a.Sync.Held {
-			note = "sync held since it was recovered"
+			note = "sync held: turned off until its person turns it on"
+		}
+		if note == "" && a.Sync.Paused {
+			note = "sync paused since " + stamp(a.Sync.PausedSince)
 		}
 		if note == "" && a.SyncTier != "" {
 			note = "sync: " + a.SyncTier
@@ -435,9 +440,10 @@ func accountRemoved(ctx context.Context, cfg config.Config, args []string) error
 }
 
 // accountRecover recovers a removed mailbox of the operator workspace within
-// its 30 days. Its sync stays held until it is switched on again (account
-// sync ID on); a person's or a team's is recovered by its owners, in the
-// console.
+// its 30 days. Its sync comes back paused until it is resumed (account sync
+// ID resume), or off when the operator had switched it off (account sync ID
+// on), as the answer says; a person's or a team's is recovered by its
+// owners, in the console.
 func accountRecover(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account recover", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -452,8 +458,17 @@ func accountRecover(ctx context.Context, cfg config.Config, args []string) error
 		nil, &recovered); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "recovered %s; its sync is held until `mailserver account sync %s on`\n",
-		recovered.Email, accountID)
+	switch {
+	case recovered.Sync.Paused:
+		fmt.Fprintf(os.Stderr, "recovered %s; its sync is paused until `mailserver account sync %s resume`\n",
+			recovered.Email, accountID)
+	case recovered.Sync.Held:
+		// Never an operator mailbox's, said all the same.
+		fmt.Fprintf(os.Stderr, "recovered %s; its sync is held until its person turns it on\n", recovered.Email)
+	default:
+		fmt.Fprintf(os.Stderr, "recovered %s; its sync is off until `mailserver account sync %s on`\n",
+			recovered.Email, accountID)
+	}
 	return nil
 }
 
@@ -538,11 +553,13 @@ type syncJSON struct {
 	ErrorClass      string `json:"error_class"`
 	Held            bool   `json:"held"`
 	HeldSince       int64  `json:"held_since"`
+	Paused          bool   `json:"paused"`
+	PausedSince     int64  `json:"paused_since"`
 }
 
 // accountSync shows an account's sync, asks for a pass, switches an
-// operator mailbox's on — which also lifts the hold of one recovered after
-// it was removed — or turns any mailbox's off. A person's mailbox syncs when
+// operator mailbox's on, pauses or resumes an operator mailbox's sync, its
+// index kept, or turns any mailbox's off. A person's mailbox syncs when
 // they turn sync on in the console, and a team's when its owners or admins
 // do, and the daemon refuses to let anyone else turn it on for them; off is
 // the operator's turn-off (POST /v1/accounts/{id}/sync/stop), of a mailbox of
@@ -558,7 +575,7 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 	if len(rest) != 2 {
-		return fmt.Errorf("%w: account sync ID status|now|on|off", errUsage)
+		return fmt.Errorf("%w: account sync ID status|now|on|off|pause|resume", errUsage)
 	}
 	accountID := rest[0]
 	path := "/v1/accounts/" + url.PathEscape(accountID) + "/sync"
@@ -579,8 +596,13 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 			return nil
 		}
 		raw, err = adminDo(ctx, cfg, http.MethodPost, path+"/stop", nil)
+	case "pause":
+		raw, err = adminDo(ctx, cfg, http.MethodPost, path+"/pause", nil)
+	case "resume":
+		// An operator mailbox takes no text to agree to.
+		raw, err = adminDo(ctx, cfg, http.MethodPost, path+"/resume", nil)
 	default:
-		return fmt.Errorf("%w: account sync ID status|now|on|off", errUsage)
+		return fmt.Errorf("%w: account sync ID status|now|on|off|pause|resume", errUsage)
 	}
 	if err != nil {
 		return err
@@ -605,9 +627,19 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Println("sync off, its index deleted")
 		return nil
 	}
+	if rest[1] == "pause" {
+		fmt.Printf("sync paused; its index is kept, not updated, until `mailserver account sync %s resume`\n", accountID)
+		return nil
+	}
 	if st.Held {
-		fmt.Printf("sync held since %s, when it was recovered; `mailserver account sync %s on` turns it on\n",
-			stamp(st.HeldSince), accountID)
+		// Naming no actor: a hold migration 0025 could not attribute may be
+		// an older recovery's.
+		fmt.Printf("sync held since %s: turned off until its person turns it on again\n", stamp(st.HeldSince))
+		return nil
+	}
+	if st.Paused {
+		fmt.Printf("sync paused since %s; its index is kept, not updated; `mailserver account sync %s resume` resumes it\n",
+			stamp(st.PausedSince), accountID)
 		return nil
 	}
 	fmt.Printf("sync %s, %s", enabled, st.State)

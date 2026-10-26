@@ -94,6 +94,9 @@ type fixtureOptions struct {
 	// freshness is asked before an act that widens access; nil asks
 	// nothing.
 	freshness service.Freshness
+	// pauseWithheld is an edition that does not offer a person's pause of
+	// one mailbox's sync: every other fixture offers it, as serve does.
+	pauseWithheld bool
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -181,6 +184,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		TeamsWithheld:               f.opts.teamsWithheld,
 		KeysInPersonalWorkspaceOnly: f.opts.keysPersonalOnly,
 		Freshness:                   f.opts.freshness,
+		SyncPauseOffered:            !f.opts.pauseWithheld,
 	}), registry
 }
 
