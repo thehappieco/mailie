@@ -115,8 +115,9 @@ func (m *Manager) leaveSlot(s *slot) {
 }
 
 // closeInteractive logs the account's interactive connection out: its worker
-// is stopping, or the provider said there are too many connections. A call
-// in flight finishes first.
+// is stopping, the provider said there are too many connections, or it kept
+// its connection while paused and no longer does (releaseLocked). A call in
+// flight finishes first.
 func (m *Manager) closeInteractive(id string) {
 	s := m.takeSlot(id, false)
 	if s == nil {

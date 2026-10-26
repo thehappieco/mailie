@@ -83,6 +83,9 @@ type Manager struct {
 	paused map[string]bool
 	slots  map[string]*slot // interactive connections, by account
 	wg     sync.WaitGroup
+
+	// indexFollows is store.IndexFollows, which a test makes fail.
+	indexFollows func(ctx context.Context, accountID string) (bool, error)
 }
 
 var (
@@ -109,6 +112,8 @@ func New(d Deps, o Options) *Manager {
 		pending:  map[string]bool{},
 		paused:   map[string]bool{},
 		slots:    map[string]*slot{},
+
+		indexFollows: d.Store.IndexFollows,
 	}
 }
 
@@ -210,35 +215,34 @@ func (m *Manager) reconcile(ctx context.Context, id string) {
 		return
 	}
 	// Not eligible, an account whose index still follows is a paused one:
-	// the engine's rule is the index rule and not paused.
-	paused := false
+	// the engine's rule is the index rule and not paused. A read that fails
+	// leaves the paused set as it was, as reconcileAll's does, and the
+	// worker of an account that may not sync is stopped all the same.
+	paused, known := false, true
 	if !eligible {
-		if paused, err = m.store.IndexFollows(ctx, id); err != nil {
+		if paused, err = m.indexFollows(ctx, id); err != nil {
 			if ctx.Err() == nil {
 				m.log.Warn("checking whether an account is paused failed", "account", id, "err", err)
 			}
-			return
+			known = false
 		}
 	}
-	var release []string
-	defer func() {
-		for _, id := range release {
-			m.closeInteractive(id)
-		}
-	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return
 	}
-	if m.paused[id] && !paused && !eligible {
-		// No longer paused, and no worker: its slot is logged out.
-		release = append(release, id)
-	}
-	if paused {
-		m.paused[id] = true
-	} else {
-		delete(m.paused, id)
+	if known {
+		left := m.paused[id] && !paused && !eligible
+		if paused {
+			m.paused[id] = true
+		} else {
+			delete(m.paused, id)
+		}
+		if left {
+			// No longer paused, and no worker: its slot is logged out.
+			m.releaseLocked(id)
+		}
 	}
 	w := m.workers[id]
 	switch {
@@ -271,12 +275,6 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 	if pausedErr != nil && ctx.Err() == nil {
 		m.log.Warn("listing the paused accounts failed", "err", pausedErr)
 	}
-	var release []string
-	defer func() {
-		for _, id := range release {
-			m.closeInteractive(id)
-		}
-	}()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
@@ -287,12 +285,13 @@ func (m *Manager) reconcileAll(ctx context.Context) {
 		for _, id := range pausedIDs {
 			paused[id] = true
 		}
-		for id := range m.paused {
+		left := m.paused
+		m.paused = paused
+		for id := range left {
 			if !paused[id] && !eligible[id] {
-				release = append(release, id)
+				m.releaseLocked(id)
 			}
 		}
-		m.paused = paused
 	}
 	for id := range m.workers {
 		if !eligible[id] {
@@ -341,13 +340,37 @@ func (m *Manager) stopLocked(id, why string) {
 	m.log.Info("account sync stopped", "account", id, "why", why)
 }
 
-// shutdown stops every worker and waits for them, within a bound.
+// releaseLocked logs out, away from the engine's loop, the interactive
+// connection of an account that keeps none between calls any more: it left
+// the paused set with no worker, or the engine is shutting down. A call in
+// flight on it finishes first — and, once its account keeps no slot, drops
+// its own session as it ends — but the loop never waits for it: a download
+// can hold the slot for minutes, and every other account's reconcile and
+// the periodic checks would wait behind it, the end of Run's context
+// unseen. Called with m.mu held, by the loop or by the shutdown before it
+// waits (both on Run's goroutine), so the shutdown waits for it, within its
+// bound, as it does for a worker, which logs its own slot out as it stops.
+func (m *Manager) releaseLocked(id string) {
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.closeInteractive(id)
+	}()
+}
+
+// shutdown stops every worker, logs out the connections the paused accounts
+// keep, and waits for them, within a bound.
 func (m *Manager) shutdown() {
 	m.mu.Lock()
 	m.closed = true
 	for id := range m.workers {
 		m.stopLocked(id, "shutting down")
 	}
+	// A paused account has no worker to log its kept connection out.
+	for id := range m.paused {
+		m.releaseLocked(id)
+	}
+	m.paused = map[string]bool{}
 	m.mu.Unlock()
 	done := make(chan struct{})
 	go func() {

@@ -312,3 +312,95 @@ func TestAPassInFlightWhenThePauseCommitsStoresNothingAndRecordsNoFailure(t *tes
 		t.Errorf("the pause was recorded as %d sync failures", n)
 	}
 }
+
+func TestACallInFlightOnAMailboxThatLeftItsPauseNeverHoldsTheEngineBack(t *testing.T) {
+	h := newHarness(t, setup{caps: providertest.GmailCaps()})
+	h.start()
+	h.waitLive()
+	h.pausedWhileRunning()
+	// A long call on the paused mailbox's kept connection: a download.
+	entered, release := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- h.engine.Interactive(context.Background(), h.account, func(ctx context.Context, s provider.Session) error {
+			close(entered)
+			<-release
+			return s.Noop(ctx)
+		})
+	}()
+	var once sync.Once
+	letGo := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(letGo) // before the engine stops: cleanups run last first
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call never started")
+	}
+	// Its sync turned off while the call runs: the engine lets go of the
+	// pause and of the connection, which the call still holds.
+	if _, err := h.db.WithdrawSyncConsent(context.Background(), h.user); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.Reconcile(h.account)
+	time.Sleep(100 * time.Millisecond) // the engine has looked at it
+	// Turned on again: the engine starts its worker while the call is still
+	// running, never once it ends.
+	if _, _, err := h.db.GrantSyncConsent(context.Background(), h.user, "test"); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.Reconcile(h.account)
+	h.waitFor("the worker of the mailbox turned on again, the call still running", 3*time.Second, func() bool {
+		return h.box.OpenSessions(provider.RoleIdle) == 1
+	})
+	select {
+	case err := <-done:
+		t.Fatalf("the call ended before it was let go: %v", err)
+	default:
+	}
+	letGo()
+	if err := <-done; err != nil {
+		t.Errorf("the call: %v", err)
+	}
+	if peak := h.box.PeakSessions(); peak > 3 {
+		t.Errorf("%d connections open at once, want at most 3", peak)
+	}
+}
+
+func TestAPausedMailboxsKeptConnectionIsLoggedOutWhenTheEngineStops(t *testing.T) {
+	h := newHarness(t, setup{caps: providertest.GmailCaps()})
+	h.start()
+	h.waitLive()
+	h.pausedWhileRunning()
+	h.noop()
+	if n := h.box.OpenSessions(provider.RoleInteractive); n != 1 {
+		t.Fatalf("%d interactive connections kept while paused, want one", n)
+	}
+	h.stop()
+	if n := h.box.OpenSessions(); n != 0 {
+		t.Errorf("%d connections still open once the engine stopped", n)
+	}
+	if n := h.box.Logouts(provider.RoleInteractive); n != 2 {
+		t.Errorf("%d interactive connections logged out, want the worker's and the one the pause kept", n)
+	}
+	if err := h.engine.Interactive(context.Background(), h.account, func(ctx context.Context, s provider.Session) error {
+		return s.Noop(ctx)
+	}); !errors.Is(err, service.ErrSyncNotRunning) {
+		t.Errorf("a call once the engine stopped: %v, want not running", err)
+	}
+}
+
+func TestAWorkerIsStoppedWhenWhetherItsMailboxIsPausedCannotBeRead(t *testing.T) {
+	h := newHarness(t, setup{caps: providertest.GmailCaps()})
+	syncengine.FailIndexFollowsForTest(h.engine, errors.New("database is locked"))
+	h.start()
+	h.waitLive()
+	if _, err := h.db.WithdrawSyncConsent(context.Background(), h.user); err != nil {
+		t.Fatal(err)
+	}
+	h.engine.Reconcile(h.account)
+	// Nothing else looks again for an hour: the reconcile told stops it.
+	h.waitFor("the worker of a mailbox that may no longer sync to stop", 3*time.Second, func() bool {
+		err := h.engine.Trigger(context.Background(), h.account)
+		return errors.Is(err, service.ErrSyncNotRunning) && h.box.OpenSessions(provider.RoleSync, provider.RoleIdle) == 0
+	})
+}
