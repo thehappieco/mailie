@@ -411,14 +411,14 @@ func TestAnOwnerLinksAnOAuthTeamMailboxCompletesItAndOnlyTheyCanComplete(t *test
 	// Bea is an owner of the team too, and manages the mailbox: the flow is
 	// still Ana's alone, and an instance key's never.
 	for name, p := range map[string]service.Principal{"Bea, another owner": bea, "an instance key": admin()} {
-		if _, err := f.svc.CompleteOAuth(t.Context(), p, redirect); service.CodeOf(err) != service.CodeNotFound {
+		if _, err := f.svc.CompleteOAuth(t.Context(), p, returnTo(redirect)); service.CodeOf(err) != service.CodeNotFound {
 			t.Errorf("%s completing Ana's flow: %v, want not_found", name, err)
 		}
 	}
 	if n := idp.exchangeCount(); n != 0 {
 		t.Fatalf("the code was exchanged %d times for callers who did not start the flow", n)
 	}
-	a, err := f.svc.CompleteOAuth(t.Context(), ana, redirect)
+	a, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(redirect))
 	if err != nil {
 		t.Fatalf("Ana finishing her flow: %v", err)
 	}

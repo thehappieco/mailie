@@ -24,6 +24,7 @@ import {
   isActionsConsent, isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
   isGrantText, isMailboxKeyPair, isMailboxKeyState, isSealedGrant, isSealIDText, readsNow,
   isPersonNoticeList, isRemoval, isRemovedMailboxList, type PersonNotice, type Removal, type RemovedMailbox,
+  isLink, isLinkStarted, type Link, type LinkStarted,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
   type KeyMailbox, type KeySend, type MailboxAccess, type MailboxKeyPair, type MailboxKeyState, type McpAccess, type Me, type Member, type Provider,
   type SealedGrant, type ServerEvent, type SessionReply, type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace,
@@ -35,6 +36,7 @@ import { heldOn, listed } from '../src/api/apikeys'
 import { keyStanding, scopeActs, stopReasonLabel } from '../src/ui/apikeys'
 import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
 import { signupLink } from '../src/ui/signupLink'
+import { knownReasons } from '../src/ui/reasons'
 
 const directory = new URL('../../internal/api/testdata/contract/', import.meta.url)
 
@@ -117,7 +119,18 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['access_paused', value => isMailboxAccessList(value, true)],
   ['notices_paused', value => isPersonNoticeList(value, true)],
   ['sync_resumed', value => isAccountSync(value, true)],
+  ['link_started', value => isLinkStarted(value, true)],
+  ['link_waiting', value => isLink(value, true)],
+  ['link_connected', value => isLink(value, true)],
+  ['link_failed_declined', value => isLink(value, true)],
+  ['link_failed_duplicate', value => isLink(value, true)],
+  ['link_failed_no_address', value => isLink(value, true)],
+  ['link_failed_mailbox_refused', value => isLink(value, true)],
+  ['link_failed_expired', value => isLink(value, true)],
 ]
+
+/** Every failed link the daemon that writes the fixtures answers, one per reason. */
+const failedLinks = ['link_failed_declined', 'link_failed_duplicate', 'link_failed_no_address', 'link_failed_mailbox_refused', 'link_failed_expired']
 
 describe('the HTTP contract the Go handlers answer with', () => {
   it.each(shapes)('%s.json has exactly the shape the console reads', (name, valid) => {
@@ -185,6 +198,46 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(web.flow).toBe('web')
     expect(new URL(web.auth_url!).protocol).toBe('https:')
     expect(decodeURIComponent(web.auth_url!)).toContain('/oauth/return')
+  })
+
+  it('a link leaves for the provider’s account chooser with the scopes that name the address, and no address', () => {
+    const { link, auth } = fixture('link_started') as LinkStarted
+    const url = new URL(auth.auth_url!)
+    expect(url.protocol).toBe('https:')
+    expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:5174/oauth/return')
+    expect(url.searchParams.get('scope')!.split(' ').sort()).toEqual(['email', 'https://mail.google.com/', 'openid'])
+    expect(url.searchParams.get('prompt')).toBe('select_account consent')
+    expect(url.searchParams.has('login_hint')).toBe(false)
+    expect(link.state).toBe('waiting')
+    expect(link.expires_at).toBe(auth.expires_at)
+    // Its starter reads it as it was started; the address-first path keeps its scope and its hint.
+    expect(fixture('link_waiting')).toEqual(link)
+    const consent = new URL((fixture('auth_flow_web') as AuthFlow).auth_url!)
+    expect(consent.searchParams.get('scope')).toBe('https://mail.google.com/')
+    expect(consent.searchParams.get('login_hint')).toBe('ana@gmail.com')
+  })
+
+  it('says why a link failed only with a reason the console knows, and the address only once the provider named one', () => {
+    for (const name of failedLinks) {
+      const link = fixture(name) as Link
+      expect(link.state, name).toBe('failed')
+      expect(knownReasons.has(link.reason!), `${name}: ${link.reason}`).toBe(true)
+      expect(link, name).not.toHaveProperty('account_id')
+    }
+    for (const name of ['link_failed_duplicate', 'link_failed_mailbox_refused']) expect((fixture(name) as Link).email, name).toMatch(/@gmail\.com$/)
+    for (const name of ['link_failed_declined', 'link_failed_no_address', 'link_failed_expired']) expect(fixture(name), name).not.toHaveProperty('email')
+    // Each reason once: the fixtures name every way a link the console explains ends.
+    expect(new Set(failedLinks.map(name => (fixture(name) as Link).reason)).size).toBe(failedLinks.length)
+  })
+
+  it('names the mailbox a link connected and never its address, which only the mailbox’s own route shows', () => {
+    const link = fixture('link_connected') as Link
+    expect(link.state).toBe('connected')
+    expect(link.account_id).toMatch(/^acc_/)
+    expect(link).not.toHaveProperty('email')
+    expect(link).not.toHaveProperty('reason')
+    expect(isLink({ ...link, email: 'ana.lima@gmail.com' }, true)).toBe(false)
+    expect(isLink({ ...(fixture('link_waiting') as Link), account_id: link.account_id }, true)).toBe(false)
   })
 
   it('lists the providers in order, with iCloud and IMAP by password only and Microsoft never by password', () => {

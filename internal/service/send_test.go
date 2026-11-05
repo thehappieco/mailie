@@ -1007,8 +1007,8 @@ func TestASubmissionServerRefusingARefreshedTokenFailsTheSendAndLeavesTheAccount
 		smtp.Host, smtp.Port, added.Account.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.GrantSendConsent(t.Context(), ana, service.DefaultSendConsentVersion); err != nil {

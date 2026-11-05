@@ -264,9 +264,18 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `snapshot.go` are what it reports: the journal as its outbox (`MailboxJournal`), the followed
   workspaces and their change marks, its own state, and a snapshot of a followed workspace
   (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
-  recovered, its kept last readers protected, until it is deleted for good). `freshness.go`: the
+  recovered, its kept last readers protected, until it is deleted for good). `links.go`: a link at
+  the provider for a person signed in (`StartLink`, `GetLink`, its starter's alone, and the return
+  `CompleteOAuth` sends there when no consent of the caller's has its state), which names no address
+  and carries no key at its start; its return with a code carries the mailbox's key and is checked,
+  read only and within 20 s, before its code is taken (who may link, the freshness hook for a team,
+  a step-up still fresh once the finish is over, `auth.RequireStepUpFor`), the transaction that
+  creates the mailbox asking again; a return carrying the provider's refusal is recorded with no key
+  and no step-up, and a mailbox the workspace holds, live or removed, is one `conflict`.
+  `freshness.go`: the
   hook (`Deps.Freshness`) asked before thirteen acts of a person signed in — a key sealed to
-  someone, flags raised for a person or a key, a key created, a link into a team, a team mailbox's
+  someone, flags raised for a person or a key, a key created, a link into a team (a link at the
+  provider's at its start and again at its return), a team mailbox's
   consent started again, its sync switched, paused or resumed, an action on it or a send from it, and, by an owner, a
   removed team mailbox deleted for good (`FreshPurge`) or its sync turned off
   (`FreshRemovedSyncOff`) — after the read-only authorization (a team withheld or closed refused
@@ -275,7 +284,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   that ended the actor's place stops the act. Never asked for reading, removing, recovering, taking
   access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
   operator's acts, or a key's own acts.
-- `internal/api` — REST `/v1/...`, SSE and the long poll. `internal/mcp` — tools, resources and the
+- `internal/api` — REST `/v1/...`, SSE and the long poll; a link at the provider's routes sit beside
+  `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
+  `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks
+  and its finish. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
   `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
   process (the SDK's `SchemaCache` keeps each schema by pointer, forever), and an event store of its
@@ -430,7 +442,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   request, never a session alone (a recovery code a session could set is a password it could set).
   Writing a mailbox key and a grant for someone else (linking, `read` given with a grant,
   supplying the key, a first or a new key) takes a step-up within ten minutes on that session,
-  checked again in the transaction that writes (a sign-in counts, the hosted one is id.'s
+  checked again in the transaction that writes (a link at the provider's, whose key goes with its
+  return, also before its code is taken, still fresh once its finish is over; a sign-in counts, the hosted one is id.'s
   `auth_time`, never the sign-in's moment); flags alone take none. The browser makes every mailbox
   key and seals every grant (`web/src/crypto/mailbox.ts`); the server checks their shapes, writes
   each key and grant once, and never receives a private key. Every enrolment

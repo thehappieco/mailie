@@ -26,9 +26,9 @@ sends it twice or leaks a credential.
 | `internal/netguard` | Refuses loopback, private, link-local and CGNAT addresses in `net.Dialer.Control`, on the address already resolved: what stops a host typed into the console from becoming SSRF. |
 | `internal/provider` | The `Mailbox`/`Session`/`Sender` interfaces and a `Profile` per provider. `providertest.FakeMailbox`, a stateful fake, is the seam of the sync tests. `internal/provider/imap` is the only implementation and the only package that imports `imapclient` and `go-mail`. |
 | `internal/mime` | A lenient parser over go-message; parts ↔ IMAP sections. |
-| `internal/account` | Accounts, their credentials and OAuth flows, the registry of token sources. Removing a mailbox keeps it 30 days (migration 0020), used by nothing, then deletes it for good, and ends its pause; a recovery pauses its sync, where its consent stands, until someone who may resumes it (migration 0025); a link that never connected is deleted at once ([`workspaces.md`](workspaces.md#removed-mailboxes)). A Google mailbox deleted for good has its grant revoked at Google once the deletion commits (`revoke.go`), best effort, the token opened in the deleting transaction and never logged. |
+| `internal/account` | Accounts, their credentials and OAuth flows, the registry of token sources. A link at the provider (`links.go`, `identity.go`) creates a Gmail or Microsoft mailbox from the address the provider's ID token names, only at its return. Removing a mailbox keeps it 30 days (migration 0020), used by nothing, then deletes it for good, and ends its pause; a recovery pauses its sync, where its consent stands, until someone who may resumes it (migration 0025); a link that never connected is deleted at once ([`workspaces.md`](workspaces.md#removed-mailboxes)). A Google mailbox deleted for good has its grant revoked at Google once the deletion commits (`revoke.go`), best effort, the token opened in the deleting transaction and never logged. |
 | `internal/sync` | One worker per account with three sessions of fixed role (`idle`, `sync`, `interactive`); a paused mailbox has no worker and keeps its interactive connection between calls. |
-| `internal/service` | The use cases and **all** authorization, account ownership included. A concrete struct, not an interface. What an extension that follows an external directory calls (`directory.go`: a person's document applied in one write, at a first sign-in in the transaction that creates them; the directory's generation, resets, confirmation and cursor; a closed person forgotten and released; `journal.go` and `snapshot.go`, what it reports: the journal as its outbox, the followed workspaces and their change marks, its own state, a snapshot of who holds what) takes no principal, and no transport calls it (a test parses the transports to hold it). `freshness.go` is the hook asked before thirteen acts of a person (`Deps.Freshness`). |
+| `internal/service` | The use cases and **all** authorization, account ownership included. A concrete struct, not an interface. What an extension that follows an external directory calls (`directory.go`: a person's document applied in one write, at a first sign-in in the transaction that creates them; the directory's generation, resets, confirmation and cursor; a closed person forgotten and released; `journal.go` and `snapshot.go`, what it reports: the journal as its outbox, the followed workspaces and their change marks, its own state, a snapshot of who holds what) takes no principal, and no transport calls it (a test parses the transports to hold it). `freshness.go` is the hook asked before thirteen acts of a person (`Deps.Freshness`). `links.go` starts a link at the provider and checks its return before its code is taken. |
 | `internal/api` | REST under `/v1`, Server-Sent Events, the long poll. |
 | `internal/mcp` | MCP tools, resources and transports (stateful Streamable HTTP at `/mcp`, stdio). One `sdk.Server` per session, built for the key that opened it, with the same tool definitions for the whole process (the SDK's `SchemaCache` keys each schema by pointer, forever), and an event store of its own bounded in bytes and age. See [`mcp.md`](mcp.md). |
 | `internal/mcpbridge` | The relay behind `mcp connect`: the go-sdk's stdio transport towards the client and its Streamable HTTP client towards a server's `/mcp`, copying JSON-RPC messages without reading them. It sends the negotiated `MCP-Protocol-Version` and holds the standalone GET stream (which that client does only inside the SDK's own session), asking for it again with `Last-Event-ID`, through refusals, and in a new session when the server can no longer resume it or keeps holding it for a dead connection; it opens a session the server ended again with the client's own `initialize` and subscriptions, never follows a redirect, and sends the key only to the endpoint. |
@@ -86,7 +86,8 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
   [`workspaces.md`](workspaces.md).
 - **Freshness gates; it never authorizes.** Where workspaces come from a directory elsewhere, the
   service asks an extension (`service.Freshness`) before a person's act that shares a key, raises
-  flags, creates a key, links into a team, starts a team mailbox's consent again, switches its sync,
+  flags, creates a key, links into a team (a link at the provider at its start and again at its
+  return), starts a team mailbox's consent again, switches its sync,
   acts on it or sends from it, or, as an owner, deletes a removed one for good or turns its kept
   index off: after the act's own read-only checks and outside every write, since
   the answer may apply a document. The act's write then asks again who may, in its transaction (an
@@ -102,12 +103,23 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
 - **An external identity never takes over a person.** Accounts are never linked by matching
   addresses: an identity seen for the first time only creates a new person, and an address somebody
   here has already, however they sign in, is `conflict`, with nothing created or linked.
-- **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
-  same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
-  `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return`, never
-  derived from `Host`, and a console that is not on loopback is never offered the loopback flow.
-  Refreshing uses the client that issued the token (`accounts.oauth_client`); `invalid_client` is a
-  configuration error, not a dead grant.
+- **An OAuth flow belongs to whoever started it.** Its owner is checked in the same statement that
+  takes the row, `oauth_pending`'s `DELETE` or `oauth_links`' `UPDATE` (`taken_at`), **before** the
+  code is exchanged; another owner's is `not_found` and the row stays. The web flow's redirect is
+  `MAIL_PUBLIC_URL + /oauth/return`, never derived from `Host`, and a console that is not on
+  loopback is never offered the loopback flow. Refreshing uses the client that issued the token
+  (`accounts.oauth_client`); `invalid_client` is a configuration error, not a dead grant.
+- **A link at the provider learns its address there.** A person links a Gmail or Microsoft mailbox
+  through the web flow without typing its address: the authorization asks for `openid email`
+  beside the mailbox's scopes, with the provider's account chooser and no hint, and the address is
+  the one the token endpoint's ID token names, checked for this client, issuer and tenant (no
+  signature, as OIDC allows for a token taken there). Nothing of the mailbox exists before the
+  return: a link (`oauth_links`, migration 0026) holds only its state, its PKCE verifier and what
+  was asked for, never a key or an address, for 20 minutes at most. Its return carries the
+  mailbox's key, is checked before its code is taken, and creates the mailbox, its key and its
+  linker's grant in one transaction once one login as that address worked. Re-authorizing keeps the
+  mailbox's scopes and `login_hint`; the ID token, the account's identifier at the provider and its
+  tenant are never kept.
 - **Private account hosts are refused when dialing**, through `netguard.Control` on the IMAP and SMTP
   dialers, unless `MAIL_ACCOUNT_ALLOW_PRIVATE`. A password account logs in once before it is saved.
   Tests that connect to the in-process IMAP server on `127.0.0.1` turn `AllowPrivate` on, as the

@@ -1,8 +1,10 @@
 //go:build integration
 
 // Integration tests of the registry against the compose services: a password
-// account proved against a real Dovecot before it is stored, and a message
-// submitted to a real SMTP server through the guarded dialer.
+// account proved against a real Dovecot before it is stored, a link at the
+// provider whose grant is proved by a real XOAUTH2 login as the address it
+// learned, and a message submitted to a real SMTP server through the guarded
+// dialer.
 //
 // Both servers are on 127.0.0.1, which production refuses to connect to; the
 // registries here opt in to private hosts exactly as MAIL_ACCOUNT_ALLOW_PRIVATE
@@ -13,17 +15,26 @@
 package account_test
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider"
 )
 
@@ -172,4 +183,154 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// dovecotKey is the HMAC key Dovecot validates XOAUTH2 tokens with
+// (it/dovecot/oauth2-keys.dict holds its base64): a test-only key that
+// protects nothing.
+const dovecotKey = "integration-oauth2-key-not-secret"
+
+// dovecotIDP is a token endpoint whose answer to a code carries an ID token
+// naming one address and an access token Dovecot takes for another, or the
+// same: a JWT whose email claim is the user it logs in.
+type dovecotIDP struct {
+	server *httptest.Server
+
+	mu sync.Mutex
+	// claims are the next ID token's; tokenFor is the address the next
+	// access token logs in.
+	claims   map[string]any
+	tokenFor string
+}
+
+func newDovecotIDP(t *testing.T) *dovecotIDP {
+	t.Helper()
+	idp := &dovecotIDP{}
+	idp.server = httptest.NewServer(http.HandlerFunc(idp.token))
+	t.Cleanup(idp.server.Close)
+	return idp
+}
+
+func (d *dovecotIDP) endpoint() oauth2.Endpoint {
+	return oauth2.Endpoint{AuthURL: d.server.URL + "/authorize", TokenURL: d.server.URL + "/token"}
+}
+
+// names makes the next answer's ID token carry claims, and its access token
+// log in as tokenFor.
+func (d *dovecotIDP) names(claims map[string]any, tokenFor string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.claims, d.tokenFor = claims, tokenFor
+}
+
+func (d *dovecotIDP) token(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	d.mu.Lock()
+	claims, tokenFor := d.claims, d.tokenFor
+	d.mu.Unlock()
+	now := time.Now()
+	answer := map[string]any{
+		// Dovecot's local validation wants a subject beside the email.
+		"access_token": signedJWT(map[string]any{
+			"sub": "subject-of-" + tokenFor, "email": tokenFor, "iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+		}),
+		"refresh_token": "refresh-" + strconv.FormatInt(now.UnixNano(), 36), "token_type": "Bearer", "expires_in": 3600,
+	}
+	if r.Form.Get("grant_type") == "authorization_code" {
+		payload, _ := json.Marshal(claims)
+		answer["id_token"] = "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".c2lnbmF0dXJl"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(answer)
+}
+
+// signedJWT is an HS256 JWT of claims under dovecotKey, with no azp and no
+// kid: the key Dovecot looks up is its default one.
+func signedJWT(claims map[string]any) string {
+	enc := base64.RawURLEncoding
+	header, _ := json.Marshal(map[string]string{"alg": "HS256", "typ": "JWT"})
+	payload, _ := json.Marshal(claims)
+	signing := enc.EncodeToString(header) + "." + enc.EncodeToString(payload)
+	mac := hmac.New(sha256.New, []byte(dovecotKey))
+	mac.Write([]byte(signing))
+	return signing + "." + enc.EncodeToString(mac.Sum(nil))
+}
+
+func TestALinkAtTheProviderLogsInToDovecotAsTheAddressItLearned(t *testing.T) {
+	// Gmail's and Microsoft's servers stand in Dovecot's place: a grant is
+	// proved by a real XOAUTH2 login as the address the provider's ID token
+	// named, and Dovecot opens a mailbox only to a token for that user.
+	imapHost, imapPort := itAddr(t, "MAIL_IT_IMAP_ADDR", "127.0.0.1:31143")
+	dovecot := net.JoinHostPort(imapHost, strconv.Itoa(imapPort))
+	idp := newDovecotIDP(t)
+	repo, db := newRepo(t)
+	registry := account.NewRegistry(t.Context(), repo, account.RegistryOptions{
+		GoogleWeb:    account.OAuthClient{ClientID: googleClient, ClientSecret: "google-secret", Endpoint: idp.endpoint()},
+		MicrosoftWeb: account.OAuthClient{ClientID: msClient, ClientSecret: "ms-secret", Endpoint: idp.endpoint()},
+		PublicURL:    publicURL,
+		SpoolDir:     t.TempDir(),
+		AllowPrivate: true,
+		// Dovecot here speaks plain TCP; the daemon cannot set this.
+		AllowInsecureAuth: true,
+		RedirectIMAP:      map[string]string{"imap.gmail.com:993": dovecot, "outlook.office365.com:993": dovecot},
+	})
+	t.Cleanup(func() { _ = registry.Close() })
+	ana := authtest.NewUser(t, db, "ana@example.test", auth.RoleMember)
+	link := func(kind provider.Kind, claims map[string]any, tokenFor string) (account.Account, error) {
+		t.Helper()
+		_, flow, err := registry.StartLink(t.Context(), account.LinkStart{Provider: kind, OwnerUserID: ana.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		idp.names(claims, tokenFor)
+		key := authtest.LinkKey(t)
+		return registry.CompleteLink(t.Context(), account.Redirect{Code: "the-code", State: flow.State}, ana.ID,
+			account.LinkCompletion{Key: &key, LinkedBy: ana.ID})
+	}
+	fresh := func(name string) string {
+		return name + "-" + strconv.FormatInt(time.Now().UnixNano(), 36) + "@example.test"
+	}
+
+	for kind, claimsOf := range map[provider.Kind]func(string) map[string]any{
+		provider.KindGmail:     googleClaims,
+		provider.KindMicrosoft: func(email string) map[string]any { return microsoftClaims(email, workTenant) },
+	} {
+		address := fresh("link")
+		created, err := link(kind, claimsOf(address), address)
+		if err != nil {
+			t.Fatalf("%s: a link whose token logs in as the address it names (is `docker compose -f it/compose.yml up "+
+				"--wait` running?): %v", kind, err)
+		}
+		if created.Email != address || created.LoginUser != address || created.State != account.StateActive {
+			t.Errorf("%s: the mailbox the link created: %+v", kind, created)
+		}
+		// Its grant opens it, on Dovecot, as that address.
+		mailbox, err := registry.Mailbox(t.Context(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		session, err := mailbox.Open(t.Context(), provider.RoleInteractive)
+		if err != nil {
+			t.Fatalf("%s: opening the linked mailbox: %v", kind, err)
+		}
+		folders, err := session.ListFolders(t.Context(), false)
+		_ = session.Close()
+		if err != nil || len(folders) == 0 {
+			t.Errorf("%s: its folders: %v, %v", kind, folders, err)
+		}
+	}
+
+	// A provider that names one address and grants another account: Dovecot
+	// refuses the login as the address named, and nothing is stored.
+	before := countOf(t, db, `SELECT count(*) FROM accounts`)
+	named := fresh("named")
+	if _, err := link(provider.KindGmail, googleClaims(named), fresh("granted")); !errors.Is(err, account.ErrMailboxRefused) {
+		t.Fatalf("a grant for another account than the one named: %v, want ErrMailboxRefused", err)
+	}
+	if n := countOf(t, db, `SELECT count(*) FROM accounts`); n != before {
+		t.Errorf("a refused link stored %d mailboxes", n-before)
+	}
 }

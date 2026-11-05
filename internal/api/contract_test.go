@@ -521,6 +521,28 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("actions_consent_withdrawn", http.StatusOK, http.MethodDelete, "/v1/me/actions-consent", token, "")
 	capture("send_consent_withdrawn", http.StatusOK, http.MethodDelete, "/v1/me/send-consent", token, "")
 
+	// Links at the provider (internal/service/links.go), after everything
+	// else for the same reason: one into the team, with its agreement to
+	// sync, still waiting for the provider; one of ana's own she declines at
+	// the provider; and one whose return comes too late.
+	started := capture("link_started", http.StatusCreated, http.MethodPost, "/v1/accounts/oauth/links", token,
+		fmt.Sprintf(`{"provider":"gmail","workspace_id":%q,"sync_consent_version":%q,"display_name":"Support (Gmail)"}`,
+			teamID, service.DefaultSyncConsentVersion))
+	waiting, _ := started["link"].(map[string]any)["id"].(string)
+	capture("link_waiting", http.StatusOK, http.MethodGet, "/v1/accounts/oauth/links/"+waiting, token, "")
+	declined, declinedState := h.startLink(t, token)
+	capture("", http.StatusBadRequest, http.MethodPost, "/v1/accounts/oauth/callback", token, jsonOf(t, map[string]any{
+		"redirect_url": "http://localhost:5174/oauth/return?error=access_denied&state=" + url.QueryEscape(declinedState),
+	}))
+	capture("link_failed_declined", http.StatusOK, http.MethodGet, "/v1/accounts/oauth/links/"+declined, token, "")
+	late, lateState := h.startLink(t, token)
+	if _, err := h.store.Writer().ExecContext(t.Context(), `UPDATE oauth_links SET expires_at = ? WHERE id = ?`,
+		epoch.Add(-time.Second).Unix(), late); err != nil {
+		t.Fatal(err)
+	}
+	capture("", http.StatusNotFound, http.MethodPost, "/v1/accounts/oauth/callback", token, linkReturn(t, lateState, 7))
+	capture("link_failed_expired", http.StatusOK, http.MethodGet, "/v1/accounts/oauth/links/"+late, token, "")
+
 	// A plain session, as signing up, a reset and a password change answer
 	// it: here a password change, which ends every session ana had, so it
 	// comes last.
@@ -531,6 +553,29 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		"ticket": ticket, "current_auth_key": authtest.AuthKey, "auth_key": authtest.AuthKey, "kdf": defaultKDF(),
 		"password_wrap": base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)),
 	}))
+
+	// Links at the provider that reach it, on a daemon whose Google answers
+	// as the console's provider would, last, so their ids take no number
+	// another fixture has: one that connects, the same account again, one
+	// whose provider names no address, and one whose mail server refuses
+	// the account.
+	google := newLinkProvider(t)
+	linker := newLinkHarness(t, google, func() time.Time { return epoch })
+	authtest.NewUser(t, linker.store, "ana@example.test", auth.RoleOwner)
+	anaLinks := authtest.SignIn(t, linker.users, "ana@example.test")
+	pair := byte(8)
+	finish := func(name string, want int, email string, refuse bool) {
+		t.Helper()
+		google.names(email, refuse)
+		id, state := linker.startLink(t, anaLinks)
+		pair++
+		captureOn(linker, "", want, http.MethodPost, "/v1/accounts/oauth/callback", anaLinks, linkReturn(t, state, pair))
+		captureOn(linker, name, http.StatusOK, http.MethodGet, "/v1/accounts/oauth/links/"+id, anaLinks, "")
+	}
+	finish("link_connected", http.StatusOK, "ana.lima@gmail.com", false)
+	finish("link_failed_duplicate", http.StatusConflict, "ana.lima@gmail.com", false)
+	finish("link_failed_no_address", http.StatusBadRequest, "", false)
+	finish("link_failed_mailbox_refused", http.StatusBadRequest, "ana.work@gmail.com", true)
 }
 
 // contractMailboxKey is the public half of a mailbox key pair the contract

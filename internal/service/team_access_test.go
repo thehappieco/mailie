@@ -270,7 +270,7 @@ func TestLosingManageOfAMailboxEndsTheConsentAttemptsStartedOnIt(t *testing.T) {
 			}
 			query := url.Values{"code": {"the-code"}, "state": {stateOf(t, flow)}}
 			pasted := redirectURIOf(t, flow.AuthURL) + "?" + query.Encode()
-			if _, err := f.svc.CompleteOAuth(t.Context(), tm.bea, pasted); service.CodeOf(err) != service.CodeNotFound {
+			if _, err := f.svc.CompleteOAuth(t.Context(), tm.bea, returnTo(pasted)); service.CodeOf(err) != service.CodeNotFound {
 				t.Errorf("pasting the redirect afterwards: %v, want not_found", err)
 			}
 			// Nor does the browser reaching the listener the daemon keeps.

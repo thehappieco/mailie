@@ -152,11 +152,21 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/accounts/{id}/purge",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.purgeAccount))
 	mux.Handle("POST /v1/accounts/{id}/oauth/start", h.authenticated(auth.ScopeAdmin, opts(), h.startOAuth))
+	// A link at the provider: a person signed in connects a Gmail or
+	// Microsoft mailbox whose address the provider names once they chose the
+	// account on its page. Its start carries no address and no key; its
+	// return is the callback below, with the mailbox's key; its starter, and
+	// nobody else, reads how it stands while it finishes or after an answer
+	// that never arrived. Beside the callback: under /v1/accounts/{id} a GET
+	// of …/links/{id} would overlap a mailbox's own routes.
+	mux.Handle("POST /v1/accounts/oauth/links", h.authenticated(auth.ScopeAdmin, opts(), h.startLink))
+	mux.Handle("GET /v1/accounts/oauth/links/{id}", h.authenticated(auth.ScopeRead, opts(), h.getLink))
 	// The exchange behind a callback runs detached for up to forty seconds, so
-	// the code survives a caller that gives up; the route outlasts it, so the
+	// the code survives a caller that gives up; a link's return asks who may
+	// finish it for up to twenty more first. The route outlasts both, so the
 	// caller that waits hears how it ended instead of a timeout.
 	mux.Handle("POST /v1/accounts/oauth/callback",
-		h.authenticated(auth.ScopeAdmin, opts().withTimeout(45*time.Second), h.completeOAuth))
+		h.authenticated(auth.ScopeAdmin, opts().withTimeout(callbackTimeout), h.completeOAuth))
 	// Listing folders talks to the mail server, so it gets a longer deadline
 	// than a database read.
 	mux.Handle("GET /v1/accounts/{id}/folders",
@@ -358,25 +368,50 @@ func (h *Handler) startOAuth(q *request) {
 	q.finish(http.StatusOK, flow)
 }
 
-type completeOAuthRequest struct {
-	// RedirectURL is the whole address the browser ended on. Taking the URL
-	// rather than the code is one paste instead of three, and it carries the
-	// state that ties it back to the flow.
-	RedirectURL string `json:"redirect_url"`
-}
+// callbackTimeout is how long POST /v1/accounts/oauth/callback waits: a
+// link's checks before its code is taken (twenty seconds at most), its
+// finish (account.FinishTimeout, forty), and ten to answer.
+const callbackTimeout = 70 * time.Second
 
 func (h *Handler) completeOAuth(q *request) {
-	var req completeOAuthRequest
+	var req service.CompleteOAuthRequest
 	if err := q.decode(&req); err != nil {
 		q.fail(err)
 		return
 	}
-	a, err := h.Service.CompleteOAuth(q.ctx(), q.principal, req.RedirectURL)
+	a, err := h.Service.CompleteOAuth(q.ctx(), q.principal, req)
 	if err != nil {
 		q.fail(err)
 		return
 	}
 	q.finish(http.StatusOK, a)
+}
+
+func (h *Handler) startLink(q *request) {
+	var req service.LinkRequest
+	if err := q.decode(&req); err != nil {
+		q.fail(err)
+		return
+	}
+	started, err := h.Service.StartLink(q.ctx(), q.principal, req)
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusCreated, started)
+}
+
+func (h *Handler) getLink(q *request) {
+	if _, err := q.query(); err != nil {
+		q.fail(err)
+		return
+	}
+	link, err := h.Service.GetLink(q.ctx(), q.principal, q.r.PathValue("id"))
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusOK, link)
 }
 
 func (h *Handler) listFolders(q *request) {

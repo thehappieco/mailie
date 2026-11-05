@@ -16,6 +16,9 @@ services:
       # One file, not the directory: mounting over conf.d would hide the
       # image's own auth.conf and leave Dovecot with no passdb.
       - ./dovecot/conf.d/90-mailserver.conf:/etc/dovecot/conf.d/90-mailserver.conf:ro
+      # The test-only key XOAUTH2's tokens are validated with: base64 of
+      # the HMAC key under the lookup key of a token with no azp and no kid.
+      - ./dovecot/oauth2-keys.dict:/etc/dovecot/oauth2-keys.dict:ro
     ports:
       # The rootless image listens on 31143 inside the container, not 143.
       - "127.0.0.1:31143:31143"

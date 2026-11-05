@@ -447,7 +447,7 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 	}
 	switch {
 	case p.IsSession():
-		key, err := linkKeyOf(req)
+		key, err := linkKeyOf(req.PublicKey, req.Namespace, req.Grant)
 		if err != nil {
 			return account.AddRequest{}, err
 		}
@@ -533,14 +533,19 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 // cannot be redeemed by whoever sent it — and its account one this caller may
 // still administer. Either failing is not_found, like a flow that never
 // existed, so a state cannot be probed for.
-func (s *Service) CompleteOAuth(ctx context.Context, p Principal, redirectURL string) (Account, error) {
+//
+// A state that names no consent of the caller's may name a link at the
+// provider they started (links.go), whose return creates its mailbox: its
+// key comes with the request then. A consent for a mailbox that exists
+// carries none.
+func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOAuthRequest) (Account, error) {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return Account{}, err
 	}
-	if strings.TrimSpace(redirectURL) == "" {
+	if strings.TrimSpace(req.RedirectURL) == "" {
 		return Account{}, E(CodeBadRequest, "paste the whole address the browser ended on", nil)
 	}
-	redirect, err := account.ParseRedirect(redirectURL)
+	redirect, err := account.ParseRedirect(req.RedirectURL)
 	if err != nil {
 		return Account{}, E(CodeBadRequest,
 			"that is not the address the provider sent the browser back to; paste the whole address", err)
@@ -550,8 +555,19 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, redirectURL st
 	}
 
 	pending, err := s.accounts.PendingFlow(ctx, redirect.State, p.UserID)
+	if errors.Is(err, account.ErrNotFound) && p.IsSession() {
+		// No consent of theirs: a link of theirs, or nothing they may know of.
+		link, linkErr := s.accounts.OwnedLink(ctx, redirect.State, p.UserID)
+		if linkErr != nil {
+			return Account{}, fromLink(linkErr)
+		}
+		return s.completeLink(ctx, p, redirect, req, link)
+	}
 	if err != nil {
 		return Account{}, fromCompletion(err)
+	}
+	if req.carriesKey() {
+		return Account{}, errLinkKey
 	}
 	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage); err != nil {
 		return Account{}, err
@@ -567,6 +583,15 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, redirectURL st
 // fromCompletion renders a consent attempt that could not be finished. The
 // account already records why; these messages say what to do next.
 func fromCompletion(err error) error {
+	if known := completionError(err); known != nil {
+		return known
+	}
+	return E(CodeInternal, "completing the authorisation failed", err)
+}
+
+// completionError is fromCompletion for the failures a consent and a link at
+// the provider share, or nil for any other.
+func completionError(err error) error {
 	switch {
 	case errors.Is(err, account.ErrNotFound), errors.Is(err, account.ErrFlowExpired),
 		errors.Is(err, account.ErrOwnerInactive), errors.Is(err, account.ErrStarterLostAccess):
@@ -599,7 +624,7 @@ func fromCompletion(err error) error {
 	case errors.Is(err, account.ErrExchangeFailed), errors.Is(err, account.ErrProviderRefused):
 		return E(CodeBadRequest, "the provider did not accept the authorisation; start again", err)
 	default:
-		return E(CodeInternal, "completing the authorisation failed", err)
+		return nil
 	}
 }
 

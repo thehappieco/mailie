@@ -28,6 +28,28 @@ export const REASON_TOKEN_REJECTED = "the mail server rejected the account's acc
  * answers.
  */
 export const REASON_UNPROVED = 'the mail server could not be reached to prove this authorization'
+/** A consent, or a link at the provider, refused on the provider's page: by the person, or for want of an administrator's approval. */
+export const REASON_DECLINED = 'consent was declined'
+/** A consent, or a link at the provider, that was not answered in time. */
+export const REASON_EXPIRED = 'the authorization attempt expired'
+/** A link at the provider whose answer named no address Mailie could connect. */
+export const REASON_NO_ADDRESS = 'the provider named no usable address for the account'
+/**
+ * A link at the provider to an address the workspace holds already: live, or
+ * removed and kept. One reason for both, so an admin who is not an owner
+ * learns nothing of a removed mailbox.
+ */
+export const REASON_DUPLICATE = 'the address is already linked in this workspace'
+
+/**
+ * The reasons the console knows, which a failed link at the provider says
+ * (GET /v1/accounts/oauth/links/{id}) beside those an account's state does:
+ * any other is the console's fallback text.
+ */
+export const knownReasons: ReadonlySet<string> = new Set([
+  REASON_NOT_GRANTED, REASON_MAILBOX_REFUSED, REASON_TOKEN_REJECTED, REASON_UNPROVED,
+  REASON_DECLINED, REASON_EXPIRED, REASON_NO_ADDRESS, REASON_DUPLICATE,
+])
 
 export type ReasonFacts = Pick<Account, 'provider' | 'email' | 'state' | 'state_reason'>
 

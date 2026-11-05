@@ -1,0 +1,15 @@
+{
+  "auth": {
+    "auth_url": "https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=google-web-client&code_challenge=fixed-pkce-challenge&code_challenge_method=S256&prompt=select_account+consent&redirect_uri=http%3A%2F%2Flocalhost%3A5174%2Foauth%2Freturn&response_type=code&scope=https%3A%2F%2Fmail.google.com%2F+openid+email&state=fixed-oauth-state",
+    "expires_at": 1790000600,
+    "flow": "web",
+    "state": "fixed-oauth-state"
+  },
+  "link": {
+    "expires_at": 1790000600,
+    "id": "lnk_0000000000000001",
+    "provider": "gmail",
+    "state": "waiting",
+    "workspace_id": "wsp_0000000000000002"
+  }
+}

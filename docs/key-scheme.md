@@ -548,9 +548,10 @@ Every mailbox a person links from the console gets a key pair, made by the linke
 - epoch 1.
 
 The browser sends the public key, the namespace and the linker's own grant (section 9) with the
-request that links the mailbox, the one request it makes before it leaves for the provider's
-consent, with a fresh step-up (section 11), and the server writes them in the transaction that
-creates the mailbox, beside the grant of "read" the linker already gets (`GrantLinkTx`). The
+request that creates the mailbox: on the paths that name the address, the one request it makes
+before it leaves for the provider's consent; on a link at the provider (section 12.11), the request
+that posts the provider's return. It does so with a fresh step-up (section 11), and the server
+writes them in the transaction that creates the mailbox, beside the grant of "read" the linker already gets (`GrantLinkTx`). The
 mailbox private key never leaves the browser but sealed in grants, and the browser zeroes it once
 they are sealed.
 
@@ -1017,6 +1018,10 @@ step-up (section 11). Resuming an abandoned link sends no key: the mailbox it re
 one its link wrote (Appendix C). The server checks the step-up, the public key,
 the namespace's spelling and uniqueness, and the grant's shape at epoch 1 for the linker. It never
 makes a mailbox key itself.
+
+A link at the provider (Google and Microsoft, web flow) sends nothing sealed at its start; its key
+and grant go with the request that posts the return, sealed then to the linker's current public
+key, and the server writes them in the transaction that creates the mailbox.
 
 ### 12.12 A new key for a mailbox
 
@@ -1773,3 +1778,23 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
     the listings and the snapshot report.
   - **Deleting it for good ends it** with the grants, whoever deletes it: the sweep, its owners,
     the operator, or a person's closure that takes it.
+- Version 1, linking at the provider (2026-11-05). No byte changed. A person links a Gmail or
+  Microsoft mailbox through the web flow without typing its address: the provider's account
+  chooser picks the account, its answer names the address, and the mailbox exists only once that
+  answer is back. Sections 8 and 12.11 say where the key goes then; nothing in the scheme binds a
+  mailbox's address (a grant binds its namespace, the seal id and the epoch, section 9.1), so
+  learning the address at the return changes no byte. What the code had to choose, recorded here:
+  - **Nothing sealed waits on the server.** The start sends no key: a link holds its flow's state,
+    its PKCE verifier and what was asked for, for 20 minutes at most. The browser makes the key
+    pair and seals the linker's grant at the return, to their account public key as the server
+    serves it then, so a reset between the two halves leaves no grant sealed to a key they no
+    longer have.
+  - **The step-up is asked three times.** At the start, to fail early; again at the return, before
+    its code is taken, fresh with the finish's time to spare (`RequireStepUpFor`, the finish's
+    40 seconds and five more), so a step-up that would lapse during the exchange and the login
+    refuses before the single-use code is spent and leaves the link for the same return posted
+    after a step-up; and in the transaction that creates the mailbox, which is the one that
+    counts. A return that carries the provider's refusal writes no key and asks for none.
+  - **The console asks with time to spare.** It asks for the step-up with five minutes left before
+    it leaves for the provider, and again at the return when it is no longer fresh, before taking
+    the return from where it kept it, so a step-up that sends the whole tab away loses nothing.

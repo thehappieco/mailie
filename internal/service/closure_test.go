@@ -719,8 +719,9 @@ func TestDeletingAnAddressThatWasOnlyInvitedDeletesItsInvites(t *testing.T) {
 
 func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 	// A listener left open for a person who is gone, or switched off, would
-	// still take a redirect and answer it.
-	f, _ := consentFixture(t, "")
+	// still take a redirect and answer it; a link at the provider left
+	// waiting would still be taken by its return.
+	f, _ := consentFixture(t, "http://localhost:5174")
 	keeper := f.person(t, "keeper@example.com", auth.RoleOwner)
 	ana := f.person(t, "ana@example.com", auth.RoleMember)
 	bea := f.person(t, "bea@example.com", auth.RoleMember)
@@ -781,12 +782,27 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 		t.Fatal(err)
 	}
 	ownHost, sharedHost := listening(own.Auth), listening(onShared)
+	links := func(p service.Principal) int {
+		t.Helper()
+		return f.count(t, `SELECT count(*) FROM oauth_links WHERE owner_user_id = ?`, p.UserID)
+	}
+	for _, p := range []service.Principal{ana, bea} {
+		if _, err := f.svc.StartLink(t.Context(), p, service.LinkRequest{Provider: "gmail"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	if _, err := f.svc.DeleteUser(t.Context(), admin(), service.CloseUserRequest{Email: "ana@example.com"}); err != nil {
 		t.Fatal(err)
 	}
 	closed(ownHost, "the listener for her deleted mailbox")
 	closed(sharedHost, "the listener for her attempt on the team's mailbox")
+	if n := links(ana); n != 0 {
+		t.Errorf("a deleted person's link at the provider is still waiting")
+	}
+	if n := links(bea); n != 1 {
+		t.Errorf("bea has %d links, want hers", n)
+	}
 	if _, err := f.repo.Get(t.Context(), shared.Account.ID); err != nil {
 		t.Errorf("the team's mailbox went with her: %v", err)
 	}
@@ -802,6 +818,9 @@ func TestClosingAnAccountStopsTheConsentItsOwnerLeftWaiting(t *testing.T) {
 	closed(beaHost, "the listener of a disabled person")
 	if n := f.count(t, `SELECT count(*) FROM oauth_pending WHERE owner_user_id = ?`, bea.UserID); n != 0 {
 		t.Errorf("a disabled person's attempt is still pending")
+	}
+	if n := links(bea); n != 0 {
+		t.Errorf("a disabled person's link at the provider is still waiting")
 	}
 }
 
@@ -927,8 +946,8 @@ func TestConsentFinishingAfterItsOwnerWasDisabledStoresNoGrant(t *testing.T) {
 		_, disabled = f.svc.DisableUser(t.Context(), admin(), service.CloseUserRequest{Email: "ana@example.com"})
 	}
 
-	_, err = f.svc.CompleteOAuth(t.Context(), ana,
-		"https://console.mailie.example/oauth/return?code=the-code&state="+stateOf(t, added.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"https://console.mailie.example/oauth/return?code=the-code&state="+stateOf(t, added.Auth)))
 	if disabled != nil {
 		t.Fatalf("disabling during the exchange: %v", disabled)
 	}

@@ -1,0 +1,8 @@
+{
+  "email": "ana.work@gmail.com",
+  "expires_at": 1790000600,
+  "id": "lnk_0000000000000007",
+  "provider": "gmail",
+  "reason": "the mail server refused this authorization for the mailbox",
+  "state": "failed"
+}

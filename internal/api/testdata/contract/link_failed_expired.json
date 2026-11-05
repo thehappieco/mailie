@@ -1,0 +1,7 @@
+{
+  "expires_at": 1789999999,
+  "id": "lnk_0000000000000003",
+  "provider": "gmail",
+  "reason": "the authorization attempt expired",
+  "state": "failed"
+}

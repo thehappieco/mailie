@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -48,6 +49,12 @@ type fakeIDP struct {
 	// scope, when set, is the token response's scope field: what the
 	// provider says the token is valid for.
 	scope string
+	// claims, when set, are the ID token's an answer to a code carries, as
+	// the provider's answer to a link at the provider names its account.
+	claims map[string]any
+	// onExchange runs while a code is exchanged, before the answer: after
+	// every check a link's return makes before its code is taken.
+	onExchange func()
 }
 
 func newFakeIDP(t *testing.T) *fakeIDP {
@@ -78,6 +85,12 @@ func (f *fakeIDP) token(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+	f.mu.Lock()
+	hook := f.onExchange
+	f.mu.Unlock()
+	if hook != nil && r.Form.Get("grant_type") == "authorization_code" {
+		hook()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,6 +131,14 @@ func (f *fakeIDP) token(w http.ResponseWriter, r *http.Request) {
 	}
 	if f.scope != "" {
 		response["scope"] = f.scope
+	}
+	if f.claims != nil && r.Form.Get("grant_type") == "authorization_code" {
+		payload, err := json.Marshal(f.claims)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		response["id_token"] = "eyJhbGciOiJSUzI1NiJ9." + base64.RawURLEncoding.EncodeToString(payload) + ".c2lnbmF0dXJl"
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -242,7 +263,7 @@ func TestAUserCannotCompleteAnotherUsersOAuthFlow(t *testing.T) {
 	redirect := "https://console.mailie.example/oauth/return?code=the-code&state=" + stateOf(t, added.Auth)
 
 	for name, p := range map[string]service.Principal{"another user": mallory, "an instance key": admin()} {
-		_, err := f.svc.CompleteOAuth(t.Context(), p, redirect)
+		_, err := f.svc.CompleteOAuth(t.Context(), p, returnTo(redirect))
 		if service.CodeOf(err) != service.CodeNotFound {
 			t.Errorf("%s completing ana's flow: %v, want not_found", name, err)
 		}
@@ -252,7 +273,7 @@ func TestAUserCannotCompleteAnotherUsersOAuthFlow(t *testing.T) {
 	}
 
 	// The flow is still there for the person it belongs to.
-	a, err := f.svc.CompleteOAuth(t.Context(), ana, redirect)
+	a, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(redirect))
 	if err != nil {
 		t.Fatalf("ana could not finish her own flow after the refusals: %v", err)
 	}
@@ -274,7 +295,7 @@ func TestAUserCannotCompleteAnotherUsersOAuthFlow(t *testing.T) {
 	if stored := f.stateOfAccount(t, a.ID); stored.OAuthClient != account.ClientWeb || stored.OwnerUserID != ana.UserID {
 		t.Errorf("stored client %q owner %q, want the web client and ana", stored.OAuthClient, stored.OwnerUserID)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana, redirect); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(redirect)); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("a replayed redirect: %v, want not_found", err)
 	}
 }
@@ -325,14 +346,14 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 	}
 	denied := "http://localhost:5174/oauth/return?error=access_denied&error_description=The+user+said+no&state=" +
 		stateOf(t, web.Auth)
-	_, err = f.svc.CompleteOAuth(t.Context(), ana, denied)
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo(denied))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("a declined consent answered %v, want bad_request", err)
 	}
 	if a := f.stateOfAccount(t, web.Account.ID); a.State != account.StateError || a.StateReason != account.ReasonDeclined {
 		t.Errorf("web account = %s %q, want error %q", a.State, a.StateReason, account.ReasonDeclined)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana, denied); service.CodeOf(err) != service.CodeNotFound {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(denied)); service.CodeOf(err) != service.CodeNotFound {
 		t.Errorf("the declined flow could be answered twice: %v", err)
 	}
 
@@ -341,8 +362,8 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code=refused&state="+stateOf(t, refused.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code=refused&state="+stateOf(t, refused.Auth)))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("a refused exchange answered %v", err)
 	}
@@ -356,8 +377,8 @@ func TestADeniedConsentMarksTheAccountFailed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code=wrong-client&state="+stateOf(t, rejected.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code=wrong-client&state="+stateOf(t, rejected.Auth)))
 	if service.CodeOf(err) != service.CodeInternal || !strings.Contains(service.MessageOf(err), "operator") {
 		t.Fatalf("a rejected client answered %v", err)
 	}
@@ -423,8 +444,8 @@ func TestAProviderFailureOnTheRedirectIsNotRecordedAsADecline(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?error="+c.error+
-			"&error_description=Something+went+wrong&state="+stateOf(t, added.Auth))
+		_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?error="+c.error+
+			"&error_description=Something+went+wrong&state="+stateOf(t, added.Auth)))
 		if service.CodeOf(err) != c.code || strings.Contains(service.MessageOf(err), "declined") {
 			t.Errorf("error=%s answered %s %q, want %s", c.error, service.CodeOf(err), service.MessageOf(err), c.code)
 		}
@@ -451,8 +472,8 @@ func TestAnAccountWhoseFirstConsentFailedHasNoFoldersToList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?error=access_denied&state="+stateOf(t, declined.Auth)); err == nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?error=access_denied&state="+stateOf(t, declined.Auth))); err == nil {
 		t.Fatal("a declined consent completed")
 	}
 	abandoned, err := f.svc.AddAccount(t.Context(), ana, keyed(ana, service.AddAccountRequest{Email: "abandoned@gmail.com"}))
@@ -611,8 +632,8 @@ func TestAWebClientTokenIsRefreshedWithTheWebClient(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.svc.CompleteOAuth(t.Context(), p,
-			"http://127.0.0.1:1/cb?code=code-"+flow+"&state="+stateOf(t, added.Auth)); err != nil {
+		if _, err := f.svc.CompleteOAuth(t.Context(), p, returnTo(
+			"http://127.0.0.1:1/cb?code=code-"+flow+"&state="+stateOf(t, added.Auth))); err != nil {
 			t.Fatalf("%s: %v", flow, err)
 		}
 		return added.Account.ID
@@ -656,8 +677,8 @@ func TestAnAccountWhoseClientWasRemovedSaysSo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code=c&state="+stateOf(t, added.Auth)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code=c&state="+stateOf(t, added.Auth))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -824,4 +845,10 @@ func getRedirect(t *testing.T, flow *service.AuthFlow, query url.Values) redirec
 		t.Fatal(err)
 	}
 	return redirectReply{status: resp.StatusCode, body: string(body)}
+}
+
+// returnTo is the callback's request for the address a browser landed on,
+// carrying no key: a consent for a mailbox that exists.
+func returnTo(redirectURL string) service.CompleteOAuthRequest {
+	return service.CompleteOAuthRequest{RedirectURL: redirectURL}
 }

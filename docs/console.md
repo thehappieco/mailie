@@ -1055,7 +1055,9 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `POST /v1/accounts/{id}/recover` | admin: its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | → `Account`, live again, its `sync.paused` until someone who may resumes it (or off, where its consent is off, or `sync.held`, where the operator's turn-off holds it); `409` once its 30 days are over, in a closed team, and for a team mailbox nobody who could read it is left to read; anyone else is told it does not exist (`404`) |
 | `POST /v1/accounts/{id}/purge` | admin: its owners, as above; the operator, any workspace's | `{confirm: <id>}` → 204 (150 s): a removed mailbox deleted for good, compacting what held its index; a live one `409`; without the id repeated, `400` and nothing deleted |
 | `POST /v1/accounts/{id}/oauth/start` | admin, manage | start (or restart) its authorization; the flow is the caller's |
-| `POST /v1/accounts/oauth/callback` | admin, manage | `{redirect_url}` → `Account` (45 s); only the flow's starter |
+| `POST /v1/accounts/oauth/links` | admin, a session only (a key: `403`) | `{provider, flow?, workspace_id?, sync_consent_version?, display_name?}` → `LinkStarted` `{link, auth}` (201): a Gmail or Microsoft mailbox linked at the provider, the web flow only ([Linking at the provider](#linking-at-the-provider)); no address and no key; `workspace_id` and `sync_consent_version` as for `POST /v1/accounts`; a fresh step-up; `429` with five waiting |
+| `GET /v1/accounts/oauth/links/{id}` | its starter (anyone else: `404`) | `Link` `{id, provider, workspace_id?, state, expires_at, account_id?, email?, reason?}`: `waiting`, `finishing`, `connected` (`account_id`, until that mailbox is deleted for good) or `failed` (`reason`, and `email` once the provider named one); never the mailbox itself, read with `GET /v1/accounts/{id}`; kept 20 minutes at most |
+| `POST /v1/accounts/oauth/callback` | admin, manage; a link: its starter | `{redirect_url, public_key?, namespace?, grant?}` → `Account` (70 s); only the flow's starter; a link's return with a code carries the mailbox's first key (`400` without it, before its code is taken), and a consent for a mailbox that exists none |
 | `GET /v1/accounts/{id}/folders` | read, `read` | folders, from the index or from the server |
 | `GET /v1/accounts/{id}/sync` | read | `AccountSync` |
 | `POST /v1/accounts/{id}/sync` | write, `read` | ask for a pass now → `AccountSync` (202) |
@@ -1134,6 +1136,51 @@ connected again.
 
 Gmail in the console connects only with Google sign-in. An app password works from the command line
 (an instance key), never for a person: it is a credential without scope or expiry.
+
+### Linking at the provider
+
+A person signed in links a Gmail or Microsoft mailbox without typing its address: they choose the
+account on the provider's own page, and the provider's answer names its address. Only through the
+web flow; everything else (iCloud and IMAP, keys, a server with only the installed client, a
+Microsoft shared mailbox or a tenant whose administrator consented to the mail permissions alone)
+uses `POST /v1/accounts` with the address.
+
+- **The start**, `POST /v1/accounts/oauth/links`, asks what `POST /v1/accounts` asks before it
+  dials (who may link into the workspace, the freshness hook for a team, an account key, a fresh
+  step-up) and answers the link and its authorization. It carries no address and no key, and
+  stores no mailbox: a link holds its flow's state and PKCE verifier, who started it, the team it
+  goes into (none for the starter's personal workspace, decided at the return), the name asked for
+  and the team's sync text if the box was ticked. The authorization URL asks for `openid email`
+  beside the mailbox's scopes, with the account chooser (Google's `prompt=select_account consent`,
+  Microsoft's `select_account`) and no `login_hint`. A person has at most five links waiting; a
+  new one for the same provider and workspace replaces theirs.
+- **The return** is the same `POST /v1/accounts/oauth/callback`: a `state` that is no consent of
+  the caller's is looked for among their links, by its owner as a consent is. One that carries
+  the provider's `error=` is recorded (`consent was declined`), with no key and no step-up. One
+  with a code carries the mailbox's first key, made and sealed by the browser then
+  ([Mailbox keys](#mailbox-keys)), and is checked before its code is taken, read only and within
+  20 seconds: the key's shapes, who may still link there (and that the ticked sync text is still the
+  current one), the freshness hook for a team, the account key, and a step-up still fresh once the
+  finish is over. A refusal here leaves the link for the same return posted again. Then the
+  daemon takes the link, once, exchanges the code, reads the address from the token endpoint's ID
+  token (its audience, issuer, Microsoft's tenant, its times, Google's verification), refuses a
+  mailbox the workspace holds under it, live or removed, under any spelling of one Gmail account
+  (one `409` for both, so an admin who is not an owner learns nothing of a removed one), proves
+  the grant with one login as that address, and creates the mailbox, its key, the person's grant
+  and the team's agreement to sync, at the current text, in one transaction, which asks again who
+  may link and the step-up. The answer is the mailbox as `GET /v1/accounts/{id}` shows it. The
+  ID token is never kept; neither are the account's identifier at the provider nor its tenant.
+- **Reading it.** `GET /v1/accounts/oauth/links/{id}` is how its starter's console learns how a
+  return it did not hear the answer of ended, or follows one still `finishing`. A failed link says
+  why with one of the reasons below, or `the provider named no usable address for the account`
+  or `the address is already linked in this workspace`, and the address once the provider named
+  one; a connected one names its mailbox and no address. Its row goes 10 minutes after it expires;
+  a mailbox deleted for good takes the failed links naming its address with it.
+- **Where it ends.** A link goes in the transaction that ends its starter's consent attempts
+  (a disable, a suspension, a deletion, leaving or being removed from the team, a demotion, a held
+  membership, the team closing), and with a reset, a recovery and a sign-out everywhere; its return
+  is then `404`. Re-authorizing a mailbox linked this way is the ordinary consent, for its address,
+  with its scopes alone.
 
 ### Mailbox keys
 
@@ -1360,6 +1407,8 @@ fails, `state_reason` is one of these fixed texts, never the provider's:
 | `the provider rejected this server's OAuth client` | a wrong or expired client id or secret |
 | `the OAuth client that authorized this account is not configured` | the client left the configuration |
 | `the authorization could not be completed` | anything else |
+| `the provider named no usable address for the account` | (a link at the provider's) its ID token named none this server takes |
+| `the address is already linked in this workspace` | (a link at the provider's) the workspace holds that mailbox, live or removed |
 | `the mail server rejected the account's access token` | (`needs_reauth`) IMAP refused the token of a mailbox in use |
 
 Every failure a person sees because of the mail server (listing folders, finishing a consent,

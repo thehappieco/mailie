@@ -257,27 +257,28 @@ func checkNamespace(ns string) error {
 	return nil
 }
 
-// linkKeyOf reads the key a person's link carries (section 12.11): every
-// part, each in its shape, the grant at epoch 1.
-func linkKeyOf(req AddAccountRequest) (*workspace.LinkKey, error) {
-	if req.PublicKey == "" || req.Namespace == "" || req.Grant == "" {
+// linkKeyOf reads the key a person's link carries (section 12.11), with the
+// request that creates the mailbox: every part, each in its shape, the grant
+// at epoch 1.
+func linkKeyOf(publicKey, namespace, grant string) (*workspace.LinkKey, error) {
+	if publicKey == "" || namespace == "" || grant == "" {
 		return nil, errLinkKeyNeeded
 	}
-	pub, err := mailboxPublicKey(req.PublicKey)
+	pub, err := mailboxPublicKey(publicKey)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkNamespace(req.Namespace); err != nil {
+	if err := checkNamespace(namespace); err != nil {
 		return nil, err
 	}
-	grant, err := grantBytes(req.Grant)
+	sealed, err := grantBytes(grant)
 	if err != nil {
 		return nil, err
 	}
-	if err := grantAtEpoch(grant, keyscheme.MinEpoch); err != nil {
+	if err := grantAtEpoch(sealed, keyscheme.MinEpoch); err != nil {
 		return nil, err
 	}
-	key := workspace.LinkKey{PublicKey: pub, Namespace: req.Namespace, Grant: grant}
+	key := workspace.LinkKey{PublicKey: pub, Namespace: namespace, Grant: sealed}
 	if err := workspace.CheckLinkKey(key); err != nil {
 		return nil, fromKeys(err, "checking the mailbox key failed")
 	}

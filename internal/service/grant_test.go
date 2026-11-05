@@ -87,8 +87,8 @@ func TestAGrantWithoutTheMailScopeIsRefusedAndStoresNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)))
 	if service.CodeOf(err) != service.CodeBadRequest ||
 		!strings.Contains(service.MessageOf(err), "did not grant access to the mailbox") {
 		t.Fatalf("completing a grant without the mail scope: %s %q", service.CodeOf(err), service.MessageOf(err))
@@ -110,7 +110,7 @@ func TestAGrantWithoutTheMailScopeIsRefusedAndStoresNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code=whole&state="+stateOf(t, flow))
+	a, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code=whole&state="+stateOf(t, flow)))
 	if err != nil || a.State != "active" {
 		t.Fatalf("the whole grant: %+v %v", a, err)
 	}
@@ -142,7 +142,7 @@ func TestAGrantForAnotherAccountEndsInErrorAndStoresNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, web.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, web.Auth)))
 	if service.CodeOf(err) != service.CodeBadRequest || !strings.Contains(service.MessageOf(err), "sign in as the address") {
 		t.Fatalf("web: %s %q", service.CodeOf(err), service.MessageOf(err))
 	}
@@ -160,7 +160,7 @@ func TestAGrantForAnotherAccountEndsInErrorAndStoresNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, pasted.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), admin(), returnTo("http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, pasted.Auth)))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("pasted: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestAMailServerThatIsDownAtConsentStoresNothingAndAsksToStartAgain(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)))
 	wantUnproved(t, "a consent whose mail server could not be reached", err)
 	if a := f.stateOfAccount(t, added.Account.ID); a.State != account.StateError || a.StateReason != account.ReasonUnproved {
 		t.Errorf("account = %s %q, want error %q", a.State, a.StateReason, account.ReasonUnproved)
@@ -263,7 +263,7 @@ func TestAMailServerThatIsDownAtConsentStoresNothingAndAsksToStartAgain(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow))
+	a, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow)))
 	if err != nil || a.State != "active" {
 		t.Fatalf("the consent started again once the server answers: %+v %v", a, err)
 	}
@@ -284,8 +284,8 @@ func TestAReauthorizationTheMailServerCannotProveKeepsTheGrantTheMailboxHad(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))); err != nil {
 		t.Fatal(err)
 	}
 	stored := func() string {
@@ -306,7 +306,7 @@ func TestAReauthorizationTheMailServerCannotProveKeepsTheGrantTheMailboxHad(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow))
+	_, err = f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow)))
 	wantUnproved(t, "a re-authorization whose mail server could not be reached", err)
 	if stored() != before {
 		t.Error("a grant nothing proved replaced the one the mailbox had")
@@ -353,7 +353,7 @@ func TestACallerThatStopsWaitingChangesNothingAboutTheCheck(t *testing.T) {
 			t.Fatal(err)
 		}
 		tried := len(srv.AuthAttempts())
-		_, _ = f.svc.CompleteOAuth(ctx, ana, "http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))
+		_, _ = f.svc.CompleteOAuth(ctx, ana, returnTo("http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)))
 		cancel()
 
 		if n := len(srv.AuthAttempts()) - tried; n != 1 {
@@ -382,8 +382,8 @@ func TestARefusalOfAGrantAlreadyReplacedLeavesTheNewOneAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))); err != nil {
 		t.Fatal(err)
 	}
 	old, err := f.registry.Mailbox(t.Context(), added.Account.ID)
@@ -397,8 +397,8 @@ func TestARefusalOfAGrantAlreadyReplacedLeavesTheNewOneAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code=again&state="+stateOf(t, flow))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -433,7 +433,7 @@ func TestAMailServerThatSaysItIsUnavailableIsNotARefusalAndStoresNothing(t *test
 		t.Fatal(err)
 	}
 	before := idp.refreshCount()
-	_, err = f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, added.Auth))
+	_, err = f.svc.CompleteOAuth(t.Context(), admin(), returnTo("http://127.0.0.1:1/cb?code="+pastedCode+"&state="+stateOf(t, added.Auth)))
 	wantUnproved(t, "a server that is down at consent", err)
 	if a := f.stateOfAccount(t, added.Account.ID); a.StateReason != account.ReasonUnproved {
 		t.Errorf("account = %s %q, want the unproved reason, never a refusal's", a.State, a.StateReason)
@@ -455,7 +455,7 @@ func TestAMailServerThatSaysItIsUnavailableIsNotARefusalAndStoresNothing(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a, err := f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1:1/cb?code=again&state="+stateOf(t, flow)); err != nil ||
+	if a, err := f.svc.CompleteOAuth(t.Context(), admin(), returnTo("http://127.0.0.1:1/cb?code=again&state="+stateOf(t, flow))); err != nil ||
 		a.State != "active" {
 		t.Fatalf("the consent started again: %+v %v", a, err)
 	}
@@ -489,8 +489,8 @@ func TestARefusedRefreshedTokenInUseMovesTheAccountToNeedsReauth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.svc.CompleteOAuth(t.Context(), ana,
-		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth)); err != nil {
+	if _, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo(
+		"http://localhost:5174/oauth/return?code="+webCode+"&state="+stateOf(t, added.Auth))); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.svc.ListFolders(t.Context(), ana, added.Account.ID); err != nil {
@@ -578,7 +578,7 @@ func TestTheGrantCheckRunsInTheAccountsInteractiveSlot(t *testing.T) {
 			}
 			state = stateOf(t, flow)
 		}
-		a, err := f.svc.CompleteOAuth(t.Context(), ana, "http://localhost:5174/oauth/return?code="+code+"&state="+state)
+		a, err := f.svc.CompleteOAuth(t.Context(), ana, returnTo("http://localhost:5174/oauth/return?code="+code+"&state="+state))
 		if err != nil || a.State != "active" {
 			t.Fatalf("consent %d: %+v %v", i, a, err)
 		}

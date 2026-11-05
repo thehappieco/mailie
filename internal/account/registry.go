@@ -1011,8 +1011,9 @@ const grantCheckTimeout = 30 * time.Second
 // whoever is waiting: exchanging the code, the grant check, and storing the
 // grant, for which the check always leaves persistTimeout; for a link at the
 // provider, also reading its address and creating its mailbox. The callback
-// route gives its caller 45 s, and the loopback page waits a little longer
-// than this, so both hear how it ended.
+// route gives its caller 70 s, a link's checks before its code is taken
+// (20 s at most) and this, and the loopback page waits a little longer than
+// this, so both hear how it ended.
 const finishTimeout = grantCheckTimeout + persistTimeout
 
 // FinishTimeout is finishTimeout for the callers that bound what they do

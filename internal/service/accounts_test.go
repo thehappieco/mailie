@@ -529,11 +529,11 @@ func TestAnUnknownConsentFlowIsRejected(t *testing.T) {
 
 func TestCompletingConsentNeedsTheWholeRedirect(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.svc.CompleteOAuth(t.Context(), admin(), "")
+	_, err := f.svc.CompleteOAuth(t.Context(), admin(), returnTo(""))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("want bad_request, got %v", err)
 	}
-	_, err = f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1/cb?code=abc")
+	_, err = f.svc.CompleteOAuth(t.Context(), admin(), returnTo("http://127.0.0.1/cb?code=abc"))
 	if service.CodeOf(err) != service.CodeBadRequest {
 		t.Fatalf("a redirect with no state should be refused, got %v", err)
 	}
@@ -541,7 +541,7 @@ func TestCompletingConsentNeedsTheWholeRedirect(t *testing.T) {
 
 func TestAReplayedRedirectFindsNothing(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.svc.CompleteOAuth(t.Context(), admin(), "http://127.0.0.1/cb?code=abc&state=unknown")
+	_, err := f.svc.CompleteOAuth(t.Context(), admin(), returnTo("http://127.0.0.1/cb?code=abc&state=unknown"))
 	if service.CodeOf(err) != service.CodeNotFound {
 		t.Fatalf("want not_found, got %v", err)
 	}

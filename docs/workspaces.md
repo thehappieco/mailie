@@ -180,6 +180,20 @@ takes `sync_consent_version`: naming the current revision of the sync text gives
 to sync it, on the team's behalf, in the same transaction; left out, the mailbox is linked with sync
 off, until an owner or an admin turns it on. A personal or operator link refuses it.
 
+**A link at the provider** (`POST /v1/accounts/oauth/links`, a person signed in, Gmail and Microsoft
+through the web flow; [`console.md`](console.md#linking-at-the-provider)) follows the same rules
+with no address typed: the person chooses the account on the provider's page, and the provider's
+answer names the address. Nothing of the mailbox exists until that answer comes back: the link
+keeps where it goes (a team's id, or none for the starter's personal workspace, which is the one
+they have at the return), the name asked for and, into a team, the sync text the box agreed to.
+Who may link there is asked at its start, again at its return before the code is taken, and in the
+transaction that creates the mailbox, which is the answer that counts; the team's agreement is
+recorded then, by whoever finishes the link, to the text that is current then, and a text that
+changed meanwhile is refused. A mailbox the workspace holds under the address, live or removed and
+kept, under any spelling of one Gmail account, is one `409` whatever it is, so an admin who is not
+an owner learns nothing of a removed one. A link ends, in the same transaction, wherever its
+starter's consent attempts end, and with a reset, a recovery and a sign-out everywhere.
+
 Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`), or nothing is removed
 (`400`). A team's mailbox is its owners' to remove, a personal one its person's, an operator one the
 operator's; an admin abandons only their own link that never connected. A removed mailbox is kept 30
@@ -262,7 +276,7 @@ that writes:
 
 | What | Who | Route |
 |---|---|---|
-| a mailbox's first key, with the linker's grant (section 12.11) | the person who links it; an instance key's link carries none | `POST /v1/accounts` with `{public_key, namespace, grant}` |
+| a mailbox's first key, with the linker's grant (section 12.11) | the person who links it; an instance key's link carries none | `POST /v1/accounts` with `{public_key, namespace, grant}`; for a link at the provider, its return, `POST /v1/accounts/oauth/callback`, which creates the mailbox |
 | `read` with the recipient's grant (section 12.13) | an owner or an admin who reads the mailbox now; the step-up when the recipient is someone else | `PUT /v1/accounts/{id}/access/{user}` with `grant` |
 | the key, to a member who holds the flag and has no grant at the current epoch (section 12.13) | **anyone who reads the mailbox now**: it gives nobody `read` who was not given it | `PUT /v1/accounts/{id}/grants/{user}` |
 | the first key of a mailbox without one, with a grant for everyone who holds `read` and has an account key, exactly (section 12.14) | a person who reads it now, by the flag, and has an account key | `POST /v1/accounts/{id}/mailbox-key` |
@@ -794,7 +808,8 @@ included: these routes take a session or the operator's key.
    anyone, themselves included, without holding them. `manage` is stored for members only; for an
    owner or an admin it is `400` ("owners and admins manage every team mailbox by their role").
    Losing `manage` ends, in the same transaction, the consent attempts the person started on that
-   mailbox (`oauth_pending`). Storing what a consent produced checks again, in its own transaction,
+   mailbox (`oauth_pending`); a demotion, leaving the team, a held membership and its closing end
+   the links at the provider the person started into it (`oauth_links`). Storing what a consent produced checks again, in its own transaction,
    that its starter still manages the mailbox, or for an attempt an instance key started that the
    mailbox is the operator's (`workspace.ManagesTx`, installed by the service with
    `account.Registry.CheckFlowsWith`).
@@ -1202,7 +1217,8 @@ Changed routes:
 | `GET /v1/accounts`, `GET /v1/accounts/{id}`, `GET /v1/accounts/{id}/sync` | a team's owners and admins see the card of each of its mailboxes |
 | `GET /v1/accounts`, `GET /v1/messages`, `GET /v1/me/storage`, `GET /v1/events`, `GET /v1/events/wait` | optional `?workspace=` |
 | `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected; answers `Removal` (`200`, `204` before 0020) |
-| `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's) |
+| `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's); the callback is also a link at the provider's return, with the mailbox's first key, `public_key`, `namespace` and `grant` |
+| `POST /v1/accounts/oauth/links`, `GET /v1/accounts/oauth/links/{id}` | new: a link at the provider, who may link where as [above](#mailboxes), read only by its starter |
 | `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
@@ -1680,7 +1696,8 @@ nothing, and one question it asks. No transport calls any of them, and none take
   theirs rises), supplying the key, a first key, a personal mailbox's new key (`share_key`, naming
   who the key is sealed to but the actor, or the actor alone for their own new key), raising what a
   workspace key holds (`raise_flags`), creating a key (`create_key`), linking a mailbox into a team
-  (`link`), starting a team mailbox's consent again (`reauthorize`), switching a team mailbox's
+  (`link`; a link at the provider asks at its start and again at its return, before its code is
+  taken), starting a team mailbox's consent again (`reauthorize`), switching a team mailbox's
   sync on or off (`team_sync`), an action on a team mailbox (`act`), a send from one (`send`), and,
   by an owner of its team before its 30 days are over, a removed team mailbox deleted for good
   (`purge`) or its sync turned off, which deletes the index it keeps (`removed_sync_off`): what they

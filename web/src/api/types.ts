@@ -296,6 +296,61 @@ export interface AuthFlow {
   expires_at?: number
 }
 export interface AddAccountResult { account: Account; auth?: AuthFlow }
+/**
+ * Where a link at the provider stands: waiting for the provider's return;
+ * finishing, its return taken and its mailbox being created; connected; or
+ * failed.
+ */
+export type LinkState = 'waiting' | 'finishing' | 'connected' | 'failed'
+/**
+ * The body of POST /v1/accounts/oauth/links: a Gmail or Microsoft mailbox
+ * linked without its address, which the provider names once the person chose
+ * the account on its page. It carries no address and no key: the mailbox's
+ * key goes with the return (CompleteOAuthRequest), which creates it.
+ */
+export interface LinkRequest {
+  provider: 'gmail' | 'microsoft'
+  /** web, the only flow a link takes; left out, it is the one. */
+  flow?: 'web'
+  /** A team the caller owns or administers; left out, the caller's personal workspace. */
+  workspace_id?: string
+  /** Into a team only: the sync text's revision, the team's agreement recorded at the return. */
+  sync_consent_version?: string
+  display_name?: string
+}
+/**
+ * A link at the provider as its starter reads it (GET
+ * /v1/accounts/oauth/links/{id}): never the mailbox it created, which GET
+ * /v1/accounts/{id} shows to whoever may see it. workspace_id is absent for
+ * the starter's personal workspace; account_id is there only while
+ * connected, and email (once the provider named one) and reason only while
+ * failed. reason is the server's fixed English text (ui/reasons.ts), matched
+ * and never shown.
+ */
+export interface Link {
+  id: string
+  provider: 'gmail' | 'microsoft'
+  workspace_id?: string
+  state: LinkState
+  expires_at: number
+  account_id?: string
+  email?: string
+  reason?: string
+}
+/** What starting a link answers: the link, and where to send the browser. */
+export interface LinkStarted { link: Link; auth: AuthFlow }
+/**
+ * The body of POST /v1/accounts/oauth/callback: the address the browser
+ * landed on and, for a link at the provider's return with a code, the
+ * mailbox's first key, made and sealed then (docs/key-scheme.md section
+ * 12.11); a consent for a mailbox that exists carries none.
+ */
+export interface CompleteOAuthRequest {
+  redirect_url: string
+  public_key?: string
+  namespace?: string
+  grant?: string
+}
 export interface Provider { id: ProviderID; oauth: boolean; password: boolean; flows: FlowKind[] }
 export interface Folder {
   /**
@@ -774,6 +829,8 @@ export const providerIDs: readonly ProviderID[] = ['gmail', 'microsoft', 'icloud
 export const authKinds: readonly AuthKind[] = ['oauth2', 'password']
 export const accountStates: readonly AccountState[] = ['pending_auth', 'active', 'needs_reauth', 'disabled', 'error']
 export const flowKinds: readonly FlowKind[] = ['web', 'loopback', 'pasted', 'device']
+export const linkProviders: readonly Link['provider'][] = ['gmail', 'microsoft']
+export const linkStates: readonly LinkState[] = ['waiting', 'finishing', 'connected', 'failed']
 export const syncStates: readonly SyncState[] = ['off', 'initial', 'live', 'backoff', 'stopped']
 export const archiveReasons: readonly ArchiveReason[] = ['all_mail_hidden']
 export const noticeKinds: readonly NoticeKind[] = ['removed', 'sync_off', 'paused']
@@ -1018,6 +1075,23 @@ export function isAuthFlow(v: unknown, strict = false): v is AuthFlow {
 
 export function isAddAccountResult(v: unknown, strict = false): v is AddAccountResult {
   return record(v) && known(v, ['account', 'auth'], strict) && isAccount(v.account, strict) && optional(v.auth, x => isAuthFlow(x, strict))
+}
+
+export function isLink(v: unknown, strict = false): v is Link {
+  return record(v) && known(v, ['id', 'provider', 'workspace_id', 'state', 'expires_at', 'account_id', 'email', 'reason'], strict)
+    && pathID(v.id) && word(linkProviders, strict)(v.provider) && optional(v.workspace_id, pathID)
+    && oneOf(linkStates)(v.state) && seconds(v.expires_at) && optional(v.account_id, pathID)
+    && optional(v.email, x => filled(x, 320)) && optional(v.reason, x => filled(x, 1024))
+    // The mailbox only while connected, and why only while failed: never an address beside a mailbox.
+    && (!strict || (v.account_id === undefined || v.state === 'connected'))
+    && (!strict || ((v.reason !== undefined) === (v.state === 'failed')))
+    && (!strict || v.email === undefined || v.state === 'failed')
+}
+
+export function isLinkStarted(v: unknown, strict = false): v is LinkStarted {
+  return record(v) && known(v, ['link', 'auth'], strict) && isLink(v.link, strict) && isAuthFlow(v.auth, strict)
+    // Started is waiting, and it leaves for the provider through the web flow.
+    && (!strict || (v.link.state === 'waiting' && v.auth.flow === 'web'))
 }
 
 export function isProvider(v: unknown, strict = false): v is Provider {

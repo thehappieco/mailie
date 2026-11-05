@@ -116,8 +116,12 @@ issued its grant and always refreshes with it:
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create a project and
    configure the **OAuth consent screen** (type *External*).
-2. Add the scope `https://mail.google.com/`. Google lists it as *restricted*; it is the only scope
-   that IMAP and SMTP accept.
+2. Under **Data access**, add the scope `https://mail.google.com/`, the one IMAP and SMTP accept,
+   which Google lists as *restricted*, and the sign-in scopes `openid` and
+   `https://www.googleapis.com/auth/userinfo.email` (*non-sensitive*). The console's web flow asks
+   for the last two only when it links a mailbox at Google: the person chooses the account on
+   Google's page, and Google tells the daemon its address. Re-authorizing a mailbox, and the
+   command line, ask for the mail scope alone.
 3. Set the publishing status to **In production**, even unverified. In *Testing*, every refresh
    token expires after 7 days. An unverified app shows Google's "unverified app" screen and is
    limited to 100 users over the project's life, which is plenty for yourself and your team.
@@ -151,7 +155,14 @@ at most three), and changing the account's password revokes the refresh token.
    secrets**. Never `/oauth/callback`, the loopback path. Id and secret go in
    `MAIL_MICROSOFT_WEB_CLIENT_ID` and `MAIL_MICROSOFT_WEB_CLIENT_SECRET`. Note the secret's expiry
    date: an expired secret makes every refresh fail with `invalid_client`, which the daemon reports
-   as a configuration error, not as a revoked grant.
+   as a configuration error, not as a revoked grant. Under its **API permissions**, add **Microsoft
+   Graph → Delegated → OpenId permissions** `openid` and `email`: the console asks for them when it
+   links a mailbox at Microsoft, so that Microsoft names the account chosen on its page.
+   Re-authorizing asks for the mail permissions alone. A tenant whose administrator consented to
+   the web registration before these two were added consents again (**Enterprise applications →
+   the app → Permissions → Grant admin consent**); until then its people connect by entering the
+   mailbox's address, which asks only for what was consented. A shared mailbox is always connected
+   that way.
 
 Microsoft refuses passwords for IMAP, so Microsoft mailboxes connect with OAuth only. In a work
 tenant, each mailbox needs IMAP and, for sending, SMTP AUTH enabled:

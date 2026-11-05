@@ -1,0 +1,8 @@
+{
+  "email": "ana.lima@gmail.com",
+  "expires_at": 1790000600,
+  "id": "lnk_0000000000000005",
+  "provider": "gmail",
+  "reason": "the address is already linked in this workspace",
+  "state": "failed"
+}
