@@ -481,11 +481,11 @@ func RequireOpenTx(ctx context.Context, tx *sql.Tx, workspaceID string) error {
 // their consent to sync, their grants and the keys that hold them; nothing
 // is linked, granted, keyed or invited there (RequireOpenTx, and the
 // schema). Closing it also expires the invites into it still waiting, and
-// ends the consent attempts on its mailboxes: a redirect that comes back
-// later is refused, and a listener or a device poll the daemon runs finds
-// nothing to store (ManagesTx refuses it too). Reopening it gives back
-// exactly what it had: an expired invite or an ended attempt does not come
-// back.
+// ends the consent attempts on its mailboxes and the links at the provider
+// into it: a redirect that comes back later is refused, and a listener or a
+// device poll the daemon runs finds nothing to store (ManagesTx refuses it
+// too). Reopening it gives back exactly what it had: an expired invite or an
+// ended attempt does not come back.
 func (r *Repository) SetClosed(ctx context.Context, id string, closed bool) (changed bool, accounts []string, err error) {
 	now := r.now()
 	err = r.store.Write(ctx, func(tx *sql.Tx) error {
@@ -532,6 +532,9 @@ func SetClosedTx(ctx context.Context, tx *sql.Tx, id string, closed bool, now ti
 		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
 			WHERE account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`, id); err != nil {
 			return false, nil, fmt.Errorf("workspace: end the consent attempts of the closed team: %w", err)
+		}
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{Into: id}); err != nil {
+			return false, nil, err
 		}
 	}
 	accounts, err := listIDs(ctx, tx, `SELECT id FROM accounts WHERE workspace_id = ? ORDER BY created_at, rowid`, id)

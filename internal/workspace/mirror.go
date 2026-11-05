@@ -292,11 +292,12 @@ func mirroredTeamTx(ctx context.Context, tx *sql.Tx, workspaceID string) (Worksp
 // suspended person is a member, reading nothing until resumed) and whether
 // or not the team is closed; a role changed, with what changing it here does
 // (a demotion to member ends the consent attempts they started on the team's
-// mailboxes, any change expires the invites they made there, and becoming an
-// owner or an admin takes a stored manage away, by the schema); and a
-// membership held or disabled made active again, a hold keeping its flags
-// and sealed grants, which count again. None of the refusals of a local
-// change apply: the directory decides who belongs.
+// mailboxes and their links at the provider into it, any change expires the
+// invites they made there, and becoming an owner or an admin takes a stored
+// manage away, by the schema); and a membership held or disabled made active
+// again, a hold keeping its flags and sealed grants, which count again. None
+// of the refusals of a local change apply: the directory decides who
+// belongs.
 func MirrorMemberTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string, role Role, now time.Time) (bool, error) {
 	if _, err := ParseRole(string(role)); err != nil {
 		return false, err
@@ -322,11 +323,14 @@ func MirrorMemberTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string,
 	at := now.UTC().Unix()
 	if role == RoleMember && was != RoleMember {
 		// They managed the team's mailboxes by their role, and manage none
-		// of them now.
+		// of them now, nor link any into it.
 		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
 			WHERE owner_user_id = ? AND account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`,
 			userID, workspaceID); err != nil {
 			return false, fmt.Errorf("workspace: end the consent attempts of mailboxes no longer managed: %w", err)
+		}
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, Into: workspaceID}); err != nil {
+			return false, err
 		}
 	}
 	if err := expireInvitesByTx(ctx, tx, workspaceID, userID, at); err != nil {
@@ -364,16 +368,18 @@ type EndResult struct {
 // is held instead: disabled, its held_at set, its flags and sealed grants
 // kept, unusable, until a document lists it again (MirrorMemberTx) or the
 // generation is confirmed, which ends it; what a disable here ends ends
-// with it: the consent attempts the person started on the team's mailboxes,
-// the invites they made there, and the keys they created there
-// (KeyStopCreatorLeft). A membership already held stays as it is.
+// with it: the consent attempts the person started on the team's mailboxes
+// and their links at the provider into it, the invites they made there, and
+// the keys they created there (KeyStopCreatorLeft). A membership already
+// held stays as it is.
 //
 // Otherwise it ends as a local removal does — the person's grants there,
-// flags and sealed grants, their consent attempts, the team's invites still
-// waiting for their address, the invites they made there and the keys they
-// created there go with it — and each mailbox it leaves stranded, a held
-// membership's included, is journaled (store.MailboxStranded, cause
-// membership_ended, by the directory), naming the person, who still exists.
+// flags and sealed grants, their consent attempts and links, the team's
+// invites still waiting for their address, the invites they made there and
+// the keys they created there go with it — and each mailbox it leaves
+// stranded, a held membership's included, is journaled
+// (store.MailboxStranded, cause membership_ended, by the directory), naming
+// the person, who still exists.
 func EndMembershipTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string, hold bool, now time.Time) (EndResult, error) {
 	if _, err := mirroredTeamTx(ctx, tx, workspaceID); err != nil {
 		return EndResult{}, err
@@ -400,6 +406,9 @@ func EndMembershipTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string
 			WHERE owner_user_id = ? AND account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`,
 			userID, workspaceID); err != nil {
 			return EndResult{}, fmt.Errorf("workspace: end the consent attempts of a held membership: %w", err)
+		}
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, Into: workspaceID}); err != nil {
+			return EndResult{}, err
 		}
 		if err := expireInvitesByTx(ctx, tx, workspaceID, userID, at); err != nil {
 			return EndResult{}, err

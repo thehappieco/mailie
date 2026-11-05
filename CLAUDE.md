@@ -208,7 +208,21 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   commit, best effort, bounded, logged without it, never while another mailbox here holds the same
   grant (the same client and canonical address, compared in Go; one Workspace account under two
   addresses is not recognised, which costs an early re-authorization, never access); Microsoft has
-  no such endpoint and a password nothing to revoke.
+  no such endpoint and a password nothing to revoke. A link at the provider (`links.go`, migration
+  0026's `oauth_links`; Gmail and Microsoft, the web client only) names no address: it asks for
+  `openid email` beside the mailbox's scopes, with the account chooser (Google's
+  `prompt=select_account consent`) and no hint, holds only its state, PKCE verifier and what was
+  asked until its return (10 minutes, kept 10 more for its starter to read how it ended), at most
+  `MaxLinksWaiting` (5) waiting per person, a new one replacing theirs for the same provider and
+  workspace; it learns the address from the token endpoint's ID token (`identity.go`: audience,
+  issuer, Microsoft's tenant, times, Google's verification; no signature, as OIDC allows there;
+  every refusal `ErrNoAddress` naming only its check; nothing else of the token kept), refuses a
+  mailbox the workspace holds, proves the grant, and creates the mailbox with its key and its
+  linker's grant in one transaction that finishes the link (`ErrFlowExpired` if it ended meanwhile,
+  `store.EndLinksTx`, which runs wherever its starter's consent attempts end, and on a reset, a
+  recovery and a sign-out everywhere). A finished link keeps no verifier, a connected one no
+  address; a failed one its reason and the address named, which a purge of that mailbox deletes.
+  Re-authorizing keeps the mailbox's scopes and `login_hint`.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -494,9 +508,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   documents never resume a person disabled here, nor one whose disable they do not know of. The
   freshness hook gates and never authorizes: every act it is asked about keeps its own checks, run
   again in the write.
-- **An OAuth flow belongs to whoever started it.** `oauth_pending.owner_user_id` is checked in the
-  same `DELETE` that consumes the row, **before** the code is exchanged; another owner's is
-  `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
+- **An OAuth flow belongs to whoever started it.** Its owner is checked in the same statement that
+  takes the row, `oauth_pending`'s `DELETE` or `oauth_links`' `UPDATE` (`taken_at`), **before** the
+  code is exchanged; another owner's is `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
   console route), never derived from `Host`; a console that is not on loopback is never offered
   `loopback`. Refresh uses the client that issued the token (`accounts.oauth_client`);
   `invalid_client` is a configuration error, not a dead grant. A new grant, a first one or a

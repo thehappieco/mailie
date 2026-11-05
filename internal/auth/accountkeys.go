@@ -634,9 +634,10 @@ type RecoveryFinish struct {
 // the recovery proof it was issued to (CurrentRecoveryProof); anything else is
 // ErrTicketInvalid, refused before any hash, and leaves the ticket unused.
 // The account key is unchanged, so every grant still opens. Every session of
-// the person ends, and every other ticket, and every API key they created
-// stops (workspace.KeyStopAccountRecovered), in whichever workspace; the
-// person signs in with the new password, and creates keys again.
+// the person ends, and every other ticket, every link at the provider they
+// started, and every API key they created stops
+// (workspace.KeyStopAccountRecovered), in whichever workspace; the person
+// signs in with the new password, and creates keys again.
 func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 	if err := checkSecretText(in.CurrentRecoveryProof); err != nil {
 		return err
@@ -692,6 +693,11 @@ func (u *Users) FinishRecovery(ctx context.Context, in RecoveryFinish) error {
 			return err
 		}
 		if _, err := revokeSessionsTx(ctx, tx, t.userID, now.Unix()); err != nil {
+			return err
+		}
+		// So does every link at the provider they started: one started with
+		// a session that ends here is not finished with the next.
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: t.userID}); err != nil {
 			return err
 		}
 		// A key outlives the sessions that end here, and whoever made one
@@ -785,7 +791,18 @@ func (u *Users) StepUp(ctx context.Context, userID, sessionID, authKey string) (
 // is more than StepUpWindow old, later than now, or none: what the step-up
 // guards (docs/key-scheme.md section 11) asks it first.
 func (u *Users) RequireStepUp(ctx context.Context, userID, sessionID string) error {
-	return requireStepUpOn(ctx, u.store.Reader(), userID, sessionID, u.now())
+	return requireStepUpOn(ctx, u.store.Reader(), userID, sessionID, u.now(), 0)
+}
+
+// RequireStepUpFor is RequireStepUp for an act that writes what the step-up
+// guards only once something slow is over, at most margin from now: the
+// step-up must still be fresh then, or the act is refused before it starts
+// (ErrStepUpNeeded) rather than after the slow part, which may spend what
+// cannot be spent twice, as a link at the provider spends its
+// authorization code. The write still asks again in its transaction
+// (RequireStepUpTx), which is the answer that counts.
+func (u *Users) RequireStepUpFor(ctx context.Context, userID, sessionID string, margin time.Duration) error {
+	return requireStepUpOn(ctx, u.store.Reader(), userID, sessionID, u.now(), margin)
 }
 
 // RequireStepUpTx is RequireStepUp inside the caller's transaction, where
@@ -795,7 +812,7 @@ func (u *Users) RequireStepUpTx(ctx context.Context, tx *sql.Tx, userID, session
 }
 
 func requireStepUpTx(ctx context.Context, tx *sql.Tx, userID, sessionID string, now time.Time) error {
-	return requireStepUpOn(ctx, tx, userID, sessionID, now)
+	return requireStepUpOn(ctx, tx, userID, sessionID, now, 0)
 }
 
 // RequireSessionTx refuses, with ErrInvalidSession, inside the caller's
@@ -806,7 +823,9 @@ func (u *Users) RequireSessionTx(ctx context.Context, tx *sql.Tx, userID, sessio
 	return requireLiveSessionTx(ctx, tx, userID, sessionID, u.now())
 }
 
-func requireStepUpOn(ctx context.Context, q rowQuerier, userID, sessionID string, now time.Time) error {
+// requireStepUpOn refuses a session that is not the person's live one, or
+// whose step-up is not fresh now and, with a margin, still margin from now.
+func requireStepUpOn(ctx context.Context, q rowQuerier, userID, sessionID string, now time.Time, margin time.Duration) error {
 	var (
 		owner, status        string
 		at, expires, revoked int64
@@ -822,7 +841,7 @@ func requireStepUpOn(ctx context.Context, q rowQuerier, userID, sessionID string
 	case owner != userID || !sessionLive(now, expires, revoked, status):
 		return ErrInvalidSession
 	}
-	if !freshStepUp(at, now) {
+	if !freshStepUp(at, now) || (margin > 0 && !freshStepUp(at, now.Add(margin))) {
 		return ErrStepUpNeeded
 	}
 	return nil
@@ -1055,10 +1074,10 @@ func ResetLink(publicURL, code, email string) string {
 // answered (which this stores), and in one transaction the server
 // replaces the public key (the one replacement of a key written once), the
 // verifiers and the wraps, deletes every grant sealed to the old key and
-// every platform wrap of the person, ends their sessions and every ticket,
-// stops every API key they created (workspace.KeyStopAccountRecovered),
-// enrols them if they had not, clears any old password hash, and starts a
-// session whose step-up time is now.
+// every platform wrap of the person, ends their sessions, every ticket and
+// every link at the provider they started, stops every API key they created
+// (workspace.KeyStopAccountRecovered), enrols them if they had not, clears
+// any old password hash, and starts a session whose step-up time is now.
 //
 // The invitation is for the address it names, of an active person; anything
 // else is ErrResetInvalid and spends nothing. One issued without force is
@@ -1170,6 +1189,9 @@ func (u *Users) CompleteReset(ctx context.Context, code, email string, in Enrolm
 			return fmt.Errorf("auth: reset: %w", err)
 		}
 		if _, err := revokeSessionsTx(ctx, tx, userID, now.Unix()); err != nil {
+			return err
+		}
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID}); err != nil {
 			return err
 		}
 		// Before the session this reset opens, which creates keys afresh:

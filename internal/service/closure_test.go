@@ -357,6 +357,20 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		VALUES ('inv_0000000000000004', ?, 'gil@example.com', 'member', ?, ?, ?, ?, 'member')`,
 		[]byte(strings.Repeat("04", 16)), ana.UserID, now, now+3600, support.ID)
 
+	// Links at the provider: one she started, waiting for its return, one
+	// of hers into the team that failed naming the address the provider
+	// named, and one bob started into it: deleting her takes hers.
+	f.exec(t, `INSERT INTO oauth_links(id, state, owner_user_id, provider, oauth_client, pkce_verifier, redirect_uri,
+		created_at, expires_at) VALUES ('lnk_00000000000000a1', 'link-state-of-ana', ?, 'gmail', 'web', 'verifier-of-ana',
+		'https://c.example/oauth/return', ?, ?)`, ana.UserID, now, expires)
+	f.exec(t, `INSERT INTO oauth_links(id, state, owner_user_id, workspace_id, provider, oauth_client, redirect_uri,
+		created_at, expires_at, taken_at, finished_at, outcome, email, reason) VALUES ('lnk_00000000000000a2',
+		'link-state-of-ana-two', ?, ?, 'microsoft', 'web', 'https://c.example/oauth/return', ?, ?, ?, ?, 'failed',
+		'ana.new@mail.example', ?)`, ana.UserID, support.ID, now, expires, now, now, account.ReasonDuplicate)
+	f.exec(t, `INSERT INTO oauth_links(id, state, owner_user_id, workspace_id, provider, oauth_client, pkce_verifier,
+		redirect_uri, created_at, expires_at) VALUES ('lnk_00000000000000b1', 'link-state-of-bob', ?, ?, 'gmail', 'web',
+		'verifier-of-bob', 'https://c.example/oauth/return', ?, ?)`, bob.UserID, support.ID, now, expires)
+
 	// A mailbox of the team she removed, kept for its 30 days, and the
 	// journal of what she and bob did to the team's mailboxes, with what it
 	// told each of them: deleting her forgets that she did it, and takes
@@ -469,7 +483,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		ana.UserID, "ana@example.com", ana.SessionID, anaKey,
 		anaHome, anaWork, "ana@mail.example", "ana.work@mail.example",
 		"state-by-ana", "state-on-anas", anaPersonal.ID, anaAlone.ID, "Ana alone",
-		"subject-of-ana", "key-of-ana",
+		"subject-of-ana", "key-of-ana", "link-state-of-ana", "verifier-of-ana", "ana.new@mail.example",
 	}
 	if found := f.mentions(t, needles); len(found) > 0 {
 		t.Errorf("rows still name ana or her mailboxes:\n  %s", strings.Join(found, "\n  "))
@@ -478,7 +492,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 	// frees would otherwise sit in free pages and in the write-ahead log
 	// until SQLite happened to overwrite it.
 	if found := f.onDisk(t, ana.UserID, "ana@example.com", "Ana Quaresma", "ana@mail.example", "ana.work@mail.example",
-		"subject-of-ana", "key-of-ana"); len(found) > 0 {
+		"subject-of-ana", "key-of-ana", "ana.new@mail.example", "verifier-of-ana"); len(found) > 0 {
 		t.Errorf("deleted, but still on disk:\n  %s", strings.Join(found, "\n  "))
 	}
 	if n := f.count(t, `SELECT count(*) FROM messages_fts WHERE messages_fts MATCH 'zebra'`); n != 0 {
@@ -515,6 +529,8 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		"the key pinned for nobody": f.count(t, `SELECT count(*) FROM identity_key_pins WHERE subject = 'subject-of-nobody'`),
 		"bob's recovery under way":  f.count(t, `SELECT count(*) FROM auth_tickets WHERE user_id = ?`, bob.UserID),
 		"bob's reset invitation":    f.count(t, `SELECT count(*) FROM reset_invites WHERE user_id = ?`, bob.UserID),
+		"bob's link at the provider": f.count(t, `SELECT count(*) FROM oauth_links WHERE state = 'link-state-of-bob'
+			AND owner_user_id = ?`, bob.UserID),
 		"the mailbox she removed, kept": f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0
 			AND removed_by = ''`, removed.ID),
 		"its removal, unsigned, told bob": f.count(t, `SELECT count(*) FROM mailbox_events e JOIN notices n ON n.event_seq = e.seq
@@ -829,7 +845,17 @@ func TestAPurgedMailboxLeavesNothingOnDisk(t *testing.T) {
 		`SELECT ciphertext FROM credentials WHERE account_id = ?`, gone).Scan(&sealed); err != nil {
 		t.Fatal(err)
 	}
-	needles := []string{"leaving.soon@mail.example", string(sealed), "pelican"}
+	// The link at the provider that connected it, and one of hers it
+	// refused, naming its address under another case.
+	now := time.Now().Unix()
+	f.exec(t, `INSERT INTO oauth_links(id, state, owner_user_id, provider, oauth_client, redirect_uri, created_at,
+		expires_at, taken_at, finished_at, outcome, account_id) VALUES ('lnk_00000000000000c1', 'link-state-1', ?, 'gmail',
+		'web', 'https://c.example/oauth/return', ?, ?, ?, ?, 'connected', ?)`, ana.UserID, now, now+600, now, now, gone)
+	f.exec(t, `INSERT INTO oauth_links(id, state, owner_user_id, provider, oauth_client, redirect_uri, created_at,
+		expires_at, taken_at, finished_at, outcome, email, reason) VALUES ('lnk_00000000000000c2', 'link-state-2', ?, 'gmail',
+		'web', 'https://c.example/oauth/return', ?, ?, ?, ?, 'failed', 'Leaving.Soon@mail.example', ?)`,
+		ana.UserID, now, now+600, now, now, account.ReasonDuplicate)
+	needles := []string{"leaving.soon@mail.example", "Leaving.Soon@mail.example", string(sealed), "pelican"}
 
 	if _, err := f.svc.RemoveAccount(t.Context(), ana, gone, service.RemoveAccountRequest{Confirm: gone}); err != nil {
 		t.Fatal(err)

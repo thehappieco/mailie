@@ -463,7 +463,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 	applyServerDefaults(&a, req)
 
 	if kind == provider.KindMicrosoft {
-		a.Tenant = orDefault(r.microsoft.Tenant, "common")
+		a.Tenant = r.microsoftTenant()
 	}
 
 	switch {
@@ -646,7 +646,7 @@ func (r *Registry) startWebFlow(ctx context.Context, a Account, state, owner str
 	if err != nil {
 		return nil, err
 	}
-	flow, err := startAuthCode(a.Provider, config, state, a.Email)
+	flow, err := startAuthCode(a.Provider, config, state, a.Email, false)
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +681,7 @@ func (r *Registry) startBrowserFlow(ctx context.Context, a Account, kind FlowKin
 		r.closeLoopback(listener)
 		return nil, err
 	}
-	flow, err := startAuthCode(a.Provider, config, state, a.Email)
+	flow, err := startAuthCode(a.Provider, config, state, a.Email, false)
 	if err != nil {
 		r.closeLoopback(listener)
 		return nil, err
@@ -1009,10 +1009,17 @@ const grantCheckTimeout = 30 * time.Second
 
 // finishTimeout bounds everything after a consent is answered, detached from
 // whoever is waiting: exchanging the code, the grant check, and storing the
-// grant, for which the check always leaves persistTimeout. The callback route
-// gives its caller 45 s, and the loopback page waits a little longer than
-// this, so both hear how it ended.
+// grant, for which the check always leaves persistTimeout; for a link at the
+// provider, also reading its address and creating its mailbox. The callback
+// route gives its caller 45 s, and the loopback page waits a little longer
+// than this, so both hear how it ended.
 const finishTimeout = grantCheckTimeout + persistTimeout
+
+// FinishTimeout is finishTimeout for the callers that bound what they do
+// around a finish: a link at the provider's step-up must still be fresh once
+// its finish is over (auth.Users.RequireStepUpFor), and the callback route
+// waits for it.
+const FinishTimeout = finishTimeout
 
 // checkGrant proves a new grant opens the mailbox it was given for, before
 // the account is called connected, and returns the token to store — which a
@@ -1041,6 +1048,15 @@ const finishTimeout = grantCheckTimeout + persistTimeout
 // ctx is already detached from the request: the code has been spent. The
 // check leaves the time the grant still needs to be stored.
 func (r *Registry) checkGrant(ctx context.Context, a Account, config *oauth2.Config, token *oauth2.Token) (*oauth2.Token, error) {
+	return r.proveGrant(ctx, a, config, token, "account", a.ID)
+}
+
+// proveGrant is checkGrant logging what it proves for as subject and id: an
+// account, or a link at the provider (links.go), whose mailbox does not
+// exist until the grant is proved, and whose account id would name nothing.
+func (r *Registry) proveGrant(ctx context.Context, a Account, config *oauth2.Config, token *oauth2.Token,
+	subject, id string,
+) (*oauth2.Token, error) {
 	deadline := time.Now().Add(grantCheckTimeout)
 	if outer, ok := ctx.Deadline(); ok && outer.Add(-persistTimeout).Before(deadline) {
 		deadline = outer.Add(-persistTimeout)
@@ -1069,12 +1085,12 @@ func (r *Registry) checkGrant(ctx context.Context, a Account, config *oauth2.Con
 		return held.latest(), nil
 	case errors.Is(err, provider.ErrNeedsReauth), errors.Is(err, provider.ErrAuthFailed):
 		r.log.Warn("the mail server refused a new authorization; nothing is stored",
-			"account", a.ID, "provider", a.ProviderName(), "class", provider.Class(err),
+			subject, id, "provider", a.ProviderName(), "class", provider.Class(err),
 			"err", err, "server", provider.ServerReply(err))
 		return nil, fmt.Errorf("%w: %w", ErrMailboxRefused, err)
 	default:
 		r.log.Warn("could not prove a new authorization opens the mailbox; nothing is stored",
-			"account", a.ID, "provider", a.ProviderName(), "class", provider.Class(err),
+			subject, id, "provider", a.ProviderName(), "class", provider.Class(err),
 			"err", err, "server", provider.ServerReply(err))
 		return nil, fmt.Errorf("%w: %w", ErrGrantUnproved, err)
 	}
@@ -1133,16 +1149,17 @@ func (r *Registry) expire(accountID, state string) {
 	r.fail(ctx, accountID, fmt.Errorf("%w before consent was given", ErrFlowExpired))
 }
 
-// SweepFlows removes expired consent attempts and records each as failed.
+// SweepFlows removes expired consent attempts and records each as failed,
+// and records as failed the links at the provider that ended without an
+// answer, each forgotten linkKeptAfter past its expiry (links.go).
 func (r *Registry) SweepFlows(ctx context.Context) error {
 	expired, err := r.repo.SweepFlows(ctx)
-	if err != nil {
-		return err
+	if err == nil {
+		for _, accountID := range expired {
+			r.fail(ctx, accountID, ErrFlowExpired)
+		}
 	}
-	for _, accountID := range expired {
-		r.fail(ctx, accountID, ErrFlowExpired)
-	}
-	return nil
+	return errors.Join(err, r.repo.sweepLinks(ctx))
 }
 
 // fail records a failed consent attempt on an account that was waiting for
@@ -1534,8 +1551,22 @@ func (r *Registry) closeLoopback(l *loopbackServer) {
 // clientConfig builds the OAuth configuration for one of an account's
 // provider's clients: ClientInstalled or ClientWeb.
 func (r *Registry) clientConfig(a Account, client, redirect string) (*oauth2.Config, error) {
+	registration, err := r.registration(a.Provider, client, a.Tenant)
+	if err != nil {
+		return nil, err
+	}
+	if client != ClientWeb {
+		client = ClientInstalled
+	}
+	return configFor(a.Provider, registration, client, redirect, false)
+}
+
+// registration is a provider's registration for one of its clients,
+// ClientInstalled or ClientWeb, with tenant in place of its own for
+// Microsoft when tenant is not empty.
+func (r *Registry) registration(kind provider.Kind, client, tenant string) (OAuthClient, error) {
 	var registration OAuthClient
-	switch a.Provider {
+	switch kind {
 	case provider.KindGmail:
 		registration = r.google
 		if client == ClientWeb {
@@ -1546,17 +1577,19 @@ func (r *Registry) clientConfig(a Account, client, redirect string) (*oauth2.Con
 		if client == ClientWeb {
 			registration = r.microsoftWeb
 		}
-		if a.Tenant != "" {
-			registration.Tenant = a.Tenant
+		if tenant != "" {
+			registration.Tenant = tenant
 		}
 	default:
-		return nil, fmt.Errorf("%w: %s accounts do not use OAuth", ErrNotOAuth, a.Provider)
+		return OAuthClient{}, fmt.Errorf("%w: %s accounts do not use OAuth", ErrNotOAuth, kind)
 	}
-	if client != ClientWeb {
-		client = ClientInstalled
-	}
-	return configFor(a.Provider, registration, client, redirect)
+	return registration, nil
 }
+
+// microsoftTenant is the tenant a new Microsoft mailbox is authorized
+// under, and kept: the deployment's, or common, which covers work and
+// personal accounts.
+func (r *Registry) microsoftTenant() string { return orDefault(r.microsoft.Tenant, "common") }
 
 // applyServerDefaults fills in the hosts a provider uses, so a person adding a
 // Gmail account does not have to know them.

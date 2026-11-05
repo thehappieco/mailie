@@ -824,7 +824,8 @@ func (r *Repository) deleteOwner(ctx context.Context, userID string, before, als
 	return owned, attempts, grants, nil
 }
 
-// deleteFlowsBy drops every consent attempt a person started and returns them.
+// deleteFlowsBy drops every consent attempt a person started and returns
+// them, and every link at the provider they started.
 func (r *Repository) deleteFlowsBy(ctx context.Context, userID string) ([]attempt, error) {
 	var attempts []attempt
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
@@ -866,7 +867,13 @@ func ownedTx(ctx context.Context, tx *sql.Tx, userID string) ([]string, error) {
 	return ids, nil
 }
 
+// deleteFlowsByTx drops, inside the caller's transaction, every consent
+// attempt a person started, and returns them, and every link at the provider
+// they started (store.EndLinksTx), which nothing waits on here.
 func deleteFlowsByTx(ctx context.Context, tx *sql.Tx, userID string) ([]attempt, error) {
+	if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID}); err != nil {
+		return nil, err
+	}
 	rows, err := tx.QueryContext(ctx,
 		`DELETE FROM oauth_pending WHERE owner_user_id = ? RETURNING account_id, state`, userID)
 	if err != nil {
@@ -912,7 +919,7 @@ type purge struct {
 // folders, messages with their parts, bodies and full-text rows, drafts, sends,
 // key restrictions and what keys hold on them (a workspace key left with no
 // mailbox reaches nothing; a carried-over one is revoked by the schema's
-// trigger). Four things are not, and go here first:
+// trigger). Five things are not, and go here first:
 //
 //   - A live instance key restricted to nothing but these accounts is
 //     revoked, saying its last mailbox went (restriction_emptied). Its
@@ -929,6 +936,10 @@ type purge struct {
 //     deletion is journaled; or, as p says, the entries go with them. A
 //     pause's notices are withdrawn first (store.EndPauseTx), in a
 //     workspace from another source whose journal stays.
+//   - A failed link at the provider names the address it was refused for,
+//     and goes with the mailbox under that address, in any of its spellings
+//     (forgetFailedLinksTx); a connected one names the mailbox by its id
+//     alone, which the schema sets to NULL.
 func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, p purge) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil
@@ -962,6 +973,9 @@ func purgeTx(ctx context.Context, tx *sql.Tx, ids []string, p purge) (int, error
 	list, err := json.Marshal(ids)
 	if err != nil {
 		return 0, fmt.Errorf("account: encode ids: %w", err)
+	}
+	if err := forgetFailedLinksTx(ctx, tx, string(list)); err != nil {
+		return 0, err
 	}
 	now := p.at.Unix()
 	const in = `(SELECT value FROM json_each(?))`
@@ -1072,7 +1086,6 @@ func duplicateOfTx(ctx context.Context, tx *sql.Tx, workspaceID string, kind pro
 	}
 	//nolint:errcheck // read-only query
 	defer func() { _ = rows.Close() }()
-	want := canonicalAddress(kind, email)
 	for rows.Next() {
 		var (
 			id, other, otherKind  string
@@ -1081,11 +1094,8 @@ func duplicateOfTx(ctx context.Context, tx *sql.Tx, workspaceID string, kind pro
 		if err := rows.Scan(&id, &other, &otherKind, &removedAt, &purgeAfter); err != nil {
 			return fmt.Errorf("account: read the workspace's addresses: %w", err)
 		}
-		same := asciiLower(other) == asciiLower(email) ||
-			(kind == provider.KindGmail && provider.Kind(otherKind) == provider.KindGmail &&
-				canonicalAddress(provider.KindGmail, other) == want)
 		switch {
-		case !same:
+		case !sameMailbox(kind, email, provider.Kind(otherKind), other):
 			continue
 		case removedAt == 0:
 			return ErrDuplicate

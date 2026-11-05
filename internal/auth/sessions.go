@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/thehappieco/mailie/internal/store"
 )
 
 // A session is a signed-in browser: an opaque bearer token of 32 random bytes,
@@ -165,22 +167,27 @@ func (u *Users) EndSession(ctx context.Context, id string) error {
 	})
 }
 
-// EndAllSessions revokes every session a user has, on every device.
+// EndAllSessions revokes every session a user has, on every device, and ends
+// every link at the provider they started: one started with a session that
+// ends here is not finished with the next.
 func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 	return u.store.Write(ctx, func(tx *sql.Tx) error {
-		_, err := revokeSessionsTx(ctx, tx, userID, u.now().Unix())
-		return err
+		if _, err := revokeSessionsTx(ctx, tx, userID, u.now().Unix()); err != nil {
+			return err
+		}
+		return store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID})
 	})
 }
 
 // RevokeSessionsStartedBeforeTx ends, inside the caller's transaction, every
 // live session of a person that started at or before a moment, given in unix
 // microseconds, as an external directory states when it revoked their
-// sessions, and deletes the tickets of their ceremonies under way. A session
-// starts at a whole second (startSessionTx), so one that started within the
-// moment's second is ended too: this may end a session started just after
-// the moment, never spare one started before it. Sessions started in a later
-// second stay. It reports how many it ended, and opens no write of its own.
+// sessions, and deletes the tickets of their ceremonies under way and the
+// links at the provider they started by then. A session starts at a whole
+// second (startSessionTx), and so does a link, so one that started within
+// the moment's second is ended too: this may end one started just after the
+// moment, never spare one started before it. Those started in a later second
+// stay. It reports how many sessions it ended, and opens no write of its own.
 func (u *Users) RevokeSessionsStartedBeforeTx(ctx context.Context, tx *sql.Tx, userID string, beforeUS int64) (int, error) {
 	if beforeUS <= 0 {
 		return 0, nil
@@ -191,6 +198,9 @@ func (u *Users) RevokeSessionsStartedBeforeTx(ctx context.Context, tx *sql.Tx, u
 		return 0, fmt.Errorf("auth: end the sessions started before a moment: %w", err)
 	}
 	if err := dropTicketsTx(ctx, tx, userID); err != nil {
+		return 0, err
+	}
+	if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, StartedAtOrBefore: beforeUS / 1_000_000}); err != nil {
 		return 0, err
 	}
 	return n, nil

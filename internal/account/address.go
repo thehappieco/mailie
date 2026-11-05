@@ -43,6 +43,15 @@ func canonicalAddress(kind provider.Kind, email string) string {
 	return strings.ReplaceAll(local, ".", "") + "@gmail.com"
 }
 
+// sameMailbox reports whether two addresses, of mailboxes of the kinds given,
+// name one mailbox: the same address without regard to ASCII case, or two
+// Gmail mailboxes of one account under any spelling.
+func sameMailbox(kind provider.Kind, email string, otherKind provider.Kind, other string) bool {
+	return asciiLower(strings.TrimSpace(other)) == asciiLower(strings.TrimSpace(email)) ||
+		(kind == provider.KindGmail && otherKind == provider.KindGmail &&
+			canonicalAddress(kind, other) == canonicalAddress(kind, email))
+}
+
 // asciiLower lowercases the ASCII letters of s and nothing else, as SQLite's
 // NOCASE does.
 func asciiLower(s string) string {

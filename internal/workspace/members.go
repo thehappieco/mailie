@@ -218,13 +218,15 @@ type MemberChange struct {
 // longer has. Making them an owner or an admin takes a stored manage away,
 // which the role gives (the schema's trigger); taking that role away ends the
 // consent attempts they started on the team's mailboxes, which they manage no
-// longer. Disabling a membership deletes the person's grants in the workspace
-// in the same transaction, ends the consent attempts they started on its
-// mailboxes and deletes the team's invites still waiting for their address
-// (leaveTx); enabling it again restores the membership only. The keys they
-// created stay, as a demotion leaves them: they are the workspace's. Refused:
-// leaving the team without an active owner (ErrLastOwner), and disabling the
-// last reader of one of its mailboxes (ErrLastReader).
+// longer, and the links at the provider they started into it. Disabling a
+// membership deletes the person's grants in the workspace in the same
+// transaction, ends the consent attempts they started on its mailboxes and
+// their links into it, and deletes the team's invites still waiting for
+// their address (leaveTx); enabling it again restores the membership only.
+// The keys they created stay, as a demotion leaves them: they are the
+// workspace's. Refused: leaving the team without an active owner
+// (ErrLastOwner), and disabling the last reader of one of its mailboxes
+// (ErrLastReader).
 func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, change MemberChange, check Check) (Member, error) {
 	if change.Role != nil {
 		if _, err := ParseRole(string(*change.Role)); err != nil {
@@ -278,11 +280,14 @@ func (r *Repository) SetMember(ctx context.Context, workspaceID, userID string, 
 		if role == RoleMember && m.Role != RoleMember {
 			// They managed the team's mailboxes by their role, and manage
 			// none of them now: they hold no stored manage, which the role
-			// took away when they got it.
+			// took away when they got it. Nor do they link mailboxes into it.
 			if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
 				WHERE owner_user_id = ? AND account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`,
 				userID, workspaceID); err != nil {
 				return fmt.Errorf("workspace: end the consent attempts of mailboxes no longer managed: %w", err)
+			}
+			if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, Into: workspaceID}); err != nil {
+				return err
 			}
 		}
 		if err := expireInvitesByTx(ctx, tx, workspaceID, userID, now); err != nil {
@@ -365,16 +370,20 @@ func expireInvitesByTx(ctx context.Context, tx *sql.Tx, workspaceID, userID stri
 
 // leaveTx is what a member losing their place in a workspace takes with it:
 // their grants there, flags and sealed grants of every epoch, the consent
-// attempts they started on its mailboxes, and the team's invites still
-// waiting for their address. The last-reader rule is the caller's to have
-// checked.
+// attempts they started on its mailboxes and the links at the provider they
+// started into it, and the team's invites still waiting for their address.
+// The last-reader rule is the caller's to have checked.
 func leaveTx(ctx context.Context, tx *sql.Tx, workspaceID, userID string) error {
 	// Whatever consent attempt they started on a mailbox here ends: they
-	// manage none of them any more (dropAttemptsTx).
+	// manage none of them any more (dropAttemptsTx). So does every link
+	// they started into it: they link nothing into it any more.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_pending
 		WHERE owner_user_id = ? AND account_id IN (SELECT id FROM accounts WHERE workspace_id = ?)`,
 		userID, workspaceID); err != nil {
 		return fmt.Errorf("workspace: end the consent attempts of mailboxes no longer managed: %w", err)
+	}
+	if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, Into: workspaceID}); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM mailbox_access WHERE workspace_id = ? AND user_id = ?`,
 		workspaceID, userID); err != nil {

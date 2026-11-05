@@ -35,6 +35,15 @@ var (
 		"https://outlook.office.com/SMTP.Send",
 		"offline_access",
 	}
+
+	// identifyScopes are what only a link at the provider asks for besides
+	// the mailbox (links.go): OpenID Connect's sign-in, whose ID token names
+	// the address of the account the person chose there (identity.go). The
+	// short name email, never Google's userinfo URL, and never profile:
+	// nothing else of the account is asked for. Both providers take them
+	// beside the mailbox's own, and neither lists them among what a token is
+	// for (unechoedScopes).
+	identifyScopes = []string{"openid", "email"}
 )
 
 // OAuthClient is a provider's application registration.
@@ -46,12 +55,19 @@ type OAuthClient struct {
 	// in the daemon sets it: it exists so tests can put a fake identity
 	// provider behind a real flow and count what reaches it.
 	Endpoint oauth2.Endpoint
+	// Issuer replaces the issuer an ID token must name (identity.go), for
+	// Microsoft with {tenantid} where the tenant's id goes, as Microsoft's
+	// own is written. Nothing in the daemon sets it either: it is the fake
+	// identity provider's, beside Endpoint.
+	Issuer string
 }
 
 // configFor builds the OAuth configuration for a provider's registration.
 // which is ClientInstalled or ClientWeb, and only decides which variable an
-// error names.
-func configFor(kind provider.Kind, client OAuthClient, which, redirectURL string) (*oauth2.Config, error) {
+// error names. identify asks for the account's address too (identifyScopes):
+// only a link at the provider does, never a re-authorization nor a link that
+// names its address, which keep asking for the mailbox alone.
+func configFor(kind provider.Kind, client OAuthClient, which, redirectURL string, identify bool) (*oauth2.Config, error) {
 	switch kind {
 	case provider.KindGmail:
 		if client.ClientID == "" {
@@ -74,7 +90,7 @@ func configFor(kind provider.Kind, client OAuthClient, which, redirectURL string
 			ClientSecret: client.ClientSecret,
 			Endpoint:     endpoint,
 			RedirectURL:  redirectURL,
-			Scopes:       googleScopes,
+			Scopes:       scopes(googleScopes, identify),
 		}, nil
 
 	case provider.KindMicrosoft:
@@ -103,12 +119,22 @@ func configFor(kind provider.Kind, client OAuthClient, which, redirectURL string
 			ClientSecret: client.ClientSecret,
 			Endpoint:     endpoint,
 			RedirectURL:  redirectURL,
-			Scopes:       microsoftScopes,
+			Scopes:       scopes(microsoftScopes, identify),
 		}, nil
 
 	default:
 		return nil, fmt.Errorf("%w: %s accounts authenticate with a password", ErrNotOAuth, kind)
 	}
+}
+
+// scopes is a provider's scopes, with identifyScopes after them when
+// identify is set, in a slice of its own.
+func scopes(mailbox []string, identify bool) []string {
+	out := append([]string(nil), mailbox...)
+	if identify {
+		out = append(out, identifyScopes...)
+	}
+	return out
 }
 
 // redirectHost is the loopback address each provider expects.
@@ -225,11 +251,12 @@ var (
 	ErrStarterLostAccess = errors.New("account: whoever started the consent no longer manages the account")
 	// ErrScopeMissing is a grant the token endpoint says does not cover the
 	// mailbox. Google lets a person untick a scope only on the granular
-	// screen it shows apps that ask for more than one, which this server
-	// does not; Entra returns what was consented. Either way the response is
-	// the provider saying what the token is for, and a token without the
-	// mailbox refreshes like any other and fails at every login, so it is
-	// refused before anything is stored.
+	// screen it shows apps that ask for more than one scope besides its
+	// sign-in ones, which this server does not: it asks for one, and a link
+	// at the provider for the sign-in ones beside it. Entra returns what was
+	// consented. Either way the response is the provider saying what the
+	// token is for, and a token without the mailbox refreshes like any other
+	// and fails at every login, so it is refused before anything is stored.
 	ErrScopeMissing = errors.New("account: the provider did not grant access to the mailbox")
 	// ErrMailboxRefused is a grant the mail server would not log in with,
 	// even after a refresh: most often a token for another account than the
@@ -259,6 +286,12 @@ const (
 	ReasonMailboxRefused = "the mail server refused this authorization for the mailbox"
 	ReasonUnproved       = "the mail server could not be reached to prove this authorization"
 	ReasonFailed         = "the authorization could not be completed"
+	// ReasonNoAddress and ReasonDuplicate are a link at the provider's
+	// alone (links.go): the provider named no usable address, or the
+	// workspace holds a mailbox under it, live or removed, under any
+	// spelling of one Gmail account, which one reason says for both.
+	ReasonNoAddress = "the provider named no usable address for the account"
+	ReasonDuplicate = "the address is already linked in this workspace"
 	// ReasonTokenRejected is not a failed consent but a grant that stopped
 	// working: the mail server refused the account's access token, a freshly
 	// refreshed one included, and the account moved to needs_reauth.
@@ -297,7 +330,12 @@ func failureReason(err error) string {
 // prefill the account on their sign-in page, which matters most exactly when
 // it goes wrong: a browser signed in as somebody else would otherwise offer
 // that person, and the grant would open the wrong mailbox.
-func startAuthCode(kind provider.Kind, config *oauth2.Config, state, loginHint string) (*AuthFlow, error) {
+//
+// identify is a link at the provider (links.go), which names no mailbox: the
+// person picks the account on the provider's page, so its account chooser is
+// always shown, and its answer names the address (identity.go). It carries
+// no hint.
+func startAuthCode(kind provider.Kind, config *oauth2.Config, state, loginHint string, identify bool) (*AuthFlow, error) {
 	verifier := oauth2.GenerateVerifier()
 
 	options := []oauth2.AuthCodeOption{
@@ -313,8 +351,14 @@ func startAuthCode(kind provider.Kind, config *oauth2.Config, state, loginHint s
 	case provider.KindGmail:
 		// Google only issues a refresh token on the first consent unless
 		// asked again explicitly, and an account added twice would otherwise
-		// arrive with nothing to refresh.
-		options = append(options, oauth2.SetAuthURLParam("prompt", "consent"))
+		// arrive with nothing to refresh. A link asks for its chooser too:
+		// without it, a browser signed in to one account is never asked
+		// which.
+		prompt := "consent"
+		if identify {
+			prompt = "select_account consent"
+		}
+		options = append(options, oauth2.SetAuthURLParam("prompt", prompt))
 	case provider.KindMicrosoft:
 		// Otherwise a browser already signed in as someone else silently
 		// authorises the wrong mailbox.
