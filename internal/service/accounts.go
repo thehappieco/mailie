@@ -323,9 +323,10 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 			return AddAccountResult{}, err
 		}
 		check := link.check
-		add.Check = func(tx *sql.Tx) error {
+		// Under the context the write gives it, never the request's.
+		add.Check = func(ctx context.Context, tx *sql.Tx) error {
 			if check != nil {
-				if err := check(tx); err != nil {
+				if err := check(ctx, tx); err != nil {
 					return err
 				}
 			}
@@ -714,11 +715,12 @@ func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a ac
 
 var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner of the team removes its mailboxes", nil)
 
-// link is where a new mailbox goes, the check its transaction runs, and the
-// workspace's consent to sync it, when the link gives one.
+// link is where a new mailbox goes, the check its transaction runs (under
+// the context that transaction's write gives it), and the workspace's consent
+// to sync it, when the link gives one.
 type link struct {
 	workspaceID string
-	check       func(*sql.Tx) error
+	check       func(context.Context, *sql.Tx) error
 	consent     store.MailboxConsent
 	// team is a link into a team: what asks the freshness hook first.
 	team bool
@@ -772,7 +774,9 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVe
 	default:
 		consent = store.MailboxConsent{At: s.now().Unix(), By: p.Actor(), Version: syncVersion}
 	}
-	check := func(tx *sql.Tx) error {
+	// Under the context it is given, which for the write that creates the
+	// mailbox is that write's own, never this request's.
+	check := func(ctx context.Context, tx *sql.Tx) error {
 		m, err := workspace.MemberTx(ctx, tx, w.ID, p.UserID)
 		switch {
 		case errors.Is(err, workspace.ErrNotMember):
@@ -792,7 +796,7 @@ func (s *Service) linkInto(ctx context.Context, p Principal, workspaceID, syncVe
 		// Nor into a closed team.
 		return s.openTx(ctx, tx, w.ID)
 	}
-	if err := s.precheck(ctx, check); err != nil {
+	if err := s.precheck(ctx, func(tx *sql.Tx) error { return check(ctx, tx) }); err != nil {
 		return link{}, fromWorkspace(err, "reading the workspace failed")
 	}
 	return link{workspaceID: w.ID, check: check, consent: consent, team: w.Kind == workspace.KindTeam}, nil

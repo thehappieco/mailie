@@ -460,7 +460,7 @@ func (r *Repository) Create(ctx context.Context, a Account, linker string) (Acco
 // behind, and the same add can be tried again; a write that fails leaves no
 // account without its password, which no route could give it afterwards.
 func (r *Repository) createWithPassword(ctx context.Context, a Account, linker string, key *workspace.LinkKey,
-	also func(*sql.Tx) error, password string,
+	also func(context.Context, *sql.Tx) error, password string,
 ) (Account, error) {
 	// Sealed outside the transaction: a call to a key service must not hold
 	// the database's one writer. The id is the account's before it exists.
@@ -482,8 +482,9 @@ func (r *Repository) createWithPassword(ctx context.Context, a Account, linker s
 	})
 }
 
-// create is Create with a check run first in its transaction, and then
-// after the account's insert, both in that transaction; nil runs nothing.
+// create is Create with a check run first in its transaction, under ctx,
+// the write's own context, and then after the account's insert, both in that
+// transaction; nil runs nothing.
 // What then journals is published after the commit, and the account it
 // returns is in the state then left it in.
 //
@@ -492,8 +493,9 @@ func (r *Repository) createWithPassword(ctx context.Context, a Account, linker s
 // 12.11): written after the insert and the linker's flags, before then, in
 // the same transaction (workspace.WriteLinkKeyTx). Only with a linker: a
 // mailbox nobody links is the operator's, which has no key (ErrOperatorKey).
-func (r *Repository) create(ctx context.Context, a Account, linker string, key *workspace.LinkKey, also func(*sql.Tx) error,
-	then func(tx *sql.Tx, at time.Time) ([]events.Event, error)) (Account, error) {
+func (r *Repository) create(ctx context.Context, a Account, linker string, key *workspace.LinkKey,
+	also func(context.Context, *sql.Tx) error, then func(tx *sql.Tx, at time.Time) ([]events.Event, error),
+) (Account, error) {
 	if key != nil && linker == "" {
 		return Account{}, ErrOperatorKey
 	}
@@ -522,7 +524,7 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, key *
 	var evs []events.Event
 	err = r.store.Write(ctx, func(tx *sql.Tx) error {
 		if also != nil {
-			if err := also(tx); err != nil {
+			if err := also(ctx, tx); err != nil {
 				return err
 			}
 		}
@@ -1442,9 +1444,11 @@ func (r *Repository) SaveGrant(ctx context.Context, id string, token *oauth2.Tok
 	return r.saveGrant(ctx, id, token, client, nil)
 }
 
-// saveGrant is SaveGrant with a check run first in its transaction; nil
-// checks nothing.
-func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Token, client string, also func(*sql.Tx) error) error {
+// saveGrant is SaveGrant with a check run first in its transaction, under
+// ctx, the write's own context; nil checks nothing.
+func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Token, client string,
+	also func(context.Context, *sql.Tx) error,
+) error {
 	//nolint:gosec // G117: the result is encrypted before it reaches disk
 	encoded, err := json.Marshal(token)
 	if err != nil {
@@ -1459,7 +1463,7 @@ func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Tok
 	var evs []events.Event
 	err = r.store.Write(ctx, func(tx *sql.Tx) error {
 		if also != nil {
-			if err := also(tx); err != nil {
+			if err := also(ctx, tx); err != nil {
 				return err
 			}
 		}
@@ -1613,18 +1617,19 @@ func orDefault(s, def string) string {
 	return s
 }
 
-// both runs two checks in order, either of which may be nil.
-func both(first, second func(*sql.Tx) error) func(*sql.Tx) error {
+// both runs two checks in order, under the context it is given, either of
+// which may be nil.
+func both(first, second func(context.Context, *sql.Tx) error) func(context.Context, *sql.Tx) error {
 	switch {
 	case first == nil:
 		return second
 	case second == nil:
 		return first
 	}
-	return func(tx *sql.Tx) error {
-		if err := first(tx); err != nil {
+	return func(ctx context.Context, tx *sql.Tx) error {
+		if err := first(ctx, tx); err != nil {
 			return err
 		}
-		return second(tx)
+		return second(ctx, tx)
 	}
 }

@@ -214,15 +214,16 @@ func (r *Registry) CheckOwnersWith(check OwnerCheck) {
 }
 
 // ownerStillActive is the check for one person, for a repository write to
-// run in its transaction; nil when there is nobody to check.
-func (r *Registry) ownerStillActive(ctx context.Context, userID string) func(*sql.Tx) error {
+// run in its transaction, under that write's own context; nil when there is
+// nobody to check.
+func (r *Registry) ownerStillActive(userID string) func(context.Context, *sql.Tx) error {
 	r.mu.Lock()
 	check := r.ownerCheck
 	r.mu.Unlock()
 	if userID == "" || check == nil {
 		return nil
 	}
-	return func(tx *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
 		if err := check(ctx, tx, userID); err != nil {
 			return fmt.Errorf("%w: %w", ErrOwnerInactive, err)
 		}
@@ -253,15 +254,16 @@ func (r *Registry) CheckFlowsWith(check FlowCheck) {
 }
 
 // flowStillAllowed is the check for one attempt, for the write that stores
-// its grant to run in its transaction; nil when there is no rule.
-func (r *Registry) flowStillAllowed(ctx context.Context, accountID, owner string) func(*sql.Tx) error {
+// its grant to run in its transaction, under that write's own context; nil
+// when there is no rule.
+func (r *Registry) flowStillAllowed(accountID, owner string) func(context.Context, *sql.Tx) error {
 	r.mu.Lock()
 	check := r.flowCheck
 	r.mu.Unlock()
 	if check == nil {
 		return nil
 	}
-	return func(tx *sql.Tx) error {
+	return func(ctx context.Context, tx *sql.Tx) error {
 		if err := check(ctx, tx, accountID, owner); err != nil {
 			return fmt.Errorf("%w: %w", ErrStarterLostAccess, err)
 		}
@@ -383,9 +385,11 @@ type AddRequest struct {
 	SyncConsent store.MailboxConsent
 	// Check runs first in the transaction that creates the account, after
 	// the check that the person is still active: where the service re-reads
-	// that the caller may still link into the workspace. nil checks nothing
-	// more.
-	Check func(*sql.Tx) error
+	// that the caller may still link into the workspace. It is called with
+	// the context of the write it runs in, never one it kept from elsewhere:
+	// where a finish detached from the request creates the account, the
+	// finish's own. nil checks nothing more.
+	Check func(ctx context.Context, tx *sql.Tx) error
 	// Key is the mailbox's first key pair and the linker's own grant at
 	// epoch 1, made by the linker's browser (docs/key-scheme.md sections 8
 	// and 12.11), written in the transaction that creates the mailbox, on
@@ -504,7 +508,7 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 
 	// The login check above can take seconds; the person may have been
 	// switched off meanwhile.
-	check := both(r.ownerStillActive(ctx, req.LinkerID), req.Check)
+	check := both(r.ownerStillActive(req.LinkerID), req.Check)
 	if a.AuthKind == "password" {
 		// Sealed before anything is written, and written whole: a key
 		// service that cannot seal it leaves no account behind, which a retry
@@ -1177,7 +1181,7 @@ func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oaut
 	// use picks up both.
 	r.forget(accountID)
 	if err := r.repo.saveGrant(ctx, accountID, token, client,
-		both(r.ownerStillActive(ctx, owner), r.flowStillAllowed(ctx, accountID, owner))); err != nil {
+		both(r.ownerStillActive(owner), r.flowStillAllowed(accountID, owner))); err != nil {
 		return err
 	}
 	r.forget(accountID)
