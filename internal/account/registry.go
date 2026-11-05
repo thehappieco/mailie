@@ -475,20 +475,18 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		a.AuthKind = "oauth2"
 	}
 
-	// A duplicate would be refused by the insert anyway; asking first saves
-	// dialing somebody's mail server to find that out. Only within the
-	// workspace it goes into: elsewhere the same address is another mailbox.
+	// A duplicate would be refused by the insert's transaction anyway;
+	// asking first saves dialing somebody's mail server to find that out.
+	// Only within the workspace it goes into: elsewhere the same address is
+	// another mailbox. A removed mailbox keeps its address taken until it is
+	// recovered or deleted for good: linking it again is neither. A Gmail
+	// account is one mailbox under every spelling of its address.
 	ws, err := r.repo.WorkspaceFor(ctx, a.WorkspaceID, req.LinkerID)
 	if err != nil {
 		return Account{}, nil, err
 	}
-	if existing, err := r.repo.GetByEmail(ctx, ws, a.Email); err == nil {
-		// A removed mailbox keeps its address taken until it is recovered
-		// or deleted for good: linking it again is neither.
-		if existing.Removed() {
-			return Account{}, nil, &RemovedDuplicateError{AccountID: existing.ID, PurgeAfter: existing.PurgeAfter}
-		}
-		return Account{}, nil, ErrDuplicate
+	if err := r.repo.duplicateOf(ctx, ws, kind, a.Email); err != nil {
+		return Account{}, nil, err
 	}
 
 	checkCtx, cancel := context.WithTimeout(ctx, loginCheckTimeout)

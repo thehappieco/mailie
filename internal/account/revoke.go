@@ -31,9 +31,10 @@ import (
 //
 // The token is opened inside the transaction that deletes it, and handed to
 // the step after the commit in memory only. A grant another mailbox here
-// still holds — the same Google address linked again elsewhere through the
-// same OAuth client, which Google keeps one grant for — is not revoked: that
-// would cut the other mailbox off.
+// still holds — the same Google account linked again elsewhere, under its
+// address or another spelling of it (canonicalAddress), through the same
+// OAuth client, which Google keeps one grant for — is not revoked: that would
+// cut the other mailbox off.
 
 // GoogleRevokeEndpoint is Google's OAuth 2.0 revocation endpoint.
 const GoogleRevokeEndpoint = "https://oauth2.googleapis.com/revoke"
@@ -109,33 +110,85 @@ type sealedToken struct {
 }
 
 // googleTokensTx reads the sealed tokens of the Google mailboxes in list (a
-// JSON array of ids) whose grant no mailbox outside it holds.
+// JSON array of ids) whose grant no mailbox outside it holds: Google keeps
+// one grant per account and OAuth client, and another Google mailbox through
+// the same client holds it under any spelling of the account's address
+// (canonicalAddress), which is compared here rather than in SQL.
 func googleTokensTx(ctx context.Context, tx *sql.Tx, list string) ([]sealedToken, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT a.id, c.ciphertext FROM accounts a
+	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.email, a.oauth_client, c.ciphertext FROM accounts a
 		  JOIN credentials c ON c.account_id = a.id AND c.field = 'oauth_token'
 		 WHERE a.id IN (SELECT value FROM json_each(?1)) AND a.provider = ?2 AND a.auth_kind = 'oauth2'
-		   AND NOT EXISTS (SELECT 1 FROM accounts o JOIN credentials oc ON oc.account_id = o.id AND oc.field = 'oauth_token'
-		                    WHERE o.id NOT IN (SELECT value FROM json_each(?1)) AND o.provider = a.provider
-		                      AND o.auth_kind = 'oauth2' AND o.oauth_client = a.oauth_client
-		                      AND lower(o.email) = lower(a.email))
 		 ORDER BY a.id`, list, string(provider.KindGmail))
 	if err != nil {
 		return nil, fmt.Errorf("account: read the grants to revoke: %w", err)
 	}
 	//nolint:errcheck // read to the end below
 	defer func() { _ = rows.Close() }()
-	var out []sealedToken
+	type candidate struct {
+		sealedToken
+		grant googleGrant
+	}
+	var candidates []candidate
 	for rows.Next() {
-		var s sealedToken
-		if err := rows.Scan(&s.accountID, &s.ciphertext); err != nil {
+		var (
+			c     candidate
+			email string
+		)
+		if err := rows.Scan(&c.accountID, &email, &c.grant.client, &c.ciphertext); err != nil {
 			return nil, fmt.Errorf("account: read the grants to revoke: %w", err)
 		}
-		out = append(out, s)
+		c.grant.address = canonicalAddress(provider.KindGmail, email)
+		candidates = append(candidates, c)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("account: read the grants to revoke: %w", err)
 	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	held, err := googleGrantsHeldTx(ctx, tx, list)
+	if err != nil {
+		return nil, err
+	}
+	var out []sealedToken
+	for _, c := range candidates {
+		if !held[c.grant] {
+			out = append(out, c.sealedToken)
+		}
+	}
 	return out, nil
+}
+
+// googleGrant is one grant at Google: the OAuth client it was issued to, and
+// its account's address, canonical.
+type googleGrant struct {
+	client, address string
+}
+
+// googleGrantsHeldTx is every Google grant a mailbox outside list (a JSON
+// array of ids) holds: one with a stored token, live or removed.
+func googleGrantsHeldTx(ctx context.Context, tx *sql.Tx, list string) (map[googleGrant]bool, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT o.email, o.oauth_client FROM accounts o
+		  JOIN credentials oc ON oc.account_id = o.id AND oc.field = 'oauth_token'
+		 WHERE o.id NOT IN (SELECT value FROM json_each(?1)) AND o.provider = ?2 AND o.auth_kind = 'oauth2'`,
+		list, string(provider.KindGmail))
+	if err != nil {
+		return nil, fmt.Errorf("account: read the grants other mailboxes hold: %w", err)
+	}
+	//nolint:errcheck // read to the end below
+	defer func() { _ = rows.Close() }()
+	held := map[googleGrant]bool{}
+	for rows.Next() {
+		var email, client string
+		if err := rows.Scan(&email, &client); err != nil {
+			return nil, fmt.Errorf("account: read the grants other mailboxes hold: %w", err)
+		}
+		held[googleGrant{client: client, address: canonicalAddress(provider.KindGmail, email)}] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("account: read the grants other mailboxes hold: %w", err)
+	}
+	return held, nil
 }
 
 // revokes reports whether a deletion for good leaves grants to revoke.

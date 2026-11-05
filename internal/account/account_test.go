@@ -14,6 +14,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/thehappieco/mailie/internal/account"
+	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
 	"github.com/thehappieco/mailie/internal/secrets/secretstest"
@@ -86,6 +88,65 @@ func TestAnAddressIsLinkedOnceInAWorkspace(t *testing.T) {
 	}, "")
 	if !errors.Is(err, account.ErrDuplicate) {
 		t.Fatalf("want ErrDuplicate for an address differing only in case, got %v", err)
+	}
+}
+
+func TestAGmailAddressSpelledWithDotsOrATagIsTheSameMailbox(t *testing.T) {
+	// Gmail delivers every spelling of a consumer address to one account,
+	// and Google grants it once per client: a second spelling in the same
+	// workspace would be one mailbox linked twice, live or kept removed.
+	repo, db := newRepo(t)
+	ctx := t.Context()
+	registry := account.NewRegistry(ctx, repo, account.RegistryOptions{Google: account.OAuthClient{ClientID: "google-client"}})
+	t.Cleanup(func() { _ = registry.Close() })
+	live := seed(t, repo, "ana.lima@gmail.com", provider.KindGmail)
+	removed := seed(t, repo, "bruno.reis@googlemail.com", provider.KindGmail)
+	removeBySQL(t, db, removed.ID)
+
+	gmail := func(id, email string) account.Account {
+		return account.Account{ID: id, Email: email, Provider: provider.KindGmail, AuthKind: "oauth2",
+			IMAPHost: "imap.gmail.com", IMAPPort: 993, SMTPHost: "smtp.gmail.com", SMTPPort: 465,
+			SMTPTLS: "implicit", LoginUser: email}
+	}
+	// Both ways a link is refused: asked before anything is dialled, and
+	// in the transaction that would insert it.
+	refusals := func(email string) (asked, inserted error) {
+		_, _, asked = registry.Add(ctx, account.AddRequest{Email: email, Provider: provider.KindGmail,
+			Flow: account.FlowPasted})
+		_, inserted = repo.Create(ctx, gmail("acc_spelling_"+email, email), "")
+		return asked, inserted
+	}
+	for _, spelling := range []string{"analima@gmail.com", "Ana.Lima+news@googlemail.com", "a.n.a.l.i.m.a@GMAIL.com",
+		"analima+@gmail.com"} {
+		asked, inserted := refusals(spelling)
+		if !errors.Is(asked, account.ErrDuplicate) || !errors.Is(inserted, account.ErrDuplicate) {
+			t.Errorf("%s beside %s: %v, %v; want ErrDuplicate", spelling, live.Email, asked, inserted)
+		}
+	}
+	for _, spelling := range []string{"brunoreis@gmail.com", "BRUNO.REIS+old@googlemail.com"} {
+		asked, inserted := refusals(spelling)
+		for _, err := range []error{asked, inserted} {
+			var dup *account.RemovedDuplicateError
+			if !errors.As(err, &dup) || dup.AccountID != removed.ID {
+				t.Errorf("%s beside the removed %s: %v; want it kept", spelling, removed.Email, err)
+			}
+		}
+	}
+	if n := countOf(t, db, `SELECT count(*) FROM accounts`); n != 2 {
+		t.Fatalf("%d mailboxes, want the two first linked", n)
+	}
+
+	// A Google Workspace domain's dots count: another address, another
+	// account.
+	for _, email := range []string{"ana.lima@example.test", "analima@example.test"} {
+		if _, err := repo.Create(ctx, gmail("acc_"+strings.ReplaceAll(email, "@", "_"), email), ""); err != nil {
+			t.Errorf("linking %s: %v", email, err)
+		}
+	}
+	// In another workspace the same account is another mailbox.
+	ana := authtest.NewUser(t, db, "ana@example.test", auth.RoleMember)
+	if _, err := repo.Create(ctx, gmail("acc_anas_own", "AnaLima+mail@googlemail.com"), ana.ID); err != nil {
+		t.Errorf("linking the same account into Ana's own workspace: %v", err)
 	}
 }
 

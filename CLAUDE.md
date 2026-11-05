@@ -197,11 +197,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   once, and so are the removed mailboxes that go with a person closed, their journal entries with
   them (a never-connected link in a workspace from another source is journaled `purged` instead,
   its earlier entries kept, for an extension to report). Its address stays taken in its workspace
-  meanwhile (`ErrRemovedDuplicate`). A Google mailbox deleted for good — the sweep, its owners or
-  the operator early, the person it goes with deleted or forgotten — has its grant revoked at
-  Google (`revoke.go`, `GoogleRevokeURL`, which the daemon and `user delete --bootstrap` set): the
-  refresh token opened inside the deleting transaction, revoked after the commit, best effort,
-  bounded, logged without it, never while another mailbox here holds the same grant; Microsoft has
+  meanwhile (`ErrRemovedDuplicate`). One Gmail account is one mailbox per workspace under every
+  spelling of its address (`address.go`, `canonicalAddress`: case, and at `gmail.com` or
+  `googlemail.com` the dots, a `+tag` and the domain; a Workspace domain's by case only), live or
+  removed, asked before anything is dialled and again in the inserting transaction
+  (`duplicateOfTx`); rows linked before the rule stay. A Google mailbox deleted for good — the
+  sweep, its owners or the operator early, the person it goes with deleted or forgotten — has its
+  grant revoked at Google (`revoke.go`, `GoogleRevokeURL`, which the daemon and `user delete
+  --bootstrap` set): the refresh token opened inside the deleting transaction, revoked after the
+  commit, best effort, bounded, logged without it, never while another mailbox here holds the same
+  grant (the same client and canonical address, compared in Go; one Workspace account under two
+  addresses is not recognised, which costs an early re-authorization, never access); Microsoft has
   no such endpoint and a password nothing to revoke.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role

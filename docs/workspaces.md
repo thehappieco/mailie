@@ -62,7 +62,8 @@ conflicts with the code or with another rule, it says so in
   The operator closes a local team; a team from another source closes where it is managed. See
   [Closed teams](#closed-teams).
 - The same address may be linked in several workspaces; each link is an independent mailbox with
-  its own credentials, worker and index. Within one workspace an address is linked at most once.
+  its own credentials, worker and index. Within one workspace an address is linked at most once,
+  and a Gmail account once under every spelling of its address.
 - `users.role` (`owner`, `member`) is purely the **instance role** of a self-hosted server. It
   gives no mailbox visibility. The first owner comes only from `user invite --bootstrap`.
 - Migration 0008 created the workspaces and rebuilt `accounts`; 0009 set right what 0008 could not
@@ -144,6 +145,16 @@ workspace_members(workspace_id, user_id, role, status, created_at, updated_at)  
 - Addresses are unique per workspace, `UNIQUE (workspace_id, email)` with `email COLLATE NOCASE`,
   instead of across the daemon. A second link of an address already linked in the same workspace is
   `409` with the generic "that address is already connected".
+- **One Gmail account, one mailbox.** Gmail delivers every spelling of a consumer address to one
+  account — any case, dots anywhere in the local part, a `+tag` after it, `googlemail.com` for
+  `gmail.com` — and Google keeps one grant per account and OAuth client. So a Gmail mailbox is
+  refused (`409`, as above) where its workspace holds a Gmail mailbox, live or removed and kept,
+  under another spelling of the same account (`account.canonicalAddress`): asked before anything is
+  dialled, and again in the transaction that would insert it, which the database's one writer
+  orders against every other. Mailboxes linked before the rule are left as they are. A Google
+  Workspace domain's addresses are compared without regard to case only, as its dots count. The
+  same rule says which mailboxes hold one Google grant when one is deleted for good
+  ([Removed mailboxes](#removed-mailboxes)).
 - Each link is a mailbox of its own: its own id, credentials and OAuth grant, sync worker with its
   three connections, index, events and send records. Nothing is shared between two links of one
   address, and nothing says to anyone that an address is linked in another workspace.
@@ -409,8 +420,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   refreshed (`Registry.Mailbox` builds a mailbox only through `Repository.Get`, which leaves it out,
   and builds again, never caching, one it was building while the removal let go of it), syncs
   nothing, and has no reader (`store.LiveSQL` in the one rule). Nothing is granted, keyed or given
-  on it (the schema's triggers). Its address stays taken in its workspace: linking it again is `409`, which
-  says until when it is kept; an owner recovers it, or deletes it for good to link it again.
+  on it (the schema's triggers). Its address stays taken in its workspace, a Gmail account's under
+  every spelling ([Mailboxes](#mailboxes)): linking it again is `409`, which says until when it is
+  kept; an owner recovers it, or deletes it for good to link it again.
 - **It keeps protecting until it is deleted for good.** Whoever would read it once recovered — an
   active member holding `read` and, on a mailbox that has a key, a grant at its current epoch
   (`store.KeptReaderSQL`, the one rule on it as if it were live) — counts in every protection as a
@@ -492,8 +504,13 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   that commits, best effort, bounded (10 s), through a connection held to
   `MAIL_ACCOUNT_ALLOW_PRIVATE` as a mailbox's are, and logged without the token. A failure never
   stops the deletion, and is not retried: the grant then lapses when its person removes it. A grant
-  another mailbox here still holds — the same address linked elsewhere through the same OAuth
-  client, which Google keeps one grant for — is not revoked, which would cut that mailbox off.
+  another mailbox here still holds — the same Google account linked elsewhere through the same OAuth
+  client, under its address or another spelling of a Gmail one, which Google keeps one grant for —
+  is not revoked, which would cut that mailbox off. Two addresses of one Google Workspace account
+  (an alias, a user renamed) are not recognised as one: deleting one of their mailboxes for good can
+  revoke the grant the other holds, which then asks to be authorized again. That costs an early
+  re-authorization, never access, and telling them apart would mean keeping an identifier of the
+  Google account, which Mailie does not.
   Microsoft's identity platform revokes no single grant, only every session of the person, and a
   password has nothing to revoke: their stored credential is deleted, and lapses.
 - **The journal** (`mailbox_events`, with who read the mailbox then, `mailbox_event_readers`):

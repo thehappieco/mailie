@@ -446,7 +446,9 @@ func (v Visibility) clause() (string, []any) {
 // workspace; empty for the operator. The mailbox goes into a.WorkspaceID, or
 // else the linker's personal workspace, or the operator workspace when nobody
 // links it. It names its person (OwnerUserID) exactly when that workspace is
-// personal.
+// personal. An address that workspace already holds, live or removed, is
+// refused in the same transaction, a Gmail account's under every spelling
+// (duplicateOfTx).
 func (r *Repository) Create(ctx context.Context, a Account, linker string) (Account, error) {
 	return r.create(ctx, a, linker, nil, nil, nil)
 }
@@ -540,6 +542,11 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, key *
 			consent.At = now.Unix()
 		}
 		a.SyncConsent = consent
+		// The writer is serialized: no other insert can come between this
+		// read and the one below.
+		if err := duplicateOfTx(ctx, tx, a.WorkspaceID, a.Provider, a.Email); err != nil {
+			return err
+		}
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO accounts(id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 			 smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, owner_user_id, oauth_client,
@@ -1033,6 +1040,60 @@ func duplicateTx(ctx context.Context, tx *sql.Tx, workspaceID, email string) err
 		return fmt.Errorf("account: read the address's mailbox: %w", err)
 	}
 	return &RemovedDuplicateError{AccountID: id, PurgeAfter: unixOrZero(purgeAfter)}
+}
+
+// duplicateOf is duplicateOfTx read before anything slow, in a read-only
+// transaction: create asks again in its own, which is the answer that counts.
+func (r *Repository) duplicateOf(ctx context.Context, workspaceID string, kind provider.Kind, email string) error {
+	tx, err := r.store.Reader().BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("account: begin: %w", err)
+	}
+	//nolint:errcheck // a read-only transaction; nothing to keep or lose
+	defer func() { _ = tx.Rollback() }()
+	return duplicateOfTx(ctx, tx, workspaceID, kind, email)
+}
+
+// duplicateOfTx is the error of linking email, for a mailbox of kind, into a
+// workspace that already holds it, inside the caller's transaction, or nil.
+// An address is linked once per workspace without regard to case, and a
+// Gmail mailbox once under every spelling of its account (canonicalAddress),
+// live or removed: ErrDuplicate, or, for a removed mailbox that keeps it
+// taken, a *RemovedDuplicateError. A live mailbox answers before a removed
+// one, which recovering or deleting would not free the address from.
+func duplicateOfTx(ctx context.Context, tx *sql.Tx, workspaceID string, kind provider.Kind, email string) error {
+	rows, err := tx.QueryContext(ctx, `SELECT id, email, provider, removed_at, purge_after FROM accounts
+		 WHERE workspace_id = ?1 AND (email = ?2 COLLATE NOCASE OR (?3 = ?4 AND provider = ?4))
+		 ORDER BY removed_at <> 0, id`, workspaceID, email, string(kind), string(provider.KindGmail))
+	if err != nil {
+		return fmt.Errorf("account: read the workspace's addresses: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	want := canonicalAddress(kind, email)
+	for rows.Next() {
+		var (
+			id, other, otherKind  string
+			removedAt, purgeAfter int64
+		)
+		if err := rows.Scan(&id, &other, &otherKind, &removedAt, &purgeAfter); err != nil {
+			return fmt.Errorf("account: read the workspace's addresses: %w", err)
+		}
+		same := asciiLower(other) == asciiLower(email) ||
+			(kind == provider.KindGmail && provider.Kind(otherKind) == provider.KindGmail &&
+				canonicalAddress(provider.KindGmail, other) == want)
+		switch {
+		case !same:
+			continue
+		case removedAt == 0:
+			return ErrDuplicate
+		}
+		return &RemovedDuplicateError{AccountID: id, PurgeAfter: unixOrZero(purgeAfter)}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("account: read the workspace's addresses: %w", err)
+	}
+	return nil
 }
 
 // SetState records where an account stands and why.

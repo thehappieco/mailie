@@ -226,6 +226,61 @@ func TestOnlyAGoogleGrantNoOtherMailboxHoldsIsRevoked(t *testing.T) {
 	}
 }
 
+func TestDeletingOneOfTwoMailboxesOfTheSameGoogleAccountSpelledDifferentlyKeepsTheGrant(t *testing.T) {
+	repo, db := newRepo(t)
+	ctx := t.Context()
+	google := newRevocations(t)
+	registry, _ := revokingRegistry(t, repo, google.srv.URL, true)
+	grantIn := func(userID, id, email, client, refresh string) account.Account {
+		t.Helper()
+		a, err := repo.Create(ctx, account.Account{
+			ID: id, WorkspaceID: authtest.Personal(t, db, userID), Email: email, Provider: provider.KindGmail,
+			AuthKind: "oauth2", IMAPHost: "imap.gmail.com", IMAPPort: 993, SMTPHost: "smtp.gmail.com",
+			SMTPPort: 465, SMTPTLS: "implicit", LoginUser: email,
+		}, userID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := repo.SaveGrant(ctx, a.ID, &oauth2.Token{AccessToken: "a", RefreshToken: refresh}, client); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	ana := authtest.NewUser(t, db, "ana@example.test", auth.RoleMember)
+	bruno := authtest.NewUser(t, db, "bruno@example.test", auth.RoleMember)
+
+	// One Gmail account linked in two workspaces under two spellings,
+	// through the same client: one grant at Google, which both hold.
+	first := granted(t, repo, "ana.lima@gmail.com", provider.KindGmail, "refresh-one")
+	second := grantIn(ana.ID, "acc_anas_own", "AnaLima+mail@googlemail.com", account.ClientInstalled, "refresh-two")
+	// The same account through the other client holds a grant of its own.
+	web := grantIn(bruno.ID, "acc_brunos_own", "a.na.lima@gmail.com", account.ClientWeb, "refresh-web")
+	// A Google Workspace domain's dots count: two accounts, two grants.
+	dotted := granted(t, repo, "ana.lima@example.test", provider.KindGmail, "refresh-dotted")
+	grantIn(ana.ID, "acc_anas_workspace", "analima@example.test", account.ClientInstalled, "refresh-undotted")
+
+	for _, step := range []struct {
+		purged  account.Account
+		revoked []string
+		why     string
+	}{
+		{first, nil, "nothing: another spelling of the account still holds its grant"},
+		{dotted, []string{"refresh-dotted"}, "the Workspace address's own grant"},
+		// Once the last mailbox holding it through its client goes, the
+		// grant is revoked, whatever the other client still holds.
+		{second, []string{"refresh-dotted", "refresh-two"}, "the last holder's grant"},
+		{web, []string{"refresh-dotted", "refresh-two", "refresh-web"}, "the other client's grant too"},
+	} {
+		removeBySQL(t, db, step.purged.ID)
+		if err := registry.Purge(ctx, step.purged.ID, "cli", nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := google.sent(); !slices.Equal(got, step.revoked) {
+			t.Fatalf("deleting %s for good revoked %q, want %s", step.purged.Email, got, step.why)
+		}
+	}
+}
+
 func TestAFailedRevocationNeverStopsTheDeletionNorLogsTheToken(t *testing.T) {
 	repo, db := newRepo(t)
 	ctx := t.Context()
