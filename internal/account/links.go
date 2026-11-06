@@ -72,6 +72,10 @@ const (
 	linkCutOff = finishTimeout + persistTimeout
 )
 
+// LinkTakeTimeout bounds how long a link's return waits for the writer to
+// take its link.
+const LinkTakeTimeout = 5 * time.Second
+
 // Errors about links at the provider.
 var (
 	// ErrTooManyLinks is a person with MaxLinksWaiting links waiting
@@ -82,6 +86,9 @@ var (
 	// 12.11): refused before the link is taken, which stays for a return
 	// that carries one.
 	ErrNoLinkKey = errors.New("account: a link's return carries the mailbox's key")
+	// ErrLinkBusy is a link's return that could not take its link within
+	// LinkTakeTimeout.
+	ErrLinkBusy = errors.New("account: the link could not be taken in time")
 )
 
 // TooManyLinksError is ErrTooManyLinks for one person: a link is started
@@ -269,9 +276,11 @@ func (r *Registry) OwnedLink(ctx context.Context, state, owner string) (PendingL
 // The owner is matched in the same statement that takes the link, before
 // anything is exchanged: a return from a link somebody else started is not
 // found, and leaves it takeable by its starter. A return with a code needs
-// the mailbox's key (ErrNoLinkKey), checked before the take too. Once taken,
-// everything runs detached from the request, bounded by finishTimeout: the
-// code is single-use. A return carrying an error records the refusal. One
+// the mailbox's key (ErrNoLinkKey), checked before the take too. The take
+// waits for the writer LinkTakeTimeout at most: one that could not take the
+// link by then has taken nothing (ErrLinkBusy), and the same return may be
+// posted again. Once taken, everything runs detached from the request,
+// bounded by finishTimeout from the take: the code is single-use. A return carrying an error records the refusal. One
 // carrying a code is exchanged with the scopes that name the address; the
 // address read (ErrNoAddress); a mailbox the workspace holds under it, live
 // or removed, under any spelling of one Gmail account, refused (ErrDuplicate,
@@ -294,7 +303,7 @@ func (r *Registry) CompleteLink(ctx context.Context, rd Redirect, owner string, 
 			return Account{}, err
 		}
 	}
-	link, err := r.repo.takeLink(ctx, rd.State, owner)
+	link, err := r.takeLink(ctx, rd.State, owner)
 	if err != nil {
 		return Account{}, err
 	}
@@ -377,14 +386,15 @@ func (r *Registry) finishLink(ctx context.Context, link PendingLink, rd Redirect
 
 // failLink records a link that ended without its mailbox, unless it ended
 // meanwhile another way: why, by a fixed reason, and the address the
-// provider named, if it named one.
+// provider named, if it named one (for a duplicate, only while the
+// workspace still holds a mailbox under it: Repository.failLink).
 func (r *Registry) failLink(ctx context.Context, link PendingLink, address string, cause error) {
 	// Detached: the link has ended whether or not the finish that noticed
 	// has time left.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), persistTimeout)
 	defer cancel()
 	reason := linkFailureReason(cause)
-	moved, err := r.repo.failLink(writeCtx, link.ID, address, reason)
+	moved, err := r.repo.failLink(writeCtx, link, address, reason)
 	if err != nil {
 		r.log.Error("recording a failed link at the provider failed", "link", link.ID, "err", err)
 		return
@@ -509,16 +519,42 @@ func (r *Repository) ownedLink(ctx context.Context, state, owner string) (Pendin
 	return link, nil
 }
 
+// takeLink takes a link of owner's for its return (Repository.takeLink),
+// waiting for the writer linkTakeTimeout at most: a take that could not get
+// it by then, while the caller still waits, is ErrLinkBusy, and has taken
+// nothing.
+//
+// The bound keeps what the caller checked before the take true until the
+// finish is over: a link's starter's step-up is checked, before the take,
+// to be fresh for LinkTakeTimeout and finishTimeout more
+// (auth.Users.RequireStepUpFor), and the transaction that creates the
+// mailbox asks again. It also keeps the route that posts the return within
+// its deadline.
+func (r *Registry) takeLink(ctx context.Context, state, owner string) (PendingLink, error) {
+	takeCtx, cancel := context.WithTimeout(ctx, r.linkTakeTimeout)
+	defer cancel()
+	link, err := r.repo.takeLink(takeCtx, state, owner)
+	if err != nil && ctx.Err() == nil && errors.Is(takeCtx.Err(), context.DeadlineExceeded) {
+		return PendingLink{}, fmt.Errorf("%w: %w", ErrLinkBusy, err)
+	}
+	return link, err
+}
+
 // takeLink takes a link of owner's waiting for its return, once
 // (takeLinkTx). One of theirs that ran out of time is recorded so, and is
 // ErrFlowExpired; anything else is ErrNotFound, and stays as it was.
+//
+// The moment of the take is read inside its transaction, once the writer is
+// this take's: its finish is bounded from then (finishTimeout), and a link
+// still finishing is taken for one a restart cut off only linkCutOff after
+// it (Link, sweepLinks), however long the take waited for the writer.
 func (r *Repository) takeLink(ctx context.Context, state, owner string) (PendingLink, error) {
-	now := r.now().Unix()
 	var (
 		link    PendingLink
 		expired bool
 	)
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+		now := r.now().Unix()
 		var err error
 		link, err = takeLinkTx(ctx, tx, state, owner, now)
 		if !errors.Is(err, ErrNotFound) {
@@ -554,11 +590,10 @@ func takeLinkTx(ctx context.Context, tx *sql.Tx, state, owner string, now int64)
 // expireLink records a link of owner's that ran out of time before its
 // return was taken, and reports whether it did.
 func (r *Repository) expireLink(ctx context.Context, state, owner string) (bool, error) {
-	now := r.now().Unix()
 	var expired bool
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
 		var err error
-		expired, err = expireLinkTx(ctx, tx, state, owner, now)
+		expired, err = expireLinkTx(ctx, tx, state, owner, r.now().Unix())
 		return err
 	})
 	return expired, err
@@ -578,13 +613,28 @@ func expireLinkTx(ctx context.Context, tx *sql.Tx, state, owner string, now int6
 // failLink records a link taken and not finished as failed, for reason,
 // with the address the provider named, if any, and reports whether it did:
 // one that ended meanwhile another way stays as it ended.
-func (r *Repository) failLink(ctx context.Context, id, address, reason string) (bool, error) {
-	now := r.now().Unix()
+//
+// A duplicate names its address only while the link's workspace still holds
+// a mailbox under it, asked in this transaction: one deleted for good since
+// it was found took its failed links with it (forgetFailedLinksTx) only if
+// they were failed then, and this one was still finishing. Either way, no
+// failed link outlives the mailbox it named.
+func (r *Repository) failLink(ctx context.Context, link PendingLink, address, reason string) (bool, error) {
 	var moved bool
 	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+		named := address
+		if reason == ReasonDuplicate && named != "" {
+			held, err := heldUnderTx(ctx, tx, link, named)
+			if err != nil {
+				return err
+			}
+			if !held {
+				named = ""
+			}
+		}
 		n, err := execCount(ctx, tx, `UPDATE oauth_links SET outcome = 'failed', reason = ?, email = ?, finished_at = ?,
 			pkce_verifier = '', display_name = '', sync_consent_version = '' WHERE id = ? AND finished_at = 0`,
-			reason, address, now, id)
+			reason, named, r.now().Unix(), link.ID)
 		moved = n == 1
 		return err
 	})
@@ -592,6 +642,28 @@ func (r *Repository) failLink(ctx context.Context, id, address, reason string) (
 		return false, fmt.Errorf("account: record the failed link: %w", err)
 	}
 	return moved, nil
+}
+
+// heldUnderTx reports, inside the caller's transaction, whether the
+// workspace a link goes into holds a mailbox, live or removed and kept, under
+// address, as duplicateOfTx counts one. A workspace the link can no longer
+// go into holds none for it.
+func heldUnderTx(ctx context.Context, tx *sql.Tx, link PendingLink, address string) (bool, error) {
+	w, err := workspaceForTx(ctx, tx, link.WorkspaceID, link.OwnerUserID)
+	switch {
+	case errors.Is(err, ErrNoWorkspace):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	err = duplicateOfTx(ctx, tx, w.ID, link.Provider, address)
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, ErrDuplicate), errors.Is(err, ErrRemovedDuplicate):
+		return true, nil
+	}
+	return false, err
 }
 
 // createLinked creates a link's mailbox with its grant: the token sealed

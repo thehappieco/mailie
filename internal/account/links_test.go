@@ -127,6 +127,9 @@ type linkFixture struct {
 	idp      *linkIDP
 	imap     *providertest.IMAPServer
 	clock    *time.Time
+	// clockMu guards clock for a test that moves it while a finish runs in
+	// another goroutine (moveClock); a test that moves it alone needs none.
+	clockMu *sync.Mutex
 }
 
 func newLinkFixture(t *testing.T) *linkFixture {
@@ -138,7 +141,12 @@ func newLinkFixture(t *testing.T) *linkFixture {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	clock := &now
-	repo := account.NewRepository(db, keyring).WithClock(func() time.Time { return *clock })
+	clockMu := &sync.Mutex{}
+	repo := account.NewRepository(db, keyring).WithClock(func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		return *clock
+	})
 	idp := newLinkIDP(t)
 	imap := providertest.NewIMAPServer(t, providertest.IMAPOptions{AnyUser: true})
 	idp.accept = imap.AcceptToken
@@ -154,7 +162,50 @@ func newLinkFixture(t *testing.T) *linkFixture {
 	})
 	t.Cleanup(func() { _ = registry.Close() })
 	return &linkFixture{t: t, db: db, repo: repo, registry: registry, ws: workspace.NewRepository(db, nil),
-		idp: idp, imap: imap, clock: clock}
+		idp: idp, imap: imap, clock: clock, clockMu: clockMu}
+}
+
+// moveClock sets the repository's clock to at, while another goroutine may
+// be reading it.
+func (f *linkFixture) moveClock(at time.Time) {
+	f.clockMu.Lock()
+	defer f.clockMu.Unlock()
+	*f.clock = at
+}
+
+// holdWriter holds the store's one writer connection, as a long write does,
+// until the function it returns is called.
+func (f *linkFixture) holdWriter() (release func()) {
+	f.t.Helper()
+	held, done := make(chan struct{}), make(chan struct{})
+	finished := make(chan error, 1)
+	go func() {
+		finished <- f.db.Write(context.Background(), func(*sql.Tx) error {
+			close(held)
+			<-done
+			return nil
+		})
+	}()
+	<-held
+	return func() {
+		close(done)
+		if err := <-finished; err != nil {
+			f.t.Errorf("the write holding the writer: %v", err)
+		}
+	}
+}
+
+// awaitWriterWaits returns once more callers than before have waited for the
+// writer: one is blocked on it now.
+func (f *linkFixture) awaitWriterWaits(before int64) {
+	f.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for f.db.Writer().Stats().WaitCount <= before {
+		if time.Now().After(deadline) {
+			f.t.Fatal("nothing waited for the writer")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func (f *linkFixture) person(email string) auth.User {
@@ -730,6 +781,95 @@ func TestALinkFinishesWhenItsCallerHangsUpAfterTheCodeWasTaken(t *testing.T) {
 	}
 }
 
+func TestALinkTakenAfterWaitingForTheWriterIsNotCutOffWhileItFinishes(t *testing.T) {
+	f := newLinkFixture(t)
+	ana := f.person("ana@example.test")
+	link, flow := f.start(ana.ID, provider.KindGmail, "")
+	f.names(provider.KindGmail, "ana@gmail.com")
+	key := authtest.LinkKey(t)
+	exchanging, exchanged := make(chan struct{}), make(chan struct{})
+	f.idp.set(func(i *linkIDP) {
+		i.onExchange = func() {
+			close(exchanging)
+			<-exchanged
+		}
+	})
+
+	// A long write holds the one writer as the return arrives, and the take
+	// waits for it.
+	release := f.holdWriter()
+	waits := f.db.Writer().Stats().WaitCount
+	type outcome struct {
+		created account.Account
+		err     error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		created, err := f.registry.CompleteLink(context.Background(), account.Redirect{Code: "the-code", State: flow.State},
+			ana.ID, account.LinkCompletion{Key: &key})
+		done <- outcome{created, err}
+	}()
+	f.awaitWriterWaits(waits)
+	arrived := *f.clock
+	f.moveClock(arrived.Add(account.LinkTakeTimeout))
+	release()
+
+	// Its finish began when it was taken: 46 s later, 51 s after its return
+	// arrived, it is still finishing, as its starter reads it and as the
+	// sweep leaves it.
+	<-exchanging
+	f.moveClock(arrived.Add(account.LinkTakeTimeout + account.FinishTimeout + 6*time.Second))
+	if l, err := f.repo.Link(t.Context(), link.ID, ana.ID); err != nil || l.State != account.LinkFinishing {
+		t.Errorf("while it finishes, its starter reads %+v, %v", l, err)
+	}
+	if err := f.registry.SweepFlows(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	close(exchanged)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("a link taken after waiting for the writer: %v", got.err)
+	}
+	if row := f.row(link.ID); row != connectedTo(got.created.ID) {
+		t.Errorf("the link holds %+v", row)
+	}
+}
+
+func TestALinkReturnThatCannotTakeItInTimeLeavesItForTheSameReturn(t *testing.T) {
+	f := newLinkFixture(t)
+	ana := f.person("ana@example.test")
+	link, flow := f.start(ana.ID, provider.KindGmail, "")
+	f.names(provider.KindGmail, "ana@gmail.com")
+	f.registry.LinkTakeTimeoutForTest(50 * time.Millisecond)
+
+	// The writer is held longer than a take waits: nothing is taken, and the
+	// return says to come again.
+	release := f.holdWriter()
+	_, err := f.complete(flow, ana.ID, account.LinkCompletion{})
+	release()
+	if !errors.Is(err, account.ErrLinkBusy) {
+		t.Fatalf("a return whose take ran out of time: %v, want ErrLinkBusy", err)
+	}
+	if row := f.row(link.ID); row != waiting(false) || f.idp.exchangeCount() != 0 {
+		t.Fatalf("the link holds %+v and its code was exchanged %d times", row, f.idp.exchangeCount())
+	}
+	// A caller that hangs up while it waits is not told to come again.
+	release = f.holdWriter()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	key := authtest.LinkKey(t)
+	_, err = f.registry.CompleteLink(ctx, account.Redirect{Code: "the-code", State: flow.State}, ana.ID,
+		account.LinkCompletion{Key: &key})
+	release()
+	if err == nil || errors.Is(err, account.ErrLinkBusy) {
+		t.Errorf("a return whose caller hung up: %v", err)
+	}
+	// The same return, once the writer is free, connects.
+	if created, err := f.complete(flow, ana.ID, account.LinkCompletion{}); err != nil || f.row(link.ID) != connectedTo(created.ID) {
+		t.Errorf("the same return again: %+v, %v", created, err)
+	}
+}
+
 func TestAnUnansweredLinkExpiresAndIsForgottenTenMinutesLater(t *testing.T) {
 	f := newLinkFixture(t)
 	ana := f.person("ana@example.test")
@@ -970,5 +1110,54 @@ func TestAPurgedMailboxForgetsTheFailedLinksNamingItsAddress(t *testing.T) {
 	}
 	if got := f.row(other.ID); got != failed(account.ReasonMailboxRefused, "other@gmail.com", true) {
 		t.Errorf("the failed link naming another address holds %+v", got)
+	}
+}
+
+func TestALinkRefusedForAMailboxDeletedForGoodBeforeItsRefusalIsRecordedNamesNoAddress(t *testing.T) {
+	f := newLinkFixture(t)
+	ana := f.person("ana@example.test")
+	own := authtest.Personal(t, f.db, ana.ID)
+	link, flow := f.start(ana.ID, provider.KindGmail, "")
+	f.names(provider.KindGmail, "Jane.Doe@gmail.com")
+
+	// The mailbox appears while the grant is proved, after the check made
+	// before it: the transaction that would create the link's mailbox
+	// refuses it.
+	var held account.Account
+	f.registry.CheckGrantsIn(func(ctx context.Context, _ string, check func(context.Context) error) error {
+		var err error
+		held, err = f.repo.Create(ctx, account.Account{
+			ID: "acc_jane", Email: "jane.doe@gmail.com", Provider: provider.KindGmail, AuthKind: "oauth2",
+			IMAPHost: "imap.gmail.com", IMAPPort: 993, SMTPHost: "smtp.gmail.com", SMTPPort: 465, SMTPTLS: "implicit",
+			LoginUser: "jane.doe@gmail.com", WorkspaceID: own,
+		}, ana.ID)
+		if err != nil {
+			return err
+		}
+		return check(ctx)
+	})
+	// Its owner deletes it for good while that transaction runs: the
+	// deletion waits for the writer, and commits before the refusal is
+	// recorded.
+	purged := make(chan error, 1)
+	_, err := f.complete(flow, ana.ID, account.LinkCompletion{Check: func(ctx context.Context, _ *sql.Tx) error {
+		waits := f.db.Writer().Stats().WaitCount
+		go func() { purged <- f.repo.Delete(context.WithoutCancel(ctx), held.ID) }()
+		f.awaitWriterWaits(waits)
+		return nil
+	}})
+	if !errors.Is(err, account.ErrDuplicate) {
+		t.Fatalf("a link to a mailbox the workspace holds: %v, want ErrDuplicate", err)
+	}
+	if err := <-purged; err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(`SELECT count(*) FROM accounts`); n != 0 {
+		t.Fatalf("%d mailboxes left", n)
+	}
+	// The link failed as a duplicate, and keeps no address of a mailbox
+	// deleted for good.
+	if got := f.row(link.ID); got != failed(account.ReasonDuplicate, "", true) {
+		t.Errorf("the refused link holds %+v", got)
 	}
 }

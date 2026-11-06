@@ -67,6 +67,12 @@ func IdentityForTest(kind provider.Kind, client OAuthClient, idToken any, now ti
 	return identityOf(kind, client, token, now)
 }
 
+// LinkTakeTimeoutForTest shortens how long a link's return waits to take its
+// link, so a test need not hold the writer for LinkTakeTimeout.
+func (r *Registry) LinkTakeTimeoutForTest(d time.Duration) {
+	r.linkTakeTimeout = d
+}
+
 // RefusalForTest is the error a redirect carrying error=code stands for, and
 // the state_reason a flow ended by it leaves on the account.
 func RefusalForTest(code, description string) (reason string, err error) {

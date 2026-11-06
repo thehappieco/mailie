@@ -109,8 +109,10 @@ const (
 	linkPrecheckTimeout = 20 * time.Second
 	// linkStepUpSpare is what a link's return asks of the step-up beyond
 	// its finish: still fresh once the code is exchanged and the login is
-	// over, when the transaction that creates the mailbox asks again.
-	linkStepUpSpare = 5 * time.Second
+	// over, when the transaction that creates the mailbox asks again. The
+	// take waits for the writer account.LinkTakeTimeout at most, and the
+	// finish runs from the take; five seconds more are slack.
+	linkStepUpSpare = account.LinkTakeTimeout + 5*time.Second
 	// maxLinkName is the longest name a link keeps for its mailbox until its
 	// return, in characters.
 	maxLinkName = 200
@@ -138,6 +140,10 @@ const (
 	// msgLinkSlow is a return whose checks before its code is taken ran out
 	// of time: nothing was taken, and the same return may be posted again.
 	msgLinkSlow = "upstream: checking that you may still finish this link took too long; nothing was taken, " +
+		"so post the same return again shortly"
+	// msgLinkBusy is a return that could not take its link in time, the
+	// server busy writing something else: nothing was taken either.
+	msgLinkBusy = "the server was too busy to take this return just now; nothing was taken, " +
 		"so post the same return again shortly"
 )
 
@@ -229,7 +235,8 @@ func (s *Service) GetLink(ctx context.Context, p Principal, id string) (Link, er
 // is over. Then the registry takes the link, exchanges its code, learns the
 // address, proves one login with it and creates the mailbox, its key and the
 // person's grant in one transaction, which asks who may link and the step-up
-// again under its own context.
+// again under its own context. A take that could not get the writer in time
+// has taken nothing either: internal, with a Retry, for the same return.
 func (s *Service) completeLink(ctx context.Context, p Principal, rd account.Redirect, req CompleteOAuthRequest,
 	pending account.PendingLink,
 ) (Account, error) {
@@ -327,6 +334,8 @@ func fromLink(err error) error {
 		return fromUsers(err, "reading the step-up failed")
 	case errors.Is(err, account.ErrNoLinkKey):
 		return errLinkKeyNeeded
+	case errors.Is(err, account.ErrLinkBusy):
+		return &Error{Code: CodeInternal, Message: msgLinkBusy, Retry: freshRetry, Err: err}
 	case errors.Is(err, account.ErrNotFound), errors.Is(err, account.ErrFlowExpired):
 		return E(CodeNotFound, msgLinkGone, err)
 	}

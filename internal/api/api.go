@@ -369,8 +369,9 @@ func (h *Handler) startOAuth(q *request) {
 }
 
 // callbackTimeout is how long POST /v1/accounts/oauth/callback waits: a
-// link's checks before its code is taken (twenty seconds at most), its
-// finish (account.FinishTimeout, forty), and ten to answer.
+// link's checks before its code is taken (twenty seconds at most), its take
+// (account.LinkTakeTimeout, five), its finish (account.FinishTimeout,
+// forty), and five to answer.
 const callbackTimeout = 70 * time.Second
 
 func (h *Handler) completeOAuth(q *request) {

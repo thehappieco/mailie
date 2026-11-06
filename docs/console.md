@@ -1173,7 +1173,9 @@ uses `POST /v1/accounts` with the address.
   20 seconds: the key's shapes, who may still link there (and that the ticked sync text is still the
   current one), the freshness hook for a team, the account key, and a step-up still fresh once the
   finish is over. A refusal here leaves the link for the same return posted again. Then the
-  daemon takes the link, once, exchanges the code, reads the address from the token endpoint's ID
+  daemon takes the link, once, waiting for its one writer five seconds at most (busier than that,
+  nothing is taken: `500` with a `Retry-After`, for the same return), and from that moment, which
+  the link records, exchanges the code, reads the address from the token endpoint's ID
   token (its audience, issuer, Microsoft's tenant, its times, Google's verification), refuses a
   mailbox the workspace holds under it, live or removed, under any spelling of one Gmail account
   (one `409` for both, so an admin who is not an owner learns nothing of a removed one), proves
@@ -1185,8 +1187,9 @@ uses `POST /v1/accounts` with the address.
   return it did not hear the answer of ended, or follows one still `finishing`. A failed link says
   why with one of the reasons below, or `the provider named no usable address for the account`
   or `the address is already linked in this workspace`, and the address once the provider named
-  one; a connected one names its mailbox and no address. Its row goes 10 minutes after it expires;
-  a mailbox deleted for good takes the failed links naming its address with it.
+  one (a duplicate's only while the workspace still holds a mailbox under it); a connected one
+  names its mailbox and no address. Its row goes 10 minutes after it expires; a mailbox deleted for
+  good takes the failed links naming its address with it.
 - **Where it ends.** A link goes in the transaction that ends its starter's consent attempts
   (a disable, a suspension, a deletion, leaving or being removed from the team, a demotion, a held
   membership, the team closing), and with a reset, a recovery and a sign-out everywhere; its return

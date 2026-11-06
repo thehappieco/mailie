@@ -100,6 +100,10 @@ type Registry struct {
 	// export_test.go, to stand an in-process server in for a provider whose
 	// servers are constants and cannot be overridden, such as iCloud's.
 	redirect map[string]string
+
+	// linkTakeTimeout is how long a link's return waits for the writer to
+	// take its link: LinkTakeTimeout, shorter only in the package's tests.
+	linkTakeTimeout time.Duration
 }
 
 // waiter is one attempt the daemon is completing by itself.
@@ -190,6 +194,7 @@ func NewRegistry(ctx context.Context, repo *Repository, opts RegistryOptions) *R
 		mailboxes:       map[string]provider.Mailbox{},
 		sources:         map[string]*tokenSource{},
 		waiting:         map[string]*waiter{},
+		linkTakeTimeout: LinkTakeTimeout,
 	}
 }
 
@@ -1010,10 +1015,11 @@ const grantCheckTimeout = 30 * time.Second
 // finishTimeout bounds everything after a consent is answered, detached from
 // whoever is waiting: exchanging the code, the grant check, and storing the
 // grant, for which the check always leaves persistTimeout; for a link at the
-// provider, also reading its address and creating its mailbox. The callback
-// route gives its caller 70 s, a link's checks before its code is taken
-// (20 s at most) and this, and the loopback page waits a little longer than
-// this, so both hear how it ended.
+// provider, also reading its address and creating its mailbox, bounded from
+// its take. The callback route gives its caller 70 s, a link's checks before
+// its code is taken (20 s at most), its take (LinkTakeTimeout) and this, and
+// the loopback page waits a little longer than this, so both hear how it
+// ended.
 const finishTimeout = grantCheckTimeout + persistTimeout
 
 // FinishTimeout is finishTimeout for the callers that bound what they do

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"maps"
 	"net/url"
 	"strings"
@@ -520,6 +521,28 @@ func TestALinkWhoseStepUpLapsedIsRefusedBeforeItsCodeIsExchanged(t *testing.T) {
 	w.stepUp(t, w.ana)
 	if _, err := w.finish(t, w.ana, started); err != nil {
 		t.Fatalf("the same return after a step-up: %v", err)
+	}
+}
+
+func TestALinkReturnTheServerWasTooBusyToTakeIsToldToComeAgain(t *testing.T) {
+	// The take waits for the writer a few seconds at most (the registry's
+	// tests hold it): nothing was taken, so the same return is posted again
+	// once the server says, and never read as a refusal.
+	err := service.LinkErrorForTest(fmt.Errorf("%w: store: begin: %w", account.ErrLinkBusy, context.DeadlineExceeded))
+	var se *service.Error
+	if !errors.As(err, &se) || se.Code != service.CodeInternal || se.Retry <= 0 {
+		t.Fatalf("a return too busy to take: %#v", err)
+	}
+	// And a step-up checked before the take lasts through the longest take
+	// and the finish after it.
+	w := newLinkWorld(t)
+	started := w.start(t, w.ana, service.LinkRequest{})
+	w.exec(t, `UPDATE sessions SET authenticated_at = ? WHERE id = ?`,
+		time.Now().Add(-10*time.Minute+account.FinishTimeout+account.LinkTakeTimeout+time.Second).Unix(), w.ana.SessionID)
+	w.googleNames("ana.lima@gmail.com")
+	if _, err := w.finish(t, w.ana, started); service.CodeOf(err) != service.CodeNotAuthorized || w.idp.exchangeCount() != 0 {
+		t.Errorf("a step-up that would lapse during the longest take and finish: %v, exchanged %d times", err,
+			w.idp.exchangeCount())
 	}
 }
 

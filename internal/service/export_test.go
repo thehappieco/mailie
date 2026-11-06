@@ -15,3 +15,7 @@ func SetSendRetryForTest(s *Service, waits ...time.Duration) { s.sendRetry = wai
 func SignInExternalMeanwhileForTest(ctx context.Context, s *Service, in ExternalSignIn, meanwhile func()) (ExternalSignedIn, error) {
 	return s.signInExternal(ctx, in, meanwhile)
 }
+
+// LinkErrorForTest is what a link at the provider's start or return answers
+// for err, as the registry returned it.
+func LinkErrorForTest(err error) error { return fromLink(err) }
