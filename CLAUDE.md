@@ -216,12 +216,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `MaxLinksWaiting` (5) waiting per person, a new one replacing theirs for the same provider and
   workspace; it learns the address from the token endpoint's ID token (`identity.go`: audience,
   issuer, Microsoft's tenant, times, Google's verification; no signature, as OIDC allows there;
-  every refusal `ErrNoAddress` naming only its check; nothing else of the token kept), refuses a
-  mailbox the workspace holds, proves the grant, and creates the mailbox with its key and its
-  linker's grant in one transaction that finishes the link (`ErrFlowExpired` if it ended meanwhile,
+  every refusal `ErrNoAddress` naming only its check; nothing else of the token kept) once its
+  return took it (`taken_at`, read in the take's transaction, which waits for the writer
+  `LinkTakeTimeout`, 5 s, at most: `ErrLinkBusy`, nothing taken; its finish bounded from then),
+  refuses a mailbox the workspace holds, proves the grant, and creates the mailbox with its key and
+  its linker's grant in one transaction that finishes the link (`ErrFlowExpired` if it ended meanwhile,
   `store.EndLinksTx`, which runs wherever its starter's consent attempts end, and on a reset, a
   recovery and a sign-out everywhere). A finished link keeps no verifier, a connected one no
-  address; a failed one its reason and the address named, which a purge of that mailbox deletes.
+  address; a failed one its reason and the address named (a duplicate's only while the workspace
+  still holds a mailbox under it), which a purge of that mailbox deletes.
   Re-authorizing keeps the mailbox's scopes and `login_hint`.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
@@ -286,8 +289,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   operator's acts, or a key's own acts.
 - `internal/api` — REST `/v1/...`, SSE and the long poll; a link at the provider's routes sit beside
   `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
-  `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks
-  and its finish. `internal/mcp` — tools, resources and the
+  `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks,
+  its take and its finish. `internal/mcp` — tools, resources and the
   transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
   `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
   process (the SDK's `SchemaCache` keeps each schema by pointer, forever), and an event store of its

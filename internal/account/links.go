@@ -280,17 +280,18 @@ func (r *Registry) OwnedLink(ctx context.Context, state, owner string) (PendingL
 // waits for the writer LinkTakeTimeout at most: one that could not take the
 // link by then has taken nothing (ErrLinkBusy), and the same return may be
 // posted again. Once taken, everything runs detached from the request,
-// bounded by finishTimeout from the take: the code is single-use. A return carrying an error records the refusal. One
-// carrying a code is exchanged with the scopes that name the address; the
-// address read (ErrNoAddress); a mailbox the workspace holds under it, live
-// or removed, under any spelling of one Gmail account, refused (ErrDuplicate,
-// or a *RemovedDuplicateError) with nothing stored or revoked; the grant
-// proved by one login as that address (checkGrant); and the mailbox, its
-// credential, its key, its linker's grant and the team's consent created in
-// one transaction, which checks again that the person is active, runs
-// c.Check, and finishes the link: one that ended meanwhile (EndLinksTx)
-// creates nothing (ErrFlowExpired). Every ending but that one is recorded on
-// the link, with the address once the provider named it.
+// bounded by finishTimeout from the take: the code is single-use. A return
+// carrying an error records the refusal. One carrying a code is exchanged
+// with the scopes that name the address; the address read (ErrNoAddress); a
+// mailbox the workspace holds under it, live or removed, under any spelling
+// of one Gmail account, refused (ErrDuplicate, or a *RemovedDuplicateError)
+// with nothing stored or revoked; the grant proved by one login as that
+// address (checkGrant); and the mailbox, its credential, its key, its
+// linker's grant and the team's consent created in one transaction, which
+// checks again that the person is active, runs c.Check, and finishes the
+// link: one that ended meanwhile (EndLinksTx) creates nothing
+// (ErrFlowExpired). Every ending but that one is recorded on the link, with
+// the address once the provider named it.
 func (r *Registry) CompleteLink(ctx context.Context, rd Redirect, owner string, c LinkCompletion) (Account, error) {
 	if rd.State == "" {
 		return Account{}, fmt.Errorf("%w: it carries no state parameter; paste the whole address", ErrBadRedirect)
