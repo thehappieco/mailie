@@ -148,6 +148,19 @@ describe('an edition’s own step-up', () => {
     expect(done).toBe(true)
   })
 
+  it('asks a link for a password from the last few minutes, never claiming one from the last ten is too old', async () => {
+    // A link asks with minutes to spare (state/accounts.ts), so a password entered six minutes ago is asked again.
+    const s = await load()
+    void s.askStepUp('link', 300).catch(() => {})
+    const link = await drawn(s.StepUpPrompt)
+    expect(link).toContain('For your safety, connecting a mailbox needs your password from the last few minutes. It is processed here and never sent.')
+    expect(link).not.toContain('ten minutes')
+    s.stepUpRefused()
+    void s.askStepUp('grant').catch(() => {})
+    expect(await drawn(s.StepUpPrompt)).toContain('For your safety, this needs your password from the last ten minutes. It is processed here and never sent.')
+    s.stepUpRefused()
+  })
+
   it('words the sentence beside a guarded write as the edition says, and the open edition’s names the password', async () => {
     let s = await load()
     expect(s.stepUpHint()).toBe('It asks for your password if you have not entered it in the last ten minutes.')

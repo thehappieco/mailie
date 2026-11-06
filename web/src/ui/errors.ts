@@ -350,6 +350,7 @@ function general(failure: Failure): string {
     case 'return_invalid': return t('The provider sent back an incomplete answer. Start again.')
     case 'return_expired': return t('This authorization took too long and expired. Start again.')
     case 'step_up_closed': return t('Mailie needs to confirm it is you to finish connecting the mailbox. Start again.')
+    case 'storage_refused': return t('This browser did not let Mailie keep what connecting needs while you are on the provider’s page. Allow this site to store data, then try again.')
     case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'security': return t('This server answered something Mailie does not trust, so nothing more was sent. Tell the administrator of this server.')

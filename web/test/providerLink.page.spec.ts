@@ -107,6 +107,17 @@ describe('connecting Gmail or Microsoft at the provider', () => {
     expect(sent('POST', '/v1/accounts')).toEqual([expect.objectContaining({ email: 'compartilhada@example.test', provider: 'microsoft' })])
   })
 
+  it.each(['gmail', 'microsoft'] as const)('asks %s for the address in a browser that refuses site storage, where a link’s return could not be finished', async provider => {
+    vi.stubGlobal('sessionStorage', { getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') }, removeItem() { throw new Error('denied') } })
+    await choosing(provider, ['web'])
+    expect(find('dialog input[name=mailbox]')).not.toBeNull()
+    expect(find('dialog .address-switch')).toBeNull()
+    await fill(find('dialog input[name=mailbox]'), 'suporte@example.test')
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(sent('POST', '/v1/accounts')).toHaveLength(1))
+    expect(sent('POST', '/v1/accounts/oauth/links')).toEqual([])
+  })
+
   it.each(['gmail', 'microsoft'] as const)('asks %s for the address where the server offers only the installed client’s flow', async provider => {
     await choosing(provider, ['loopback'])
     expect(find('dialog input[name=mailbox]')).not.toBeNull()

@@ -29,9 +29,11 @@
 // its ten minutes are up (sweepOAuthStorage), as soon as the console is running
 // in the tab; sessionStorage itself goes when the tab closes. A browser that
 // refuses site storage
-// still finishes a return on the page load that received it: the return is
-// also held in memory until it is taken (it cannot survive a reload there,
-// and the start cannot name the mailbox).
+// still finishes a consent's return on the page load that received it: the
+// return is also held in memory until it is taken (it cannot survive a reload
+// there, and the start cannot name the mailbox). A link's return needs its
+// start, which says it is a link's and carries its key: such a tab starts no
+// link (canKeepOAuthStart), and names the mailbox's address instead.
 
 import type { Link, ProviderID } from '../api/types'
 import { linkProviders, providerIDs } from '../api/types'
@@ -108,8 +110,9 @@ function read<T>(key: string): T | null {
   } catch { return null }
 }
 
-function write(key: string, value: unknown): void {
-  try { sessionStorage.setItem(key, JSON.stringify(value)) } catch { /* Storage refused: the in-memory copy from captureOAuthReturn still finishes a return on this page load. */ }
+/** Whether it was kept: storage refused, the in-memory copy from captureOAuthReturn still finishes a consent's return on this page load. */
+function write(key: string, value: unknown): boolean {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); return true } catch { return false }
 }
 
 function remove(key: string): void {
@@ -180,14 +183,30 @@ export function oauthBack(start: unknown, origin: string, now = Date.now()): str
  * say which mailbox, or which link, it was, and come back to back: the path of
  * the page it left from (location.pathname), kept only when it is one
  * checkBack takes. A return still waiting in this tab belonged to the flow
- * this one replaces: it goes.
+ * this one replaces: it goes. Answers whether the start was kept: a link's
+ * return cannot be finished without it.
  */
-export function rememberOAuthStart(start: OAuthStartInput, now = Date.now()): void {
+export function rememberOAuthStart(start: OAuthStartInput, now = Date.now()): boolean {
   const { back, ...rest } = start
   const kept = typeof location === 'undefined' ? null : checkBack(back, location.origin)
   captured = null
   remove(RETURN_KEY)
-  write(START_KEY, { ...rest, started_at: now, ...(kept ? { back: kept } : {}) } satisfies OAuthStart)
+  return write(START_KEY, { ...rest, started_at: now, ...(kept ? { back: kept } : {}) } satisfies OAuthStart)
+}
+
+/**
+ * Whether this tab keeps a start across the trip to the provider and back:
+ * its session storage takes a write. A browser that refuses site storage
+ * loses it on the way, and with it what tells a link's return from a
+ * consent's.
+ */
+export function canKeepOAuthStart(): boolean {
+  const probe = `${START_KEY}.probe`
+  try {
+    sessionStorage.setItem(probe, '1')
+    sessionStorage.removeItem(probe)
+    return true
+  } catch { return false }
 }
 
 /** The start record, if this tab left one recently, read and left where it is: a link's waits until its return is answered. */

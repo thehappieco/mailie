@@ -1202,9 +1202,13 @@ uses `POST /v1/accounts` with the address.
   form keeps the address form one small link away ("Enter the mailbox's address instead", for a
   shared mailbox and for an organization whose administrator must approve Mailie), with a link
   back; that form is `POST /v1/accounts` with the address, as before. Gmail has no such link. A
-  server with only the installed client asks for the address, as before. The step-up is asked with
-  five minutes to spare before the page leaves (`PROVIDER_LINK_STEP_UP_MARGIN_S`), and the start
-  kept in the tab names the link, never an address. How its return ends is under
+  server with only the installed client asks for the address, as before, and so does a browser that
+  refuses site storage: the start, which tells a link's return from a consent's and has it carry
+  the key, would be lost on the way to the provider (`canKeepOAuthStart`; a start that could not be
+  kept leaves for no provider, `storage_refused`). The step-up is asked with five minutes to spare
+  before the page leaves (`PROVIDER_LINK_STEP_UP_MARGIN_S`), and its dialog says a link needs a
+  password from the last few minutes, never that one from the last ten is too old. The start kept
+  in the tab names the link, never an address. How its return ends is under
   [OAuth flows](#oauth-flows), "How the web flow ends".
 
 ### Mailbox keys
@@ -1397,7 +1401,10 @@ the page that comes back within its ten minutes (a new start in the tab drops it
 mailbox's first key is made and sealed, and posted with the return (`{redirect_url, public_key,
 namespace, grant}`); a `403` after which the step-up is no longer fresh asks for it again and posts
 a new key. The page waits 75 seconds, longer than the route's 70. Once the server answered, the
-return goes. A success is the mailbox, as `GET /v1/accounts/{id}` shows it: its workspace is shown,
+return goes, but for one answer: a `500` or `503` with a `Retry-After` while the link still reads
+`waiting` (the server could not confirm the person in time, or was too busy to take the link:
+nothing was taken) keeps it in the tab and posts it again once, after that wait (a minute at most,
+while the link and the provider's code are still open). A success is the mailbox, as `GET /v1/accounts/{id}` shows it: its workspace is shown,
 with "{email} is connected". A refusal, or no answer at all (a timeout, a dropped connection), is
 followed by `GET /v1/accounts/oauth/links/{id}`, every 2 seconds while it says `finishing`: a
 connected link's mailbox is read with `GET /v1/accounts/{id}` (the visibility rule decides), and a

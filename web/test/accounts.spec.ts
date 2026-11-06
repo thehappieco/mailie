@@ -647,6 +647,20 @@ describe('linking a mailbox at the provider', () => {
     expect(JSON.parse(sessionStorage.getItem('mailie.oauthStart')!)).not.toHaveProperty('workspace_id')
   })
 
+  it('leaves for no provider from a tab that cannot keep the link, whose return could not be finished, and says why', async () => {
+    // Site storage refused: the start would be lost on the way, and the return taken for a consent's, without its key.
+    vi.stubGlobal('sessionStorage', { getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') }, removeItem() { throw new Error('denied') } })
+    const { store, stepUp, fetch, navigate } = await signedIn(starting, { ...reply(), authenticated_at: 0 })
+    expect(store.linksAtProvider('gmail')).toBe(false)
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(store.connect.failure).toEqual({ op: 'start-link', code: 'storage_refused' })
+    expect(stepUp.stepUpPrompt.open).toBe(false)
+    expect(linkStarts(fetch)).toEqual([])
+    expect(navigate).not.toHaveBeenCalled()
+    const { describe: describeFailure } = await import('../src/ui/errors')
+    expect(describeFailure(store.connect.failure!)).toBe('This browser did not let Mailie keep what connecting needs while you are on the provider’s page. Allow this site to store data, then try again.')
+  })
+
   it('links nothing for a person without an account key, saying so before any step-up or request', async () => {
     const { store, stepUp, fetch } = await signedIn(starting, { ...reply(undefined, { ...ana, public_key: undefined }), authenticated_at: 0 })
     await store.connectAtProvider({ provider: 'gmail' })

@@ -26,7 +26,10 @@
 // mailbox's first key, made then, after a step-up still fresh enough for the
 // server's own checks, asked before the return is taken from the tab. A
 // return refused, or unanswered, is followed by asking the link how it
-// ended, every 2 s while it is finishing.
+// ended, every 2 s while it is finishing; one the server asked to wait for
+// while it took nothing is posted again, once. A tab that cannot keep the
+// start until the return (a browser that refuses site storage) links
+// nothing at the provider, and asks for the address instead.
 //
 // Removing a mailbox keeps it 30 days, recoverable by its workspace's owners
 // (docs/workspaces.md, "Removed mailboxes"), or, for one that never
@@ -47,7 +50,7 @@ import { noticeText } from '../ui/notices'
 import type { LinkFacts, ReasonFacts } from '../ui/reasons'
 import { server } from './connection'
 import { failure, type Failure, type Operation } from './failure'
-import { FLOW_LIFETIME_MS, isLinkStart, peekOAuthReturn, peekOAuthStart, rememberOAuthStart, takeOAuthReturn, takeOAuthStart, type LinkStart, type OAuthReturn } from './oauthReturn'
+import { canKeepOAuthStart, FLOW_LIFETIME_MS, isLinkStart, peekOAuthReturn, peekOAuthStart, rememberOAuthStart, takeOAuthReturn, takeOAuthStart, type LinkStart, type OAuthReturn } from './oauthReturn'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
 import { loadWorkspaces, selectWorkspace, settleWorkspace, workspaces, workspaceVanished, WorkspacesUnknown } from './workspaces'
@@ -810,10 +813,16 @@ export async function connectOAuthAccount(input: { provider: ProviderID; email: 
   follow(generation, result.auth, { state: result.account.state, reason: result.account.state_reason ?? '' })
 }
 
-/** Whether the server links this provider's mailboxes at the provider for this person: the web flow, which a link takes. */
+/**
+ * Whether this provider's mailboxes are linked at the provider here: the
+ * server offers the web flow, which a link takes, and this tab keeps the
+ * link's start until its return, without which the return cannot be told
+ * from a consent's (state/oauthReturn.ts). Otherwise the mailbox's address is
+ * asked, as before.
+ */
 export function linksAtProvider(provider: ProviderID | ''): provider is Link['provider'] {
   if (provider !== 'gmail' && provider !== 'microsoft') return false
-  return accounts.providersLoaded && !!accounts.providers.find(item => item.id === provider)?.flows.includes('web')
+  return accounts.providersLoaded && !!accounts.providers.find(item => item.id === provider)?.flows.includes('web') && canKeepOAuthStart()
 }
 
 /**
@@ -831,6 +840,8 @@ export async function connectAtProvider(input: { provider: Link['provider']; dis
   if (input.displayName) body.display_name = input.displayName
   if (input.workspaceID) body.workspace_id = input.workspaceID
   if (input.workspaceID && input.syncConsentVersion) body.sync_consent_version = input.syncConsentVersion
+  // A tab that would lose the start on the way leaves for no provider: its return could not be finished.
+  if (!canKeepOAuthStart()) { fail(generation, 'start-link', 'storage_refused'); return }
   let started
   try {
     // A person without an account key links nothing, and is told so before any step-up.
@@ -849,7 +860,11 @@ export async function connectAtProvider(input: { provider: Link['provider']; dis
   if (!url || auth.flow !== 'web') { fail(generation, 'start-link', 'flow_unsupported'); return }
   connect.flow = 'web'
   connect.expiresAt = auth.expires_at ?? link.expires_at
-  rememberOAuthStart({ link_id: link.id, provider: link.provider, ...(link.workspace_id ? { workspace_id: link.workspace_id } : {}), back: location.pathname })
+  if (!rememberOAuthStart({ link_id: link.id, provider: link.provider, ...(link.workspace_id ? { workspace_id: link.workspace_id } : {}), back: location.pathname })) {
+    // Nothing waits on it: the link expires on its own.
+    fail(generation, 'start-link', 'storage_refused')
+    return
+  }
   connect.phase = 'redirecting'
   navigation.assign(url)
 }
@@ -1038,6 +1053,25 @@ async function linkOutcome(id: string, same: () => boolean): Promise<Link | null
 }
 
 /**
+ * The longest a link's return waits, as its server asked, before it is
+ * posted again: the server refused it before taking the link, so nothing was
+ * spent.
+ */
+export const LINK_RETRY_MAX_WAIT_S = 60
+/** How soon after it is posted the server takes a link's return at the latest: its checks first (20 s at most), then the take (5 s). */
+const LINK_TAKEN_WITHIN_MS = 25_000
+
+/**
+ * Whether a refusal of a link's return is one to post the same return again
+ * after: the server's own trouble with a wait it named (it could not confirm
+ * the person in time, or was too busy to take the link), never an answer
+ * about the person or the link.
+ */
+function retryLater(error: unknown): error is ApiError & { retryAfter: number } {
+  return error instanceof ApiError && (error.code === 'internal' || error.code === 'unavailable') && error.retryAfter !== undefined
+}
+
+/**
  * finishLinkReturn posts a link at the provider's return, with the mailbox's
  * first key when it carries a code, and says how it ended.
  *
@@ -1048,11 +1082,14 @@ async function linkOutcome(id: string, same: () => boolean): Promise<Link | null
  * step-up that sends the whole tab elsewhere, for the page that comes back.
  * The key is made then, sealed to the person's own account key, and made anew
  * if the server asks for the step-up again. Once the server answered, the
- * return goes. A refusal, or no answer, is followed by the link: a mailbox
- * it connected is read as the person may see it (GET /v1/accounts/{id}),
- * and one it failed says why, with the address once the provider named one.
- * Either way, the workspace it went into is shown when the person still has
- * it.
+ * return goes, but for one answer: a refusal that asks to wait while the link
+ * still waits, nothing taken, is posted again once, after that wait (at most
+ * LINK_RETRY_MAX_WAIT_S, and while the link and the return are both still
+ * open), the return kept in the tab meanwhile. A refusal, or no answer, is
+ * followed by the link: a mailbox it connected is read as the person may see
+ * it (GET /v1/accounts/{id}), and one it failed says why, with the address
+ * once the provider named one. Either way, the workspace it went into is
+ * shown when the person still has it.
  */
 async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<void> {
   const person = identity()
@@ -1061,45 +1098,62 @@ async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<v
   await settleWorkspace().catch(() => '')
   if (!same()) return
   const declined = new URL(found.url).searchParams.has('error')
-  let account: Account
-  try {
+  const post = async (): Promise<Account> => {
     if (declined) {
       settleReturn()
-      account = await authorized(token => api.completeOAuth(token, found.url))
-    } else {
-      const linker = session.user
-      if (!linker || !enrolled(linker)) throw new CeremonyError('not_enrolled')
-      account = await withStepUp('link', async () => {
-        const key = await linkKey(linker)
-        return authorized(token => api.completeOAuth(token, found.url, key))
-      }, LINK_STEP_UP_MARGIN_S)
+      return authorized(token => api.completeOAuth(token, found.url))
     }
-  } catch (error) {
-    // A session that ended keeps the return for the person's next sign-in in this tab.
-    if (!same()) return
-    const facts: LinkFacts = { provider: start.provider }
-    if (error instanceof StepUpCancelled) {
-      showLinkWorkspace(start.workspace_id)
-      accounts.notice = { kind: 'failed', email: '', failure: { op: 'complete-link', code: 'step_up_closed', link: facts } }
+    const linker = session.user
+    if (!linker || !enrolled(linker)) throw new CeremonyError('not_enrolled')
+    return withStepUp('link', async () => {
+      const key = await linkKey(linker)
+      return authorized(token => api.completeOAuth(token, found.url, key))
+    }, LINK_STEP_UP_MARGIN_S)
+  }
+  let account: Account
+  let retried = false
+  for (;;) {
+    try {
+      account = await post()
+      break
+    } catch (error) {
+      // A session that ended keeps the return for the person's next sign-in in this tab.
+      if (!same()) return
+      const facts: LinkFacts = { provider: start.provider }
+      if (error instanceof StepUpCancelled) {
+        showLinkWorkspace(start.workspace_id)
+        accounts.notice = { kind: 'failed', email: '', failure: { op: 'complete-link', code: 'step_up_closed', link: facts } }
+        return
+      }
+      const failed = failure('complete-link', error)
+      // Refused in this browser: nothing was sent, and the link has nothing to say.
+      const link = error instanceof CeremonyError ? null : await linkOutcome(start.link_id, same)
+      if (!same()) return
+      if (!retried && !declined && retryLater(error) && link?.state === 'waiting') {
+        const wait = Math.min(Math.max(error.retryAfter, 1), LINK_RETRY_MAX_WAIT_S) * 1000
+        // Posted again only while the provider's code and the link may both still be taken by then.
+        const open = Math.min(link.expires_at * 1000, found.at + FLOW_LIFETIME_MS) - Date.now()
+        if (open > wait + LINK_TAKEN_WITHIN_MS) {
+          retried = true
+          await pauseFor(wait)
+          if (!same()) return
+          continue
+        }
+      }
+      settleReturn()
+      const made = link?.state === 'connected' && link.account_id ? await refreshAccount(link.account_id) : undefined
+      if (!same()) return
+      showLinkWorkspace(made?.workspace_id ?? link?.workspace_id ?? start.workspace_id)
+      if (made) {
+        upsert(made)
+        if (made.state === 'active') notify({ kind: 'connected', email: made.email, syncing: made.sync.enabled })
+        else accounts.notice = { kind: 'failed', email: made.email, failure: { op: 'complete-link', code: 'flow_failed', account: failing(made) } }
+        return
+      }
+      if (link?.state === 'failed') facts.reason = link.reason
+      accounts.notice = { kind: 'failed', email: link?.state === 'failed' ? link.email ?? '' : '', failure: { ...failed, link: facts } }
       return
     }
-    settleReturn()
-    const failed = failure('complete-link', error)
-    // Refused in this browser: nothing was sent, and the link has nothing to say.
-    const link = error instanceof CeremonyError ? null : await linkOutcome(start.link_id, same)
-    if (!same()) return
-    const made = link?.state === 'connected' && link.account_id ? await refreshAccount(link.account_id) : undefined
-    if (!same()) return
-    showLinkWorkspace(made?.workspace_id ?? link?.workspace_id ?? start.workspace_id)
-    if (made) {
-      upsert(made)
-      if (made.state === 'active') notify({ kind: 'connected', email: made.email, syncing: made.sync.enabled })
-      else accounts.notice = { kind: 'failed', email: made.email, failure: { op: 'complete-link', code: 'flow_failed', account: failing(made) } }
-      return
-    }
-    if (link?.state === 'failed') facts.reason = link.reason
-    accounts.notice = { kind: 'failed', email: link?.state === 'failed' ? link.email ?? '' : '', failure: { ...failed, link: facts } }
-    return
   }
   settleReturn()
   if (!same()) return

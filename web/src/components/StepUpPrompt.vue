@@ -10,5 +10,5 @@ import StepUpDialog from './StepUpDialog.vue'
 </script>
 
 <template>
-  <StepUpDialog v-if="stepUpPrompt.open && !edition().stepUp" @done="stepUpGiven" @close="stepUpRefused" />
+  <StepUpDialog v-if="stepUpPrompt.open && !edition().stepUp" :reason="stepUpPrompt.reason" @done="stepUpGiven" @close="stepUpRefused" />
 </template>

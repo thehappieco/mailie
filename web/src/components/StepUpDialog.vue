@@ -5,8 +5,12 @@
 // this session (state/stepUp.ts asks; components/StepUpPrompt.vue shows
 // this). Replacing the recovery code and changing the password prove the
 // password in their own request instead. The password is derived here as at
-// sign-in and never sent; only this session's step-up time moves.
-import { ref } from 'vue'
+// sign-in and never sent; only this session's step-up time moves. A link asks
+// with minutes of the ten to spare (state/accounts.ts), for the provider's
+// page and the server's checks, so it says it needs a password from the last
+// few minutes, never that one from the last ten is too old.
+import { computed, ref } from 'vue'
+import type { StepUpReason } from '../edition'
 import { stepUp } from '../state/account'
 import { failure, type Failure } from '../state/failure'
 import { session } from '../state/session'
@@ -15,7 +19,11 @@ import { t } from '../ui/i18n'
 import ConsoleDialog from './ConsoleDialog.vue'
 import PasswordInput from './PasswordInput.vue'
 
+const props = defineProps<{ reason?: StepUpReason | null }>()
 const emit = defineEmits<{ done: []; close: [] }>()
+const why = computed(() => props.reason === 'link'
+  ? t('For your safety, connecting a mailbox needs your password from the last few minutes. It is processed here and never sent.')
+  : t('For your safety, this needs your password from the last ten minutes. It is processed here and never sent.'))
 const password = ref('')
 const busy = ref(false)
 const problem = ref<Failure | null>(null)
@@ -41,7 +49,7 @@ async function submit(event: SubmitEvent) {
 <template>
   <ConsoleDialog :title="t('Enter your password again')" :busy="busy" @close="emit('close')">
     <form class="form-stack" name="mailie-step-up" method="post" autocomplete="on" @submit.prevent="submit">
-      <p class="dim">{{ t('For your safety, this needs your password from the last ten minutes. It is processed here and never sent.') }}</p>
+      <p class="dim">{{ why }}</p>
       <p v-if="problem" class="alert" role="alert">{{ describe(problem) }}</p>
       <!-- For password managers: the account the password belongs to. -->
       <input name="username" :value="session.user?.email" type="email" autocomplete="username" class="account-identifier" readonly tabindex="-1" aria-hidden="true" />

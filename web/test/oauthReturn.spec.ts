@@ -5,7 +5,7 @@ import { importPrivateKey, type PrivateKey } from '@thehappieco/kit/hpke'
 import { checkGrantShape, openGrant } from '@thehappieco/kit/profiles/mailie'
 import type { SessionReply, User } from '../src/api/types'
 import type { Edition } from '../src/edition'
-import { FLOW_LIFETIME_MS, captureOAuthReturn, oauthBack, parseOAuthReturn, peekOAuthStart, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
+import { FLOW_LIFETIME_MS, canKeepOAuthStart, captureOAuthReturn, oauthBack, parseOAuthReturn, peekOAuthStart, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
 import { REASON_DECLINED, REASON_DUPLICATE, REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
 import { account, ana, failure, freshModules, json, now, ORIGIN, reply, serve, stubPage } from './support'
 
@@ -105,6 +105,14 @@ describe('keeping a return across sign-in', () => {
     rememberOAuthStart({ link_id: 'lnk_0000000000000002', provider: 'gmail' })
     expect(pendingOAuthReturn()).toBe(false)
     expect(sessionStorage.getItem('mailie.oauthReturn')).toBeNull()
+  })
+
+  it('says whether this tab keeps a start across the trip to the provider', () => {
+    expect(canKeepOAuthStart()).toBe(true)
+    expect(rememberOAuthStart({ link_id: 'lnk_0000000000000001', provider: 'gmail' })).toBe(true)
+    vi.stubGlobal('sessionStorage', refused())
+    expect(canKeepOAuthStart()).toBe(false)
+    expect(rememberOAuthStart({ link_id: 'lnk_0000000000000001', provider: 'gmail' })).toBe(false)
   })
 
   it('still finishes a return on the same page load when storage is refused, and only once', () => {
@@ -556,6 +564,70 @@ describe('finishing a link at the provider', () => {
     expect(callbacks(fetch)).toHaveLength(1)
     expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.lima@gmail.com', syncing: false })
     expect(accounts.accounts.list.map(item => item.id)).toEqual([made.id])
+  })
+
+  it('posts a link’s return again, once, after the wait its server asked for, when its refusal took nothing', async () => {
+    const made = account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })
+    // The server could not confirm, before taking the link, that the person may still finish it.
+    const answers = [failure('internal', 500, { 'Retry-After': '30' }), json(made)]
+    const { accounts, returns, fetch } = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return answers.shift()!
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link())
+      return failure('not_found', 404)
+    })
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const finishing = accounts.finishOAuthReturn()
+      await until(() => reads(fetch) === 1)
+      // The link still waits: its return stays in the tab, and is posted once the wait is over.
+      expect(returns.pendingOAuthReturn()).toBe(true)
+      expect(returns.peekOAuthStart()).toMatchObject({ link_id: LINK })
+      await vi.advanceTimersByTimeAsync(29_000)
+      expect(callbacks(fetch)).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await finishing
+    } finally { vi.useRealTimers() }
+    expect(callbacks(fetch)).toHaveLength(2)
+    expect(callbacks(fetch)[1]).toMatchObject({ redirect_url: `${ORIGIN}/oauth/return?code=abc&state=${STATE}`, grant: expect.any(String) })
+    expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.lima@gmail.com', syncing: false })
+    expect(returns.pendingOAuthReturn()).toBe(false)
+  })
+
+  it('posts a link’s return no more than twice, and never again once its link was taken', async () => {
+    const busy = () => failure('internal', 500, { 'Retry-After': '30' })
+    const { accounts, returns, fetch } = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return busy()
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link())
+      return failure('not_found', 404)
+    })
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const finishing = accounts.finishOAuthReturn()
+      await until(() => reads(fetch) === 1)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await finishing
+    } finally { vi.useRealTimers() }
+    expect(callbacks(fetch)).toHaveLength(2)
+    expect(accounts.accounts.notice).toEqual({ kind: 'failed', email: '', failure: { op: 'complete-link', code: 'internal', retryAfter: 30, link: { provider: 'gmail' } } })
+    expect(returns.pendingOAuthReturn()).toBe(false)
+
+    // A link the server took and failed, though it asked to wait: its return is spent.
+    vi.restoreAllMocks()
+    stubPage(`/oauth/return?code=abc&state=${STATE}`)
+    const second = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return busy()
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link({ state: 'failed', reason: 'the mail server could not be reached' }))
+      return failure('not_found', 404)
+    })
+    second.returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    second.returns.captureOAuthReturn()
+    await second.accounts.finishOAuthReturn()
+    expect(callbacks(second.fetch)).toHaveLength(1)
+    expect(second.returns.pendingOAuthReturn()).toBe(false)
   })
 
   it('shows the team a failed link went into, and says why it failed, naming the address the provider named', async () => {

@@ -41,12 +41,13 @@ export type Operation = keyof Operations
  * holds as many as it may, or because the text they were shown is no
  * longer the one the server asks about (a 409 on creating a key is either,
  * and state/apikeys.ts reads the list again to tell which); and what the key
- * scheme refused in this browser (crypto/errors.ts); and a link at the
+ * scheme refused in this browser (crypto/errors.ts); a link at the
  * provider's return left unfinished because the person closed the step-up it
- * needed.
+ * needed; and a link not started because this browser would not keep it
+ * until its return.
  */
 export type FailureCode = ErrorCode | 'flow_expired' | 'flow_failed' | 'flow_unsupported' | 'return_invalid' | 'return_expired' | 'key_limit' | 'terms_changed'
-  | 'step_up_closed' | CeremonyCode
+  | 'step_up_closed' | 'storage_refused' | CeremonyCode
 
 /**
  * account is set when the failure left an account failing (a consent that
