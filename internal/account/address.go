@@ -9,7 +9,7 @@ import (
 // One Gmail account, one mailbox (docs/workspaces.md, "Mailboxes"). Gmail
 // delivers every spelling of a consumer address to one account — any case,
 // dots anywhere in its local part, a "+tag" after it, googlemail.com for
-// gmail.com — and Google keeps one grant per account and OAuth client. So a
+// gmail.com — and Google keeps one grant per account and Cloud project. So a
 // workspace links a Gmail mailbox once under all of its spellings, live or
 // removed (duplicateOfTx), and a deletion for good revokes no grant that
 // another spelling of the account still holds (googleTokensTx).

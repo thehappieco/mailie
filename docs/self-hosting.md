@@ -944,8 +944,10 @@ upgrade, as any restore does; the older version needs nothing this release adds.
   revocation endpoint (`https://oauth2.googleapis.com/revoke`) once the deletion has committed, so
   the grant no longer appears among the person's connected apps. It is best effort: a failure is
   logged (without the token) and never stops the deletion; a server whose egress cannot reach that
-  address only logs it. The same Google address linked again in another workspace through the
-  same OAuth client shares one grant there, which is then kept until the last such mailbox goes.
+  address only logs it. The same Google account linked again in another workspace, under any
+  spelling of a Gmail address and through either OAuth client, shares one grant there, which is
+  then kept until the last such mailbox goes: Google keeps one grant per account and Cloud project,
+  and revoking it ends it for every client of the project, the Desktop and the Web one alike.
   Microsoft 365 offers no revocation of a single grant, and a password account has nothing to
   revoke: their stored credentials are deleted, as before.
 - **The console** keeps how long the server asked to wait before trying again (`Retry-After`), and,
@@ -1048,6 +1050,38 @@ the holds it converts. **Back up first**, with the commands below: an older bina
   `account recover` says whether it came back paused or off.
 - **The console** shows one "Paused" state, with Resume (a team's through the sync text), and the
   operator's turn-off as "Turned off". The open sync text does not change.
+
+### Linking Gmail and Microsoft at the provider (migration 0026)
+
+An ordinary migration: one table added, `oauth_links`, and no row of a schema-25 database changes
+(`mailserver migrate --dry-run` names it, with no rebuild). An older binary refuses schema 26, so
+**back up first**, with the commands below; going back is that copy.
+
+- **The console connects a Gmail or Microsoft mailbox without its address**, where the server
+  offers the web flow: the person chooses the account on Google's or Microsoft's page, the daemon
+  asks for `openid email` beside the mail scopes, and the provider's ID token names the address,
+  which one login then proves before anything is stored. Add the two sign-in scopes to Google's
+  **Data access** and to the Microsoft web registration's **API permissions**
+  ([README](../README.md#mailboxes-and-providers)); the clients' ids, secrets and redirect URIs do
+  not change. A Microsoft tenant whose administrator consented before they were added consents
+  again; until then, and for a shared mailbox always, its people use "Enter the mailbox's address
+  instead". Re-authorizing a mailbox, the command line, the loopback flow and a browser that
+  refuses site storage still take the address, and ask for the mail scopes alone.
+- **One Gmail account is one mailbox per workspace**, under every spelling of its address (case,
+  dots, a `+tag`, `googlemail.com`), live or removed, on both paths: a second spelling is `409`.
+  Mailboxes linked before the rule stay as they are.
+- **A Google grant is revoked at a deletion for good only once no other mailbox here holds the
+  account**, under any spelling of its address and through either OAuth client: Google keeps one
+  grant per account and Cloud project, and revoking it ends it for every client of the project.
+- **Connecting at the provider asks for a recent password with time to spare**: the console asks
+  again when fewer than five minutes of the ten remain before it leaves for the provider, and two
+  at the return.
+- **For scripts:** `POST /v1/accounts/oauth/links` (`{provider, workspace_id?,
+  sync_consent_version?, display_name?}`, the web flow only) answers `201 {link, auth}`;
+  `GET /v1/accounts/oauth/links/{id}` reads it, for its starter alone (`waiting`, `finishing`,
+  `connected` or `failed`, with a fixed `reason`); `POST /v1/accounts/oauth/callback` takes the
+  mailbox's first key (`public_key`, `namespace`, `grant`) with a link's return, and may take up to
+  70 s to answer it.
 
 ```sh
 # Compose, from deploy/:

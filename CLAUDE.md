@@ -206,8 +206,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   grant revoked at Google (`revoke.go`, `GoogleRevokeURL`, which the daemon and `user delete
   --bootstrap` set): the refresh token opened inside the deleting transaction, revoked after the
   commit, best effort, bounded, logged without it, never while another mailbox here holds the same
-  grant (the same client and canonical address, compared in Go; one Workspace account under two
-  addresses is not recognised, which costs an early re-authorization, never access); Microsoft has
+  grant (the same canonical address, compared in Go, through any client: Google keeps one grant per
+  account and Cloud project; one Workspace account under two addresses is not recognised, which
+  costs an early re-authorization, never access); Microsoft has
   no such endpoint and a password nothing to revoke. A link at the provider (`links.go`, migration
   0026's `oauth_links`; Gmail and Microsoft, the web client only) names no address: it asks for
   `openid email` beside the mailbox's scopes, with the account chooser (Google's

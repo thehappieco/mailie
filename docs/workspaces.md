@@ -147,7 +147,7 @@ workspace_members(workspace_id, user_id, role, status, created_at, updated_at)  
   `409` with the generic "that address is already connected".
 - **One Gmail account, one mailbox.** Gmail delivers every spelling of a consumer address to one
   account — any case, dots anywhere in the local part, a `+tag` after it, `googlemail.com` for
-  `gmail.com` — and Google keeps one grant per account and OAuth client. So a Gmail mailbox is
+  `gmail.com` — and Google keeps one grant per account and Cloud project. So a Gmail mailbox is
   refused (`409`, as above) where its workspace holds a Gmail mailbox, live or removed and kept,
   under another spelling of the same account (`account.canonicalAddress`): asked before anything is
   dialled, and again in the transaction that would insert it, which the database's one writer
@@ -518,9 +518,10 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   that commits, best effort, bounded (10 s), through a connection held to
   `MAIL_ACCOUNT_ALLOW_PRIVATE` as a mailbox's are, and logged without the token. A failure never
   stops the deletion, and is not retried: the grant then lapses when its person removes it. A grant
-  another mailbox here still holds — the same Google account linked elsewhere through the same OAuth
-  client, under its address or another spelling of a Gmail one, which Google keeps one grant for —
-  is not revoked, which would cut that mailbox off. Two addresses of one Google Workspace account
+  another mailbox here still holds — the same Google account linked elsewhere, under its address or
+  another spelling of a Gmail one, through either OAuth client — is not revoked, which would cut
+  that mailbox off: Google keeps one grant per account and Cloud project, and a revocation ends it
+  for every client registered in the project, which may hold both of this server's. Two addresses of one Google Workspace account
   (an alias, a user renamed) are not recognised as one: deleting one of their mailboxes for good can
   revoke the grant the other holds, which then asks to be authorized again. That costs an early
   re-authorization, never access, and telling them apart would mean keeping an identifier of the
@@ -2715,7 +2716,7 @@ Test names state the guarantee. At least:
     token, but the grant behind it stays at the provider until its person removes it there.
     *Resolution:* Google's grant is revoked at its revocation endpoint once the deletion commits,
     best effort, never while another mailbox here holds the same grant (Google keeps one per
-    address and OAuth client); Microsoft has no per-grant revocation (only every session of the
+    account and Cloud project, so any client's mailbox of that address holds it); Microsoft has no per-grant revocation (only every session of the
     person, which is not this server's to end), and a password has nothing to revoke: both lapse.
 33. **Freshness, and who decides.** A directory elsewhere may have ended someone's membership a
     moment before they act here, and an act that shares a key or widens access cannot be taken back.

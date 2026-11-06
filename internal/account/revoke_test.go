@@ -253,7 +253,8 @@ func TestDeletingOneOfTwoMailboxesOfTheSameGoogleAccountSpelledDifferentlyKeepsT
 	// through the same client: one grant at Google, which both hold.
 	first := granted(t, repo, "ana.lima@gmail.com", provider.KindGmail, "refresh-one")
 	second := grantIn(ana.ID, "acc_anas_own", "AnaLima+mail@googlemail.com", account.ClientInstalled, "refresh-two")
-	// The same account through the other client holds a grant of its own.
+	// The same account through the other client: Google keeps one grant per
+	// Cloud project, which may hold both clients, so it holds that grant too.
 	web := grantIn(bruno.ID, "acc_brunos_own", "a.na.lima@gmail.com", account.ClientWeb, "refresh-web")
 	// A Google Workspace domain's dots count: two accounts, two grants.
 	dotted := granted(t, repo, "ana.lima@example.test", provider.KindGmail, "refresh-dotted")
@@ -266,10 +267,10 @@ func TestDeletingOneOfTwoMailboxesOfTheSameGoogleAccountSpelledDifferentlyKeepsT
 	}{
 		{first, nil, "nothing: another spelling of the account still holds its grant"},
 		{dotted, []string{"refresh-dotted"}, "the Workspace address's own grant"},
-		// Once the last mailbox holding it through its client goes, the
-		// grant is revoked, whatever the other client still holds.
-		{second, []string{"refresh-dotted", "refresh-two"}, "the last holder's grant"},
-		{web, []string{"refresh-dotted", "refresh-two", "refresh-web"}, "the other client's grant too"},
+		{second, []string{"refresh-dotted"}, "nothing more: the account still holds it through the other client"},
+		// Once the last mailbox holding it goes, through whichever client,
+		// the grant is revoked.
+		{web, []string{"refresh-dotted", "refresh-web"}, "the last holder's grant"},
 	} {
 		removeBySQL(t, db, step.purged.ID)
 		if err := registry.Purge(ctx, step.purged.ID, "cli", nil); err != nil {
