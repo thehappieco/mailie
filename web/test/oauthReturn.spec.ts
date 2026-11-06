@@ -434,11 +434,22 @@ describe('finishing a link at the provider', () => {
     return { user: { ...ana, public_key: toBase64URL(keys.publicKey) }, account: await importPrivateKey(keys.privateKey) }
   }
 
-  /** Lets the page's promises run, with the fake timers left alone, until check holds. */
+  /**
+   * Lets the page's promises run, with the fake timers left alone, until check
+   * holds: for up to four seconds of real time, which the browser's crypto
+   * and the responses' bodies may take on a busy machine.
+   */
   async function until(check: () => boolean) {
-    for (let round = 0; round < 2_000 && !check(); round++) await new Promise(resolve => setImmediate(resolve))
+    const deadline = Date.now() + 4_000
+    while (!check() && Date.now() < deadline) await new Promise(resolve => setImmediate(resolve))
     expect(check()).toBe(true)
   }
+  /**
+   * Lets the page run until it has set the timer it waits on, so the clock is
+   * moved only from that moment: a page still reading an answer when the
+   * clock moves would set its timer later than the test counts from.
+   */
+  const timerSet = () => until(() => vi.getTimerCount() > 0)
 
   beforeEach(() => { stubPage(`/oauth/return?code=abc&state=${STATE}`) })
 
@@ -552,10 +563,12 @@ describe('finishing a link at the provider', () => {
     try {
       const finishing = accounts.finishOAuthReturn()
       await until(() => reads(fetch) === 1)
+      await timerSet()
       await vi.advanceTimersByTimeAsync(1_900)
       expect(reads(fetch)).toBe(1)
       await vi.advanceTimersByTimeAsync(100)
       await until(() => reads(fetch) === 2)
+      await timerSet()
       await vi.advanceTimersByTimeAsync(2_000)
       await until(() => reads(fetch) === 3)
       await finishing
@@ -581,6 +594,7 @@ describe('finishing a link at the provider', () => {
     try {
       const finishing = accounts.finishOAuthReturn()
       await until(() => reads(fetch) === 1)
+      await timerSet()
       // The link still waits: its return stays in the tab, and is posted once the wait is over.
       expect(returns.pendingOAuthReturn()).toBe(true)
       expect(returns.peekOAuthStart()).toMatchObject({ link_id: LINK })
@@ -608,6 +622,7 @@ describe('finishing a link at the provider', () => {
     try {
       const finishing = accounts.finishOAuthReturn()
       await until(() => reads(fetch) === 1)
+      await timerSet()
       await vi.advanceTimersByTimeAsync(30_000)
       await finishing
     } finally { vi.useRealTimers() }

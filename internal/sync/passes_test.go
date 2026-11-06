@@ -262,7 +262,13 @@ func TestAPartiallyBackfilledFolderDoesNotFullScanEveryPass(t *testing.T) {
 		t.Fatalf("floor %d: the window should have left the old mail out", floor)
 	}
 	h.box.ResetCalls()
-	time.Sleep(300 * time.Millisecond) // a dozen poll passes
+	// A dozen poll passes, 20 ms apart, as soon as the machine runs them: a
+	// fixed sleep counts fewer on a busy one, where the race detector slows
+	// each pass down.
+	deadline := time.Now().Add(10 * time.Second)
+	for h.box.CallCount(providertest.MethodSelect) < 12 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	passes := h.box.CallCount(providertest.MethodSelect)
 	if passes < 5 {
 		t.Fatalf("only %d passes ran", passes)
