@@ -255,7 +255,7 @@ keeps it until the backup expires.
 **Cannot:** use a recovery wrap without the code (150 bits), a platform wrap without `sk_p`, or a
 grant without the account key; replay a verifier as an auth key (it is a hash of it). A link at the
 provider still waiting for its return (spec §12.11) holds only its flow's state and PKCE verifier,
-for 20 minutes at most, and no key material: its key goes with the return.
+for about 20 minutes, and no key material: its key goes with the return.
 
 ### 4.8 A network attacker
 

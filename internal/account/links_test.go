@@ -864,7 +864,10 @@ func TestALinkReturnThatCannotTakeItInTimeLeavesItForTheSameReturn(t *testing.T)
 	if err == nil || errors.Is(err, account.ErrLinkBusy) {
 		t.Errorf("a return whose caller hung up: %v", err)
 	}
-	// The same return, once the writer is free, connects.
+	// The same return, once the writer is free, connects. Its take waits as
+	// long as the daemon's does: under the race detector, a take with the
+	// writer free can itself outlast 50 ms.
+	f.registry.LinkTakeTimeoutForTest(account.LinkTakeTimeout)
 	if created, err := f.complete(flow, ana.ID, account.LinkCompletion{}); err != nil || f.row(link.ID) != connectedTo(created.ID) {
 		t.Errorf("the same return again: %+v, %v", created, err)
 	}

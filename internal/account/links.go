@@ -62,8 +62,8 @@ const MaxLinksWaiting = 5
 
 const (
 	// linkKeptAfter is how long a link is kept past its expiry, however it
-	// ended, for its starter's console to read how: 20 minutes in all, at
-	// most.
+	// ended, for its starter's console to read how: about 20 minutes in all,
+	// until the sweep that runs every minute (sweepLinks) deletes it.
 	linkKeptAfter = 10 * time.Minute
 	// linkCutOff is how long after its take a link still finishing is one a
 	// restart cut off: its finish ends finishTimeout after the take, which

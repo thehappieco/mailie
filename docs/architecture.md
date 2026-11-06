@@ -115,7 +115,7 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
   the one the token endpoint's ID token names, checked for this client, issuer and tenant (no
   signature, as OIDC allows for a token taken there). Nothing of the mailbox exists before the
   return: a link (`oauth_links`, migration 0026) holds only its state, its PKCE verifier and what
-  was asked for, never a key or an address, for 20 minutes at most. Its return carries the
+  was asked for, never a key or an address, for about 20 minutes. Its return carries the
   mailbox's key, is checked before its code is taken, and creates the mailbox, its key and its
   linker's grant in one transaction once one login as that address worked. Re-authorizing keeps the
   mailbox's scopes and `login_hint`; the ID token, the account's identifier at the provider and its

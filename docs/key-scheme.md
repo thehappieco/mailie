@@ -1785,7 +1785,7 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   mailbox's address (a grant binds its namespace, the seal id and the epoch, section 9.1), so
   learning the address at the return changes no byte. What the code had to choose, recorded here:
   - **Nothing sealed waits on the server.** The start sends no key: a link holds its flow's state,
-    its PKCE verifier and what was asked for, for 20 minutes at most. The browser makes the key
+    its PKCE verifier and what was asked for, for about 20 minutes. The browser makes the key
     pair and seals the linker's grant at the return, to their account public key as the server
     serves it then, so a reset between the two halves leaves no grant sealed to a key they no
     longer have.

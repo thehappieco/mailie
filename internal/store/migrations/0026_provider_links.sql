@@ -11,11 +11,12 @@
 -- workspace) and nothing that reads an address changes.
 --
 --   - oauth_links: one row per link, from its start until 10 minutes after it
---     expires (20 minutes at most): its flow's state, who started it, the
---     team it links into (NULL for the starter's personal workspace, which
---     the transaction that creates the mailbox resolves), the provider, the
---     PKCE verifier and the redirect the provider was told, and what the
---     starter asked for (a name, the team's sync text). It is taken once, by
+--     expires (about 20 minutes, until the sweep that runs every minute
+--     deletes it): its flow's state, who started it, the team it links into
+--     (NULL for the starter's personal workspace, which the transaction that
+--     creates the mailbox resolves), the provider, the PKCE verifier and the
+--     redirect the provider was told, and what the starter asked for (a
+--     name, the team's sync text). It is taken once, by
 --     its starter, in the statement that sets taken_at, before its code is
 --     exchanged, and finished once: connected, with the mailbox it created,
 --     or failed, with a fixed reason and the address the provider named, if
