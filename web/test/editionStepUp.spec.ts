@@ -47,14 +47,14 @@ afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 describe('an edition’s own step-up', () => {
   it('is asked once for every flow waiting, with the first one’s reason, in place of the password dialog', async () => {
     const asked = deferred()
-    const stepUp = vi.fn((_reason: StepUpReason) => asked.promise)
+    const stepUp = vi.fn((_reason: StepUpReason, _margin: number) => asked.promise)
     const s = await load({ stepUp })
     const calls: string[] = []
     const link = s.withStepUp('link', async () => { calls.push('link'); return 'linked' })
     const key = s.ensureStepUp('key')
     await settle()
     expect(stepUp).toHaveBeenCalledTimes(1)
-    expect(stepUp).toHaveBeenCalledWith('link')
+    expect(stepUp).toHaveBeenCalledWith('link', 30)
     expect(s.stepUpPrompt.open).toBe(true)
     expect(calls).toEqual([])
     // Nothing of the password dialog.
@@ -89,6 +89,36 @@ describe('an edition’s own step-up', () => {
     const call = vi.fn(async () => 'sent')
     await expect(s.withStepUp('key', call)).rejects.toBe(blocked)
     expect(call).not.toHaveBeenCalled()
+  })
+
+  it('is told how much of the ten minutes the flow needs left, and asked again with it when the step-up went stale on the way', async () => {
+    let asked = deferred()
+    const stepUp = vi.fn((_reason: StepUpReason, _margin: number) => asked.promise)
+    const s = await load({ stepUp })
+    // A link at the provider leaves for the provider's page: five minutes to spare.
+    const leaving = s.ensureStepUp('link', 300)
+    await settle()
+    expect(stepUp).toHaveBeenLastCalledWith('link', 300)
+    s.steppedUp(ana.id, now())
+    asked.resolve()
+    await leaving
+    // Its return needs two minutes; refused because the step-up lapsed meanwhile, it is asked again with the same margin.
+    asked = deferred()
+    let calls = 0
+    const returning = s.withStepUp('link', async () => {
+      if (++calls === 1) {
+        s.session.authenticatedAt = now() - 11 * 60
+        const { ApiError } = await import('../src/api/http')
+        throw new ApiError('not_authorized', 403)
+      }
+      return 'finished'
+    }, 120)
+    await settle()
+    expect(stepUp).toHaveBeenLastCalledWith('link', 120)
+    s.steppedUp(ana.id, now())
+    asked.resolve()
+    await expect(returning).resolves.toBe('finished')
+    expect(stepUp).toHaveBeenCalledTimes(2)
   })
 
   it('settles only the prompt it was asked for: a sign-out stops the flows, and its late answer opens nothing', async () => {

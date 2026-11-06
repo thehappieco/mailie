@@ -87,17 +87,25 @@ section (a consent to an older text is paused), the API keys of the personal wor
 endpoint at this origin (each scope; what a key holds ticked mailbox by mailbox; the key shown once,
 copied, never kept; a mailbox given to it from its sheet, its sends; revoked, and listed among the
 keys the person created in Account), API keys on a server with MCP over HTTP off (no address, no
-command) and on one whose keys do not send (no send scope), and Storage (a mailbox whose account
-needs authorizing again keeps its index; turning sync off reads the figures again). It fails on a
+command) and on one whose keys do not send (no send scope), Storage (a mailbox whose account
+needs authorizing again keeps its index; turning sync off reads the figures again), and Gmail and
+Microsoft linked at the provider on a server that offers them the web flow: no address field, the
+account chosen on the provider's own page (an account chooser the pass draws,
+`providerChooser`), the same account again and another spelling of it, one removed and kept, the
+provider's refusal with no step-up, the step-up asked with five minutes to spare before leaving
+and again at the return before its code is posted, an account without the mailbox's grant, a finish
+whose answer was lost and is followed by the link, Microsoft's address form one small link away,
+and a re-authorization from a card, in English on desktop and Portuguese on a phone. It fails on a
 page error, a CSP violation, horizontal scrolling, any legal link, byline or company name, and any
 request to the message or sending routes, which its fake daemon does not implement.
-`QA_ONLY=console|keys-scheme|sync|actions|keys|storage` runs one group.
+`QA_ONLY=console|keys-scheme|sync|actions|keys|storage|links` runs one group.
 
 The fake daemon is `test/browser/fakeDaemon.mjs`: the core's routes (users and sessions, the key
 scheme's ceremonies with the people it seeds enrolled under their password, or never enrolled
 with `notEnrolled`, their enrolment made by `test/browser/keyScheme.mjs`, mailboxes
-and their OAuth flows, sync and the event stream, actions consent, a workspace's API keys and the
-ones a person created, `GET /v1/me/mcp`, storage) and the helpers the QA scripts share. Another
+and their OAuth flows, links at the provider (`gmailFlows` offers Gmail the web flow), sync and the
+event stream, actions consent, a workspace's API keys and the ones a person created,
+`GET /v1/me/mcp`, storage) and the helpers the QA scripts share. Another
 edition's QA imports it and adds its own routes and state through `extend` (the cloud app's adds
 Mail and sending), so a change to the core's contract is made once. Unless asked to list each
 person's personal workspace (`personal`, which the keys pass sets, as a server with workspaces
@@ -124,8 +132,10 @@ light and dark, then in Portuguese and German, with the words each language expe
 console's catalogs. Then a removed mailbox's protection: Ana removes a team mailbox only Carol reads
 (kept 30 days, among the team's removed mailboxes), which keeps Carol protected, the mailbox named as
 removed for an owner, from the removed mailboxes already read, and counted for Bea, an admin, who
-never asks for them; once Ana deletes it for good the team's people are read again and Carol is
-offered for disabling and removal. On desktop and at 320 px, in English and Portuguese.
+never asks for them; each of them linking its address into the team at Google meanwhile is told the
+one text that tells no removed mailbox apart; once Ana deletes it for good the team's people are
+read again and Carol is offered for disabling and removal. On desktop and at 320 px, in English and
+Portuguese.
 `QA_ONLY=teams|removed` runs one group; it takes the other `QA_*` variables of `console.mjs`.
 
 ```sh

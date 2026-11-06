@@ -4,7 +4,9 @@
 //
 // iCloud asks for the address and an app-specific password, plus the iCloud
 // address to sign in with for a custom domain: Apple's servers are fixed, and
-// the server fills them in itself.
+// the server fills them in itself. A mailbox linked at the provider
+// (atProvider) asks for no address: the person chooses the account on the
+// provider's page, and the provider names it.
 import { computed, ref, useId, watch } from 'vue'
 import type { ProviderID, SMTPSecurity } from '../api/types'
 import { guessHosts, ICLOUD_PASSWORD_HELP, isICloudAddress, portForSecurity, signsInWithPassword, type AccountDraft } from '../ui/accountDraft'
@@ -14,7 +16,8 @@ import PasswordInput from './PasswordInput.vue'
 
 // offerIcloud: the server can connect iCloud, so an Apple address typed into
 // the IMAP form is pointed there instead of at a guessed server that is wrong.
-const props = defineProps<{ provider: ProviderID; busy?: boolean; offerIcloud?: boolean }>()
+// atProvider: the provider names the address, so there is no field for it.
+const props = defineProps<{ provider: ProviderID; busy?: boolean; offerIcloud?: boolean; atProvider?: boolean }>()
 const emit = defineEmits<{ 'use-icloud': [] }>()
 const draft = defineModel<AccountDraft>('draft', { required: true })
 const id = useId()
@@ -39,7 +42,7 @@ function changeSecurity(event: Event) {
 </script>
 
 <template>
-  <label :for="`${id}-email`">{{ t('Email address') }}
+  <label v-if="!atProvider" :for="`${id}-email`">{{ t('Email address') }}
     <input :id="`${id}-email`" v-model="draft.email" type="email" name="mailbox" required maxlength="320" autocapitalize="off"
       spellcheck="false" inputmode="email" autocomplete="off" data-1p-ignore data-lpignore="true" :disabled="busy" :placeholder="provider === 'icloud' ? 'name@icloud.com' : 'name@example.com'" />
   </label>

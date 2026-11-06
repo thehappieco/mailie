@@ -171,15 +171,22 @@ export interface Edition {
    * prove themselves again another way, such as signing in again at their
    * identity provider. state/stepUp.ts calls it when a flow needs a fresh
    * step-up, once for every flow waiting then, with what the first of them
-   * asked it for. It resolves once this session's step-up time is fresh,
-   * which the edition records with steppedUp (state/session.ts) from what its
-   * route answered, and the flows go on; it rejects with StepUpCancelled
-   * (state/stepUp.ts) when the person gives up, which stops them without a
-   * word, and with any other error to stop them with that one. It may be
-   * called after awaits, out of the click that started the flow, so a window
-   * it opens needs a click of its own. Unset: the password dialog.
+   * asked it for, and the margin it asked for: how many seconds of the ten
+   * minutes must still be left (state/session.ts freshStepUp), more for a
+   * flow that takes long before the server checks the step-up again (a link
+   * at the provider leaves for the provider's page first). It resolves once
+   * this session's step-up time is fresh with that margin, which the edition
+   * records with steppedUp (state/session.ts) from what its route answered,
+   * and the flows go on; it rejects with StepUpCancelled (state/stepUp.ts)
+   * when the person gives up, which stops them without a word, and with any
+   * other error to stop them with that one. It may be called after awaits,
+   * out of the click that started the flow, so a window it opens needs a
+   * click of its own; one that sends the whole tab elsewhere instead stops
+   * the flows the same way, and a link's return, which waits for the
+   * step-up before it is taken, is still in the tab when it comes back.
+   * Unset: the password dialog.
    */
-  stepUp?: (reason: StepUpReason) => Promise<void>
+  stepUp?: (reason: StepUpReason, margin: number) => Promise<void>
   /**
    * Called once the person has signed out on purpose (from the frame, the
    * account section, or everywhere), after the core has ended the session in

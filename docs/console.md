@@ -164,16 +164,21 @@ session ended in this browser and the server was told, never when one expires, i
 in another tab; an edition may navigate away there. A person whose `has_password` is `false` is not
 offered to change a password.
 
-Such an edition may also bring its own **step-up** (`stepUp(reason)`), in place of the password
-dialog: `state/stepUp.ts` calls it when a flow needs a fresh step-up, once for every flow waiting
-then, with what the first of them asked it for (`'link'`, `'grant'` or `'key'`). It resolves once
-the session's step-up time is fresh, recorded with `steppedUp` (`state/session.ts`) from what its
-own route answered, and the flows go on; it rejects with `StepUpCancelled` when the person gives
-up, which stops them without a word, or with any other error to stop them with that one. A prompt
-settled meanwhile (a sign-out, another person) is not settled again by its late answer. It may be
-called after awaits, outside the click that started the flow, so a window it opens needs a click of
-its own. `copy.stepUpHint` words the sentence beside a guarded write, which the core's names the
-password; `copy.accountRecovered` says why a key stopped when its creator's account was recovered
+Such an edition may also bring its own **step-up** (`stepUp(reason, margin)`), in place of the
+password dialog: `state/stepUp.ts` calls it when a flow needs a fresh step-up, once for every flow
+waiting then, with what the first of them asked it for (`'link'`, `'grant'` or `'key'`) and the
+margin it asked for: how many seconds of the ten minutes must still be left (five minutes for a
+link at the provider before the page leaves for the provider's page, two at its return and for any
+other link, 30 seconds otherwise). It resolves once the session's step-up time is fresh with that
+margin, recorded with `steppedUp` (`state/session.ts`) from what its own route answered, and the
+flows go on; it rejects with `StepUpCancelled` when the person gives up, which stops them without a
+word, or with any other error to stop them with that one. A prompt settled meanwhile (a sign-out,
+another person) is not settled again by its late answer. It may be called after awaits, outside the
+click that started the flow, so a window it opens needs a click of its own; one that sends the whole
+tab elsewhere instead rejects with `StepUpCancelled` too, and a link's return, which waits for the
+step-up before it is taken, is still in the tab for the page that comes back. `copy.stepUpHint`
+words the sentence beside a guarded write, which the core's names the password;
+`copy.accountRecovered` says why a key stopped when its creator's account was recovered
 (`account_recovered`), which the core's says without naming where; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
 failures (the core's say to sign in again here, and, for `not_enrolled`, to ask the administrator
 for a reset link). The open edition sets none of these.
@@ -222,12 +227,16 @@ built on the same pieces, so it behaves as it always did:
 - **Coming back from a provider.** The web flow keeps, with its start in this tab's
   `sessionStorage`, the path of the page it left from (`back`: `location.pathname` alone, never a
   query or a fragment, which may carry a workspace or a code; at most 1024 bytes, of this origin,
-  without a backslash, a control character or dot segments, and never `/oauth/return`).
+  without a backslash, a control character or dot segments, and never `/oauth/return`). A consent's
+  start names its mailbox (`{account_id, provider, email}`); a link at the provider's, which knows no
+  address yet, names the link and the team it goes into (`{link_id, provider, workspace_id?}`).
   `captureOAuthReturn()` reads the start without taking it and replaces the address with that
   path while the start is fresh, else with `/`; it may run from an edition's entry before the page
-  chooses its root, and running it again changes nothing. A host whose address names a workspace
-  takes it again from the mailbox once the return is finished: the workspace shown is then the
-  mailbox's (`workspaces.currentID`).
+  chooses its root, and running it again changes nothing. A link's return stays in the tab until
+  the server has answered it: the step-up it may ask for first can send the whole tab to an
+  edition's own page and back (`started_at` and `back` are all a page that comes back reads). A
+  host whose address names a workspace takes it again from the mailbox once the return is
+  finished: the workspace shown is then the mailbox's (`workspaces.currentID`).
 - **The workspace in the address.** `requestWorkspace(id)` (`state/workspaces.ts`) shows the
   workspace a page's address names, for that page only: once the person's workspaces are read and
   hold it, it is the one shown (`currentID`; every list is read for it first) and the request is
@@ -451,7 +460,9 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   mailbox's key over, and its first or a new key. `state/stepUp.ts` asks first, over whatever
   dialog is open, unless the session's `authenticated_at` leaves 30 seconds of the ten minutes (two
   minutes for a link, which the server checks again after its login to the mail server, up to 30
-  seconds later); the flow goes on once the password is proved (`POST /v1/auth/stepup`), and stops
+  seconds later; five before a link at the provider leaves for the provider's page, where the person
+  chooses the account, and two again at its return, before its code is taken); the flow goes on
+  once the password is proved (`POST /v1/auth/stepup`), and stops
   without a word, sending nothing, when the dialog is closed. An edition with a step-up of its own
   (`Edition.stepUp`, [Editions](#editions)) is asked instead, and the dialog is not drawn. A `403`
   after which the step-up is no longer fresh was the step-up going stale on the way: the prompt is
@@ -1181,6 +1192,17 @@ uses `POST /v1/accounts` with the address.
   membership, the team closing), and with a reset, a recovery and a sign-out everywhere; its return
   is then `404`. Re-authorizing a mailbox linked this way is the ordinary consent, for its address,
   with its scopes alone.
+- **In the console** (`components/AddAccountDialog.vue`, `state/accounts.ts` `connectAtProvider`).
+  Where `GET /v1/providers` offers Gmail or Microsoft the `web` flow, their form has no address
+  field: it says the account is chosen on the provider's page, which names its address, and keeps
+  the display name, the workspace choice, the team's sync box and the step-up's hint. Microsoft's
+  form keeps the address form one small link away ("Enter the mailbox's address instead", for a
+  shared mailbox and for an organization whose administrator must approve Mailie), with a link
+  back; that form is `POST /v1/accounts` with the address, as before. Gmail has no such link. A
+  server with only the installed client asks for the address, as before. The step-up is asked with
+  five minutes to spare before the page leaves (`PROVIDER_LINK_STEP_UP_MARGIN_S`), and the start
+  kept in the tab names the link, never an address. How its return ends is under
+  [OAuth flows](#oauth-flows), "How the web flow ends".
 
 ### Mailbox keys
 
@@ -1289,9 +1311,12 @@ one ([`key-scheme.md`](key-scheme.md) section 16):
   grant at epoch 1 sealed to their own `user.public_key` under their `seal_id`, sent as
   `public_key`, `namespace` and `grant` in the `POST /v1/accounts` that creates the mailbox, by the
   password form and the OAuth flows alike, and the private key zeroed before the page leaves for the
-  provider. A person without an account key (signed up before the key scheme, never enrolled, and
-  still signed in from then) is told to ask the administrator for a reset link (`not_enrolled`)
-  before anything is asked or sent. Finishing an abandoned link sends no
+  provider. A link at the provider sends nothing sealed at its start: its key is made, sealed to
+  the linker's current public key and sent with the return that creates the mailbox
+  (`POST /v1/accounts/oauth/callback`, `public_key`, `namespace` and `grant`), made anew if the
+  server asks for the step-up again. A person without an account key (signed up before the key
+  scheme, never enrolled, and still signed in from then) is told to ask the administrator for a
+  reset link (`not_enrolled`) before anything is asked or sent. Finishing an abandoned link sends no
   key: the mailbox has its own.
 - **Giving Read** (`state/team.ts` `saveGrant`): Read added on a mailbox that has a key (the
   directory's `epoch`) to a member with an account key reads the member again
@@ -1359,6 +1384,26 @@ manage the mailbox, and only then exchanges the code. A `state` that belongs to 
 consent phishing, where someone starts a flow in their own account and gets a victim to consent, so
 that the victim's mailbox lands in the attacker's account. An `error=` in the address marks the
 account `error` and answers `400`.
+
+A link at the provider's return ([Linking at the provider](#linking-at-the-provider)) is posted the
+same way, with what only it needs. One that carries the provider's refusal (`error=`) is posted at
+once, with no key and no step-up. One that carries a code first needs the step-up fresh with two
+minutes to spare, asked **before the return is taken from the tab**: a dialog the person closes, or
+an edition's step-up that sends the whole tab elsewhere, leaves the return there, for a reload or
+the page that comes back within its ten minutes (a new start in the tab drops it). Then the
+mailbox's first key is made and sealed, and posted with the return (`{redirect_url, public_key,
+namespace, grant}`); a `403` after which the step-up is no longer fresh asks for it again and posts
+a new key. The page waits 75 seconds, longer than the route's 70. Once the server answered, the
+return goes. A success is the mailbox, as `GET /v1/accounts/{id}` shows it: its workspace is shown,
+with "{email} is connected". A refusal, or no answer at all (a timeout, a dropped connection), is
+followed by `GET /v1/accounts/oauth/links/{id}`, every 2 seconds while it says `finishing`: a
+connected link's mailbox is read with `GET /v1/accounts/{id}` (the visibility rule decides), and a
+failed one says why from its reason, naming the address once the provider named one; a mailbox the
+workspace holds, live or removed, is the one text `add-account` says for an address typed, so an
+admin who is not an owner learns nothing of a removed one. The link's workspace is shown either way
+while the person still has it. A link the server no longer has (ended with its starter's place,
+another person's, forgotten) is `404`: "This authorization expired or was started by another
+sign-in."
 
 The loopback listener knows the `state` it waits for: a request with another one gets an error page
 and the flow keeps waiting. Removing the mailbox closes the listener at once, and starting a new

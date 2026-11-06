@@ -22,6 +22,50 @@ export const REASON_NOT_GRANTED = 'the provider did not grant access to the mail
 export const REASON_TOKEN_REJECTED = "the mail server rejected the account's access token"
 /** A Gmail consent for this address comes back without access to the mailbox, as an unticked box on Google's screen leaves it. */
 export const NOT_GRANTED_EMAIL = 'recusada@example.test'
+/** The reasons a failed link at the provider says (GET /v1/accounts/oauth/links/{id}), as the daemon writes them. */
+export const REASON_DECLINED = 'consent was declined'
+export const REASON_DUPLICATE = 'the address is already linked in this workspace'
+/**
+ * An account chosen on the provider's page whose link finishes slowly, and
+ * whose callback's answer is lost on the way: the console learns how it
+ * ended from the link.
+ */
+export const SLOW_LINK_EMAIL = 'lenta@gmail.com'
+
+/** The code a provider's page sends back for the account chosen on it: the fake daemon reads the account from it. Synthetic. */
+export const chosenCode = email => `synthetic-chosen.${Buffer.from(email).toString('base64url')}`
+const chosenEmail = code => {
+  const match = /^synthetic-chosen\.([A-Za-z0-9_-]+)$/.exec(code ?? '')
+  return match ? Buffer.from(match[1], 'base64url').toString() : ''
+}
+
+/**
+ * A provider's page with its account chooser, for a link at the provider (an
+ * authorization URL whose scope asks for openid): each account goes back to
+ * the console's return with a code naming it, and Cancel with the
+ * provider's refusal. Answers undefined for any other provider page. Not the
+ * provider's markup: just enough to choose with.
+ */
+export function providerChooser(href, accounts) {
+  const url = new URL(href)
+  const scope = (url.searchParams.get('scope') ?? '').split(' ')
+  if (!scope.includes('openid')) return undefined
+  const back = new URL(url.searchParams.get('redirect_uri'))
+  const state = url.searchParams.get('state')
+  const to = params => { const target = new URL(back); for (const [key, value] of Object.entries({ ...params, state })) target.searchParams.set(key, value); return target.toString() }
+  const escape = text => text.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
+  const items = accounts.map(email => `<li><a href="${escape(to({ code: chosenCode(email) }))}">${escape(email)}</a></li>`).join('')
+  return `<!doctype html><meta charset="utf-8"><title>Choose an account</title><h1>Choose an account</h1><ul>${items}</ul><p><a href="${escape(to({ error: 'access_denied' }))}">Cancel</a></p>`
+}
+
+/** One mailbox under every spelling the daemon takes as one (internal/account address.go): the address in any case, and a consumer Gmail account's dots, tag and domain. */
+const canonical = (provider, email) => {
+  const lower = String(email).replace(/[A-Z]/g, letter => letter.toLowerCase())
+  const at = lower.lastIndexOf('@')
+  if (provider !== 'gmail' || !['gmail.com', 'googlemail.com'].includes(lower.slice(at + 1))) return lower
+  return `${lower.slice(0, at).split('+')[0].replaceAll('.', '')}@gmail.com`
+}
+const sameMailbox = (a, b) => a.email.toLowerCase() === b.email.toLowerCase() || (a.provider === 'gmail' && b.provider === 'gmail' && canonical('gmail', a.email) === canonical('gmail', b.email))
 /** An account's sync before anything has run: what the daemon keeps for a mailbox nobody consented for. */
 export const idle = () => ({ state: 'off', tier: '', folders_synced: 0, folders_total: 0, messages: 0, initial_progress: 0, last_synced_at: 0 })
 /** The Gmail account: the one whose folders a sync pass reads again, the one a key is made for, and the one whose mail an edition with Mail reads. */
@@ -51,7 +95,12 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * left after the release that brought the scheme); otherwise they enrolled
  * with that password, and the daemon holds only what their browser would
  * have sent (an auth key, wraps it cannot open), made the first time
- * anything asks.
+ * anything asks. gmailFlows: the flows the server offers for Gmail
+ * (GET /v1/providers); with web, a Gmail mailbox is linked at the provider,
+ * as a Microsoft one always is here, its address named by the account chosen
+ * on the provider's page (providerChooser): a link's routes, its return
+ * through the callback, and a mailbox its workspace holds refused under any
+ * spelling the daemon takes as one, live or removed and kept.
  *
  * extend(core): an edition's own state and routes, called once with the
  * core's state and helpers. It may return methods (added to the daemon),
@@ -60,9 +109,12 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * trashMessages(), what the index holds in the Gmail account's Trash, and
  * keyWorkspace(user, id), a workspace whose API keys the core's key routes
  * keep: { admin, mailboxes: [{ id, reads }] } for a member (admin: an owner
- * or an admin of it; reads: the person reads that mailbox), or null.
+ * or an admin of it; reads: the person reads that mailbox), or null; and
+ * linkInto(user, id), a team the person may link a mailbox into at the
+ * provider: { held, add(account), present?(account) } (held: its mailboxes,
+ * live and removed and kept), or null.
  */
-export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, notEnrolled = false, extend } = {}) {
+export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, notEnrolled = false, gmailFlows = ['loopback'], extend } = {}) {
   if (!origin || !versions?.sync || !versions.actions || !versions.keys) throw new Error('fakeDaemon: origin and versions { sync, actions, keys } are required')
   const users = new Map([['ana@example.test', { id: 'usr_00000000000000a1', seal_id: ANA_SEAL_ID, email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: now() - 86400 * 30, password: PASSWORD, consent: consented ? now() - 86400 : 0, ...(consented ? { consentVersion: versions.sync } : {}), actions: actionsAgreed ? now() - 3 * 86400 : 0, actionsVersion: actionsAgreed }]])
   /** The ceremonies' single-use tickets, and the reset links waiting: { purpose, user, token?, salt }. */
@@ -76,7 +128,15 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // Account ids have their own counter, past the fixtures below: sharing the
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
-  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
+  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], callbackBodies: [], links: [], linkReads: 0, removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
+  /**
+   * The links at the provider (service.Link), by id: waiting for the
+   * provider's return, finishing, connected or failed, each its starter's.
+   */
+  const links = new Map()
+  let linkSerial = 0
+  /** A person's mailboxes removed and kept 30 days: listed nowhere here, but still taken in their workspace. */
+  const keptByUser = new Map()
   /** Every workspace's API keys as the daemon stores them: never the secret, which only the creating answer carries. */
   const keys = []
   /** The record of each key's sends, by prefix (service.SendStatus): never who a message went to, its subject or its text. */
@@ -162,7 +222,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     }
   }
   const providers = [
-    { id: 'gmail', oauth: true, password: false, flows: ['loopback'] },
+    { id: 'gmail', oauth: true, password: false, flows: gmailFlows },
     { id: 'microsoft', oauth: true, password: false, flows: ['web', 'loopback'] },
     { id: 'icloud', oauth: false, password: true, flows: [] },
     { id: 'imap', oauth: false, password: true, flows: [] },
@@ -228,10 +288,18 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
     const { mailboxes, revoked_at: revoked, last_used_at: used, ...rest } = key
     return { ...rest, mailboxes: mailboxes.map(presentHeld), ...(revoked ? { revoked_at: revoked } : {}), ...(used ? { last_used_at: used } : {}), live: !revoked && key.expires_at > now(), sends: key.scope === 'send' && keysSend }
   }
+  /** A link at the provider as its starter reads it (service.Link): never the mailbox's address beside its id. */
+  const presentLink = link => ({
+    id: link.id, provider: link.provider, ...(link.workspace_id ? { workspace_id: link.workspace_id } : {}), state: link.state, expires_at: link.expires_at,
+    ...(link.state === 'connected' && link.account_id ? { account_id: link.account_id } : {}),
+    ...(link.state === 'failed' ? { reason: link.reason, ...(link.email ? { email: link.email } : {}) } : {}),
+  })
   const extension = extend?.({ users, calls, accountsByUser, journal, allMail, versions, emit, owner, present, indexedFolders, keys, keySends, presentKey }) ?? {}
   return {
     ...extension.methods,
-    calls, sessions, flows, accountsByUser, journal, recheck, policy, keys, keySends, users,
+    calls, sessions, flows, links, accountsByUser, journal, recheck, policy, keys, keySends, users,
+    /** Every session's step-up made this many seconds ago: the time a person spends on a provider's page. */
+    ageStepUp(seconds) { for (const session of sessions.values()) session.authenticated_at = now() - seconds },
     /** The person ticks Show in IMAP for All Mail in Gmail's settings; the daemon notices at its next look at the folders. */
     showAllMail() { allMail.listed = true },
     /** New mail arriving in an account's inbox, as the engine would journal it. */
@@ -479,11 +547,47 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         if (!account) return fail(404, 'not_found')
         return json(startFlow(account))
       }
+      // A link at the provider (docs/console.md, "Linking at the provider"): no address and no key at its start.
+      if (path === '/v1/accounts/oauth/links' && method === 'POST') {
+        const sent = body()
+        calls.links.push(sent)
+        if (Object.keys(sent).some(key => !['provider', 'flow', 'workspace_id', 'sync_consent_version', 'display_name'].includes(key))) return fail(400, 'bad_request')
+        const choice = providers.find(item => item.id === sent.provider)
+        if (!['gmail', 'microsoft'].includes(sent.provider) || !choice.flows.includes('web') || (sent.flow && sent.flow !== 'web')) return fail(400, 'bad_request')
+        if (!user.publicKey) return fail(403, 'not_authorized')
+        if (now() - session.authenticated_at >= 600) return fail(403, 'not_authorized')
+        const workspace = sent.workspace_id && sent.workspace_id !== personalOf(user) ? sent.workspace_id : ''
+        if (workspace && !extension.linkInto?.(user, workspace)) return fail(404, 'not_found')
+        // A new one for the same provider and workspace replaces the person's own still waiting.
+        for (const [id, other] of links) if (other.user === user.id && other.state === 'waiting' && other.provider === sent.provider && other.workspace_id === workspace) links.delete(id)
+        const id = `lnk_${String(++linkSerial).padStart(16, '0')}`
+        const state = `linkstate_${String(++serial).padStart(20, '0')}`
+        // flowState: the provider flow's state, which its return carries; state: how the link stands.
+        const link = { id, flowState: state, user: user.id, provider: sent.provider, workspace_id: workspace, display_name: sent.display_name ?? '', state: 'waiting', expires_at: now() + 600 }
+        links.set(id, link)
+        const scope = sent.provider === 'gmail' ? 'https://mail.google.com/ openid email' : 'https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access openid email'
+        const where = sent.provider === 'gmail' ? 'https://accounts.google.com/o/oauth2/auth' : 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize'
+        const authURL = `${where}?${new URLSearchParams({ client_id: 'synthetic', prompt: sent.provider === 'gmail' ? 'select_account consent' : 'select_account', redirect_uri: origin + '/oauth/return', response_type: 'code', scope, state })}`
+        return json({ link: presentLink(link), auth: { flow: 'web', auth_url: authURL, state, expires_at: link.expires_at } }, 201)
+      }
+      const linkRead = path.match(/^\/v1\/accounts\/oauth\/links\/([^/]+)$/)
+      if (linkRead && method === 'GET') {
+        calls.linkReads++
+        const link = links.get(linkRead[1])
+        if (!link || link.user !== user.id) return fail(404, 'not_found')
+        return json(presentLink(link))
+      }
       if (path === '/v1/accounts/oauth/callback' && method === 'POST') {
-        const redirect = new URL(body().redirect_url)
+        const sent = body()
+        const redirect = new URL(sent.redirect_url)
         calls.callback.push(redirect.toString())
+        calls.callbackBodies.push(sent)
         const flow = flows.get(redirect.searchParams.get('state'))
+        const link = flow ? undefined : [...links.values()].find(item => item.flowState === redirect.searchParams.get('state') && item.user === user.id)
+        if (link) return finishLink(link, redirect, sent)
         if (!flow || flow.user !== user.id) return fail(404, 'not_found')
+        // A consent for a mailbox that exists carries no key: its mailbox has one.
+        if (sent.public_key || sent.namespace || sent.grant) return fail(400, 'bad_request')
         flows.delete(redirect.searchParams.get('state'))
         const account = mine.find(item => item.id === flow.account)
         if (redirect.searchParams.get('error')) { transition(account, 'error'); return fail(400, 'bad_request') }
@@ -519,6 +623,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           // at once; any other is kept 30 days, recoverable.
           const purged = !mine[index].connected
           const removal = purged ? { account_id: one[1], purged: true } : { account_id: one[1], purged: false, purge_after: now() + 30 * 86_400 }
+          if (!purged) keptByUser.set(user.id, [...(keptByUser.get(user.id) ?? []), mine[index]])
           mine.splice(index, 1)
           return json(removal)
         }
@@ -678,6 +783,47 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
           }
         }
         return fail(404, 'not_found')
+      }
+
+      /**
+       * A link's return, as the daemon finishes it: the provider's refusal
+       * recorded with no key; a code only with the mailbox's first key and a
+       * step-up still fresh once the finish is over, checked before the link
+       * is taken; then the address the provider named, a mailbox the
+       * workspace holds under it refused, and the mailbox created with its
+       * key, active.
+       */
+      function finishLink(link, redirect, sent) {
+        if (link.state !== 'waiting' || link.expires_at < now()) return fail(404, 'not_found')
+        const failed = (status, code, reason, email = '') => {
+          Object.assign(link, { state: 'failed', reason, email })
+          return fail(status, code)
+        }
+        if (redirect.searchParams.get('error')) return failed(400, 'bad_request', REASON_DECLINED)
+        if (!sent.public_key || !sent.namespace || !sent.grant) return fail(400, 'bad_request')
+        if (now() - session.authenticated_at >= 600 - 45) return fail(403, 'not_authorized')
+        const email = chosenEmail(redirect.searchParams.get('code'))
+        if (!email) return failed(400, 'bad_request', 'the provider named no usable address for the account')
+        if (email === NOT_GRANTED_EMAIL) return failed(400, 'bad_request', REASON_NOT_GRANTED)
+        const into = link.workspace_id ? extension.linkInto?.(user, link.workspace_id) : { held: [...mine, ...(keptByUser.get(user.id) ?? [])], add: account => mine.push(account) }
+        if (!into) return fail(404, 'not_found')
+        const made = { id: `acc_${String(++accountSerial).padStart(16, '0')}`, email, provider: link.provider, auth_kind: 'oauth2', state: 'active', connected: true, save_sent_copy: false, created_at: now(), sync: idle(), target: 120 }
+        if (into.held.some(item => sameMailbox(item, made))) return failed(409, 'conflict', REASON_DUPLICATE, email)
+        made.key = { epoch: 1, public_key: sent.public_key, namespace: sent.namespace, grant: sent.grant }
+        if (link.display_name) made.display_name = link.display_name
+        const create = () => {
+          into.add(made)
+          Object.assign(link, { state: 'connected', account_id: made.id, display_name: '' })
+          if (user.consent && !link.workspace_id) startSync(user, made)
+        }
+        if (email === SLOW_LINK_EMAIL) {
+          // Its finish outlives the answer, which never reaches the page.
+          link.state = 'finishing'
+          setTimeout(create, 2_500)
+          return route.abort('connectionreset')
+        }
+        create()
+        return json(into.present?.(made) ?? present(made))
       }
 
       function startFlow(account) {

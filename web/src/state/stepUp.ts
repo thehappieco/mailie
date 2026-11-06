@@ -57,10 +57,10 @@ function settle(given: boolean, error: Error = new StepUpCancelled()): void {
  * with. A prompt settled meanwhile (a sign-out, another person) is left as
  * it is.
  */
-async function editionStepUp(own: (reason: StepUpReason) => Promise<void>, reason: StepUpReason): Promise<void> {
+async function editionStepUp(own: (reason: StepUpReason, margin: number) => Promise<void>, reason: StepUpReason, margin: number): Promise<void> {
   const asked = round
   try {
-    await own(reason)
+    await own(reason, margin)
   } catch (error) {
     if (asked === round) settle(false, error instanceof Error ? error : new StepUpCancelled())
     return
@@ -84,16 +84,18 @@ watch(identity, () => { if (stepUpPrompt.open || waiting.length) stepUpRefused()
 /**
  * askStepUp opens the prompt for reason, or joins the one open, and settles
  * when it is given or closed. Where the edition has a step-up of its own,
- * opening the prompt asks it, once.
+ * opening the prompt asks it, once, with the margin the flow that opened it
+ * asked for: the seconds of the ten minutes that must still be left once it
+ * is given.
  */
-export function askStepUp(reason: StepUpReason): Promise<void> {
+export function askStepUp(reason: StepUpReason, margin = STEP_UP_MARGIN_S): Promise<void> {
   return new Promise((resolve, reject) => {
     waiting.push({ resolve, reject })
     if (stepUpPrompt.open) return
     stepUpPrompt.open = true
     stepUpPrompt.reason = reason
     const own = edition().stepUp
-    if (own) void editionStepUp(own, reason)
+    if (own) void editionStepUp(own, reason, margin)
   })
 }
 
@@ -103,7 +105,7 @@ export function askStepUp(reason: StepUpReason): Promise<void> {
  * person closes the prompt.
  */
 export async function ensureStepUp(reason: StepUpReason, margin = STEP_UP_MARGIN_S): Promise<void> {
-  if (!freshStepUp(serverNow(), margin)) await askStepUp(reason)
+  if (!freshStepUp(serverNow(), margin)) await askStepUp(reason, margin)
 }
 
 /**
@@ -120,7 +122,7 @@ export async function withStepUp<T>(reason: StepUpReason, call: () => Promise<T>
     return await call()
   } catch (error) {
     if (!(error instanceof ApiError && error.code === 'not_authorized') || freshStepUp()) throw error
-    await askStepUp(reason)
+    await askStepUp(reason, margin)
     return call()
   }
 }

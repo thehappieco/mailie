@@ -19,7 +19,7 @@
 // QA_ORIGIN (default http://localhost:5174), QA_SCREENSHOTS (directory),
 // QA_ONLY (console: the account passes; keys-scheme: an account that never
 // enrolled, a reset link and recovery; sync; actions: the permission in Account; keys: API keys
-// and the MCP endpoint; storage),
+// and the MCP endpoint; storage; links: Gmail and Microsoft linked at the provider),
 // QA_PLAYWRIGHT_MODULE (path to playwright's index.mjs when it is not
 // installed here), QA_BROWSER (chromium|firefox|webkit), QA_BROWSER_EXECUTABLE
 // or QA_BROWSER_CHANNEL (e.g. chrome) to use an installed browser.
@@ -28,8 +28,8 @@ import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
 import {
-  APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, RESET,
-  fakeDaemon as coreDaemon, focused, noHorizontalOverflow, now, sleep, spoken, until,
+  APPLE_APP_PASSWORD, GMAIL_ACCOUNT, INVITE, NOT_GRANTED_EMAIL, PASSWORD, REASON_DECLINED, REASON_DUPLICATE, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, RESET, SLOW_LINK_EMAIL,
+  fakeDaemon as coreDaemon, focused, noHorizontalOverflow, now, providerChooser, sleep, spoken, until,
 } from './fakeDaemon.mjs'
 
 const playwright = await import(process.env.QA_PLAYWRIGHT_MODULE || 'playwright')
@@ -1381,6 +1381,263 @@ for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
     failures.push(`storage ${label}: ${error.message}`)
     console.log(`FAIL storage ${label}: ${error.stack}`)
     if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-storage-${label}.png`) }).catch(() => {})
+  } finally {
+    daemon.close()
+    await context.close()
+  }
+}
+
+// --- linking at the provider ---------------------------------------------------
+// A server that finishes Gmail and Microsoft at the provider (the web flow):
+// the form asks for no address, the step-up has five minutes to spare before
+// the page leaves, and the account is chosen on the provider's own page,
+// whose answer names its address. Connected; the same account again, under
+// another spelling of one Gmail account, and once removed and kept, refused
+// with the one text that tells no removed mailbox apart; the step-up asked
+// at the return, before its code is taken, when it went stale on the
+// provider's page, and never for the provider's refusal; an account without
+// the mailbox's grant; a finish whose answer was lost, followed by the link;
+// Microsoft's account chooser, its refusal, and its address form one small
+// link away, which takes today's way with the address; and a mailbox's
+// re-authorization from its card, unchanged. No address and no key go with a
+// link's start, and its return carries the mailbox's first key.
+
+/** The accounts each provider's page offers to choose from. */
+const CHOOSABLE = {
+  google: ['ana.lima@gmail.com', 'A.na.Lima+news@gmail.com', 'vendas.lima@gmail.com', NOT_GRANTED_EMAIL, SLOW_LINK_EMAIL],
+  microsoft: ['ana.trabalho@example.test'],
+}
+const linkText = language => Object.fromEntries(Object.entries({
+  connect: 'Connect an email account', gmail: 'Gmail or Google Workspace', microsoft: 'Microsoft 365 or Outlook', email: 'Email address',
+  gmailSubtitle: 'You will choose the account on Google’s page, and Google tells Mailie its address.',
+  microsoftSubtitle: 'You will choose the account on Microsoft’s page, and Microsoft tells Mailie its address.',
+  instead: 'Enter the mailbox’s address instead',
+  insteadHint: 'For a shared mailbox, or when Microsoft says your organization’s administrator must approve Mailie.',
+  wayBack: 'Use the account I choose at Microsoft', name: 'Display name (optional)', stepUp: 'Enter your password again',
+  declined: 'You did not allow access, so nothing was connected.',
+  declinedMicrosoft: 'Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.',
+  notGranted: 'The provider did not grant access, so nothing was connected. Start again.',
+}).map(([name, key]) => [name, say(language, key)]).concat([
+  ['continueGmail', say(language, 'Continue to {provider}', { provider: 'Gmail' })],
+  ['continueMicrosoft', say(language, 'Continue to {provider}', { provider: 'Microsoft 365' })],
+  ['connected', email => say(language, '{email} is connected. You can list its folders now. Sync is off until you turn it on.', { email })],
+  ['duplicate', email => say(language, '{email} was not connected. {reason}', { email, reason: say(language, 'This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.') })],
+]))
+
+for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] : [
+  { language: 'en-US', mobile: false, scheme: 'light', full: true },
+  { language: 'pt-BR', mobile: true, scheme: 'dark', full: false },
+]) {
+  const label = `links-${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}`
+  const text = linkText(language)
+  const context = await browser.newContext({
+    serviceWorkers: 'block', locale: language, colorScheme: scheme, reducedMotion: 'reduce',
+    viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
+  })
+  const daemon = fakeDaemon({ gmailFlows: ['web', 'loopback'], personal: true })
+  const errors = []
+  await context.route('**/v1/**', route => daemon.handle(route))
+  /** Every provider page the page was sent to. */
+  const visited = []
+  // A link's provider page shows its account chooser; a consent's (no openid) answers as before: Google's goes nowhere, Microsoft's grants it.
+  await context.route('https://accounts.google.com/**', route => {
+    visited.push(route.request().url())
+    const chooser = providerChooser(route.request().url(), CHOOSABLE.google)
+    return route.fulfill({ status: 200, contentType: 'text/html', body: chooser ?? '<!doctype html><title>Google</title><p>Synthetic consent page</p>' })
+  })
+  await context.route('https://login.microsoftonline.com/**', route => {
+    visited.push(route.request().url())
+    const chooser = providerChooser(route.request().url(), CHOOSABLE.microsoft)
+    if (chooser) return route.fulfill({ status: 200, contentType: 'text/html', body: chooser })
+    const state = new URL(route.request().url()).searchParams.get('state')
+    return route.fulfill({ status: 302, headers: { location: `${origin}/oauth/return?code=synthetic-code-0001&state=${state}&session_state=x` } })
+  })
+  const page = await context.newPage()
+  page.on('pageerror', error => errors.push(error.message))
+  page.on('console', message => { if (message.type() === 'error' && /Content Security Policy|Refused to|TypeError|Uncaught/.test(message.text())) errors.push(message.text()) })
+  const shot = async name => {
+    await noHorizontalOverflow(page, `${label} ${name}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `${name}-${label}.png`) })
+  }
+  /** The connecting dialog, on this provider's form. */
+  const open = async provider => {
+    await page.getByRole('button', { name: text.connect }).first().click()
+    await page.getByRole('dialog', { name: text.connect }).getByRole('button', { name: new RegExp(text[provider]) }).click()
+    const dialog = page.getByRole('dialog', { name: text[provider] })
+    await dialog.waitFor()
+    return dialog
+  }
+  /** Leaves for the provider's page and chooses an account there, or Cancel; meanwhile is run on the provider's page. */
+  const choose = async (dialog, provider, account, meanwhile = async () => {}) => {
+    await dialog.getByRole('button', { name: provider === 'gmail' ? text.continueGmail : text.continueMicrosoft }).click()
+    await page.waitForURL(provider === 'gmail' ? /^https:\/\/accounts\.google\.com\// : /^https:\/\/login\.microsoftonline\.com\//, { timeout: 15_000 })
+    await page.getByRole('heading', { name: 'Choose an account' }).waitFor()
+    await meanwhile()
+    await page.getByRole('link', { name: account, exact: true }).click()
+    await page.waitForURL(url => url.origin === origin && url.pathname === '/', { timeout: 15_000 })
+  }
+  const said = async expected => {
+    await page.locator('.notice').filter({ hasText: expected }).waitFor({ timeout: 20_000 })
+    assert.equal((await page.locator('.notice > span').first().textContent()).trim(), expected)
+  }
+  try {
+    await page.goto(origin + '/')
+    await page.locator('form[name=mailie-login]').waitFor()
+    await page.locator('input[name=username]').fill('ana@example.test')
+    await page.locator('input[name=password]').fill(PASSWORD)
+    await page.locator('form[name=mailie-login] button[type=submit]').click()
+    await page.locator('.account-card').first().waitFor()
+
+    // --- Gmail at the provider: no address typed --------------------------------
+    let gmail = await open('gmail')
+    assert.equal(await gmail.getByLabel(text.email).count(), 0, 'no address field where Google names the account')
+    await gmail.getByText(text.gmailSubtitle).waitFor()
+    assert.equal(await gmail.getByRole('button', { name: text.instead }).count(), 0, 'Gmail offers no address form')
+    await gmail.getByLabel(text.name).fill('Pessoal')
+    await shot('link-gmail-form')
+    await choose(gmail, 'gmail', 'ana.lima@gmail.com', () => shot('link-google-chooser'))
+    const chooser = new URL(visited.at(-1))
+    assert.equal(chooser.searchParams.get('prompt'), 'select_account consent', 'Google shows its account chooser')
+    assert.deepEqual(chooser.searchParams.get('scope').split(' ').sort(), ['email', 'https://mail.google.com/', 'openid'])
+    assert.equal(chooser.searchParams.has('login_hint'), false, 'no account is hinted')
+    await said(text.connected('ana.lima@gmail.com'))
+    await page.locator('.account-card').filter({ hasText: 'ana.lima@gmail.com' }).waitFor()
+    assert.equal(await page.evaluate(() => location.search + location.hash), '', 'the code is gone from the address bar')
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('mailie.oauthStart') ?? sessionStorage.getItem('mailie.oauthReturn')), null, 'nothing of the link is kept once answered')
+    await shot('link-connected')
+    const [startBody] = daemon.calls.links
+    assert.deepEqual(startBody, { provider: 'gmail', flow: 'web', display_name: 'Pessoal' }, 'a link starts with no address and no key')
+    const returned = daemon.calls.callbackBodies.at(-1)
+    assert.ok(/^[A-Za-z0-9_-]{43}$/.test(returned.public_key) && /^[0-9a-f-]{36}$/.test(returned.namespace) && /^[A-Za-z0-9_-]{118}$/.test(returned.grant), 'the return carries the mailbox key, its namespace and the linker grant')
+
+    // --- the same account again, and another spelling of it ------------------
+    for (const account of full ? ['ana.lima@gmail.com', 'A.na.Lima+news@gmail.com'] : ['ana.lima@gmail.com']) {
+      gmail = await open('gmail')
+      await choose(gmail, 'gmail', account)
+      await said(text.duplicate(account))
+      assert.equal(daemon.links.get(`lnk_${String(daemon.calls.links.length).padStart(16, '0')}`).reason, REASON_DUPLICATE)
+    }
+    assert.equal(await page.getByText(REASON_DUPLICATE).count(), 0, 'the server’s reason is never rendered')
+    await shot('link-duplicate')
+
+    // --- the provider's refusal: no step-up, even a stale one -----------------
+    gmail = await open('gmail')
+    await choose(gmail, 'gmail', 'Cancel', async () => { daemon.ageStepUp(11 * 60) })
+    await said(text.declined)
+    assert.equal(await page.getByRole('dialog', { name: text.stepUp }).count(), 0, 'a refusal asks for no step-up')
+    assert.deepEqual(Object.keys(daemon.calls.callbackBodies.at(-1)), ['redirect_url'], 'a refusal carries no key')
+    assert.equal(daemon.links.get(`lnk_${String(daemon.calls.links.length).padStart(16, '0')}`).reason, REASON_DECLINED)
+    await shot('link-declined')
+    // The page as it reads the step-up again: four minutes of the ten left in
+    // the full pass, enough for a return but not for leaving for the
+    // provider's page; a fresh one in the other.
+    daemon.ageStepUp(full ? 6 * 60 : 0)
+    await page.reload()
+    await page.locator('.account-card').first().waitFor()
+
+    if (full) {
+      // --- the step-up, with five minutes to spare before the page leaves ------
+      const before = daemon.calls.stepUp
+      gmail = await open('gmail')
+      // Four minutes left: the dialog asks before anything is started.
+      await gmail.getByRole('button', { name: text.continueGmail }).click()
+      const stepUp = page.getByRole('dialog', { name: text.stepUp })
+      await stepUp.waitFor()
+      assert.equal(daemon.calls.links.length, 4, 'nothing is started before the step-up')
+      await stepUp.getByLabel('Password', { exact: true }).fill(PASSWORD)
+      await stepUp.getByRole('button', { name: 'Continue' }).click()
+      await page.waitForURL(/^https:\/\/accounts\.google\.com\//, { timeout: 30_000 })
+      assert.equal(daemon.calls.stepUp, before + 1)
+      // Four minutes on the provider's page: one left when it comes back, too few for the server's checks.
+      daemon.ageStepUp(9 * 60)
+      const posted = daemon.calls.callback.length
+      await page.getByRole('link', { name: 'vendas.lima@gmail.com', exact: true }).click()
+      await page.waitForURL(url => url.origin === origin && url.pathname === '/', { timeout: 15_000 })
+      await page.getByRole('dialog', { name: text.stepUp }).waitFor()
+      assert.equal(daemon.calls.callback.length, posted, 'the return waits for the step-up before it is posted')
+      assert.ok(await page.evaluate(() => !!sessionStorage.getItem('mailie.oauthReturn')), 'the return is kept until the server answers')
+      await shot('link-return-stepup')
+      await page.getByRole('dialog', { name: text.stepUp }).getByLabel('Password', { exact: true }).fill(PASSWORD)
+      await page.getByRole('dialog', { name: text.stepUp }).getByRole('button', { name: 'Continue' }).click()
+      await said(text.connected('vendas.lima@gmail.com'))
+      assert.equal(daemon.calls.callback.length, posted + 1, 'posted once, after the step-up')
+      assert.equal(daemon.calls.stepUp, before + 2)
+
+      // --- an account the grant does not reach, and a finish whose answer was lost
+      gmail = await open('gmail')
+      await choose(gmail, 'gmail', NOT_GRANTED_EMAIL)
+      await said(text.notGranted)
+      assert.equal(await page.getByText(REASON_NOT_GRANTED).count(), 0, 'the server’s reason is never rendered')
+      const reads = daemon.calls.linkReads
+      gmail = await open('gmail')
+      await choose(gmail, 'gmail', SLOW_LINK_EMAIL)
+      await said(text.connected(SLOW_LINK_EMAIL))
+      assert.ok(daemon.calls.linkReads >= reads + 2, 'a link still finishing is asked about again')
+      await page.locator('.account-card').filter({ hasText: SLOW_LINK_EMAIL }).waitFor()
+
+      // --- a mailbox removed and kept is the same refusal for its owner ----------
+      await page.locator('.account-card').filter({ hasText: 'ana.lima@gmail.com' }).getByRole('button', { name: 'Details' }).click()
+      const sheet = page.getByRole('dialog', { name: 'Pessoal' })
+      await sheet.getByRole('button', { name: 'Remove account…' }).click()
+      await sheet.getByLabel('Type ana.lima@gmail.com to confirm').fill('ana.lima@gmail.com')
+      await sheet.getByRole('button', { name: 'Remove', exact: true }).click()
+      await page.locator('.notice').filter({ hasText: 'ana.lima@gmail.com was removed' }).waitFor()
+      gmail = await open('gmail')
+      await choose(gmail, 'gmail', 'ana.lima@gmail.com')
+      await said(text.duplicate('ana.lima@gmail.com'))
+    }
+
+    // --- Microsoft: its account chooser, and its address form one link away --
+    let outlook = await open('microsoft')
+    assert.equal(await outlook.getByLabel(text.email).count(), 0, 'no address field where Microsoft names the account')
+    await outlook.getByText(text.microsoftSubtitle).waitFor()
+    const instead = outlook.getByRole('button', { name: text.instead })
+    await outlook.getByText(text.insteadHint).waitFor()
+    await shot('link-microsoft-form')
+    await instead.click()
+    await outlook.getByLabel(text.email).waitFor()
+    await page.waitForFunction(() => document.activeElement?.getAttribute('name') === 'mailbox')
+    await shot('link-microsoft-address')
+    await outlook.getByRole('button', { name: text.wayBack }).click()
+    await outlook.getByRole('button', { name: text.instead }).waitFor()
+    assert.equal(await outlook.getByLabel(text.email).count(), 0)
+    await choose(outlook, 'microsoft', 'ana.trabalho@example.test', () => shot('link-microsoft-chooser'))
+    const microsoftChooser = new URL(visited.at(-1))
+    assert.equal(microsoftChooser.searchParams.get('prompt'), 'select_account', 'Microsoft shows its account chooser')
+    assert.equal(microsoftChooser.searchParams.has('login_hint'), false, 'no account is hinted')
+    await said(text.connected('ana.trabalho@example.test'))
+
+    outlook = await open('microsoft')
+    await choose(outlook, 'microsoft', 'Cancel')
+    await said(text.declinedMicrosoft)
+
+    if (full) {
+      // Through the address form: today's way, the mailbox created with its address, then the consent.
+      outlook = await open('microsoft')
+      await outlook.getByRole('button', { name: text.instead }).click()
+      await outlook.getByLabel(text.email).fill('compartilhada@example.test')
+      const links = daemon.calls.links.length
+      await outlook.getByRole('button', { name: text.continueMicrosoft }).click()
+      await said(text.connected('compartilhada@example.test'))
+      assert.equal(daemon.calls.links.length, links, 'the address form starts no link')
+      assert.equal(daemon.calls.created.at(-1).email, 'compartilhada@example.test')
+      assert.ok(!new URL(visited.at(-1)).searchParams.get('scope')?.includes('openid'), 'and asks the provider for nothing more than the mailbox')
+
+      // --- a mailbox's re-authorization from its card, unchanged -----------------
+      const card = page.locator('.account-card').filter({ hasText: 'ana.souza@example.test' })
+      await card.getByRole('button', { name: 'Finish authorization' }).click()
+      await said(text.connected('ana.souza@example.test'))
+      assert.ok(!new URL(visited.at(-1)).searchParams.get('scope')?.includes('openid'), 'a re-authorization asks for the mailbox alone')
+    }
+
+    for (const body of daemon.calls.links) assert.ok(!('email' in body) && !('public_key' in body) && !('grant' in body), 'no link starts with an address or a key')
+    assert.deepEqual(daemon.calls.unoffered, [], 'no request to the mail or sending routes')
+    assert.deepEqual(errors, [], 'no page, script or CSP errors')
+    console.log(`ok ${label}`)
+  } catch (error) {
+    failures.push(`${label}: ${error.message}`)
+    console.log(`FAIL ${label}: ${error.stack}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `failure-${label}.png`) }).catch(() => {})
   } finally {
     daemon.close()
     await context.close()

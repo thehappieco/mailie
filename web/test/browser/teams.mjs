@@ -28,8 +28,10 @@
 // mailboxes"): Ana removes a team mailbox only Carol reads, which keeps her
 // protected until it is deleted for good. Ana, an owner, sees it named as
 // removed, from the team's removed mailboxes, read once; Bea, an admin, sees
-// it as a count and never asks for them; and once Ana deletes it for good,
-// Carol's marks clear. On desktop and at 320 px, in English and Portuguese.
+// it as a count and never asks for them; each of them linking its address
+// into the team at the provider meanwhile is told the one text that tells no
+// removed mailbox apart; and once Ana deletes it for good, Carol's marks
+// clear. On desktop and at 320 px, in English and Portuguese.
 //
 // Then a team mailbox's sync paused and resumed (docs/workspaces.md,
 // "Pausing a mailbox's sync"): Ana, an owner, pauses suporte@ after reading
@@ -53,7 +55,7 @@ import { mkdir, readdir, readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import assert from 'node:assert/strict'
-import { PASSWORD, fakeDaemon as coreDaemon, noHorizontalOverflow, now, until } from './fakeDaemon.mjs'
+import { PASSWORD, REASON_DUPLICATE, fakeDaemon as coreDaemon, noHorizontalOverflow, now, providerChooser, until } from './fakeDaemon.mjs'
 
 const playwright = await import(process.env.QA_PLAYWRIGHT_MODULE || 'playwright')
 const engine = process.env.QA_BROWSER || 'chromium'
@@ -117,10 +119,11 @@ function say(language, key, values = {}) {
 function daemon({ archive = false } = {}) {
   let team = null
   const instance = coreDaemon({
-    origin, versions: VERSIONS, consented: true,
+    // Gmail is linked at the provider, its address named by the account chosen there.
+    origin, versions: VERSIONS, consented: true, gmailFlows: ['web', 'loopback'],
     extend: core => {
       team = teamModel(core, { archive })
-      return { methods: { team }, route: request => team.route(request), keyWorkspace: (user, id) => team.keyWorkspace(user, id) }
+      return { methods: { team }, route: request => team.route(request), keyWorkspace: (user, id) => team.keyWorkspace(user, id), linkInto: (user, id) => team.linkInto(user, id) }
     },
   })
   return instance
@@ -262,6 +265,24 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
     pause(accountID, userID) {
       const account = teamOf(accountID)
       account.paused = { at: now(), by: userID }
+    },
+    /**
+     * A team its owners and admins link a mailbox into at the provider: what
+     * it holds, live and removed and kept, which a link to the same address
+     * is refused for; and the mailbox a link creates, the team's, read by
+     * whoever linked it.
+     */
+    linkInto(user, id) {
+      if (workspaces.get(id)?.kind !== 'team' || !managesByRole(id, user.id)) return null
+      return {
+        held: protecting(id),
+        add: made => {
+          const { key: _, ...account } = made
+          teamAccounts.push({ ...account, workspace_id: id, linked_by: user.id, consent: null })
+          grants.set(account.id, new Map([[user.id, flags({ read: true, act: true, send: true })]]))
+        },
+        present: made => presentTeam(teamOf(made.id), user),
+      }
     },
     /** A workspace whose API keys the core's key routes keep: its owners and admins administer them; Read is given where they read. */
     keyWorkspace(user, id) {
@@ -993,6 +1014,32 @@ for (const { language, mobile, scheme } of only && only !== 'removed' ? [] : rem
   const offered = async name => carol.getByRole('button', { name: tr(name) }).count()
   /** A long address wraps inside its element, which clips it otherwise: what the overflow check, on boxes alone, does not see. */
   const fits = async (locator, what) => assert.ok(await locator.evaluate(element => element.scrollWidth <= element.clientWidth + 1), `${label}: ${what} fits its box`)
+  // Google's page, with its account chooser, for a link at the provider.
+  await context.route('https://accounts.google.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: providerChooser(route.request().url(), [archive]) ?? '<!doctype html><title>Google</title>' }))
+  /**
+   * Links the account at Google into the team shown, the one the dialog
+   * chooses: the provider names arquivo@, which the team holds removed and
+   * kept, and the refusal says so in the one text an owner and an admin
+   * alike are told.
+   */
+  const linkRemovedAtGoogle = async who => {
+    await page.getByRole('button', { name: tr('Connect an email account') }).first().click()
+    await page.locator('dialog .provider-option').filter({ hasText: tr('Gmail or Google Workspace') }).click()
+    const dialog = page.locator('dialog[open]').filter({ hasText: tr('You will choose the account on Google’s page, and Google tells Mailie its address.') })
+    await dialog.waitFor()
+    assert.equal(await dialog.locator('input[name=mailbox]').count(), 0, `${who}: no address field`)
+    assert.equal(await dialog.locator('input[name=workspace]:checked').getAttribute('value'), TEAM, `${who}: into the team shown`)
+    const started = fake.calls.links.length
+    await dialog.getByRole('button', { name: tr('Continue to {provider}', { provider: 'Gmail' }) }).click()
+    await page.getByRole('link', { name: archive, exact: true }).click()
+    const refused = tr('{email} was not connected. {reason}', { email: archive, reason: tr('This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.') })
+    await page.locator('.notice').filter({ hasText: archive }).waitFor({ timeout: 20_000 })
+    assert.equal(plain(await page.locator('.notice > span').first().innerText()), refused, `${who}: the one refusal`)
+    assert.deepEqual(fake.calls.links.slice(started), [{ provider: 'gmail', flow: 'web', workspace_id: TEAM }], `${who}: a link into the team, with no address and no key`)
+    assert.equal([...fake.links.values()].at(-1).reason, REASON_DUPLICATE)
+    assert.equal(await page.getByText(REASON_DUPLICATE).count(), 0, `${who}: the server’s reason is never rendered`)
+    await shot(`removed-link-${who}`)
+  }
   try {
     await page.goto(origin + '/')
     await signIn('ana@example.test')
@@ -1032,6 +1079,8 @@ for (const { language, mobile, scheme } of only && only !== 'removed' ? [] : rem
     assert.equal(asked(ANA), before, 'the removed mailboxes, already read, are not asked for again')
     await carol.scrollIntoViewIfNeeded()
     await shot('removed-owner')
+    await openSection(tr('Mailboxes'))
+    await linkRemovedAtGoogle('owner')
 
     // The admin's view: the same protection, the removed mailbox a count; the removed mailboxes are never asked for.
     await signOut()
@@ -1047,6 +1096,9 @@ for (const { language, mobile, scheme } of only && only !== 'removed' ? [] : rem
     assert.equal(asked(BEA), 0, 'an admin never asks for the team’s removed mailboxes')
     await carol.scrollIntoViewIfNeeded()
     await shot('removed-admin')
+    await openSection(tr('Mailboxes'))
+    await linkRemovedAtGoogle('admin')
+    assert.equal(asked(BEA), 0, 'nor does her refused link')
 
     // Deleted for good by an owner: its grants go, and Carol's marks with them, without opening Members again.
     await signOut()

@@ -6,8 +6,9 @@
 import { segment } from './endpoint'
 import { checked, request } from './http'
 import {
-  isAccount, isAccountList, isAddAccountResult, isAuthFlow, isFolderList, isRemoval, isRemovedMailboxList,
-  type Account, type AddAccountRequest, type AddAccountResult, type AuthFlow, type FlowKind, type Folder, type Removal, type RemovedMailbox,
+  isAccount, isAccountList, isAddAccountResult, isAuthFlow, isFolderList, isLink, isLinkStarted, isRemoval, isRemovedMailboxList,
+  type Account, type AddAccountRequest, type AddAccountResult, type AuthFlow, type CompleteOAuthRequest, type FlowKind, type Folder, type Link,
+  type LinkRequest, type LinkStarted, type Removal, type RemovedMailbox,
 } from './types'
 
 /**
@@ -20,10 +21,11 @@ export const ADD_ACCOUNT_TIMEOUT_MS = 45_000
 export const FOLDERS_TIMEOUT_MS = 70_000
 /**
  * Completing consent exchanges the code with the provider: up to 40 s on the
- * server, inside a 45 s route. The client waits longer, so the server's answer
- * decides and a slow provider is not reported as a failure that then succeeds.
+ * server, after up to 20 s of checks for a link at the provider, inside a
+ * 70 s route. The client waits longer, so the server's answer decides and a
+ * slow provider is not reported as a failure that then succeeds.
  */
-export const COMPLETE_OAUTH_TIMEOUT_MS = 50_000
+export const COMPLETE_OAUTH_TIMEOUT_MS = 75_000
 
 /** The caller's mailboxes; with workspace, only that workspace's (?workspace=), so a view never reads another's. */
 export async function listAccounts(token: string, workspace = '', signal?: AbortSignal): Promise<Account[]> {
@@ -43,9 +45,31 @@ export async function startAuth(token: string, id: string, flow?: FlowKind): Pro
   return checked(await request(`/v1/accounts/${segment(id)}/oauth/start`, { token, body: flow ? { flow } : {} }), isAuthFlow)
 }
 
-/** Hands the provider's redirect back to the server, which checks it belongs to this user before exchanging the code. */
-export async function completeOAuth(token: string, redirectURL: string): Promise<Account> {
-  return checked(await request('/v1/accounts/oauth/callback', { token, body: { redirect_url: redirectURL }, timeoutMS: COMPLETE_OAUTH_TIMEOUT_MS }), isAccount)
+/**
+ * Hands the provider's redirect back to the server, which checks it belongs
+ * to this user before exchanging the code. A link at the provider's return
+ * with a code carries the mailbox's first key, which the mailbox is created
+ * with (docs/key-scheme.md section 12.11); a consent for a mailbox that
+ * exists, and a return that carries the provider's refusal, carry none.
+ */
+export async function completeOAuth(token: string, redirectURL: string, key?: Omit<CompleteOAuthRequest, 'redirect_url'>): Promise<Account> {
+  const body: CompleteOAuthRequest = { redirect_url: redirectURL, ...key }
+  return checked(await request('/v1/accounts/oauth/callback', { token, body, timeoutMS: COMPLETE_OAUTH_TIMEOUT_MS }), isAccount)
+}
+
+/**
+ * Starts a link at the provider: a Gmail or Microsoft mailbox whose address
+ * the provider names once the person chose the account on its page. It
+ * carries no address and no key, and the server stores no mailbox: the
+ * answer is the link and where to send the browser.
+ */
+export async function startLink(token: string, body: LinkRequest): Promise<LinkStarted> {
+  return checked(await request('/v1/accounts/oauth/links', { token, body }), isLinkStarted)
+}
+
+/** How a link this person started stands: never the mailbox it created, which getAccount reads. */
+export async function getLink(token: string, id: string, signal?: AbortSignal): Promise<Link> {
+  return checked(await request(`/v1/accounts/oauth/links/${segment(id)}`, { token, signal }), isLink)
 }
 
 /**

@@ -6,18 +6,26 @@
 // flow exists and belongs to the signed-in person before it exchanges anything.
 //
 // Two things are kept in this tab's sessionStorage, never elsewhere:
-// - the start, {account_id, provider, email, back}, written just before
-//   leaving, so the return can name the mailbox it was about, and come back
-//   to the page it left from (back: that page's path alone, never its query
-//   or fragment; a host whose address names a workspace takes it again from
-//   the mailbox, once the return is finished);
+// - the start, written just before leaving, so the return can say what it
+//   was about, and come back to the page it left from (back: that page's
+//   path alone, never its query or fragment; a host whose address names a
+//   workspace takes it again from the mailbox, once the return is finished):
+//   for a consent, {account_id, provider, email, back}, the mailbox it was
+//   about; for a link at the provider, {link_id, provider, workspace_id?,
+//   back}, which names no address, since none is known before the provider
+//   names one;
 // - the return itself, written the moment the page loads and removed from the
 //   address bar at once, so a person who has to sign in first (a new tab, an
 //   expired session) can still finish, and a reload never replays the code.
 //   The address becomes the start's back, while the start is fresh and back is
 //   a path of this origin; else /.
 // Both expire with the provider's flow, ten minutes, and are taken, not read,
-// when used: one return is posted once. One that is never used is removed once
+// when used: one return is posted once. A link's return is taken only once the
+// server answered it: the step-up it may need first can send the whole tab
+// elsewhere (an edition's own step-up), and the return waits in the tab for
+// the page that comes back; the server takes a link once, so a return posted
+// again is refused without harm. A new start drops a return still waiting,
+// which belonged to the flow it replaces. One that is never used is removed once
 // its ten minutes are up (sweepOAuthStorage), as soon as the console is running
 // in the tab; sessionStorage itself goes when the tab closes. A browser that
 // refuses site storage
@@ -25,8 +33,8 @@
 // also held in memory until it is taken (it cannot survive a reload there,
 // and the start cannot name the mailbox).
 
-import type { ProviderID } from '../api/types'
-import { providerIDs } from '../api/types'
+import type { Link, ProviderID } from '../api/types'
+import { linkProviders, providerIDs } from '../api/types'
 
 export const RETURN_PATH = '/oauth/return'
 const START_KEY = 'mailie.oauthStart'
@@ -34,14 +42,29 @@ const RETURN_KEY = 'mailie.oauthReturn'
 /** The server keeps a pending flow for ten minutes; nothing here outlives it. */
 export const FLOW_LIFETIME_MS = 10 * 60_000
 
-export interface OAuthStart {
-  account_id: string
-  provider: ProviderID
-  email: string
+interface StartCommon {
   started_at: number
   /** The path of the page the flow left from, where its return comes back to: a path alone (oauthBack). */
   back?: string
 }
+/** A consent for a mailbox that exists: the mailbox, by its id and its address. */
+export interface ConsentStart extends StartCommon {
+  account_id: string
+  provider: ProviderID
+  email: string
+}
+/**
+ * A link at the provider: the link, and the team it goes into (none for the
+ * person's personal workspace). No address: the provider names it.
+ */
+export interface LinkStart extends StartCommon {
+  link_id: string
+  provider: Link['provider']
+  workspace_id?: string
+}
+export type OAuthStart = ConsentStart | LinkStart
+/** A start as the page that leaves for the provider writes it: started_at is the time it is written. */
+export type OAuthStartInput = Omit<ConsentStart, 'started_at'> | Omit<LinkStart, 'started_at'>
 export interface OAuthReturn {
   /** What is posted to the server: the return URL without its fragment. Empty when the shape was wrong. */
   url: string
@@ -121,12 +144,26 @@ function checkBack(back: unknown, origin: string): string | null {
   return url.origin === origin && url.pathname === back && !url.search && !url.hash ? back : null
 }
 
+/** Whether a start is a link at the provider's, rather than a consent's. */
+export function isLinkStart(start: OAuthStart | null): start is LinkStart {
+  return !!start && 'link_id' in start
+}
+
+/** A start's own fields, either kind's and never both: what this page writes. */
+function startShape(record: Record<string, unknown>): boolean {
+  if ('link_id' in record) {
+    return typeof record.link_id === 'string' && record.link_id !== '' && linkProviders.includes(record.provider as Link['provider'])
+      && (record.workspace_id === undefined || (typeof record.workspace_id === 'string' && record.workspace_id !== ''))
+      && !('account_id' in record) && !('email' in record)
+  }
+  return typeof record.account_id === 'string' && typeof record.email === 'string' && providerIDs.includes(record.provider as ProviderID)
+}
+
 /** Whether a start record is one this page wrote, for a flow still open. */
 function freshStart(start: unknown, now: number): start is OAuthStart {
   if (!start || typeof start !== 'object') return false
-  const record = start as Partial<OAuthStart>
-  return typeof record.account_id === 'string' && typeof record.email === 'string' && providerIDs.includes(record.provider!)
-    && typeof record.started_at === 'number' && now - record.started_at <= FLOW_LIFETIME_MS && record.started_at <= now
+  const record = start as Record<string, unknown>
+  return startShape(record) && typeof record.started_at === 'number' && now - record.started_at <= FLOW_LIFETIME_MS && record.started_at <= now
 }
 
 /**
@@ -140,20 +177,30 @@ export function oauthBack(start: unknown, origin: string, now = Date.now()): str
 
 /**
  * Kept by the tab that leaves for the provider, so the tab that comes back can
- * say which mailbox it was, and come back to back: the path of the page it
- * left from (location.pathname), kept only when it is one checkBack takes.
+ * say which mailbox, or which link, it was, and come back to back: the path of
+ * the page it left from (location.pathname), kept only when it is one
+ * checkBack takes. A return still waiting in this tab belonged to the flow
+ * this one replaces: it goes.
  */
-export function rememberOAuthStart(start: Omit<OAuthStart, 'started_at'>, now = Date.now()): void {
+export function rememberOAuthStart(start: OAuthStartInput, now = Date.now()): void {
   const { back, ...rest } = start
   const kept = typeof location === 'undefined' ? null : checkBack(back, location.origin)
+  captured = null
+  remove(RETURN_KEY)
   write(START_KEY, { ...rest, started_at: now, ...(kept ? { back: kept } : {}) } satisfies OAuthStart)
+}
+
+/** The start record, if this tab left one recently, read and left where it is: a link's waits until its return is answered. */
+export function peekOAuthStart(now = Date.now()): OAuthStart | null {
+  const start = read<unknown>(START_KEY)
+  return freshStart(start, now) ? start : null
 }
 
 /** Takes the start record, if this tab left one recently. */
 export function takeOAuthStart(now = Date.now()): OAuthStart | null {
-  const start = read<OAuthStart>(START_KEY)
+  const start = peekOAuthStart(now)
   remove(START_KEY)
-  return freshStart(start, now) ? start : null
+  return start
 }
 
 /**
@@ -210,11 +257,17 @@ export function pendingOAuthReturn(now = Date.now()): boolean {
   return !!found && typeof found.at === 'number' && now - found.at <= FLOW_LIFETIME_MS
 }
 
+/** The waiting return, read and left where it is: a link's is taken only once the server answered it. */
+export function peekOAuthReturn(): OAuthReturn | null {
+  const found = currentReturn()
+  if (!found || typeof found !== 'object' || typeof found.url !== 'string' || typeof found.at !== 'number') return null
+  return found
+}
+
 /** Takes the waiting return: whoever takes it posts it, and nobody else can. */
 export function takeOAuthReturn(): OAuthReturn | null {
-  const found = currentReturn()
+  const found = peekOAuthReturn()
   captured = null
   remove(RETURN_KEY)
-  if (!found || typeof found !== 'object' || typeof found.url !== 'string' || typeof found.at !== 'number') return null
   return found
 }

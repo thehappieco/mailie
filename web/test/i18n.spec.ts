@@ -106,6 +106,24 @@ describe('application languages', () => {
     expect(managersGivingAccess(catalogs)).toEqual([])
   })
 
+  it('names a mailbox with each language’s own word in what a link at the provider says', () => {
+    // The words every other text uses: a link names no new one.
+    const words = ['caixa de email', 'buzón', 'boîte mail', 'Postfach']
+    const said = [
+      'Enter the mailbox’s address instead',
+      'For a shared mailbox, or when Microsoft says your organization’s administrator must approve Mailie.',
+      'Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.',
+      'Microsoft’s mail server did not accept this account, so nothing was connected. Check that it has an Outlook or Exchange mailbox with IMAP turned on, or enter the mailbox’s address instead.',
+      'Microsoft did not give Mailie a usable address for this account, so nothing was connected. Enter the mailbox’s address instead.',
+      'Mailie needs to confirm it is you to finish connecting the mailbox. Start again.',
+    ]
+    const entries = Object.assign({}, ...Object.values(catalogs)) as Record<string, string[]>
+    for (const source of said) {
+      expect(entries[source], source).toHaveLength(4)
+      entries[source]!.forEach((translation, index) => expect(translation, `${source} (${index})`).toContain(words[index]))
+    }
+  })
+
   it('lets an edition add translations without changing the core’s', () => {
     locale.value = 'pt'
     addCatalogs({ 'A sentence only an edition says': ['Uma frase que só uma edição diz', 'x', 'x', 'x'], 'Email accounts': ['Outra coisa', 'x', 'x', 'x'] })

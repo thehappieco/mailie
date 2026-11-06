@@ -14,7 +14,7 @@ import { edition } from '../edition'
 import { MAX_LIVE_KEYS } from './apikeys'
 import { count } from './format'
 import { t } from './i18n'
-import { reasonText } from './reasons'
+import { linkReasonText, reasonText } from './reasons'
 import type { Failure } from '../state/failure'
 
 /** Words for a failure, or undefined to leave it to the core. */
@@ -116,6 +116,20 @@ function specific(failure: Failure): string | undefined {
       if (code === 'not_found') return t('This authorization expired or was started by another sign-in. Start again.')
       if (code === 'return_invalid') return t('The provider sent back an incomplete answer. Start again.')
       if (code === 'return_expired') return t('This authorization took too long and expired. Start again.')
+      return undefined
+    case 'start-link':
+      // Starting a link at the provider names no address: nothing here does either.
+      if (code === 'bad_request') return t('The server did not accept this request. Reload the page and try again.')
+      if (code === 'rate_limited') return t('Too many connections were started. Wait a few minutes and try again.')
+      if (code === 'not_authorized' || code === 'not_found' || code === 'flow_unsupported') return specific({ op: 'add-account', code })
+      return undefined
+    case 'complete-link':
+      // The reason the link records says more than the callback's code; one the console does not know is the provider's flow ending badly.
+      if (failure.link?.reason) return linkReasonText(failure.link) ?? specific({ op: 'wait-auth', code: 'flow_failed' })
+      // Refused before its code was taken: a team's sync text changed meanwhile, which a reload reads.
+      if (code === 'bad_request') return specific({ op: 'start-link', code })
+      if (code === 'not_authorized') return specific({ op: 'add-account', code })
+      if (code === 'not_found') return specific({ op: 'complete-auth', code })
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')
@@ -335,6 +349,7 @@ function general(failure: Failure): string {
     case 'flow_unsupported': return t('This server offered a way to sign in that this page cannot finish.')
     case 'return_invalid': return t('The provider sent back an incomplete answer. Start again.')
     case 'return_expired': return t('This authorization took too long and expired. Start again.')
+    case 'step_up_closed': return t('Mailie needs to confirm it is you to finish connecting the mailbox. Start again.')
     case 'key_limit': return t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) })
     case 'terms_changed': return t('The terms for API keys changed while this page was open. Reload the page to read the current text.')
     case 'security': return t('This server answered something Mailie does not trust, so nothing more was sent. Tell the administrator of this server.')

@@ -581,3 +581,107 @@ describe('linking a mailbox with its first key', () => {
     expect(posted(fetch)).toHaveLength(1)
   })
 })
+
+describe('linking a mailbox at the provider', () => {
+  const TEAM = 'wsp_000000000000bbbb'
+  const chooser = 'https://accounts.google.com/o/oauth2/auth?prompt=select_account+consent&scope=https%3A%2F%2Fmail.google.com%2F+openid+email&state=x'
+  /** What the daemon answers a start: the link, waiting, and the provider's page with its account chooser. */
+  const started = (provider: 'gmail' | 'microsoft', workspace?: string) => ({
+    link: { id: 'lnk_0000000000000001', provider, state: 'waiting', expires_at: now() + 600, ...(workspace ? { workspace_id: workspace } : {}) },
+    auth: { flow: 'web', auth_url: chooser, state: 'x', expires_at: now() + 600 },
+  })
+  const linkStarts = (fetch: ReturnType<typeof serve>) => fetch.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/v1/accounts/oauth/links') && init?.method === 'POST')
+    .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>)
+  const starting: Route = ({ path, method, body }) => path === '/v1/accounts/oauth/links' && method === 'POST'
+    ? json(started((body as { provider: 'gmail' | 'microsoft' }).provider, (body as { workspace_id?: string }).workspace_id), 201)
+    : failure('not_found', 404)
+
+  it('starts with no address and no key, stores no mailbox, and leaves for the provider’s account chooser', async () => {
+    const { store, fetch, navigate } = await signedIn(starting)
+    await store.connectAtProvider({ provider: 'gmail', displayName: 'Vendas' })
+    expect(linkStarts(fetch)).toEqual([{ provider: 'gmail', flow: 'web', display_name: 'Vendas' }])
+    // Nothing that creates a mailbox, and nothing sealed: the key goes with the return.
+    expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/v1/accounts') && init?.method === 'POST')).toBe(false)
+    expect(navigate).toHaveBeenCalledWith(new URL(chooser).toString())
+    expect(store.connect.phase).toBe('redirecting')
+    expect(store.accounts.list).toEqual([])
+  })
+
+  it('asks for the step-up with five minutes to spare before it leaves for the provider, and starts nothing until it is given', async () => {
+    const person = await linker()
+    // Four minutes of the ten left: enough for a link that names its address, not for one that leaves for the provider first.
+    const { session, store, stepUp, fetch, navigate } = await signedIn(starting, { ...reply(undefined, person.user), authenticated_at: now() - 6 * 60 })
+    const linking = store.connectAtProvider({ provider: 'microsoft' })
+    await vi.waitFor(() => expect(stepUp.stepUpPrompt.open).toBe(true))
+    expect(linkStarts(fetch)).toEqual([])
+    session.steppedUp(person.user.id, now())
+    stepUp.stepUpGiven()
+    await linking
+    expect(linkStarts(fetch)).toEqual([{ provider: 'microsoft', flow: 'web' }])
+    expect(navigate).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves the form as it was, and starts nothing, when the step-up is closed', async () => {
+    const { store, stepUp, fetch, navigate } = await signedIn(starting, { ...reply(), authenticated_at: 0 })
+    const linking = store.connectAtProvider({ provider: 'gmail' })
+    await vi.waitFor(() => expect(stepUp.stepUpPrompt.open).toBe(true))
+    stepUp.stepUpRefused()
+    await linking
+    expect(store.connect.phase).toBe('idle')
+    expect(store.connect.failure).toBeNull()
+    expect(linkStarts(fetch)).toEqual([])
+    expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it('remembers the link it left for, its team and the page it left from, and never an address', async () => {
+    stubPage('/settings/mailboxes?workspace=wsp_000000000000bbbb#add')
+    const { store, fetch } = await signedIn(starting)
+    await store.connectAtProvider({ provider: 'microsoft', workspaceID: TEAM, syncConsentVersion: 'synthetic-sync-1' })
+    expect(linkStarts(fetch)).toEqual([{ provider: 'microsoft', flow: 'web', workspace_id: TEAM, sync_consent_version: 'synthetic-sync-1' }])
+    const kept = JSON.parse(sessionStorage.getItem('mailie.oauthStart')!) as Record<string, unknown>
+    expect(Object.keys(kept).sort()).toEqual(['back', 'link_id', 'provider', 'started_at', 'workspace_id'])
+    expect(kept).toMatchObject({ link_id: 'lnk_0000000000000001', provider: 'microsoft', workspace_id: TEAM, back: '/settings/mailboxes' })
+    // Into the personal workspace, the start names none.
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(JSON.parse(sessionStorage.getItem('mailie.oauthStart')!)).not.toHaveProperty('workspace_id')
+  })
+
+  it('links nothing for a person without an account key, saying so before any step-up or request', async () => {
+    const { store, stepUp, fetch } = await signedIn(starting, { ...reply(undefined, { ...ana, public_key: undefined }), authenticated_at: 0 })
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(store.connect.failure).toEqual({ op: 'start-link', code: 'not_enrolled' })
+    expect(stepUp.stepUpPrompt.open).toBe(false)
+    expect(linkStarts(fetch)).toEqual([])
+  })
+
+  it('says a refused start in words that name no address', async () => {
+    const answers: Record<string, Response> = {}
+    const { store } = await signedIn(({ path }) => path === '/v1/accounts/oauth/links' ? answers.next! : failure('not_found', 404))
+    const { describe: describeFailure } = await import('../src/ui/errors')
+    const said: string[] = []
+    for (const [code, status] of [['bad_request', 400], ['rate_limited', 429], ['not_authorized', 403]] as const) {
+      answers.next = failure(code, status, code === 'rate_limited' ? { 'Retry-After': '120' } : {})
+      await store.connectAtProvider({ provider: 'gmail' })
+      expect(store.connect.failure).toMatchObject({ op: 'start-link', code })
+      said.push(describeFailure(store.connect.failure!))
+    }
+    expect(said).toEqual([
+      'The server did not accept this request. Reload the page and try again.',
+      'Too many connections were started. Wait a few minutes and try again.',
+      'Your account is not allowed to connect mailboxes here. In a team, only its owners and admins connect them.',
+    ])
+  })
+
+  it('never sends the page to a provider page that is not https, nor through a flow that does not come back here', async () => {
+    const { store, navigate } = await signedIn(() => json({ ...started('gmail'), auth: { flow: 'web', auth_url: 'javascript:alert(1)', state: 'x' } }, 201))
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(store.connect.failure).toEqual({ op: 'start-link', code: 'flow_unsupported' })
+    const { store: again, navigate: navigateAgain } = await signedIn(() => json({ ...started('gmail'), auth: { flow: 'loopback', auth_url: chooser, state: 'x' } }, 201))
+    await again.connectAtProvider({ provider: 'gmail' })
+    expect(again.connect.failure).toEqual({ op: 'start-link', code: 'flow_unsupported' })
+    expect(navigate).not.toHaveBeenCalled()
+    expect(navigateAgain).not.toHaveBeenCalled()
+    expect(sessionStorage.getItem('mailie.oauthStart')).toBeNull()
+  })
+})

@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FLOW_LIFETIME_MS, captureOAuthReturn, oauthBack, parseOAuthReturn, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
-import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
-import { account, ana, failure, freshModules, json, ORIGIN, reply, serve, stubPage } from './support'
+import { generateAccountKeys } from '@thehappieco/kit/account'
+import { fromBase64URL, toBase64URL } from '@thehappieco/kit/bytes'
+import { importPrivateKey, type PrivateKey } from '@thehappieco/kit/hpke'
+import { checkGrantShape, openGrant } from '@thehappieco/kit/profiles/mailie'
+import type { SessionReply, User } from '../src/api/types'
+import type { Edition } from '../src/edition'
+import { FLOW_LIFETIME_MS, captureOAuthReturn, oauthBack, parseOAuthReturn, peekOAuthStart, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
+import { REASON_DECLINED, REASON_DUPLICATE, REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
+import { account, ana, failure, freshModules, json, now, ORIGIN, reply, serve, stubPage } from './support'
 
 // A return is also held in module memory until taken; take it so no test sees another's.
 afterEach(() => { takeOAuthReturn(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
@@ -73,6 +79,32 @@ describe('keeping a return across sign-in', () => {
     expect(takeOAuthStart(Date.now() + FLOW_LIFETIME_MS + 1000)).toBeNull()
     sessionStorage.setItem('mailie.oauthStart', JSON.stringify({ account_id: 'acc_1', provider: 'yahoo', email: 'x', started_at: Date.now() }))
     expect(takeOAuthStart()).toBeNull()
+  })
+
+  it('takes a link’s start, which names no address, as fresh, and never one that mixes a link with a mailbox', () => {
+    rememberOAuthStart({ link_id: 'lnk_0000000000000001', provider: 'microsoft', workspace_id: 'wsp_000000000000bbbb', back: '/settings' })
+    expect(oauthBack(JSON.parse(sessionStorage.getItem('mailie.oauthStart')!), ORIGIN)).toBe('/settings')
+    expect(peekOAuthStart()).toMatchObject({ link_id: 'lnk_0000000000000001', provider: 'microsoft', workspace_id: 'wsp_000000000000bbbb' })
+    expect(takeOAuthStart()).toMatchObject({ link_id: 'lnk_0000000000000001' })
+    expect(takeOAuthStart()).toBeNull()
+    for (const record of [
+      { link_id: 'lnk_0000000000000001', provider: 'microsoft', email: 'ana@example.test' },
+      { link_id: 'lnk_0000000000000001', provider: 'gmail', account_id: 'acc_1' },
+      { link_id: 'lnk_0000000000000001', provider: 'icloud' },
+      { link_id: '', provider: 'gmail' },
+      { link_id: 'lnk_0000000000000001', provider: 'gmail', workspace_id: '' },
+    ]) {
+      sessionStorage.setItem('mailie.oauthStart', JSON.stringify({ ...record, started_at: Date.now() }))
+      expect(takeOAuthStart(), JSON.stringify(record)).toBeNull()
+    }
+  })
+
+  it('drops a return still waiting when a new flow starts, which it does not belong to', () => {
+    captureOAuthReturn()
+    expect(pendingOAuthReturn()).toBe(true)
+    rememberOAuthStart({ link_id: 'lnk_0000000000000002', provider: 'gmail' })
+    expect(pendingOAuthReturn()).toBe(false)
+    expect(sessionStorage.getItem('mailie.oauthReturn')).toBeNull()
   })
 
   it('still finishes a return on the same page load when storage is refused, and only once', () => {
@@ -180,9 +212,9 @@ describe('nothing outlives the provider flow', () => {
   })
 
   it('answers when the next record expires, so the page can come back for it', () => {
-    captureOAuthReturn()
     const later = Date.now() + 4 * 60_000
     rememberOAuthStart({ account_id: 'acc_1', provider: 'gmail', email: 'ana@example.test' }, later)
+    captureOAuthReturn()
     // Six minutes on: the return has four left, the start ten.
     const left = sweepOAuthStorage(Date.now() + 6 * 60_000)!
     expect(left).toBeGreaterThan(4 * 60_000 - 1000)
@@ -288,8 +320,8 @@ describe('finishing a return', () => {
     const { accounts, returns } = await signedIn(() => json(account({ state: 'active' })))
     returns.captureOAuthReturn()
     await accounts.finishOAuthReturn()
-    // The server's exchange takes up to 40 s inside a 45 s route.
-    expect(timeout).toHaveBeenLastCalledWith(50_000)
+    // The server's exchange takes up to 40 s, after up to 20 s of a link's checks, inside a 70 s route.
+    expect(timeout).toHaveBeenLastCalledWith(75_000)
   })
 
   it('believes the account, not a lost reply, when the exchange finished after the page stopped waiting', async () => {
@@ -350,5 +382,241 @@ describe('finishing a return', () => {
     await accounts.finishOAuthReturn()
     expect(fetch.mock.calls.some(([url]) => String(url).endsWith('/oauth/callback'))).toBe(false)
     expect(accounts.accounts.notice).toMatchObject({ kind: 'failed', failure: { code: 'return_invalid' } })
+  })
+})
+
+describe('finishing a link at the provider', () => {
+  const LINK = 'lnk_0000000000000001'
+  const PERSONAL = 'wsp_000000000000aaaa'
+  const TEAM = 'wsp_000000000000bbbb'
+  const listed = [
+    { id: PERSONAL, kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 },
+    { id: TEAM, kind: 'team', source: 'local', name: 'Support', role: 'admin', status: 'active', created_at: 1_790_000_000 },
+  ]
+  const link = (fields: Record<string, unknown> = {}) => ({ id: LINK, provider: 'gmail', state: 'waiting', expires_at: now() + 600, ...fields })
+  const callbacks = (fetch: ReturnType<typeof serve>) => fetch.mock.calls
+    .filter(([url]) => String(url).endsWith('/v1/accounts/oauth/callback'))
+    .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, string>)
+  const reads = (fetch: ReturnType<typeof serve>) => fetch.mock.calls.filter(([url]) => String(url).endsWith(`/v1/accounts/oauth/links/${LINK}`)).length
+
+  type Steps = typeof import('../src/state/stepUp')
+  /**
+   * A new page load signed in as signedInAs, with the edition's own step-up
+   * when one is given (made with this page's modules); route answers all but
+   * sign-in.
+   */
+  async function signedIn(route: Parameters<typeof serve>[0], signedInAs: SessionReply = reply(), stepUp?: (steps: Steps) => NonNullable<Edition['stepUp']>) {
+    await freshModules()
+    const steps = await import('../src/state/stepUp')
+    if (stepUp) {
+      const [{ configureEdition }, { openEdition }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
+      configureEdition({ ...openEdition, stepUp: stepUp(steps) })
+    }
+    const session = await import('../src/state/session')
+    const accounts = await import('../src/state/accounts')
+    const returns = await import('../src/state/oauthReturn')
+    const { workspaces } = await import('../src/state/workspaces')
+    const fetch = serve(request => request.path === '/v1/auth/login' ? json(reply()) : route(request))
+    await session.adoptSession(signedInAs)
+    return { session, accounts, returns, steps, workspaces, fetch }
+  }
+  /** A person with a real account key: the public half the server serves, and the private half only their browser holds. */
+  async function linker(): Promise<{ user: User; account: PrivateKey }> {
+    const keys = await generateAccountKeys()
+    return { user: { ...ana, public_key: toBase64URL(keys.publicKey) }, account: await importPrivateKey(keys.privateKey) }
+  }
+
+  /** Lets the page's promises run, with the fake timers left alone, until check holds. */
+  async function until(check: () => boolean) {
+    for (let round = 0; round < 2_000 && !check(); round++) await new Promise(resolve => setImmediate(resolve))
+    expect(check()).toBe(true)
+  }
+
+  beforeEach(() => { stubPage(`/oauth/return?code=abc&state=${STATE}`) })
+
+  it('sends the mailbox’s first key with a link’s return, sealed to the person who started it, and takes the return once answered', async () => {
+    const person = await linker()
+    const made = account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })
+    const { accounts, returns, fetch } = await signedIn(({ path }) => path.endsWith('/oauth/callback') ? json(made) : failure('not_found', 404), reply(undefined, person.user))
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    const [body, ...more] = callbacks(fetch)
+    expect(more).toEqual([])
+    expect(Object.keys(body!).sort()).toEqual(['grant', 'namespace', 'public_key', 'redirect_url'])
+    expect(body!.redirect_url).toBe(`${ORIGIN}/oauth/return?code=abc&state=${STATE}`)
+    const grant = fromBase64URL(body!.grant!, 88)
+    checkGrantShape(grant, 1)
+    expect(await openGrant(person.account, body!.namespace!, person.user.seal_id!, 1, fromBase64URL(body!.public_key!, 32), grant)).toHaveLength(32)
+    expect(returns.pendingOAuthReturn()).toBe(false)
+    expect(returns.takeOAuthStart()).toBeNull()
+    expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.lima@gmail.com', syncing: false })
+    // Answered: the same page posts nothing again.
+    await accounts.finishOAuthReturn()
+    expect(callbacks(fetch)).toHaveLength(1)
+  })
+
+  it.each([
+    ['gmail', 'You did not allow access, so nothing was connected.'],
+    ['microsoft', 'Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.'],
+  ] as const)('posts a %s link’s refusal at once, with no key and no step-up, and says why it ended', async (provider, said) => {
+    stubPage(`/oauth/return?error=access_denied&state=${STATE}`)
+    const { accounts, returns, steps, fetch } = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return failure('bad_request', 400)
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link({ provider, state: 'failed', reason: REASON_DECLINED }))
+      return failure('not_found', 404)
+    }, { ...reply(), authenticated_at: 0 })
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider, back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(steps.stepUpPrompt.open).toBe(false)
+    expect(callbacks(fetch)).toEqual([{ redirect_url: `${ORIGIN}/oauth/return?error=access_denied&state=${STATE}` }])
+    expect(accounts.accounts.notice).toEqual({ kind: 'failed', email: '', failure: { op: 'complete-link', code: 'bad_request', link: { provider, reason: REASON_DECLINED } } })
+    expect(noticeText(accounts.accounts.notice!)).toBe(said)
+    expect(returns.pendingOAuthReturn()).toBe(false)
+  })
+
+  it('asks for the step-up before it takes a link’s return, and posts the return once it is given', async () => {
+    // A minute of the ten left: too little for the server's own checks once the code is exchanged.
+    const { accounts, returns, session, steps, fetch } = await signedIn(({ path }) => path.endsWith('/oauth/callback')
+      ? json(account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })) : failure('not_found', 404), { ...reply(), authenticated_at: now() - 9 * 60 })
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    const finishing = accounts.finishOAuthReturn()
+    await vi.waitFor(() => expect(steps.stepUpPrompt.open).toBe(true))
+    expect(callbacks(fetch)).toEqual([])
+    // Still in the tab while the person proves themselves.
+    expect(returns.pendingOAuthReturn()).toBe(true)
+    expect(returns.peekOAuthStart()).toMatchObject({ link_id: LINK })
+    session.steppedUp(ana.id, now())
+    steps.stepUpGiven()
+    await finishing
+    expect(callbacks(fetch)).toHaveLength(1)
+    expect(callbacks(fetch)[0]).toHaveProperty('grant')
+    expect(returns.pendingOAuthReturn()).toBe(false)
+  })
+
+  it('keeps a link’s return in the tab when its step-up is closed or sends the tab away, and finishes it on the page that comes back', async () => {
+    const answer = ({ path }: { path: string }) => path.endsWith('/oauth/callback')
+      ? json(account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })) : failure('not_found', 404)
+    // The edition's step-up, whose window the browser blocked: it stops the flows, and sends the tab to prove the person again.
+    const away = vi.fn()
+    const first = await signedIn(answer, { ...reply(), authenticated_at: 0 }, steps => async (reason, margin) => { away(reason, margin); throw new steps.StepUpCancelled() })
+    const { noticeText } = await import('../src/ui/notices')
+    first.returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    first.returns.captureOAuthReturn()
+    await first.accounts.finishOAuthReturn()
+    expect(away).toHaveBeenCalledWith('link', 120)
+    expect(callbacks(first.fetch)).toEqual([])
+    expect(first.returns.pendingOAuthReturn()).toBe(true)
+    expect(noticeText(first.accounts.accounts.notice!)).toBe('Mailie needs to confirm it is you to finish connecting the mailbox. Start again.')
+    // The page the tab comes back to, in the same tab, its step-up fresh: the same return, posted once, with a key.
+    const kept = ['mailie.oauthStart', 'mailie.oauthReturn'].map(key => [key, sessionStorage.getItem(key)!] as const)
+    expect(kept.every(([, value]) => value)).toBe(true)
+    vi.restoreAllMocks()
+    stubPage('/')
+    for (const [key, value] of kept) sessionStorage.setItem(key, value)
+    const second = await signedIn(answer)
+    expect(second.returns.captureOAuthReturn()).toBe(false)
+    await second.accounts.finishOAuthReturn()
+    expect(callbacks(second.fetch)).toHaveLength(1)
+    expect(callbacks(second.fetch)[0]).toMatchObject({ redirect_url: `${ORIGIN}/oauth/return?code=abc&state=${STATE}`, grant: expect.any(String) })
+    expect(second.accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.lima@gmail.com', syncing: false })
+    expect(second.returns.pendingOAuthReturn()).toBe(false)
+  })
+
+  it('asks a link still finishing every 2 s after its callback went unanswered, and shows the mailbox it connected', async () => {
+    const made = account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })
+    const states = ['finishing', 'finishing', 'connected']
+    const { accounts, returns, fetch } = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return failure('unavailable', 503)
+      if (path === `/v1/accounts/oauth/links/${LINK}`) {
+        const state = states.shift()!
+        return json(link(state === 'connected' ? { state, account_id: made.id } : { state }))
+      }
+      if (path === `/v1/accounts/${made.id}`) return json(made)
+      return failure('not_found', 404)
+    })
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      const finishing = accounts.finishOAuthReturn()
+      await until(() => reads(fetch) === 1)
+      await vi.advanceTimersByTimeAsync(1_900)
+      expect(reads(fetch)).toBe(1)
+      await vi.advanceTimersByTimeAsync(100)
+      await until(() => reads(fetch) === 2)
+      await vi.advanceTimersByTimeAsync(2_000)
+      await until(() => reads(fetch) === 3)
+      await finishing
+    } finally { vi.useRealTimers() }
+    expect(reads(fetch)).toBe(3)
+    expect(callbacks(fetch)).toHaveLength(1)
+    expect(accounts.accounts.notice).toEqual({ kind: 'connected', email: 'ana.lima@gmail.com', syncing: false })
+    expect(accounts.accounts.list.map(item => item.id)).toEqual([made.id])
+  })
+
+  it('shows the team a failed link went into, and says why it failed, naming the address the provider named', async () => {
+    const { accounts, returns, workspaces, fetch } = await signedIn(({ path }) => {
+      if (path === '/v1/workspaces') return json(listed)
+      if (path === '/v1/accounts') return json([])
+      if (path.endsWith('/oauth/callback')) return failure('bad_request', 400)
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link({ provider: 'microsoft', workspace_id: TEAM, state: 'failed', email: 'vendas@example.test', reason: REASON_MAILBOX_REFUSED }))
+      return failure('not_found', 404)
+    })
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'microsoft', workspace_id: TEAM, back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(reads(fetch)).toBe(1)
+    expect(workspaces.currentID).toBe(TEAM)
+    expect(accounts.accounts.notice).toEqual({ kind: 'failed', email: 'vendas@example.test', failure: { op: 'complete-link', code: 'bad_request', link: { provider: 'microsoft', reason: REASON_MAILBOX_REFUSED } } })
+    expect(noticeText(accounts.accounts.notice!)).toBe('vendas@example.test was not connected. Microsoft’s mail server did not accept this account, so nothing was connected. Check that it has an Outlook or Exchange mailbox with IMAP turned on, or enter the mailbox’s address instead.')
+  })
+
+  it('names the address of a link to a mailbox the workspace holds with the one text that never tells a removed one apart', async () => {
+    const { accounts, returns, workspaces } = await signedIn(({ path }) => {
+      if (path === '/v1/workspaces') return json(listed)
+      if (path === '/v1/accounts') return json([])
+      if (path.endsWith('/oauth/callback')) return failure('conflict', 409)
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link({ state: 'failed', email: 'ana.lima@gmail.com', reason: REASON_DUPLICATE }))
+      return failure('not_found', 404)
+    })
+    const { locale } = await import('../src/ui/i18n')
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    // Into the personal workspace: that is the one shown.
+    expect(workspaces.currentID).toBe(PERSONAL)
+    expect(noticeText(accounts.accounts.notice!)).toBe('ana.lima@gmail.com was not connected. This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.')
+    locale.value = 'pt'
+    expect(noticeText(accounts.accounts.notice!)).toMatch(/^ana\.lima@gmail\.com não foi conectada\. /)
+    locale.value = 'en'
+  })
+
+  it('says a link that failed for a reason the console does not know as a flow that did not finish, never in the server’s words', async () => {
+    const { accounts, returns } = await signedIn(({ path }) => {
+      if (path.endsWith('/oauth/callback')) return failure('bad_request', 400)
+      if (path === `/v1/accounts/oauth/links/${LINK}`) return json(link({ state: 'failed', reason: 'the provider issued no refresh token' }))
+      return failure('not_found', 404)
+    })
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(noticeText(accounts.accounts.notice!)).toBe('The provider did not complete the authorization. Try again.')
+  })
+
+  it('says a link that ended with its starter’s place is gone, and asks the link nothing more', async () => {
+    const { accounts, returns, fetch } = await signedIn(() => failure('not_found', 404))
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(reads(fetch)).toBe(1)
+    expect(noticeText(accounts.accounts.notice!)).toBe('This authorization expired or was started by another sign-in. Start again.')
   })
 })

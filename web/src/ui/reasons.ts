@@ -9,7 +9,7 @@
 // Those are matched exactly here; any other reason falls back to the text for
 // the state alone.
 
-import type { Account } from '../api/types'
+import type { Account, Link } from '../api/types'
 import { t } from './i18n'
 
 /** A consent whose token does not cover the mailbox: a box left unticked on the provider's screen. */
@@ -52,6 +52,45 @@ export const knownReasons: ReadonlySet<string> = new Set([
 ])
 
 export type ReasonFacts = Pick<Account, 'provider' | 'email' | 'state' | 'state_reason'>
+
+/** A failed link at the provider, as far as its text needs it: the provider, and why it failed, when the link says. */
+export interface LinkFacts { provider: Link['provider']; reason?: string }
+
+/**
+ * linkReasonText says why a link at the provider failed and what to do, for
+ * a reason the console knows; otherwise undefined, and the failure's code
+ * speaks. Nothing was stored for a link that failed, so none of these sends
+ * the person to a card: they start again, or, for Microsoft, give the
+ * mailbox's address instead.
+ */
+export function linkReasonText(link: LinkFacts): string | undefined {
+  const google = link.provider === 'gmail'
+  switch (link.reason) {
+    case REASON_DECLINED:
+      return google
+        ? t('You did not allow access, so nothing was connected.')
+        : t('Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.')
+    case REASON_NOT_GRANTED:
+      return t('The provider did not grant access, so nothing was connected. Start again.')
+    case REASON_MAILBOX_REFUSED:
+      return google
+        ? t('Gmail’s server did not accept this account, so nothing was connected. A Google account without Gmail cannot be connected.')
+        : t('Microsoft’s mail server did not accept this account, so nothing was connected. Check that it has an Outlook or Exchange mailbox with IMAP turned on, or enter the mailbox’s address instead.')
+    case REASON_NO_ADDRESS:
+      return google
+        ? t('Google did not give Mailie a usable address for this account, so nothing was connected. Try again.')
+        : t('Microsoft did not give Mailie a usable address for this account, so nothing was connected. Enter the mailbox’s address instead.')
+    // Connected already, or removed and still kept: one text, as for an address typed (ui/errors.ts, add-account).
+    case REASON_DUPLICATE:
+      return t('This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.')
+    case REASON_EXPIRED:
+      return t('This authorization took too long and expired. Start again.')
+    case REASON_UNPROVED:
+      return t('The mail server could not be reached to check this authorization, so nothing was kept. Try again in a moment.')
+    default:
+      return undefined
+  }
+}
 
 /**
  * reasonText says what went wrong and what to do about it, for an account

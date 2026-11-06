@@ -22,6 +22,16 @@
 // before anything moves (state/stepUp.ts), and closing it leaves the form as
 // it was. Finishing an authorization sends no key: the mailbox has its own.
 //
+// Gmail and Microsoft, where the server offers the web flow, ask for no
+// address: the person chooses the account on the provider's page, as on any
+// site that signs in with Google or Microsoft, and the provider names it
+// (state/accounts.ts connectAtProvider). The step-up is asked with five
+// minutes to spare, for the time spent there; the mailbox's key goes with the
+// return. Microsoft keeps the address form one small link away, for a shared
+// mailbox and for an organization whose administrator approved only the mail
+// permissions, with a link back; Gmail has neither. A server with only the
+// installed client asks for the address, as before.
+//
 // An address removed from the workspace is kept there 30 days, and linking it
 // again is refused (conflict) as for one connected already. To an owner of
 // the workspace the dialog reads its removed mailboxes and, when the address
@@ -30,7 +40,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { enrolled, type Account, type ProviderID, type RemovedMailbox } from '../api/types'
 import { edition } from '../edition'
-import { accounts, accountsSettled, cancelConnect, connect, connectOAuthAccount, connectPasswordAccount, LINK_STEP_UP_MARGIN_S, loadRemoved, purgeRemoved, recoverRemoved, removed, removedByEmail, resetConnect, resumeAuthorization, retryConnect } from '../state/accounts'
+import {
+  accounts, accountsSettled, cancelConnect, connect, connectAtProvider, connectOAuthAccount, connectPasswordAccount, LINK_STEP_UP_MARGIN_S, linksAtProvider,
+  loadRemoved, PROVIDER_LINK_STEP_UP_MARGIN_S, purgeRemoved, recoverRemoved, removed, removedByEmail, resetConnect, resumeAuthorization, retryConnect,
+} from '../state/accounts'
 import { session } from '../state/session'
 import { ensureStepUp, StepUpCancelled } from '../state/stepUp'
 import { consent, consentTextOutdated, loadConsent } from '../state/sync'
@@ -98,6 +111,14 @@ const blocked = computed(() => moving.value || connect.phase === 'starting' || c
 const name = computed(() => providerName(connect.provider || provider.value))
 /** The server tests a password before it saves anything; OAuth leaves for the provider instead. */
 const password = computed(() => signsInWithPassword(provider.value))
+/** Microsoft's address form, which the person asked for: a shared mailbox, or an organization whose administrator approved only the mail permissions. */
+const byAddress = ref(false)
+const addressHintID = useId()
+watch(provider, () => { byAddress.value = false })
+/** The provider names the address: no field for it, and the link starts at the provider. */
+const atProvider = computed(() => !props.resume && linksAtProvider(provider.value) && !(provider.value === 'microsoft' && byAddress.value))
+/** Microsoft links at the provider here, so its address form is one link away, and back. */
+const offersAddress = computed(() => !props.resume && provider.value === 'microsoft' && linksAtProvider('microsoft'))
 /** Whether the new mailbox starts syncing at once: its owner has turned sync on. */
 const syncing = computed(() => accounts.list.find(item => item.id === connect.accountID)?.sync.enabled ?? false)
 const connected = computed(() => noticeText({ kind: 'connected', email: connect.email, syncing: syncing.value }))
@@ -126,6 +147,11 @@ const subtitle = computed(() => {
   if (step.value === 'choose') return t('Choose where the mailbox is hosted.')
   if (provider.value === 'imap') return t('Mailie signs in to the IMAP server with these details before it saves anything. The SMTP server is not tested.')
   if (provider.value === 'icloud') return t('Mailie signs in to iCloud with this address and password before it saves anything.')
+  if (atProvider.value) {
+    return provider.value === 'gmail'
+      ? t('You will choose the account on Google’s page, and Google tells Mailie its address.')
+      : t('You will choose the account on Microsoft’s page, and Microsoft tells Mailie its address.')
+  }
   return t('You will sign in at {provider} to let Mailie read and send mail for this address.', { provider: name.value })
 })
 
@@ -167,11 +193,13 @@ async function submit() {
   if (blocked.value || moving.value || !provider.value) return
   // The team's agreement, to the text this page showed, and only where it showed it.
   const syncConsentVersion = intoTeam.value && teamSync.value && !outdated.value ? syncText.version : undefined
+  // At the provider, the step-up has to last while the person is on the provider's page.
+  const link = atProvider.value
   moving.value = true
   let workspaceID: string
   try {
     // A person without an account key is told so by the link itself, before any step-up.
-    if (enrolled(session.user)) await ensureStepUp('link', LINK_STEP_UP_MARGIN_S)
+    if (enrolled(session.user)) await ensureStepUp('link', link ? PROVIDER_LINK_STEP_UP_MARGIN_S : LINK_STEP_UP_MARGIN_S)
     workspaceID = await goTo()
   } catch (error) {
     if (error instanceof StepUpCancelled) return
@@ -189,7 +217,20 @@ async function submit() {
     if (ok) draft.value.password = ''
     return
   }
-  await connectOAuthAccount({ provider: provider.value, email: draft.value.email.trim(), displayName: draft.value.displayName.trim(), workspaceID, syncConsentVersion })
+  const displayName = draft.value.displayName.trim()
+  if (link && (provider.value === 'gmail' || provider.value === 'microsoft')) {
+    await connectAtProvider({ provider: provider.value, displayName, workspaceID, syncConsentVersion })
+    return
+  }
+  await connectOAuthAccount({ provider: provider.value, email: draft.value.email.trim(), displayName, workspaceID, syncConsentVersion })
+}
+
+/** To Microsoft's address form and back: focus goes to what replaced the link pressed. */
+async function chooseByAddress(value: boolean) {
+  if (blocked.value) return
+  byAddress.value = value
+  await nextTick()
+  body.value?.querySelector<HTMLElement>(value ? 'input[name=mailbox]' : '.address-switch button')?.focus({ preventScroll: true })
 }
 
 async function retry() {
@@ -212,7 +253,7 @@ function close() {
 // Reading what it asks about again says so, in place of the refusal's
 // general words.
 watch(() => connect.failure, found => {
-  if (found?.op === 'add-account' || found?.op === 'test-login' || found?.op === 'test-login-icloud') {
+  if (found?.op === 'add-account' || found?.op === 'start-link' || found?.op === 'test-login' || found?.op === 'test-login-icloud') {
     if (found.code === 'bad_request' && sentTeamSync.value) void loadConsent()
   }
 })
@@ -333,7 +374,15 @@ onBeforeUnmount(() => {
 
       <!-- 2. The address, and the servers for IMAP. -->
       <form v-else-if="!resume && (connect.phase === 'idle' || connect.phase === 'starting') && provider" class="form-stack" @submit.prevent="submit">
-        <AccountFields v-model:draft="draft" :provider="provider" :busy="blocked" :offer-icloud="available('icloud')" @use-icloud="useICloud" />
+        <AccountFields v-model:draft="draft" :provider="provider" :busy="blocked" :offer-icloud="available('icloud')" :at-provider="atProvider" @use-icloud="useICloud" />
+        <!-- Microsoft's address form, a small link away: a shared mailbox, or an organization whose administrator must approve Mailie. -->
+        <div v-if="offersAddress" class="address-switch">
+          <template v-if="atProvider">
+            <button class="linkish" type="button" :aria-describedby="addressHintID" :disabled="blocked" @click="chooseByAddress(true)">{{ t('Enter the mailbox’s address instead') }}</button>
+            <p :id="addressHintID" class="hint">{{ t('For a shared mailbox, or when Microsoft says your organization’s administrator must approve Mailie.') }}</p>
+          </template>
+          <button v-else class="linkish" type="button" :disabled="blocked" @click="chooseByAddress(false)">{{ t('Use the account I choose at Microsoft') }}</button>
+        </div>
         <p v-if="places.length === 1 && placeChosen && placeChosen.id !== workspaces.currentID" class="hint place-note">{{ t('It is connected to your personal workspace, which this page then shows.') }}</p>
         <fieldset v-if="places.length > 1" class="place-choice" :disabled="blocked">
           <legend :id="placeID">{{ t('Connect it to') }}</legend>
@@ -472,6 +521,10 @@ onBeforeUnmount(() => {
 .access-note .app-icon { flex: none; margin-top: 1px; color: var(--accent); }
 .access-note :deep(a) { text-underline-offset: 2px; }
 .place-note { margin: 0; }
+/* A small secondary link, the sign-in card's kind (.linkish), its hint close below it. */
+.address-switch { display: grid; justify-items: start; margin-top: -8px; }
+.address-switch .linkish { min-height: 32px; text-align: left; }
+.address-switch .hint { margin: 0; }
 .place-choice { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; min-width: 0; }
 .place-choice legend { padding: 0; margin-bottom: 8px; font-size: 13px; }
 .form-stack .place { display: flex; align-items: flex-start; gap: 10px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg-raised); cursor: pointer; }

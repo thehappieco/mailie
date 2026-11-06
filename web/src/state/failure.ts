@@ -1,6 +1,6 @@
 import { ApiError, type ErrorCode } from '../api/http'
 import { CeremonyError, type CeremonyCode } from '../crypto/errors'
-import type { ReasonFacts } from '../ui/reasons'
+import type { LinkFacts, ReasonFacts } from '../ui/reasons'
 
 /**
  * What the console was doing when something failed. The same code means
@@ -18,6 +18,7 @@ export interface Operations {
   'recover': true; 'reset': true; 'step-up': true; 'recovery-code': true
   'load-accounts': true; 'load-providers': true; 'add-account': true; 'test-login': true; 'test-login-icloud': true
   'start-auth': true; 'wait-auth': true; 'complete-auth': true; 'remove-account': true; 'folders': true
+  'start-link': true; 'complete-link': true
   'load-removed': true; 'recover-mailbox': true; 'purge-mailbox': true; 'load-notices': true; 'dismiss-notice': true
   'sync-consent': true; 'grant-sync': true; 'withdraw-sync': true; 'sync-now': true; 'lift-held-sync': true
   'pause-sync': true; 'resume-sync': true
@@ -40,10 +41,12 @@ export type Operation = keyof Operations
  * holds as many as it may, or because the text they were shown is no
  * longer the one the server asks about (a 409 on creating a key is either,
  * and state/apikeys.ts reads the list again to tell which); and what the key
- * scheme refused in this browser (crypto/errors.ts).
+ * scheme refused in this browser (crypto/errors.ts); and a link at the
+ * provider's return left unfinished because the person closed the step-up it
+ * needed.
  */
 export type FailureCode = ErrorCode | 'flow_expired' | 'flow_failed' | 'flow_unsupported' | 'return_invalid' | 'return_expired' | 'key_limit' | 'terms_changed'
-  | CeremonyCode
+  | 'step_up_closed' | CeremonyCode
 
 /**
  * account is set when the failure left an account failing (a consent that
@@ -53,8 +56,11 @@ export type FailureCode = ErrorCode | 'flow_expired' | 'flow_failed' | 'flow_uns
  * seconds the server asked to wait before trying again (its Retry-After), on
  * a rate limit or on a server that could not confirm something elsewhere
  * yet: what a page may say, or wait for, before offering to try again.
+ * link is set when a link at the provider failed: its provider, and the
+ * reason the server recorded on it (GET /v1/accounts/oauth/links/{id}),
+ * which says more than the callback's code.
  */
-export interface Failure { op: Operation; code: FailureCode; account?: ReasonFacts; partial?: PartialChange; retryAfter?: number }
+export interface Failure { op: Operation; code: FailureCode; account?: ReasonFacts; link?: LinkFacts; partial?: PartialChange; retryAfter?: number }
 
 /**
  * An action on more messages than one request takes is sent in parts; when a
