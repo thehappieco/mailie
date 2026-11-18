@@ -287,7 +287,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   or for those that write nothing first an immediate re-check, asks again who may, so an answer
   that ended the actor's place stops the act. Never asked for reading, removing, recovering, taking
   access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
-  operator's acts, or a key's own acts.
+  operator's acts, or a key's own acts, nor for renaming a mailbox (`RenameAccount`, `PATCH
+  /v1/accounts/{id}`: a name widens no access; the platform's `item.rename` has no freshness gate).
 - `internal/api` — REST `/v1/...`, SSE and the long poll; a link at the provider's routes sit beside
   `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
   `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks,
@@ -483,7 +484,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   from any owner or admin (`act` to a reader), stored `manage` to members only; an admin never
   gives, takes or removes an owner's flags (platform decision 0060, `ownerAccessTx`: before the
   freshness hook, and again in the write with the target's role then), owners change each other's,
-  and supplying a waiting owner the key is no flag change. A team mailbox
+  and supplying a waiting owner the key is no flag change. Renaming a mailbox is `manage`'s
+  (`PATCH /v1/accounts/{id}`, never a key's, never a removed one's), under one name rule for a
+  rename, an add and a link (`checkMailboxName`: trimmed, 200 characters, no control character).
+  A team mailbox
   someone reads always keeps a reader (keys and roles never count). An API key belongs to its
   workspace: only its owners and admins, signed in, create, list and revoke keys (a key never
   mints one; an edition with `KeysInPersonalWorkspaceOnly` creates none in a team, and lets none

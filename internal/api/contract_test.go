@@ -152,6 +152,9 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("sync_status", http.StatusOK, http.MethodGet, "/v1/accounts/"+imapID+"/sync", token, "")
 	capture("sync_triggered", http.StatusAccepted, http.MethodPost, "/v1/accounts/"+imapID+"/sync", token, "")
 	capture("account_syncing", http.StatusOK, http.MethodGet, "/v1/accounts/"+imapID, token, "")
+	// Named once it is connected, as the console names a mailbox now.
+	capture("account_renamed", http.StatusOK, http.MethodPatch, "/v1/accounts/"+imapID, token, `{"display_name":"Work"}`)
+	capture("", http.StatusOK, http.MethodPatch, "/v1/accounts/"+imapID, token, `{"display_name":""}`)
 
 	// Events, as the engine journals them: the long poll's answer, and the
 	// data line of the same event on the stream.

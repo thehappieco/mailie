@@ -22,7 +22,7 @@ import (
 
 func accountCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: account needs a subcommand: add, list, authorize, folders, sync, remove, removed, "+
+		return fmt.Errorf("%w: account needs a subcommand: add, list, rename, authorize, folders, sync, remove, removed, "+
 			"recover or purge", errUsage)
 	}
 	switch args[0] {
@@ -30,6 +30,8 @@ func accountCommand(ctx context.Context, cfg config.Config, args []string) error
 		return accountAdd(ctx, cfg, args[1:])
 	case "list":
 		return accountList(ctx, cfg, args[1:])
+	case "rename":
+		return accountRename(ctx, cfg, args[1:])
 	case "authorize", "authorise":
 		return accountAuthorize(ctx, cfg, args[1:])
 	case "folders":
@@ -52,6 +54,7 @@ func accountCommand(ctx context.Context, cfg config.Config, args []string) error
 type accountJSON struct {
 	ID          string `json:"id"`
 	Email       string `json:"email"`
+	DisplayName string `json:"display_name"`
 	Provider    string `json:"provider"`
 	AuthKind    string `json:"auth_kind"`
 	State       string `json:"state"`
@@ -290,7 +293,36 @@ func accountList(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Fprintln(os.Stderr, "no accounts yet; add one with `mailserver account add --email you@example.com`")
 		return nil
 	}
+	return printAccounts(accounts)
+}
 
+// accountRename names a mailbox, or clears its name with "": the operator's
+// own mailboxes, which only it manages. It prints the mailbox as account list
+// does.
+func accountRename(ctx context.Context, cfg config.Config, args []string) error {
+	fs := flag.NewFlagSet("account rename", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return fmt.Errorf("%w: account rename takes an account id and its new name (\"\" clears it)", errUsage)
+	}
+	accountID, name := fs.Arg(0), fs.Arg(1)
+	var renamed accountJSON
+	if err := adminJSON(ctx, cfg, http.MethodPatch, "/v1/accounts/"+url.PathEscape(accountID),
+		map[string]string{"display_name": name}, &renamed); err != nil {
+		return err
+	}
+	if renamed.DisplayName == "" {
+		fmt.Fprintf(os.Stderr, "%s has no name now\n", renamed.ID)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s is named %q now\n", renamed.ID, renamed.DisplayName)
+	}
+	return printAccounts([]accountJSON{renamed})
+}
+
+// printAccounts lists mailboxes as a table, one a line, with a note on each.
+func printAccounts(accounts []accountJSON) error {
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	//nolint:errcheck // checked by Flush
 	fmt.Fprintln(w, "ID\tEMAIL\tPROVIDER\tAUTH\tSTATE\tNOTE")

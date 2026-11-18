@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -94,7 +96,11 @@ type Folder struct {
 
 // AddAccountRequest registers an account.
 type AddAccountRequest struct {
-	Email       string `json:"email"`
+	Email string `json:"email"`
+	// DisplayName is the mailbox's name, held to the one name rule
+	// (checkMailboxName). The console names a mailbox once it is connected
+	// (RenameAccount); a console of the release before, the command line and
+	// API callers may still name it here.
 	DisplayName string `json:"display_name,omitempty"`
 	Provider    string `json:"provider,omitempty"`
 	Password    string `json:"password,omitempty"`
@@ -113,11 +119,13 @@ type AddAccountRequest struct {
 	WorkspaceID string `json:"workspace_id,omitempty"`
 	// SyncConsentVersion, for a team mailbox, gives the team's consent to
 	// sync it with the link, on the team's behalf: it must name the current
-	// revision of the sync text (the console shows that text beside the
-	// switch). Left out, the mailbox is linked with sync off, until an owner
-	// or an admin turns it on (PUT /v1/accounts/{id}/sync). A personal
-	// mailbox syncs under its person's own consent, and an operator mailbox
-	// is switched on by the operator: neither takes it.
+	// revision of the sync text. Left out, the mailbox is linked with sync
+	// off, until an owner or an admin turns it on (PUT
+	// /v1/accounts/{id}/sync), which is how the console gives it now, once
+	// the mailbox is connected; a console of the release before and API
+	// callers may still send it. A personal mailbox syncs under its person's
+	// own consent, and an operator mailbox is switched on by the operator:
+	// neither takes it.
 	SyncConsentVersion string `json:"sync_consent_version,omitempty"`
 	// PublicKey, Namespace and Grant are the mailbox's first key, which the
 	// browser of the person linking it made (docs/key-scheme.md sections 8
@@ -375,8 +383,12 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 	if err != nil {
 		return account.AddRequest{}, err
 	}
+	name, err := checkMailboxName(req.DisplayName)
+	if err != nil {
+		return account.AddRequest{}, err
+	}
 	add := account.AddRequest{
-		Email: email, DisplayName: req.DisplayName, Provider: kind, Password: req.Password,
+		Email: email, DisplayName: name, Provider: kind, Password: req.Password,
 		IMAPHost: strings.TrimSpace(req.IMAPHost), IMAPPort: req.IMAPPort,
 		SMTPHost: strings.TrimSpace(req.SMTPHost), SMTPPort: req.SMTPPort, SMTPTLS: req.SMTPTLS,
 		LoginUser: req.LoginUser, InitialDays: req.InitialDays, SaveSentCopy: req.SaveSent,
@@ -489,6 +501,111 @@ func chooseProvider(email, named string) (kind provider.Kind, icloud bool, err e
 		return "", false, E(CodeBadRequest, "provider must be gmail, microsoft, icloud or imap", err)
 	}
 	return kind, false, nil
+}
+
+// maxMailboxName is the longest name a mailbox keeps, in characters (code
+// points).
+const maxMailboxName = 200
+
+var (
+	errMailboxNameLong    = Ef(CodeBadRequest, nil, "a mailbox's name has at most %d characters", maxMailboxName)
+	errMailboxNameControl = E(CodeBadRequest, "a mailbox's name has no control characters", nil)
+	errRenameKey          = E(CodeNotAuthorized, "an API key never renames a mailbox; its workspace's owners and admins do", nil)
+	errRenameNameless     = E(CodeBadRequest, `display_name is required: the mailbox's new name, or "" to clear it`, nil)
+)
+
+// checkMailboxName is a mailbox's name as it is stored: trimmed of the white
+// space around it, at most maxMailboxName characters, valid UTF-8 with no
+// control character (Unicode's Cc, as a person's name, auth.NormalizeName; a
+// format character, as emoji sequences use, passes). "" is no name. The one
+// rule of a rename, an add and a link alike, and of the contract's
+// item.rename once an extension runs it through RenameAccount.
+func checkMailboxName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if utf8.RuneCountInString(name) > maxMailboxName {
+		return "", errMailboxNameLong
+	}
+	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+		return "", errMailboxNameControl
+	}
+	return name, nil
+}
+
+// RenameAccountRequest names a mailbox.
+type RenameAccountRequest struct {
+	// DisplayName is its new name, "" to clear it: required, and held to the
+	// one name rule (checkMailboxName).
+	DisplayName *string `json:"display_name"`
+}
+
+// RenameAccount names a live mailbox, as whoever manages it: a personal
+// mailbox's person; a team's active owners and admins by their role, and its
+// members holding a stored manage; an instance key with the admin scope, an
+// operator mailbox. Never a workspace key, which manages nothing; never a
+// removed mailbox, nor anything of a closed or withheld team. The answer is
+// the mailbox as GET /v1/accounts/{id} presents it to the caller.
+//
+// The freshness hook is never asked (freshness.go): a name widens nobody's
+// access. Nothing is journaled: no state changed. A followed workspace's
+// change mark rises in the rename's transaction (migration 0025's trigger),
+// so its next snapshot carries the label.
+//
+// The platform's item.rename command, once an extension executes it, runs
+// through here with its actor and keeps these rules: the name trimmed, at
+// most 200 characters, no control character, "" (the command's null)
+// clearing it, a removed mailbox not found.
+func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req RenameAccountRequest) (Account, error) {
+	if p.IsWorkspaceKey() {
+		return Account{}, errRenameKey
+	}
+	if req.DisplayName == nil {
+		return Account{}, errRenameNameless
+	}
+	name, err := checkMailboxName(*req.DisplayName)
+	if err != nil {
+		return Account{}, err
+	}
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage)
+	if err != nil {
+		return Account{}, err
+	}
+	renamed, err := s.accounts.Repo().Rename(ctx, a.ID, name, func(tx *sql.Tx) error {
+		return s.managesTx(ctx, tx, p, a)
+	})
+	var se *Error
+	switch {
+	case errors.As(err, &se):
+		return Account{}, err
+	case errors.Is(err, account.ErrNotFound):
+		return Account{}, errNoAccount
+	case err != nil:
+		return Account{}, E(CodeInternal, "renaming the mailbox failed", err)
+	}
+	s.log.Info("mailbox renamed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
+	return s.present(ctx, p, renamed)[0], nil
+}
+
+// managesTx re-reads, inside a write's transaction, that the caller manages
+// a mailbox: its workspace open (a withheld team not_authorized, a closed one
+// a conflict), then the caller's manage, from their role or a stored flag, or
+// the operator's on an operator mailbox. A mailbox removed meanwhile is not
+// found.
+func (s *Service) managesTx(ctx context.Context, tx *sql.Tx, p Principal, a account.Account) error {
+	if err := s.openTx(ctx, tx, a.WorkspaceID); err != nil {
+		return err
+	}
+	manager := p.UserID
+	if p.IsInstance() {
+		manager = ""
+	}
+	err := workspace.ManagesTx(ctx, tx, a.ID, manager)
+	switch {
+	case errors.Is(err, workspace.ErrNoMailbox):
+		return errNoAccount
+	case errors.Is(err, workspace.ErrNoGrant):
+		return errNoManage
+	}
+	return err
 }
 
 // StartOAuth begins consent again, for an account that needs it: whoever

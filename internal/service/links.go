@@ -6,7 +6,6 @@ import (
 	"errors"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -43,9 +42,15 @@ type LinkRequest struct {
 	// SyncConsentVersion, for a team, gives the team's consent to sync the
 	// mailbox once it is linked, on the team's behalf, as AddAccount's does:
 	// the current sync text's revision, checked again at the return, where
-	// the agreement is recorded.
+	// the agreement is recorded. The console sends none: it links a team
+	// mailbox with sync off and asks its owners and admins once it is
+	// connected (PUT /v1/accounts/{id}/sync); a console of the release
+	// before and API callers may still send it.
 	SyncConsentVersion string `json:"sync_consent_version,omitempty"`
-	// DisplayName is the mailbox's name, if the person gives one.
+	// DisplayName is the mailbox's name, held to the one name rule
+	// (checkMailboxName). The console sends none: it names the mailbox once
+	// it is connected (RenameAccount); a console of the release before and
+	// API callers may still send it.
 	DisplayName string `json:"display_name,omitempty"`
 }
 
@@ -113,9 +118,6 @@ const (
 	// take waits for the writer account.LinkTakeTimeout at most, and the
 	// finish runs from the take; five seconds more are slack.
 	linkStepUpSpare = account.LinkTakeTimeout + 5*time.Second
-	// maxLinkName is the longest name a link keeps for its mailbox until its
-	// return, in characters.
-	maxLinkName = 200
 )
 
 var (
@@ -123,8 +125,7 @@ var (
 		"other mailboxes are added with their address", nil)
 	errLinkFlow = E(CodeBadRequest, "a link at the provider uses the web flow, which this server does not offer here; "+
 		"add the mailbox with its address instead", nil)
-	errLinkName = Ef(CodeBadRequest, nil, "a mailbox's name is at most %d characters", maxLinkName)
-	errLinkKey  = E(CodeBadRequest, "public_key, namespace and grant come only with a link's return, "+
+	errLinkKey = E(CodeBadRequest, "public_key, namespace and grant come only with a link's return, "+
 		"which creates the mailbox; a consent for a mailbox that exists carries none", nil)
 )
 
@@ -169,8 +170,9 @@ func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (
 	if err != nil || (kind != provider.KindGmail && kind != provider.KindMicrosoft) {
 		return LinkStarted{}, errLinkProvider
 	}
-	if utf8.RuneCountInString(req.DisplayName) > maxLinkName {
-		return LinkStarted{}, errLinkName
+	name, err := checkMailboxName(req.DisplayName)
+	if err != nil {
+		return LinkStarted{}, err
 	}
 	flow, err := s.chooseFlow(p, kind, req.Flow)
 	if err != nil {
@@ -195,7 +197,7 @@ func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (
 		return LinkStarted{}, err
 	}
 	link, started, err := s.accounts.StartLink(ctx, account.LinkStart{
-		Provider: kind, OwnerUserID: p.UserID, WorkspaceID: into.workspaceID, DisplayName: req.DisplayName,
+		Provider: kind, OwnerUserID: p.UserID, WorkspaceID: into.workspaceID, DisplayName: name,
 		SyncConsentVersion: into.consent.Version,
 	})
 	if err != nil {

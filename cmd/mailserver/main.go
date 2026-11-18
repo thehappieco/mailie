@@ -139,6 +139,7 @@ Usage:
   mailserver serve [--mcp-stdio]          Run the daemon (REST, SSE and MCP)
   mailserver account add --email ADDR      Register a mailbox and authorise it
   mailserver account list                 List accounts and their state
+  mailserver account rename ID NAME       Name a mailbox of the operator workspace ("" clears it)
   mailserver account folders ID           List an account's folders
   mailserver account authorize ID         Authorise again after a grant expires
   mailserver account sync ID status|now   Show an account's sync, or ask for a pass

@@ -530,3 +530,31 @@ func TestHeldLinesNameNoActor(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountRenameSendsTheNameAndPrintsTheMailbox(t *testing.T) {
+	cfg, db := realDaemon(t)
+	const ops = "acc_00000000000000e9"
+	linkOperatorMailbox(t, db, ops, "ops@mail.example", true)
+	command := commandOf(t, cfg)
+	name := func() string {
+		t.Helper()
+		var got string
+		if err := db.Reader().QueryRowContext(t.Context(), `SELECT display_name FROM accounts WHERE id = ?`, ops).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	out, said := command("rename", ops, "  Operations ")
+	if name() != "Operations" {
+		t.Errorf("the mailbox is named %q", name())
+	}
+	if !strings.Contains(out, ops) || !strings.Contains(out, "ops@mail.example") || !strings.Contains(said, `"Operations"`) {
+		t.Errorf("account rename printed %q and said %q", out, said)
+	}
+	if _, said := command("rename", ops, ""); name() != "" || !strings.Contains(said, "has no name now") {
+		t.Errorf("clearing the name left %q and said %q", name(), said)
+	}
+	if err := accountCommand(t.Context(), cfg, []string{"rename", ops}); !errors.Is(err, errUsage) {
+		t.Errorf("account rename without a name: %v", err)
+	}
+}

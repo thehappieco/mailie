@@ -64,6 +64,7 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['user', value => isUser(value, true)],
   ['account', value => isAccount(value, true)],
   ['account_icloud', value => isAccount(value, true)],
+  ['account_renamed', value => isAccount(value, true)],
   ['add_account', value => isAddAccountResult(value, true)],
   ['auth_flow_web', value => isAuthFlow(value, true)],
   ['auth_flow_loopback', value => isAuthFlow(value, true)],
@@ -252,6 +253,13 @@ describe('the HTTP contract the Go handlers answer with', () => {
     for (const name of ['account', 'account_icloud', 'account_syncing']) expect(fixture(name), name).not.toHaveProperty('linked_by')
     expect((fixture('add_account') as AddAccountResult).account).not.toHaveProperty('linked_by')
     expect(isAccount({ ...(fixture('account') as Account), linked_by: 'usr_0000000000000001' }, true)).toBe(false)
+  })
+
+  it('reads a renamed mailbox as the server answers it: the mailbox, with its new name', () => {
+    const renamed = fixture('account_renamed') as Account
+    const before = fixture('account_syncing') as Account
+    expect(renamed.display_name).toBe('Work')
+    expect({ ...renamed, display_name: undefined }).toEqual({ ...before, display_name: undefined })
   })
 
   it('takes iCloud as a provider of its own, as the server presents an IMAP account on Apple’s servers', () => {

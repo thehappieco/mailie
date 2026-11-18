@@ -21,8 +21,13 @@ import (
 //
 // It is asked only of a person signed in, never of a key's own acts nor of
 // the operator's, and never inside a write: the extension may apply a
-// document, which writes. Reading, removing, recovering and taking access
-// away never ask; deleting a removed mailbox for good, and turning a removed
+// document, which writes. Reading, removing, recovering, taking access away
+// and renaming a mailbox never ask: a name widens nobody's access, opens
+// nothing and shows nothing its people cannot see already (the platform's
+// item.rename has no freshness gate either), so a person a directory has
+// just removed may still rename a team mailbox until the follower applies
+// that, which changes no access and is journaled nowhere. Deleting a
+// removed mailbox for good, and turning a removed
 // one's sync off, ask only of a team's mailbox, whose owners do it before
 // its 30 days are over: what it deletes is the team's, read by others too.
 // Each act asks after its own read-only authorization — a team withheld or

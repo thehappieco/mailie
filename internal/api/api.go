@@ -136,6 +136,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("GET /v1/providers", h.authenticated(auth.ScopeRead, opts(), h.providers))
 	mux.Handle("GET /v1/accounts", h.authenticated(auth.ScopeRead, opts(), h.listAccounts))
 	mux.Handle("GET /v1/accounts/{id}", h.authenticated(auth.ScopeRead, opts(), h.getAccount))
+	// Renaming a mailbox is whoever manages it; never a key's.
+	mux.Handle("PATCH /v1/accounts/{id}", h.authenticated(auth.ScopeAdmin, opts(), h.renameAccount))
 	// Adding a password account logs in to its server first, which is given
 	// thirty seconds of its own.
 	mux.Handle("POST /v1/accounts", h.authenticated(auth.ScopeAdmin, opts().withTimeout(45*time.Second), h.addAccount))
@@ -313,6 +315,20 @@ func (h *Handler) getAccount(q *request) {
 		return
 	}
 	a, err := h.Service.GetAccount(q.ctx(), q.principal, q.r.PathValue("id"))
+	if err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusOK, a)
+}
+
+func (h *Handler) renameAccount(q *request) {
+	var req service.RenameAccountRequest
+	if err := q.decode(&req); err != nil {
+		q.fail(err)
+		return
+	}
+	a, err := h.Service.RenameAccount(q.ctx(), q.principal, q.r.PathValue("id"), req)
 	if err != nil {
 		q.fail(err)
 		return

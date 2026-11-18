@@ -194,6 +194,20 @@ kept, under any spelling of one Gmail account, is one `409` whatever it is, so a
 an owner learns nothing of a removed one. A link ends, in the same transaction, wherever its
 starter's consent attempts end, and with a reset, a recovery and a sign-out everywhere.
 
+**Naming a mailbox.** A mailbox's name (`display_name`, shown in place of its address wherever it is
+listed) is whoever manages it's to change (`PATCH /v1/accounts/{id}` `{"display_name": "…"}`,
+`RenameAccount`): a personal mailbox's person, a team's active owners and admins by their role and
+its members holding a stored `manage`, the operator for an operator mailbox; never a key, never a
+removed mailbox (`404`), nothing in a closed (`404`, or `409` when it closed meanwhile) or withheld
+team (`403`). One name rule for a rename, an add and a link (`checkMailboxName`): trimmed of the
+white space around it, at most 200 characters, valid UTF-8 with no control character; `""` clears
+it; anything else is `400` and nothing changes. The answer is the mailbox as `GET
+/v1/accounts/{id}` shows it. A name widens nobody's access: the freshness hook is never asked, and
+nothing is journaled; a followed workspace's change mark rises in the rename's transaction
+(migration 0025's trigger), so the platform hears the new label from the next snapshot. The console
+links a mailbox with no name and asks for one once it is connected; `display_name` on `POST
+/v1/accounts` and on a link is still taken, for a console of the release before and for API callers.
+
 Removing a mailbox repeats its id (`DELETE /v1/accounts/{id}?confirm=<id>`), or nothing is removed
 (`400`). A team's mailbox is its owners' to remove, a personal one its person's, an operator one the
 operator's; an admin abandons only their own link that never connected. A removed mailbox is kept 30
@@ -751,6 +765,7 @@ a pause.
 | act | `act`, actions consent, the mailbox syncing or paused | `act`, `write` scope (under its key terms; its creator's actions consent only as the Consents table says), the mailbox syncing or paused | operator mailbox, `write` scope, the mailbox syncing or paused |
 | send, read own send records | `send`, send consent | `send`, `send` scope, `MAIL_KEYS_MAY_SEND` (under its key terms; no person's consent) | operator mailbox, `send` scope |
 | re-authorize | manage (owner or admin, or a member holding `manage`) | never | operator mailbox, `admin` scope |
+| rename | manage (owner or admin, or a member holding `manage`), never a removed one | never | operator mailbox, `admin` scope |
 | remove (repeating its id) | a team's: its owners (an admin, their own link that never connected); a personal one: its person | never | operator mailbox, `admin` scope |
 | see the removed ones, recover one | a team's: its owners; a personal one: its person | never | operator mailbox, unrestricted admin key |
 | delete a removed one for good (repeating its id) | a team's: its owners; a personal one: its person | never | any removed mailbox, unrestricted admin key |
@@ -775,6 +790,7 @@ a pause.
 | see the removed mailboxes, recover one | yes | no | no | sees every workspace's; recovers operator mailboxes only |
 | delete a removed mailbox for good | yes | no | no | any |
 | re-authorize a mailbox | yes | yes | with a stored `manage` on it | operator mailboxes only |
+| rename a mailbox | yes | yes | with a stored `manage` on it | operator mailboxes only |
 | grant `read` | on a mailbox they read themselves, now | likewise, never to an owner (platform decision 0060) | no | no |
 | grant `act` | to someone who reads after the change, themselves included | likewise, never to an owner | no | no |
 | grant `send` | to any active member, themselves included | likewise, never to an owner | no | no |
@@ -1228,6 +1244,7 @@ Changed routes:
 | `DELETE /v1/accounts/{id}?confirm=<id>` | the id repeated, or `400` and nothing removed; a team's owners (an admin, their own link that never connected), a personal mailbox's person, the operator for its own; kept 30 days, or deleted at once when it never connected; answers `Removal` (`200`, `204` before 0020) |
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's); the callback is also a link at the provider's return, with the mailbox's first key, `public_key`, `namespace` and `grant` |
 | `POST /v1/accounts/oauth/links`, `GET /v1/accounts/oauth/links/{id}` | new: a link at the provider, who may link where as [above](#mailboxes), read only by its starter |
+| `PATCH /v1/accounts/{id}` | new: `{display_name}` → `Account`, renaming a live mailbox, by whoever manages it, under the one name rule ([above](#mailboxes)) |
 | `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
@@ -1367,6 +1384,7 @@ mailserver access grant  --account ID --email EMAIL --manage
 mailserver access revoke --account ID --email EMAIL [--read] [--act] [--send] [--manage]   # none: every flag
 mailserver user invite --email EMAIL [--role owner|member]                      # an instance invite
 mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
+mailserver account rename  ID NAME             # an operator mailbox's name; "" clears it
 mailserver account remove  ID [--yes]           # an operator mailbox: kept 30 days, recoverable
 mailserver account removed [--workspace ID]     # the operator workspace's by default; any workspace's
 mailserver account recover ID                   # an operator mailbox, its sync paused until `account sync ID resume` (off, if it was off, until `account sync ID on`)
@@ -2140,6 +2158,20 @@ Test names state the guarantee. At least:
   `TestAGrantOnlyGoesToAnActiveMemberOfTheMailboxesWorkspace`;
   `TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden`;
   `TestOnlyOwnersAndAdminsSeeMembersAndTheDirectory`.
+- Naming a mailbox, in `internal/service/rename_test.go`: `TestAPersonRenamesTheirOwnPersonalMailbox`,
+  `TestATeamsOwnersAndAdminsRenameItsMailboxesByTheirRole`,
+  `TestAMemberRenamesATeamMailboxOnlyWithAStoredManage`,
+  `TestAMemberWhoSeesAMailboxWithoutManageIsNotAuthorizedToRenameIt`,
+  `TestAMailboxTheCallerCannotSeeIsNotFoundToARename`, `TestARemovedMailboxIsNeverRenamed`,
+  `TestNothingInAClosedOrWithheldTeamIsRenamed`, `TestAnAPIKeyNeverRenamesAMailbox`,
+  `TestTheOperatorRenamesOperatorMailboxesAndNoOther`, `TestARenameTrimsTheNameAndAnEmptyOneClearsIt`,
+  `TestANameTooLongOrWithAControlCharacterIsRefusedAndNothingChanges`,
+  `TestALinkOrAnAddCarryingANameTheRenameRefusesIsABadRequestAndStoresNothing`,
+  `TestAMailboxsNameIsStoredTrimmedWhereverItIsGiven`,
+  `TestARenameMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`; the repository's
+  `TestARenameWhoseCheckRefusesChangesNothing` and `TestARemovedMailboxIsNotFoundToARename`; over REST
+  `TestRenamingAMailboxIsAPatchOfItsDisplayNameAnsweredAsAGet` and the fixture `account_renamed`; the
+  command line's `TestAccountRenameSendsTheNameAndPrintsTheMailbox`.
 - An owner's access (platform decision 0060), in `internal/service/owneraccess_test.go`:
   `TestAnAdminCannotGiveAnOwnerAnyFlag`, `TestAnAdminCannotTakeAFlagFromAnOwnerNorAllTheirAccess`,
   `TestAnOwnerStillChangesAnotherOwnersAccess`, `TestAnAdminStillChangesAnAdminsAndAMembersAccess`,

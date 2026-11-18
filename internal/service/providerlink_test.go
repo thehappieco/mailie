@@ -852,6 +852,32 @@ func TestALinkIntoAPersonalWorkspaceReplacedMeanwhileLandsInTheNewOne(t *testing
 	}
 }
 
+func TestALinkIntoTheStartersOwnPersonalWorkspaceByItsIdLandsThere(t *testing.T) {
+	// The console names the workspace shown on every link, the person's own
+	// personal workspace included: it lands there, as one that names none.
+	w := newLinkWorld(t)
+	personal := authtest.Personal(t, w.db, w.ana.UserID)
+	started := w.start(t, w.ana, service.LinkRequest{WorkspaceID: personal})
+	if started.Link.WorkspaceID != "" {
+		t.Errorf("the link into her personal workspace names %q, as a team's would", started.Link.WorkspaceID)
+	}
+	w.googleNames("ana.lima@gmail.com")
+	created, err := w.finish(t, w.ana, started)
+	if err != nil {
+		t.Fatalf("the return: %v", err)
+	}
+	if created.WorkspaceID != personal {
+		t.Errorf("the mailbox landed in %s, want her personal workspace %s", created.WorkspaceID, personal)
+	}
+	if stored := w.stateOfAccount(t, created.ID); stored.OwnerUserID != w.ana.UserID {
+		t.Errorf("stored as %+v, not hers", stored)
+	}
+	// Another person's personal workspace is no place for it.
+	bob := w.person(t, "bob@example.test", auth.RoleMember)
+	_, err = w.svc.StartLink(t.Context(), w.ana, service.LinkRequest{Provider: "gmail", WorkspaceID: authtest.Personal(t, w.db, bob.UserID)})
+	wantCode(t, "a link into someone else's personal workspace", err, service.CodeNotFound)
+}
+
 func TestTwoLinksOfOneAccountIntoOneWorkspaceStoreOneMailbox(t *testing.T) {
 	// Two returns naming the same account, at once: the transaction that
 	// creates a mailbox is the one that counts, and one of them is stored.

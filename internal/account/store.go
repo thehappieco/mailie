@@ -1137,6 +1137,36 @@ func (r *Repository) SetState(ctx context.Context, id string, state State, reaso
 	return nil
 }
 
+// Rename sets a live mailbox's name, once check, run first in the same
+// transaction, allows it: ErrNotFound for no mailbox, a removed one included.
+// Only the name changes, so nothing is journaled and no listener is told: a
+// name decides nothing about sync. The row is answered as it is now.
+func (r *Repository) Rename(ctx context.Context, id, name string, check func(*sql.Tx) error) (Account, error) {
+	var out Account
+	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE accounts SET display_name = ?, updated_at = ? WHERE id = ? AND removed_at = 0`,
+			name, r.now().Unix(), id)
+		if err != nil {
+			return fmt.Errorf("account: rename: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("account: rename: %w", err)
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		out, err = scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id = ?`, id))
+		return err
+	})
+	return out, err
+}
+
 // MarkNeedsReauth stops an account until a person consents again.
 func (r *Repository) MarkNeedsReauth(ctx context.Context, id, reason string) error {
 	return r.SetState(ctx, id, StateNeedsReauth, reason)
