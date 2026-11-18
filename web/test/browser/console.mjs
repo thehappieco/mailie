@@ -213,12 +213,18 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.ok(daemon.calls.me >= 1, 'a restored session is checked with /v1/auth/me')
 
       // --- connecting an IMAP mailbox --------------------------------------
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      const dialog = page.getByRole('dialog', { name: 'Connect an email account' })
-      await dialog.waitFor()
-      await shot('add-choose')
+      // One button per provider, above the cards, as one group named by its heading.
+      const buttons = page.getByRole('group', { name: 'Connect an email account' })
+      await buttons.waitFor()
+      assert.equal(await page.locator('.connect-buttons').count(), 1, 'the buttons are drawn once')
+      assert.deepEqual((await buttons.locator('.provider-button strong').allTextContents()).map(text => text.trim()),
+        ['Add a Google account', 'Add a Microsoft account', 'Add an iCloud account', 'Other server (IMAP)'], 'one button per provider, in order')
+      assert.equal(await page.getByRole('dialog').count(), 0, 'no dialog to choose a provider')
+      await shot('add-buttons')
       // Chosen with the keyboard, as the person the focus fix is for would.
-      await dialog.getByRole('button', { name: /Other provider \(IMAP\)/ }).focus()
+      await buttons.scrollIntoViewIfNeeded()
+      await shot('add-buttons-group')
+      await buttons.getByRole('button', { name: /Other server \(IMAP\)/ }).focus()
       await page.keyboard.press('Enter')
       const imap = page.getByRole('dialog', { name: 'Other provider (IMAP)' })
       await imap.getByLabel('Email address').waitFor()
@@ -237,22 +243,27 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.equal(await page.evaluate(() => document.documentElement.outerHTML.includes('app-password-123')), false, 'the mailbox password is never in the markup')
       await noLegal(page, 'IMAP form')
       await shot('add-imap')
+      assert.equal(await imap.getByLabel('Display name (optional)').count(), 0, 'no name before the mailbox is connected')
       await imap.getByRole('button', { name: 'Connect', exact: true }).click()
-      await imap.getByText('Account connected').waitFor()
-      await imap.locator('.success').getByText('vendas@example.test is connected. You can list its folders now. Sync is off until you turn it on.').waitFor()
-      await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Done')
-      assert.match(await spoken(page), /vendas@example\.test is connected\./, 'the live region inside the dialog says the account connected')
+      const connectedIMAP = page.getByRole('dialog', { name: 'Account connected' })
+      await connectedIMAP.locator('.success').getByText('vendas@example.test is connected.').waitFor()
+      await connectedIMAP.getByText('You can list its folders now. Sync is off until you turn it on.').waitFor()
+      // The new mailbox's heading takes the focus, and its nickname is asked, after the link.
+      await page.waitForFunction(() => document.activeElement?.classList.contains('new-mailbox-heading'))
+      assert.equal(await connectedIMAP.getByLabel('Nickname (optional)').getAttribute('maxlength'), '200')
       await shot('add-done')
-      await imap.getByRole('button', { name: 'Done' }).click()
-      await page.locator('.account-card').filter({ hasText: 'vendas@example.test' }).waitFor()
+      await connectedIMAP.getByLabel('Nickname (optional)').fill('  Vendas  ')
+      await connectedIMAP.getByRole('button', { name: 'Done' }).click()
+      await page.locator('.account-card').filter({ hasText: 'vendas@example.test' }).filter({ hasText: 'Vendas' }).waitFor()
       assert.equal(daemon.calls.created.at(-1).password, 'app-password-123')
       assert.equal(daemon.calls.created.at(-1).smtp_tls, 'implicit')
+      assert.equal(daemon.calls.created.at(-1).display_name, undefined, 'a link carries no name')
+      assert.deepEqual(daemon.calls.renamed.at(-1)?.display_name, 'Vendas', 'the nickname is a rename, trimmed')
 
       // --- connecting iCloud Mail -------------------------------------------
       // An Apple address typed into the IMAP form is pointed at iCloud, which
       // knows Apple's servers; the address and password come along.
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Other provider \(IMAP\)/ }).click()
+      await buttons.getByRole('button', { name: /Other server \(IMAP\)/ }).click()
       const imapForApple = page.getByRole('dialog', { name: 'Other provider (IMAP)' })
       await imapForApple.getByLabel('Email address').fill('ana.souza@icloud.com')
       const useICloud = imapForApple.getByRole('button', { name: 'Use iCloud Mail' })
@@ -264,13 +275,14 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await icloud.getByLabel('Email address').waitFor()
       await page.waitForFunction(() => document.activeElement?.getAttribute('name') === 'mailbox')
       assert.equal(await icloud.getByLabel('Email address').inputValue(), 'ana.souza@icloud.com', 'switching to iCloud keeps the address')
-      // Back to the list, and in through the iCloud option itself.
-      await icloud.getByRole('button', { name: 'Back' }).click()
-      const choices = page.getByRole('dialog', { name: 'Connect an email account' })
-      const labels = await choices.locator('.provider-option strong').allTextContents()
-      assert.deepEqual(labels, ['Gmail or Google Workspace', 'Microsoft 365 or Outlook', 'iCloud Mail', 'Other provider (IMAP)'], 'iCloud sits between Microsoft and IMAP')
-      await choices.getByRole('button', { name: /iCloud Mail/ }).click()
+      // Closed, and in through the iCloud button itself.
+      await icloud.getByRole('button', { name: 'Cancel' }).click()
+      await icloud.waitFor({ state: 'hidden' })
+      await buttons.getByRole('button', { name: /Add an iCloud account/ }).click()
       await icloud.getByLabel('Email address').waitFor()
+      // A new form: the address is asked again, and takes the focus.
+      await page.waitForFunction(() => document.activeElement?.getAttribute('name') === 'mailbox')
+      await icloud.getByLabel('Email address').fill('ana.souza@icloud.com')
       assert.equal(await icloud.getByLabel('Server').count(), 0, 'iCloud asks for no server names')
       assert.equal(await icloud.getByRole('spinbutton').count(), 0, 'iCloud asks for no ports')
       assert.match(await icloud.ariaSnapshot(), /textbox "App-specific password"\n/, 'the iCloud password field is named for what it wants')
@@ -301,8 +313,12 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await noLegal(page, 'iCloud form')
       await shot('add-icloud')
       await icloud.getByRole('button', { name: 'Connect', exact: true }).click()
-      await icloud.getByText('Account connected').waitFor()
-      await icloud.getByRole('button', { name: 'Done' }).click()
+      const connectedICloud = page.getByRole('dialog', { name: 'Account connected' })
+      await connectedICloud.getByText('ana@souza.example is connected.').waitFor()
+      // Skipped: nothing renamed.
+      const renames = daemon.calls.renamed.length
+      await connectedICloud.getByRole('button', { name: 'Skip' }).click()
+      assert.equal(daemon.calls.renamed.length, renames, 'skipping names nothing')
       const icloudCard = page.locator('.account-card').filter({ hasText: 'ana@souza.example' })
       await icloudCard.waitFor()
       await icloudCard.locator('dd', { hasText: /^iCloud$/ }).waitFor()
@@ -312,13 +328,13 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.ok(/^[A-Za-z0-9_-]{43}$/.test(linkedKey) && /^[0-9a-f-]{36}$/.test(linkedNamespace) && /^[A-Za-z0-9_-]{118}$/.test(linkedGrant), 'the link carries the mailbox key, its namespace and the linker grant')
 
       // --- connecting Gmail with the loopback flow ------------------------
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Gmail or Google Workspace/ }).click()
+      // A server with only the installed client's flow: the Google button asks for the address.
+      await buttons.getByRole('button', { name: /Add a Google account/ }).click()
       const gmail = page.getByRole('dialog', { name: 'Gmail or Google Workspace' })
       await gmail.getByLabel('Email address').fill('financeiro@example.test')
       await noLegal(page, 'Gmail form')
       await shot('add-gmail')
-      await gmail.getByRole('button', { name: 'Continue to Gmail' }).click()
+      await gmail.getByRole('button', { name: 'Continue to Google' }).click()
       const link = gmail.getByRole('link', { name: 'Open Gmail sign-in' })
       await link.waitFor()
       await page.waitForFunction(() => document.activeElement?.matches('a.primary'))
@@ -326,25 +342,24 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.match(await link.getAttribute('rel'), /noopener/)
       assert.match(await link.getAttribute('href'), /^https:\/\/accounts\.google\.com\//)
       await shot('add-waiting')
-      await gmail.getByText('Account connected').waitFor({ timeout: 20_000 })
+      const connectedGmail = page.getByRole('dialog', { name: 'Account connected' })
+      await connectedGmail.getByText('financeiro@example.test is connected.').waitFor({ timeout: 20_000 })
       assert.ok(daemon.calls.polls >= 1, 'the dialog asks for the account until it is active')
-      await gmail.getByRole('button', { name: 'Done' }).click()
+      await connectedGmail.getByRole('button', { name: 'Skip' }).click()
 
       // --- abandoning a flow removes the half-made account -------------------
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Gmail or Google Workspace/ }).click()
+      await buttons.getByRole('button', { name: /Add a Google account/ }).click()
       await gmail.getByLabel('Email address').fill('abandonada@example.test')
-      await gmail.getByRole('button', { name: 'Continue to Gmail' }).click()
+      await gmail.getByRole('button', { name: 'Continue to Google' }).click()
       await gmail.getByRole('link', { name: 'Open Gmail sign-in' }).waitFor()
       await gmail.getByRole('button', { name: 'Cancel' }).click()
       await page.waitForFunction(() => !document.querySelector('.account-card')?.parentElement?.textContent?.includes('abandonada@example.test'))
       assert.deepEqual(daemon.calls.removed, ['abandonada@example.test'], 'cancelling deletes the pending account')
 
       // --- a consent that came back without the mailbox -----------------------
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Gmail or Google Workspace/ }).click()
+      await buttons.getByRole('button', { name: /Add a Google account/ }).click()
       await gmail.getByLabel('Email address').fill(NOT_GRANTED_EMAIL)
-      await gmail.getByRole('button', { name: 'Continue to Gmail' }).click()
+      await gmail.getByRole('button', { name: 'Continue to Google' }).click()
       await gmail.getByRole('alert').filter({ hasText: REFUSED['en-US'].notGranted }).waitFor({ timeout: 15_000 })
       assert.equal((await gmail.getByRole('alert').textContent()).trim(), REFUSED['en-US'].notGranted, 'the dialog says what to do on Google’s screen')
       assert.equal(await page.getByText(REASON_NOT_GRANTED).count(), 0, 'the server’s reason is never rendered')
@@ -354,15 +369,14 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       await page.waitForFunction(email => ![...document.querySelectorAll('.account-card')].some(card => card.textContent.includes(email)), NOT_GRANTED_EMAIL)
       assert.deepEqual(daemon.calls.removed, ['abandonada@example.test', NOT_GRANTED_EMAIL], 'closing a failed first attempt removes the account it made')
 
-      // --- Microsoft's form says the same before its consent step --------------
-      await page.getByRole('button', { name: 'Connect an email account' }).first().click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Microsoft 365 or Outlook/ }).click()
+      // --- Microsoft's address form, one small link away from its button --------
+      await buttons.getByRole('button', { name: 'Enter the mailbox’s address instead' }).click()
       const outlook = page.getByRole('dialog', { name: 'Microsoft 365 or Outlook' })
       await outlook.getByRole('button', { name: 'Continue to Microsoft' }).waitFor()
+      await outlook.getByLabel('Email address').waitFor()
       await noLegal(page, 'Microsoft form')
-      await outlook.getByRole('button', { name: 'Back' }).click()
       await page.keyboard.press('Escape')
-      await page.getByRole('dialog', { name: 'Connect an email account' }).waitFor({ state: 'hidden' })
+      await outlook.waitFor({ state: 'hidden' })
 
       // --- finishing Microsoft's authorization through the web flow ------------
       const microsoft = page.locator('.account-card').filter({ hasText: 'ana.souza@example.test' })
@@ -490,17 +504,18 @@ for (const mobile of only && only !== 'console' ? [] : [false, true]) {
       assert.equal(sent(daemon, 'bruno-password-1'), false, 'signing up sends no password')
       await page.getByRole('heading', { name: 'Connect your first email account' }).waitFor()
       await shot('empty')
-      // The empty state's button opens the dialog and is gone once the first
-      // account exists; closing returns focus to the section, not to <body>.
-      await page.locator('.empty-card').getByRole('button', { name: 'Connect an email account' }).click()
-      await page.getByRole('dialog', { name: 'Connect an email account' }).getByRole('button', { name: /Other provider \(IMAP\)/ }).click()
+      // The empty state's buttons open the form and are gone from it once the
+      // first account exists; closing returns focus to the section, not to <body>.
+      await page.locator('.empty-card').getByRole('button', { name: /Other server \(IMAP\)/ }).click()
       const first = page.getByRole('dialog', { name: 'Other provider (IMAP)' })
       await first.getByLabel('Email address').fill('bruno@example.test')
       await first.getByLabel('Password', { exact: true }).fill('app-password-123')
       await first.getByRole('button', { name: 'Connect', exact: true }).click()
-      await first.getByRole('button', { name: 'Done' }).click()
+      await page.getByRole('dialog', { name: 'Account connected' }).getByRole('button', { name: 'Done' }).click()
       await page.locator('.account-card').filter({ hasText: 'bruno@example.test' }).waitFor()
       await page.waitForFunction(() => document.activeElement?.textContent?.trim() === 'Your mailboxes')
+      assert.equal(await page.locator('.empty-card').count(), 0, 'the first card goes with the first mailbox')
+      assert.equal(await page.locator('.connect-buttons').count(), 1, 'the buttons sit above the cards once')
 
       assert.deepEqual(daemon.calls.unoffered, [], 'no request to the mail or sending routes')
       assert.deepEqual(errors, [], 'no page, script or CSP errors')
@@ -545,20 +560,22 @@ for (const language of only && only !== 'console' ? [] : ['pt-BR', 'de-DE']) {
       await page.locator('form[name=mailie-login] button[type=submit]').click()
       await page.locator('.account-card').first().waitFor()
       await shot('accounts')
-      await page.locator('.section-actions .primary').click()
-      await page.locator('.provider-option').first().waitFor()
-      await page.locator('.provider-option').nth(2).click()
+      await page.locator('.connect-buttons .provider-button').first().waitFor()
+      await shot('add-buttons')
+      await page.locator('.connect-buttons .provider-button').nth(2).click()
       await page.locator('input[name=mailbox-password]').waitFor()
       assert.equal(await page.locator('.console-dialog input[type=number]').count(), 0, 'the iCloud form has no server fields')
       await noLegal(page, 'iCloud form')
       await shot('add-icloud')
       await page.locator('.console-dialog .dialog-actions .ghost').click()
-      await page.locator('.provider-option').nth(3).click()
+      await page.locator('.console-dialog').waitFor({ state: 'hidden' })
+      await page.locator('.connect-buttons .provider-button').nth(3).click()
       await page.locator('input[name=mailbox-password]').waitFor()
       await noLegal(page, 'IMAP form')
       await shot('add-imap')
       await page.locator('.console-dialog .dialog-actions .ghost').click()
-      await page.locator('.provider-option').first().click()
+      await page.locator('.console-dialog').waitFor({ state: 'hidden' })
+      await page.locator('.connect-buttons .provider-button').first().click()
       await page.locator('input[name=mailbox]').fill('financeiro@example.test')
       await noLegal(page, 'Gmail form')
       await shot('add-gmail')
@@ -1389,18 +1406,23 @@ for (const { language, mobile, scheme } of only && only !== 'storage' ? [] : [
 
 // --- linking at the provider ---------------------------------------------------
 // A server that finishes Gmail and Microsoft at the provider (the web flow):
-// the form asks for no address, the step-up has five minutes to spare before
-// the page leaves, and the account is chosen on the provider's own page,
-// whose answer names its address. Connected; the same account again, under
-// another spelling of one Gmail account, and once removed and kept, refused
-// with the one text that tells no removed mailbox apart; the step-up asked
-// at the return, before its code is taken, when it went stale on the
-// provider's page, and never for the provider's refusal; an account without
-// the mailbox's grant; a finish whose answer was lost, followed by the link;
-// Microsoft's account chooser, its refusal, and its address form one small
-// link away, which takes today's way with the address; and a mailbox's
-// re-authorization from its card, unchanged. No address and no key go with a
-// link's start, and its return carries the mailbox's first key.
+// their buttons go straight to the provider's account chooser, with no
+// dialog, no address and no name; the step-up has five minutes to spare
+// before the page leaves; and the provider's answer names the address.
+// Connected, the new mailbox asks for its nickname, which a rename gives;
+// the same account again, under another spelling of one Gmail account, and
+// once removed and kept, refused with the one text that tells no removed
+// mailbox apart; the step-up asked at the return, before its code is taken,
+// when it went stale on the provider's page, and never for the provider's
+// refusal; an account without the mailbox's grant; a finish whose answer was
+// lost, followed by the link; Microsoft's account chooser, its refusal, and
+// its address form one small link away from its button, which takes today's
+// way with the address and ends on the same new mailbox; a page restored from
+// the back/forward cache after Back on the provider's page; a browser that
+// keeps nothing for the trip, which asks for the address; buttons drawn only
+// once the workspaces are read; and a mailbox's re-authorization from its
+// card, unchanged. No address, name or key goes with a link's start, and its
+// return carries the mailbox's first key.
 
 /** The accounts each provider's page offers to choose from. */
 const CHOOSABLE = {
@@ -1408,18 +1430,17 @@ const CHOOSABLE = {
   microsoft: ['ana.trabalho@example.test'],
 }
 const linkText = language => Object.fromEntries(Object.entries({
-  connect: 'Connect an email account', gmail: 'Gmail or Google Workspace', microsoft: 'Microsoft 365 or Outlook', email: 'Email address',
-  gmailSubtitle: 'You will choose the account on Google’s page, and Google tells Mailie its address.',
-  microsoftSubtitle: 'You will choose the account on Microsoft’s page, and Microsoft tells Mailie its address.',
+  connect: 'Connect an email account', gmail: 'Add a Google account', microsoft: 'Add a Microsoft account', email: 'Email address',
+  microsoftForm: 'Microsoft 365 or Outlook', gmailForm: 'Gmail or Google Workspace',
   instead: 'Enter the mailbox’s address instead',
   insteadHint: 'For a shared mailbox, or when Microsoft says your organization’s administrator must approve Mailie.',
-  wayBack: 'Use the account I choose at Microsoft', name: 'Display name (optional)', stepUp: 'Enter your password again',
+  wayBack: 'Use the account I choose at Microsoft', nickname: 'Nickname (optional)', skip: 'Skip', done: 'Done', stepUp: 'Enter your password again',
+  continueGmail: 'Continue to Google', continueMicrosoft: 'Continue to Microsoft', openingGoogle: 'Opening Google…',
   declined: 'You did not allow access, so nothing was connected.',
   declinedMicrosoft: 'Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.',
   notGranted: 'The provider did not grant access, so nothing was connected. Start again.',
 }).map(([name, key]) => [name, say(language, key)]).concat([
-  ['continueGmail', say(language, 'Continue to {provider}', { provider: 'Gmail' })],
-  ['continueMicrosoft', say(language, 'Continue to {provider}', { provider: 'Microsoft 365' })],
+  ['arrived', email => say(language, '{email} is connected.', { email })],
   ['connected', email => say(language, '{email} is connected. You can list its folders now. Sync is off until you turn it on.', { email })],
   ['duplicate', email => say(language, '{email} was not connected. {reason}', { email, reason: say(language, 'This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.') })],
 ]))
@@ -1430,46 +1451,43 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
 ]) {
   const label = `links-${language}-${mobile ? 'mobile' : 'desktop'}-${scheme}`
   const text = linkText(language)
-  const context = await browser.newContext({
+  const newContext = () => browser.newContext({
     serviceWorkers: 'block', locale: language, colorScheme: scheme, reducedMotion: 'reduce',
     viewport: mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }, isMobile: mobile, hasTouch: mobile,
   })
+  const context = await newContext()
   const daemon = fakeDaemon({ gmailFlows: ['web', 'loopback'], personal: true })
   const errors = []
   await context.route('**/v1/**', route => daemon.handle(route))
   /** Every provider page the page was sent to. */
   const visited = []
   // A link's provider page shows its account chooser; a consent's (no openid) answers as before: Google's goes nowhere, Microsoft's grants it.
-  await context.route('https://accounts.google.com/**', route => {
-    visited.push(route.request().url())
-    const chooser = providerChooser(route.request().url(), CHOOSABLE.google)
-    return route.fulfill({ status: 200, contentType: 'text/html', body: chooser ?? '<!doctype html><title>Google</title><p>Synthetic consent page</p>' })
-  })
-  await context.route('https://login.microsoftonline.com/**', route => {
-    visited.push(route.request().url())
-    const chooser = providerChooser(route.request().url(), CHOOSABLE.microsoft)
-    if (chooser) return route.fulfill({ status: 200, contentType: 'text/html', body: chooser })
-    const state = new URL(route.request().url()).searchParams.get('state')
-    return route.fulfill({ status: 302, headers: { location: `${origin}/oauth/return?code=synthetic-code-0001&state=${state}&session_state=x` } })
-  })
+  const providerPages = async target => {
+    await target.route('https://accounts.google.com/**', route => {
+      visited.push(route.request().url())
+      const chooser = providerChooser(route.request().url(), CHOOSABLE.google)
+      return route.fulfill({ status: 200, contentType: 'text/html', body: chooser ?? '<!doctype html><title>Google</title><p>Synthetic consent page</p>' })
+    })
+    await target.route('https://login.microsoftonline.com/**', route => {
+      visited.push(route.request().url())
+      const chooser = providerChooser(route.request().url(), CHOOSABLE.microsoft)
+      if (chooser) return route.fulfill({ status: 200, contentType: 'text/html', body: chooser })
+      const state = new URL(route.request().url()).searchParams.get('state')
+      return route.fulfill({ status: 302, headers: { location: `${origin}/oauth/return?code=synthetic-code-0001&state=${state}&session_state=x` } })
+    })
+  }
+  await providerPages(context)
   const page = await context.newPage()
   page.on('pageerror', error => errors.push(error.message))
   page.on('console', message => { if (message.type() === 'error' && /Content Security Policy|Refused to|TypeError|Uncaught/.test(message.text())) errors.push(message.text()) })
-  const shot = async name => {
-    await noHorizontalOverflow(page, `${label} ${name}`)
-    if (screenshots) await page.screenshot({ path: resolve(screenshots, `${name}-${label}.png`) })
+  const shot = async (name, on = page) => {
+    await noHorizontalOverflow(on, `${label} ${name}`)
+    if (screenshots) await on.screenshot({ path: resolve(screenshots, `${name}-${label}.png`) })
   }
-  /** The connecting dialog, on this provider's form. */
-  const open = async provider => {
-    await page.getByRole('button', { name: text.connect }).first().click()
-    await page.getByRole('dialog', { name: text.connect }).getByRole('button', { name: new RegExp(text[provider]) }).click()
-    const dialog = page.getByRole('dialog', { name: text[provider] })
-    await dialog.waitFor()
-    return dialog
-  }
-  /** Leaves for the provider's page and chooses an account there, or Cancel; meanwhile is run on the provider's page. */
-  const choose = async (dialog, provider, account, meanwhile = async () => {}) => {
-    await dialog.getByRole('button', { name: provider === 'gmail' ? text.continueGmail : text.continueMicrosoft }).click()
+  const group = () => page.getByRole('group', { name: text.connect })
+  /** Presses a provider's button, which leaves for its account chooser; chooses an account there, or Cancel; meanwhile is run on the provider's page. */
+  const connectAt = async (provider, account, meanwhile = async () => {}) => {
+    await group().getByRole('button', { name: new RegExp(text[provider]) }).click()
     await page.waitForURL(provider === 'gmail' ? /^https:\/\/accounts\.google\.com\// : /^https:\/\/login\.microsoftonline\.com\//, { timeout: 15_000 })
     await page.getByRole('heading', { name: 'Choose an account' }).waitFor()
     await meanwhile()
@@ -1480,6 +1498,18 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
     await page.locator('.notice').filter({ hasText: expected }).waitFor({ timeout: 20_000 })
     assert.equal((await page.locator('.notice > span').first().textContent()).trim(), expected)
   }
+  /** The new mailbox a return connected, its heading focused; named, or skipped. */
+  const arrived = async (email, nickname = '') => {
+    const card = page.locator('.new-mailbox').filter({ hasText: text.arrived(email) })
+    await card.waitFor({ timeout: 20_000 })
+    await page.waitForFunction(() => document.activeElement?.classList.contains('new-mailbox-heading'))
+    assert.equal(await page.locator('.notice').filter({ hasText: email }).count(), 0, 'the card stands for the success notice')
+    if (nickname) {
+      await card.getByLabel(text.nickname).fill(nickname)
+      await card.getByRole('button', { name: text.done }).click()
+    } else await card.getByRole('button', { name: text.skip }).click()
+    await card.waitFor({ state: 'hidden' })
+  }
   try {
     await page.goto(origin + '/')
     await page.locator('form[name=mailie-login]').waitFor()
@@ -1488,32 +1518,39 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
     await page.locator('form[name=mailie-login] button[type=submit]').click()
     await page.locator('.account-card').first().waitFor()
 
-    // --- Gmail at the provider: no address typed --------------------------------
-    let gmail = await open('gmail')
-    assert.equal(await gmail.getByLabel(text.email).count(), 0, 'no address field where Google names the account')
-    await gmail.getByText(text.gmailSubtitle).waitFor()
-    assert.equal(await gmail.getByRole('button', { name: text.instead }).count(), 0, 'Gmail offers no address form')
-    await gmail.getByLabel(text.name).fill('Pessoal')
-    await shot('link-gmail-form')
-    await choose(gmail, 'gmail', 'ana.lima@gmail.com', () => shot('link-google-chooser'))
+    // --- Gmail at the provider: one press, no dialog, no address -----------------
+    await group().waitFor()
+    assert.equal(await page.locator('.connect-buttons').count(), 1, 'the buttons are drawn once')
+    assert.equal(await group().getByRole('button', { name: text.instead }).count(), 1, 'only Microsoft offers an address form')
+    await group().scrollIntoViewIfNeeded()
+    await shot('link-buttons')
+    await connectAt('gmail', 'ana.lima@gmail.com', () => shot('link-google-chooser'))
+    assert.equal(await page.getByRole('dialog').count(), 0, 'no dialog on the way')
     const chooser = new URL(visited.at(-1))
     assert.equal(chooser.searchParams.get('prompt'), 'select_account consent', 'Google shows its account chooser')
     assert.deepEqual(chooser.searchParams.get('scope').split(' ').sort(), ['email', 'https://mail.google.com/', 'openid'])
     assert.equal(chooser.searchParams.has('login_hint'), false, 'no account is hinted')
-    await said(text.connected('ana.lima@gmail.com'))
-    await page.locator('.account-card').filter({ hasText: 'ana.lima@gmail.com' }).waitFor()
+    await page.locator('.new-mailbox').waitFor({ timeout: 20_000 })
+    await page.waitForFunction(() => document.activeElement?.classList.contains('new-mailbox-heading'))
+    await page.locator('.new-mailbox').scrollIntoViewIfNeeded()
+    await shot('link-arrival')
+    await arrived('ana.lima@gmail.com', 'Pessoal')
+    await page.locator('.account-card').filter({ hasText: 'ana.lima@gmail.com' }).filter({ hasText: 'Pessoal' }).waitFor()
+    await page.waitForFunction(() => document.activeElement?.matches('.section-title h2'))
     assert.equal(await page.evaluate(() => location.search + location.hash), '', 'the code is gone from the address bar')
     assert.equal(await page.evaluate(() => sessionStorage.getItem('mailie.oauthStart') ?? sessionStorage.getItem('mailie.oauthReturn')), null, 'nothing of the link is kept once answered')
     await shot('link-connected')
     const [startBody] = daemon.calls.links
-    assert.deepEqual(startBody, { provider: 'gmail', flow: 'web', display_name: 'Pessoal' }, 'a link starts with no address and no key')
+    assert.deepEqual(Object.keys(startBody).sort(), ['flow', 'provider', 'workspace_id'], 'a link starts with the workspace shown, and no address, name or key')
+    assert.deepEqual({ provider: startBody.provider, flow: startBody.flow }, { provider: 'gmail', flow: 'web' })
+    assert.match(startBody.workspace_id, /^wsp_/, 'the personal workspace shown, named')
+    assert.deepEqual(daemon.calls.renamed.at(-1)?.display_name, 'Pessoal', 'the nickname is a rename once it is connected')
     const returned = daemon.calls.callbackBodies.at(-1)
     assert.ok(/^[A-Za-z0-9_-]{43}$/.test(returned.public_key) && /^[0-9a-f-]{36}$/.test(returned.namespace) && /^[A-Za-z0-9_-]{118}$/.test(returned.grant), 'the return carries the mailbox key, its namespace and the linker grant')
 
     // --- the same account again, and another spelling of it ------------------
     for (const account of full ? ['ana.lima@gmail.com', 'A.na.Lima+news@gmail.com'] : ['ana.lima@gmail.com']) {
-      gmail = await open('gmail')
-      await choose(gmail, 'gmail', account)
+      await connectAt('gmail', account)
       await said(text.duplicate(account))
       assert.equal(daemon.links.get(`lnk_${String(daemon.calls.links.length).padStart(16, '0')}`).reason, REASON_DUPLICATE)
     }
@@ -1521,8 +1558,7 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
     await shot('link-duplicate')
 
     // --- the provider's refusal: no step-up, even a stale one -----------------
-    gmail = await open('gmail')
-    await choose(gmail, 'gmail', 'Cancel', async () => { daemon.ageStepUp(11 * 60) })
+    await connectAt('gmail', 'Cancel', async () => { daemon.ageStepUp(11 * 60) })
     await said(text.declined)
     assert.equal(await page.getByRole('dialog', { name: text.stepUp }).count(), 0, 'a refusal asks for no step-up')
     assert.deepEqual(Object.keys(daemon.calls.callbackBodies.at(-1)), ['redirect_url'], 'a refusal carries no key')
@@ -1538,12 +1574,13 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
     if (full) {
       // --- the step-up, with five minutes to spare before the page leaves ------
       const before = daemon.calls.stepUp
-      gmail = await open('gmail')
+      const started = daemon.calls.links.length
       // Four minutes left: the dialog asks before anything is started.
-      await gmail.getByRole('button', { name: text.continueGmail }).click()
+      await group().getByRole('button', { name: new RegExp(text.gmail) }).click()
       const stepUp = page.getByRole('dialog', { name: text.stepUp })
       await stepUp.waitFor()
-      assert.equal(daemon.calls.links.length, 4, 'nothing is started before the step-up')
+      assert.equal(daemon.calls.links.length, started, 'nothing is started before the step-up')
+      await shot('link-stepup')
       await stepUp.getByLabel('Password', { exact: true }).fill(PASSWORD)
       await stepUp.getByRole('button', { name: 'Continue' }).click()
       await page.waitForURL(/^https:\/\/accounts\.google\.com\//, { timeout: 30_000 })
@@ -1559,21 +1596,28 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
       await shot('link-return-stepup')
       await page.getByRole('dialog', { name: text.stepUp }).getByLabel('Password', { exact: true }).fill(PASSWORD)
       await page.getByRole('dialog', { name: text.stepUp }).getByRole('button', { name: 'Continue' }).click()
-      await said(text.connected('vendas.lima@gmail.com'))
+      await arrived('vendas.lima@gmail.com')
       assert.equal(daemon.calls.callback.length, posted + 1, 'posted once, after the step-up')
       assert.equal(daemon.calls.stepUp, before + 2)
 
       // --- an account the grant does not reach, and a finish whose answer was lost
-      gmail = await open('gmail')
-      await choose(gmail, 'gmail', NOT_GRANTED_EMAIL)
+      await connectAt('gmail', NOT_GRANTED_EMAIL)
       await said(text.notGranted)
       assert.equal(await page.getByText(REASON_NOT_GRANTED).count(), 0, 'the server’s reason is never rendered')
       const reads = daemon.calls.linkReads
-      gmail = await open('gmail')
-      await choose(gmail, 'gmail', SLOW_LINK_EMAIL)
-      await said(text.connected(SLOW_LINK_EMAIL))
+      await connectAt('gmail', SLOW_LINK_EMAIL)
+      await arrived(SLOW_LINK_EMAIL)
       assert.ok(daemon.calls.linkReads >= reads + 2, 'a link still finishing is asked about again')
       await page.locator('.account-card').filter({ hasText: SLOW_LINK_EMAIL }).waitFor()
+
+      // --- Back on the provider's page: the page restored from the cache offers the buttons again
+      await group().getByRole('button', { name: new RegExp(text.gmail) }).click()
+      await page.waitForURL(/^https:\/\/accounts\.google\.com\//, { timeout: 15_000 })
+      await page.goBack()
+      await group().waitFor()
+      await page.waitForFunction(() => [...document.querySelectorAll('.connect-buttons .provider-button')].every(button => !button.disabled))
+      assert.equal((await group().locator('[role=status]').textContent()).trim(), '', 'no Opening… left behind')
+      await shot('link-back-from-provider')
 
       // --- a mailbox removed and kept is the same refusal for its owner ----------
       await page.locator('.account-card').filter({ hasText: 'ana.lima@gmail.com' }).getByRole('button', { name: 'Details' }).click()
@@ -1582,55 +1626,107 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
       await sheet.getByLabel('Type ana.lima@gmail.com to confirm').fill('ana.lima@gmail.com')
       await sheet.getByRole('button', { name: 'Remove', exact: true }).click()
       await page.locator('.notice').filter({ hasText: 'ana.lima@gmail.com was removed' }).waitFor()
-      gmail = await open('gmail')
-      await choose(gmail, 'gmail', 'ana.lima@gmail.com')
+      await connectAt('gmail', 'ana.lima@gmail.com')
       await said(text.duplicate('ana.lima@gmail.com'))
     }
 
     // --- Microsoft: its account chooser, and its address form one link away --
-    let outlook = await open('microsoft')
-    assert.equal(await outlook.getByLabel(text.email).count(), 0, 'no address field where Microsoft names the account')
-    await outlook.getByText(text.microsoftSubtitle).waitFor()
-    const instead = outlook.getByRole('button', { name: text.instead })
-    await outlook.getByText(text.insteadHint).waitFor()
-    await shot('link-microsoft-form')
+    const instead = group().getByRole('button', { name: text.instead })
+    await group().getByText(text.insteadHint).waitFor()
     await instead.click()
+    const outlook = page.getByRole('dialog', { name: text.microsoftForm })
     await outlook.getByLabel(text.email).waitFor()
     await page.waitForFunction(() => document.activeElement?.getAttribute('name') === 'mailbox')
     await shot('link-microsoft-address')
+    // The way back: the account chooser, from the form.
     await outlook.getByRole('button', { name: text.wayBack }).click()
-    await outlook.getByRole('button', { name: text.instead }).waitFor()
-    assert.equal(await outlook.getByLabel(text.email).count(), 0)
-    await choose(outlook, 'microsoft', 'ana.trabalho@example.test', () => shot('link-microsoft-chooser'))
+    await page.waitForURL(/^https:\/\/login\.microsoftonline\.com\//, { timeout: 15_000 })
+    await page.getByRole('heading', { name: 'Choose an account' }).waitFor()
+    await shot('link-microsoft-chooser')
+    await page.getByRole('link', { name: 'ana.trabalho@example.test', exact: true }).click()
+    await page.waitForURL(url => url.origin === origin && url.pathname === '/', { timeout: 15_000 })
     const microsoftChooser = new URL(visited.at(-1))
     assert.equal(microsoftChooser.searchParams.get('prompt'), 'select_account', 'Microsoft shows its account chooser')
     assert.equal(microsoftChooser.searchParams.has('login_hint'), false, 'no account is hinted')
-    await said(text.connected('ana.trabalho@example.test'))
+    await arrived('ana.trabalho@example.test')
 
-    outlook = await open('microsoft')
-    await choose(outlook, 'microsoft', 'Cancel')
+    await connectAt('microsoft', 'Cancel')
     await said(text.declinedMicrosoft)
 
     if (full) {
-      // Through the address form: today's way, the mailbox created with its address, then the consent.
-      outlook = await open('microsoft')
-      await outlook.getByRole('button', { name: text.instead }).click()
+      // Through the address form: today's way, the mailbox created with its address, then the consent, then its nickname.
+      await group().getByRole('button', { name: text.instead }).click()
       await outlook.getByLabel(text.email).fill('compartilhada@example.test')
       const links = daemon.calls.links.length
       await outlook.getByRole('button', { name: text.continueMicrosoft }).click()
-      await said(text.connected('compartilhada@example.test'))
+      await arrived('compartilhada@example.test', 'Compartilhada')
       assert.equal(daemon.calls.links.length, links, 'the address form starts no link')
       assert.equal(daemon.calls.created.at(-1).email, 'compartilhada@example.test')
+      assert.equal(daemon.calls.created.at(-1).display_name, undefined, 'and names nothing')
       assert.ok(!new URL(visited.at(-1)).searchParams.get('scope')?.includes('openid'), 'and asks the provider for nothing more than the mailbox')
 
       // --- a mailbox's re-authorization from its card, unchanged -----------------
       const card = page.locator('.account-card').filter({ hasText: 'ana.souza@example.test' })
       await card.getByRole('button', { name: 'Finish authorization' }).click()
       await said(text.connected('ana.souza@example.test'))
+      assert.equal(await page.locator('.new-mailbox').count(), 0, 'a re-authorization asks for no nickname')
       assert.ok(!new URL(visited.at(-1)).searchParams.get('scope')?.includes('openid'), 'a re-authorization asks for the mailbox alone')
+
+      // --- a browser that keeps nothing for the trip asks for the address ---------
+      const refusing = await newContext()
+      await refusing.addInitScript(() => {
+        const refuse = () => { throw new DOMException('denied', 'SecurityError') }
+        Object.defineProperty(window, 'sessionStorage', { get: () => ({ getItem: refuse, setItem: refuse, removeItem: refuse, clear: refuse, key: refuse, length: 0 }) })
+      })
+      const refusingDaemon = fakeDaemon({ gmailFlows: ['web', 'loopback'], personal: true })
+      await refusing.route('**/v1/**', route => refusingDaemon.handle(route))
+      const other = await refusing.newPage()
+      try {
+        await other.goto(origin + '/')
+        await other.locator('input[name=username]').fill('ana@example.test')
+        await other.locator('input[name=password]').fill(PASSWORD)
+        await other.locator('form[name=mailie-login] button[type=submit]').click()
+        await other.locator('.account-card').first().waitFor()
+        const buttons = other.getByRole('group', { name: text.connect })
+        assert.equal(await buttons.getByRole('button', { name: text.instead }).count(), 0, 'no address link where every Microsoft mailbox is linked by its address')
+        await buttons.getByRole('button', { name: new RegExp(text.gmail) }).click()
+        await other.getByRole('dialog', { name: text.gmailForm }).getByLabel(text.email).waitFor()
+        assert.equal(refusingDaemon.calls.links.length, 0, 'no link is started in a browser that keeps nothing')
+        await shot('link-storage-refused', other)
+      } finally {
+        refusingDaemon.close()
+        await refusing.close()
+      }
+
+      // --- the buttons wait for the workspaces ------------------------------------
+      const slow = await newContext()
+      const slowDaemon = fakeDaemon({ gmailFlows: ['web', 'loopback'], personal: true })
+      let release
+      const held = new Promise(resolve => { release = resolve })
+      await slow.route('**/v1/**', async route => {
+        if (new URL(route.request().url()).pathname === '/v1/workspaces') await held
+        return slowDaemon.handle(route)
+      })
+      const waiting = await slow.newPage()
+      try {
+        await waiting.goto(origin + '/')
+        await waiting.locator('input[name=username]').fill('ana@example.test')
+        await waiting.locator('input[name=password]').fill(PASSWORD)
+        await waiting.locator('form[name=mailie-login] button[type=submit]').click()
+        await waiting.locator('.console-main').waitFor()
+        await sleep(800)
+        assert.equal(await waiting.locator('.provider-button').count(), 0, 'no button before the workspaces are read')
+        release()
+        await waiting.locator('.provider-button').first().waitFor()
+        assert.equal(await waiting.locator('.connect-buttons').count(), 1)
+      } finally {
+        release()
+        slowDaemon.close()
+        await slow.close()
+      }
     }
 
-    for (const body of daemon.calls.links) assert.ok(!('email' in body) && !('public_key' in body) && !('grant' in body), 'no link starts with an address or a key')
+    for (const body of daemon.calls.links) assert.ok(!('email' in body) && !('public_key' in body) && !('grant' in body) && !('display_name' in body) && !('sync_consent_version' in body), 'no link starts with an address, a name, an agreement or a key')
     assert.deepEqual(daemon.calls.unoffered, [], 'no request to the mail or sending routes')
     assert.deepEqual(errors, [], 'no page, script or CSP errors')
     console.log(`ok ${label}`)

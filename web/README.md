@@ -76,8 +76,9 @@ by an in-memory fake daemon and the Google and Microsoft pages intercepted. It w
 sign-up by invitation with the key scheme (no password ever in a request; the recovery code shown
 once; a password change; the password asked for again to replace the recovery code), an account
 made before it that never enrolled (refused, its password never sent) enrolled by a reset link,
-recovery with the code the reset showed, an IMAP mailbox, iCloud (a refused password, an app-specific one, a
-custom domain), the loopback and web OAuth flows, a Gmail consent that came back without the
+recovery with the code the reset showed, the buttons that connect a mailbox (one per provider, drawn
+once, as one named group), an IMAP mailbox and its nickname given once it is connected, iCloud (a
+refused password, an app-specific one, a custom domain), the loopback and web OAuth flows, a Gmail consent that came back without the
 mailbox, a folder listing the mail server refuses, removal (with the mailbox's id repeated in
 `confirm`, as the daemon requires), the account section and an expired session, on desktop and
 phone, light and dark, then in pt-BR and German; then sync (the consent card, the first sync over
@@ -89,13 +90,17 @@ copied, never kept; a mailbox given to it from its sheet, its sends; revoked, an
 keys the person created in Account), API keys on a server with MCP over HTTP off (no address, no
 command) and on one whose keys do not send (no send scope), Storage (a mailbox whose account
 needs authorizing again keeps its index; turning sync off reads the figures again), and Gmail and
-Microsoft linked at the provider on a server that offers them the web flow: no address field, the
-account chosen on the provider's own page (an account chooser the pass draws,
-`providerChooser`), the same account again and another spelling of it, one removed and kept, the
-provider's refusal with no step-up, the step-up asked with five minutes to spare before leaving
-and again at the return before its code is posted, an account without the mailbox's grant, a finish
-whose answer was lost and is followed by the link, Microsoft's address form one small link away,
-and a re-authorization from a card, in English on desktop and Portuguese on a phone. It fails on a
+Microsoft linked at the provider on a server that offers them the web flow: their buttons go
+straight to the account chooser on the provider's own page (an account chooser the pass draws,
+`providerChooser`), with no dialog, address or name, and the new mailbox comes back asking for its
+nickname, given or skipped; the same account again and another spelling of it, one removed and
+kept, the provider's refusal with no step-up, the step-up asked with five minutes to spare before
+leaving and again at the return before its code is posted, an account without the mailbox's grant,
+a finish whose answer was lost and is followed by the link, Back on the provider's page (the page
+restored from the back/forward cache offers its buttons again), Microsoft's address form one small
+link away from its button and the way back to its chooser, a browser that keeps nothing for the
+trip (the address form), the buttons waiting for the workspaces, and a re-authorization from a
+card, in English on desktop and Portuguese on a phone. It fails on a
 page error, a CSP violation, horizontal scrolling, any legal link, byline or company name, and any
 request to the message or sending routes, which its fake daemon does not implement.
 `QA_ONLY=console|keys-scheme|sync|actions|keys|storage|links` runs one group.
@@ -135,8 +140,14 @@ removed for an owner, from the removed mailboxes already read, and counted for B
 never asks for them; each of them linking its address into the team at Google meanwhile is told the
 one text that tells no removed mailbox apart; once Ana deletes it for good the team's people are
 read again and Carol is offered for disabling and removal. On desktop and at 320 px, in English and
-Portuguese.
-`QA_ONLY=teams|removed` runs one group; it takes the other `QA_*` variables of `console.mjs`.
+Portuguese. Then the short way to connect a mailbox in a team, and an owner's access (platform
+decision 0060): Bea, an admin, sees Ana's access, an owner's, read only and still changes Carol's;
+she links a mailbox into the team from Google's button, straight to its account chooser, and it
+comes back asking for its nickname and, unticked, the team's agreement to sync, which she gives;
+and Carol, a member, is told who connects the team's mailboxes, with no button. On desktop and on a
+phone, in English and Portuguese.
+`QA_ONLY=teams|short|removed|pause` runs one group; it takes the other `QA_*` variables of
+`console.mjs`.
 
 ```sh
 npm run build && npx vite preview --port 4174 &     # or npm run dev, with QA_ORIGIN=http://localhost:5174

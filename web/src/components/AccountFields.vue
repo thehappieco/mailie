@@ -6,7 +6,8 @@
 // address to sign in with for a custom domain: Apple's servers are fixed, and
 // the server fills them in itself. A mailbox linked at the provider
 // (atProvider) asks for no address: the person chooses the account on the
-// provider's page, and the provider names it.
+// provider's page, and the provider names it. No name: a mailbox is named
+// once it is connected (NewMailbox).
 import { computed, ref, useId, watch } from 'vue'
 import type { ProviderID, SMTPSecurity } from '../api/types'
 import { guessHosts, ICLOUD_PASSWORD_HELP, isICloudAddress, portForSecurity, signsInWithPassword, type AccountDraft } from '../ui/accountDraft'
@@ -43,7 +44,8 @@ function changeSecurity(event: Event) {
 
 <template>
   <label v-if="!atProvider" :for="`${id}-email`">{{ t('Email address') }}
-    <input :id="`${id}-email`" v-model="draft.email" type="email" name="mailbox" required maxlength="320" autocapitalize="off"
+    <!-- autofocus: the form opens on its provider, and the dialog around it starts here. -->
+    <input :id="`${id}-email`" v-model="draft.email" type="email" name="mailbox" required maxlength="320" autofocus autocapitalize="off"
       spellcheck="false" inputmode="email" autocomplete="off" data-1p-ignore data-lpignore="true" :disabled="busy" :placeholder="provider === 'icloud' ? 'name@icloud.com' : 'name@example.com'" />
   </label>
   <div v-if="suggestICloud" class="suggestion">
@@ -105,12 +107,6 @@ function changeSecurity(event: Event) {
       <p :id="`${id}-login-hint`" class="hint">{{ t('Only when the server expects something other than the email address.') }}</p>
     </div>
   </template>
-  <div class="with-hint">
-    <label :for="`${id}-name`">{{ t('Display name (optional)') }}
-      <input :id="`${id}-name`" v-model="draft.displayName" maxlength="120" autocomplete="off" :aria-describedby="`${id}-name-hint`" :disabled="busy" :placeholder="t('For example: Support')" />
-    </label>
-    <p :id="`${id}-name-hint`" class="hint">{{ t('How this mailbox is named in Mailie. The provider is not changed.') }}</p>
-  </div>
 </template>
 
 <style scoped>

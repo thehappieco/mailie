@@ -168,9 +168,11 @@ describe('mailboxes in a team', () => {
     Object.assign(accounts, { list: [], loaded: true, workspace: TEAM })
     const html = await render(AccountsPanel)
     expect(text(html)).toContain('Nothing shared with you here yet')
-    expect(text(html)).toContain('A mailbox of Support appears here once you are given access to it. Only its owners and admins connect mailboxes to it; yours are connected in your personal workspace.')
+    expect(text(html)).toContain('A mailbox of Support appears here once you are given access to it.')
+    expect(text(html)).toContain('Only the owners and admins of Support connect mailboxes to it. Yours are connected in your personal workspace.')
     expect(text(html)).toContain('Show your personal workspace')
     expect(text(html)).not.toContain('Connect an email account')
+    expect(html).not.toContain('provider-button')
     // Not a word saying that managing a mailbox is enough to pass its mail on.
     expect(text(html)).not.toMatch(/whoever manages|someone who manages/i)
   })

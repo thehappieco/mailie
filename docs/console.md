@@ -228,11 +228,15 @@ built on the same pieces, so it behaves as it always did:
   `sessionStorage`, the path of the page it left from (`back`: `location.pathname` alone, never a
   query or a fragment, which may carry a workspace or a code; at most 1024 bytes, of this origin,
   without a backslash, a control character or dot segments, and never `/oauth/return`). A consent's
-  start names its mailbox (`{account_id, provider, email}`); a link at the provider's, which knows no
-  address yet, names the link and the team it goes into (`{link_id, provider, workspace_id?}`).
-  `captureOAuthReturn()` reads the start without taking it and replaces the address with that
-  path while the start is fresh, else with `/`; it may run from an edition's entry before the page
-  chooses its root, and running it again changes nothing. A link's return stays in the tab until
+  start names its mailbox (`{account_id, provider, email, created?}`, `created` when the attempt
+  that left made the mailbox); a link at the provider's, which knows no address yet, names the link
+  and the team it goes into (`{link_id, provider, workspace_id?}`). `captureOAuthReturn()` reads
+  the start without taking it and replaces the address with that path while the start is at most
+  twenty minutes old (`BACK_LIFETIME_MS`, a link's whole life on the server), else with `/`; nothing
+  else of a start counts past its ten minutes, so a slow trip comes back to its page to be told it
+  expired. It may run from an edition's entry before the page chooses its root, and running it
+  again changes nothing. An edition ties what it keeps of a trip (`keepWithProviderTrip`) to the
+  start the return was routed by (`oauthStartRef()`: its link's or its mailbox's id alone). A link's return stays in the tab until
   the server has answered it: the step-up it may ask for first can send the whole tab to an
   edition's own page and back (`started_at` and `back` are all a page that comes back reads). A
   host whose address names a workspace takes it again from the mailbox once the return is
@@ -868,20 +872,23 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   access directory (`GET /v1/workspaces/{id}/access`) is read again whenever one of the team's
   mailboxes leaves or joins their list.
 - **Connecting a mailbox** is offered only where the person may link one (their personal
-  workspace, or a team they own or administer): in a team where they may not, the team's list says
-  that its owners and admins connect its mailboxes and offers to show the personal workspace. It
-  asks where once the person owns or administers a team: their personal workspace, listed first,
-  or one of those teams (`workspace_id`). Into a team it shows the sync text with "Turn on sync for
-  {team}", which sends `sync_consent_version`; left unticked, the mailbox is linked with sync off.
-  The console shows the workspace chosen before connecting, so the new card lands in the list it
-  belongs to; a provider's return shows the workspace of the mailbox it authorized. A link carries
-  the mailbox's first key, and asks for the step-up first when the session's has less than two
-  minutes left ([Mailbox keys](#mailbox-keys)). A link refused (`409`) for an address the
-  workspace keeps removed is told apart only by its owners: the dialog reads the workspace's
-  removed mailboxes and, when the address is one of them, says since and until when it is kept
-  and offers recovering it, or deleting it for good (its address typed again) and connecting it
-  anew; anyone else is told that the address is connected already, or removed and kept, and that
-  an owner can recover it or delete it for good.
+  workspace, or a team they own or administer), one button per provider
+  ([Linking at the provider](#linking-at-the-provider), "In the console"), always into the
+  workspace shown (`workspace_id`, the personal one included): to link into another workspace, the
+  person shows it first. In a team where they may not, the section says that its owners and admins
+  connect its mailboxes, whether its list is empty or not, and offers to show the personal
+  workspace; a closed or withheld team says only why nothing of it can be used. Into a team, the
+  buttons say the mailbox is connected with sync off and that its sync is turned on for the team
+  once it is connected: the new mailbox's card then shows the sync text with an unticked "Turn on
+  sync for {team}" (`components/NewMailbox.vue`), which gives the team's agreement through the
+  sheet's turn-on. A provider's return shows the workspace of the mailbox it authorized. A link
+  carries the mailbox's first key, and asks for the step-up first when the session's has less than
+  two minutes left ([Mailbox keys](#mailbox-keys)). A link refused (`409`) for an address the
+  workspace keeps removed is told apart only by its owners (`components/RemovedAddressOffer.vue`):
+  the form reads the workspace's removed mailboxes and, when the address is one of them, says since
+  and until when it is kept and offers recovering it, or deleting it for good (its address typed
+  again) and connecting it anew; anyone else is told that the address is connected already, or
+  removed and kept, and that an owner can recover it or delete it for good.
 - **Removed mailboxes** (`components/RemovedMailboxes.vue`), below the cards, for the workspace's
   owners only (`owns`: the person of their personal workspace, an active owner of a team; nobody
   else's console asks for them): each removed mailbox of the workspace shown
@@ -1129,7 +1136,9 @@ neither, over REST or MCP.
 `POST /v1/accounts` takes `{email, provider?, display_name?, password?, imap_host?, imap_port?,
 smtp_host?, smtp_port?, smtp_tls?, login_user?, flow?, initial_days?, save_sent_copy?,
 workspace_id?, sync_consent_version?, public_key?, namespace?, grant?}` and answers the account
-and, for OAuth, the authorization to complete. A person's link carries the mailbox's first key
+and, for OAuth, the authorization to complete. The console sends neither `display_name` nor
+`sync_consent_version`: a mailbox is named, and a team's agreement to sync it given, once it is
+connected ([Naming a mailbox](#naming-a-mailbox)); the server still takes both. A person's link carries the mailbox's first key
 ([Mailbox keys](#mailbox-keys)), written in the transaction that creates the mailbox, on the
 password and the OAuth paths alike; resuming an abandoned link (`POST /v1/accounts/{id}/oauth/start`)
 carries none, since the row has it. A password account is **tested before it
@@ -1163,8 +1172,8 @@ uses `POST /v1/accounts` with the address.
   dials (who may link into the workspace, the freshness hook for a team, an account key, a fresh
   step-up) and answers the link and its authorization. It carries no address and no key, and
   stores no mailbox: a link holds its flow's state and PKCE verifier, who started it, the team it
-  goes into (none for the starter's personal workspace, decided at the return), the name asked for
-  and the team's sync text if the box was ticked. The authorization URL asks for `openid email`
+  goes into (none for the starter's personal workspace, decided at the return), and a name and the
+  team's sync text when the request carried them (the console sends neither). The authorization URL asks for `openid email`
   beside the mailbox's scopes, with the account chooser (Google's `prompt=select_account consent`,
   Microsoft's `select_account`) and no `login_hint`. A person has at most five links waiting; a
   new one for the same provider and workspace replaces theirs.
@@ -1198,21 +1207,67 @@ uses `POST /v1/accounts` with the address.
   membership, the team closing), and with a reset, a recovery and a sign-out everywhere; its return
   is then `404`. Re-authorizing a mailbox linked this way is the ordinary consent, for its address,
   with its scopes alone.
-- **In the console** (`components/AddAccountDialog.vue`, `state/accounts.ts` `connectAtProvider`).
-  Where `GET /v1/providers` offers Gmail or Microsoft the `web` flow, their form has no address
-  field: it says the account is chosen on the provider's page, which names its address, and keeps
-  the display name, the workspace choice, the team's sync box and the step-up's hint. Microsoft's
-  form keeps the address form one small link away ("Enter the mailbox's address instead", for a
-  shared mailbox and for an organization whose administrator must approve Mailie), with a link
-  back; that form is `POST /v1/accounts` with the address, as before. Gmail has no such link. A
-  server with only the installed client asks for the address, as before, and so does a browser that
-  refuses site storage: the start, which tells a link's return from a consent's and has it carry
-  the key, would be lost on the way to the provider (`canKeepOAuthStart`; a start that could not be
-  kept leaves for no provider, `storage_refused`). The step-up is asked with five minutes to spare
-  before the page leaves (`PROVIDER_LINK_STEP_UP_MARGIN_S`), and its dialog says a link needs a
-  password from the last few minutes, never that one from the last ten is too old. The start kept
-  in the tab names the link, never an address. How its return ends is under
+- **In the console** (`components/ConnectButtons.vue`, `state/accounts.ts` `connectAtProvider`). The
+  accounts section draws one button per provider the server offers (`GET /v1/providers`; none drawn
+  for one it does not, and "This server has no way to connect a mailbox yet" for none), once and
+  only once the workspaces are read: in the empty card while the workspace has no mailbox, above
+  the cards otherwise, as one group named by its heading, each button described by its line, with
+  one status line and one alert. Where the person may not link (a member of a team, a closed or
+  withheld team) there is none, and the section says why. Google's and Microsoft's, where the
+  server offers them the `web` flow and this tab keeps a start, go straight to the provider's
+  account chooser: no dialog, no address, no name and no workspace to choose. The mailbox goes into
+  the workspace shown, always named (`workspace_id`, the person's personal workspace included),
+  and the link carries neither `display_name` nor `sync_consent_version`, which come once it is
+  connected (below). Microsoft's button keeps the address form one small link away ("Enter the
+  mailbox's address instead", for a shared mailbox and for an organization whose administrator must
+  approve Mailie), which opens its form in a dialog (`components/AddAccountDialog.vue` around
+  `components/ConnectForm.vue`), with "Use the account I choose at Microsoft" back to the chooser;
+  that form is `POST /v1/accounts` with the address. Gmail has no such link. A server with only the
+  installed client asks for the address, and so does a browser that refuses site storage: the
+  start, which tells a link's return from a consent's and has it carry the key, would be lost on the
+  way to the provider (`canKeepOAuthStart`; a start that could not be kept leaves for no provider,
+  `storage_refused`). iCloud's and IMAP's buttons open their form straight away. The step-up is
+  asked with five minutes to spare before the page leaves (`PROVIDER_LINK_STEP_UP_MARGIN_S`), and
+  its dialog says a link needs a password from the last few minutes, never that one from the last
+  ten is too old; closing it puts the buttons back. The edition's note about the access a mailbox
+  grants is drawn beside the buttons and in the form, before any is granted. The providers are read
+  for the person, not the workspace shown, and a read that does not answer within 15 seconds says
+  so, with Try again, a late answer still landing. A page the browser restores from its
+  back/forward cache while it was leaving for the provider shows itself again, its buttons back.
+  The start kept in the tab names the link, never an address. How its return ends is under
   [OAuth flows](#oauth-flows), "How the web flow ends".
+- **After the return** (`components/NewMailbox.vue`). A mailbox this tab just connected (a link's
+  return that connected it, or a consent's return for a mailbox the address form created, whose start
+  says `created`) is the section's arrival, drawn first, in place of the success notice, with its
+  heading focused: "Nickname (optional)", at most the server's 200 characters, and, for a team's
+  owners and admins while its sync is off and not paused, the edition's sync text drawn for the team
+  with an unticked "Turn on sync for {team}" (the sheet's turn-on, `switchTeamSync`, the team's
+  agreement to the revision the page shows; a server that already names another offers a reload).
+  Done sends the rename when a name was typed (`PATCH /v1/accounts/{id}`) and the agreement when
+  ticked, each once: a refusal is said under its own part, what succeeded is not sent again. Skip
+  sends nothing. The focus goes back to the section's heading. A password mailbox's form ends on the
+  same card.
+- **For an edition** (`state/accounts.ts`, `state/oauthReturn.ts`). `keepWithProviderTrip(keep)`
+  registers what an edition keeps with each trip to the provider, called with the start right after
+  the core kept it; `false` takes the start back and the attempt fails `storage_refused` without
+  leaving. `oauthStartRef()` names the start this tab keeps, by its link's or its mailbox's id, never
+  an address, while its back may still route its return. `lastReturn` says how the last return this
+  tab finished ended: the start it was, whether its attempt created the mailbox, and the mailbox or
+  the failure. `readLink(id)` and `removeUnconnected(id)` read a link this person started and remove
+  a mailbox a trip left unconnected. A start's `back` routes its return for twenty minutes
+  (`BACK_LIFETIME_MS`, a link's whole life on the server), so a trip longer than ten minutes still
+  comes back to the page it left from, told it expired; nothing else of a start is used past its
+  ten minutes.
+
+### Naming a mailbox
+
+A mailbox's nickname (`display_name`) is shown in place of its address wherever it is listed. The
+console asks for it once the mailbox is connected (above), never before, and its sheet shows it
+always ("None" without one): whoever manages the mailbox changes it in place (Change, or Add; the
+field takes the focus, Save and Cancel give it back) or removes it, and a refusal is said beside the
+field. The server's rule is one for a rename, an add and a link
+([`workspaces.md`](workspaces.md#mailboxes), "Naming a mailbox"): trimmed, at most 200 characters, no
+control character, `""` clearing it.
 
 ### Mailbox keys
 

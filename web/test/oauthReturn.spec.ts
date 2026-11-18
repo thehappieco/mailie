@@ -5,12 +5,15 @@ import { importPrivateKey, type PrivateKey } from '@thehappieco/kit/hpke'
 import { checkGrantShape, openGrant } from '@thehappieco/kit/profiles/mailie'
 import type { SessionReply, User } from '../src/api/types'
 import type { Edition } from '../src/edition'
-import { FLOW_LIFETIME_MS, canKeepOAuthStart, captureOAuthReturn, oauthBack, parseOAuthReturn, peekOAuthStart, pendingOAuthReturn, rememberOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart } from '../src/state/oauthReturn'
+import {
+  BACK_LIFETIME_MS, FLOW_LIFETIME_MS, canKeepOAuthStart, captureOAuthReturn, oauthBack, oauthStartRef, parseOAuthReturn, peekOAuthStart, pendingOAuthReturn, rememberOAuthStart,
+  routableOAuthStart, sweepOAuthStorage, takeOAuthReturn, takeOAuthStart,
+} from '../src/state/oauthReturn'
 import { REASON_DECLINED, REASON_DUPLICATE, REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED } from '../src/ui/reasons'
 import { account, ana, failure, freshModules, json, now, ORIGIN, reply, serve, stubPage } from './support'
 
-// A return is also held in module memory until taken; take it so no test sees another's.
-afterEach(() => { takeOAuthReturn(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+// A return, and the start it was routed by, are also held in module memory until taken; take them so no test sees another's.
+afterEach(() => { takeOAuthReturn(); takeOAuthStart(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 const STATE = 'Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA'
 const refused = () => ({ getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') }, removeItem() { throw new Error('denied') } })
@@ -169,8 +172,8 @@ describe('coming back to the page the flow left from', () => {
     expect(history.replaceState).toHaveBeenCalledExactlyOnceWith(null, '', '/')
   })
 
-  it('comes back to / when the start is older than the flow, written in the future, not this page’s, or gone', () => {
-    rememberOAuthStart({ ...start, back: '/settings' }, Date.now() - FLOW_LIFETIME_MS - 1000)
+  it('comes back to / when the start is older than a link’s whole life, written in the future, not this page’s, or gone', () => {
+    rememberOAuthStart({ ...start, back: '/settings' }, Date.now() - BACK_LIFETIME_MS - 1000)
     captureOAuthReturn()
     expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/')
     for (const record of [
@@ -190,13 +193,55 @@ describe('coming back to the page the flow left from', () => {
     expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/')
   })
 
-  it('answers a back only for a fresh start of this origin', () => {
+  it('answers a back only for a start of this origin at most twenty minutes old', () => {
     const at = Date.now()
     expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at)).toBe('/settings')
-    expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at + FLOW_LIFETIME_MS + 1)).toBeNull()
+    expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at + FLOW_LIFETIME_MS + 1)).toBe('/settings')
+    expect(oauthBack({ ...start, back: '/settings', started_at: at }, ORIGIN, at + BACK_LIFETIME_MS + 1)).toBeNull()
     expect(oauthBack({ ...start, started_at: at }, ORIGIN, at)).toBeNull()
     expect(oauthBack(null, ORIGIN, at)).toBeNull()
     expect(oauthBack('/settings', ORIGIN, at)).toBeNull()
+  })
+})
+
+describe('a trip longer than the provider’s flow', () => {
+  beforeEach(() => { stubPage(`/oauth/return?code=abc&state=${STATE}`) })
+  const link = { link_id: 'lnk_0000000000000001', provider: 'gmail', back: '/settings/mailboxes' } as const
+
+  it('routes a return to its start’s path for twenty minutes, and uses nothing else of a start past its ten', () => {
+    expect(BACK_LIFETIME_MS).toBe(2 * FLOW_LIFETIME_MS)
+    rememberOAuthStart(link, Date.now() - FLOW_LIFETIME_MS - 60_000)
+    captureOAuthReturn()
+    expect(history.replaceState).toHaveBeenLastCalledWith(null, '', '/settings/mailboxes')
+    // Past its ten minutes, the start is no flow's: nothing reads it as one, and the sweep removes it.
+    expect(peekOAuthStart()).toBeNull()
+    sweepOAuthStorage()
+    expect(sessionStorage.getItem('mailie.oauthStart')).toBeNull()
+  })
+
+  it('names the start it routed by, and no address, until it is taken, the sweep notwithstanding', () => {
+    rememberOAuthStart(link, Date.now() - FLOW_LIFETIME_MS - 60_000)
+    captureOAuthReturn()
+    sweepOAuthStorage()
+    expect(oauthStartRef()).toEqual({ link_id: 'lnk_0000000000000001' })
+    expect(routableOAuthStart()).toMatchObject({ link_id: 'lnk_0000000000000001', provider: 'gmail' })
+    takeOAuthStart()
+    expect(oauthStartRef()).toBeNull()
+    // A consent's start is named by its mailbox, never by its address.
+    rememberOAuthStart({ account_id: 'acc_1', provider: 'microsoft', email: 'ana@example.test', back: '/settings' })
+    expect(oauthStartRef()).toEqual({ account_id: 'acc_1' })
+    expect(JSON.stringify(oauthStartRef())).not.toContain('ana@')
+    // Past a link's whole life, nothing.
+    expect(oauthStartRef(Date.now() + BACK_LIFETIME_MS + 1000)).toBeNull()
+  })
+
+  it('keeps whether a consent’s mailbox was created by the attempt, and nothing else new', () => {
+    rememberOAuthStart({ account_id: 'acc_1', provider: 'microsoft', email: 'ana@example.test', created: true, back: '/settings' })
+    expect(peekOAuthStart()).toMatchObject({ account_id: 'acc_1', created: true })
+    for (const created of [false, 'yes', 1]) {
+      sessionStorage.setItem('mailie.oauthStart', JSON.stringify({ account_id: 'acc_1', provider: 'microsoft', email: 'ana@example.test', created, started_at: Date.now() }))
+      expect(peekOAuthStart(), String(created)).toBeNull()
+    }
   })
 })
 
@@ -473,6 +518,53 @@ describe('finishing a link at the provider', () => {
     // Answered: the same page posts nothing again.
     await accounts.finishOAuthReturn()
     expect(callbacks(fetch)).toHaveLength(1)
+  })
+
+  it('makes the mailbox a link connected this tab’s arrival, and says how the return ended for the link it was', async () => {
+    const person = await linker()
+    const made = account({ id: 'acc_0000000000000008', email: 'ana.lima@gmail.com', state: 'active' })
+    const { accounts, returns } = await signedIn(({ path }) => path.endsWith('/oauth/callback') ? json(made) : failure('not_found', 404), reply(undefined, person.user))
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'gmail', back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(accounts.arrival.accountID).toBe(made.id)
+    expect(accounts.lastReturn.value).toEqual({ start: { link_id: LINK }, created: true, outcome: 'connected', account: made })
+    accounts.dismissArrival()
+    expect(accounts.arrival.accountID).toBe('')
+  })
+
+  it('says a link whose start is past its ten minutes expired, posting nothing and asking for no step-up, and names the link it was', async () => {
+    const { accounts, returns, steps, fetch } = await signedIn(() => failure('not_found', 404), { ...reply(), authenticated_at: 0 })
+    const { noticeText } = await import('../src/ui/notices')
+    returns.rememberOAuthStart({ link_id: LINK, provider: 'microsoft', back: '/' }, Date.now() - returns.FLOW_LIFETIME_MS - 5 * 60_000)
+    returns.captureOAuthReturn()
+    // The console's own sweep runs before the session is restored: the start it was routed by still names the link.
+    returns.sweepOAuthStorage()
+    await accounts.finishOAuthReturn()
+    expect(callbacks(fetch)).toEqual([])
+    expect(steps.stepUpPrompt.open).toBe(false)
+    expect(noticeText(accounts.accounts.notice!)).toBe('This authorization took too long and expired. Start again.')
+    expect(accounts.lastReturn.value).toMatchObject({ start: { link_id: LINK }, outcome: 'failed', email: '', failure: { op: 'complete-link', code: 'return_expired' } })
+    expect(accounts.arrival.accountID).toBe('')
+    expect(returns.pendingOAuthReturn()).toBe(false)
+  })
+
+  it('marks a consent for a mailbox it created, so its return asks for a nickname, and one it did not as nothing new', async () => {
+    const made = account({ id: 'acc_0000000000000009', provider: 'microsoft', email: 'compartilhada@example.test', state: 'active' })
+    const { accounts, returns } = await signedIn(({ path }) => path.endsWith('/oauth/callback') ? json(made) : failure('not_found', 404))
+    returns.rememberOAuthStart({ account_id: made.id, provider: 'microsoft', email: made.email, created: true, back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(accounts.arrival.accountID).toBe(made.id)
+    expect(accounts.lastReturn.value).toMatchObject({ start: { account_id: made.id }, created: true, outcome: 'connected' })
+    accounts.dismissArrival()
+    // A re-authorization of a mailbox that exists: no arrival.
+    stubPage(`/oauth/return?code=abc&state=${STATE}`)
+    returns.rememberOAuthStart({ account_id: made.id, provider: 'microsoft', email: made.email, back: '/' })
+    returns.captureOAuthReturn()
+    await accounts.finishOAuthReturn()
+    expect(accounts.arrival.accountID).toBe('')
+    expect(accounts.lastReturn.value).toMatchObject({ start: { account_id: made.id }, created: false, outcome: 'connected' })
   })
 
   it.each([

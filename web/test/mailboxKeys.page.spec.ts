@@ -111,7 +111,7 @@ afterEach(async () => {
 })
 
 describe('linking a mailbox', { timeout: 30_000 }, () => {
-  /** The connecting dialog, IMAP chosen, in the personal workspace; the server takes what is posted. */
+  /** The connecting dialog, as the IMAP button opens it, in the personal workspace; the server takes what is posted. */
   async function connecting(authenticatedAt: number, posted: unknown[]) {
     await signedIn(ana2, ({ path, method, body }) => {
       if (path === '/v1/accounts' && method === 'GET') return json([])
@@ -124,9 +124,8 @@ describe('linking a mailbox', { timeout: 30_000 }, () => {
     }, { authenticatedAt })
     selectWorkspace(PERSONAL)
     await Promise.all([loadAccounts(), loadProviders()])
-    mounted.push(mount(StepUpPrompt), mount(AddAccountDialog, { resume: null }))
+    mounted.push(mount(StepUpPrompt), mount(AddAccountDialog, { provider: 'imap' }))
     await flush()
-    await click(find('dialog .provider-option', 'Other provider (IMAP)'))
     await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
     await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
     await submit(find('dialog form'))

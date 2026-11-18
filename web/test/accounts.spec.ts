@@ -599,8 +599,8 @@ describe('linking a mailbox at the provider', () => {
 
   it('starts with no address and no key, stores no mailbox, and leaves for the provider’s account chooser', async () => {
     const { store, fetch, navigate } = await signedIn(starting)
-    await store.connectAtProvider({ provider: 'gmail', displayName: 'Vendas' })
-    expect(linkStarts(fetch)).toEqual([{ provider: 'gmail', flow: 'web', display_name: 'Vendas' }])
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(linkStarts(fetch)).toEqual([{ provider: 'gmail', flow: 'web' }])
     // Nothing that creates a mailbox, and nothing sealed: the key goes with the return.
     expect(fetch.mock.calls.some(([url, init]) => String(url).endsWith('/v1/accounts') && init?.method === 'POST')).toBe(false)
     expect(navigate).toHaveBeenCalledWith(new URL(chooser).toString())
@@ -637,8 +637,8 @@ describe('linking a mailbox at the provider', () => {
   it('remembers the link it left for, its team and the page it left from, and never an address', async () => {
     stubPage('/settings/mailboxes?workspace=wsp_000000000000bbbb#add')
     const { store, fetch } = await signedIn(starting)
-    await store.connectAtProvider({ provider: 'microsoft', workspaceID: TEAM, syncConsentVersion: 'synthetic-sync-1' })
-    expect(linkStarts(fetch)).toEqual([{ provider: 'microsoft', flow: 'web', workspace_id: TEAM, sync_consent_version: 'synthetic-sync-1' }])
+    await store.connectAtProvider({ provider: 'microsoft', workspaceID: TEAM })
+    expect(linkStarts(fetch)).toEqual([{ provider: 'microsoft', flow: 'web', workspace_id: TEAM }])
     const kept = JSON.parse(sessionStorage.getItem('mailie.oauthStart')!) as Record<string, unknown>
     expect(Object.keys(kept).sort()).toEqual(['back', 'link_id', 'provider', 'started_at', 'workspace_id'])
     expect(kept).toMatchObject({ link_id: 'lnk_0000000000000001', provider: 'microsoft', workspace_id: TEAM, back: '/settings/mailboxes' })
@@ -698,4 +698,97 @@ describe('linking a mailbox at the provider', () => {
     expect(navigateAgain).not.toHaveBeenCalled()
     expect(sessionStorage.getItem('mailie.oauthStart')).toBeNull()
   })
+})
+
+describe('the short way to connect a mailbox', () => {
+  const PERSONAL = 'wsp_000000000000aaaa'
+  const chooser = 'https://accounts.google.com/o/oauth2/auth?prompt=select_account+consent&state=x'
+  const starting: Route = ({ path, method, body }) => path === '/v1/accounts/oauth/links' && method === 'POST'
+    ? json({
+      link: { id: 'lnk_0000000000000001', provider: (body as { provider: string }).provider, state: 'waiting', expires_at: now() + 600 },
+      auth: { flow: 'web', auth_url: chooser, state: 'x', expires_at: now() + 600 },
+    }, 201)
+    : failure('not_found', 404)
+  const linkStarts = (fetch: ReturnType<typeof serve>) => fetch.mock.calls
+    .filter(([url, init]) => String(url).endsWith('/v1/accounts/oauth/links') && init?.method === 'POST')
+    .map(([, init]) => JSON.parse(String(init!.body)) as Record<string, unknown>)
+
+  it('starts a link at the provider for the workspace shown, the personal one included, with no name and no team agreement', async () => {
+    const { store, fetch } = await signedIn(starting)
+    await store.connectAtProvider({ provider: 'gmail', workspaceID: PERSONAL })
+    expect(linkStarts(fetch)).toEqual([{ provider: 'gmail', flow: 'web', workspace_id: PERSONAL }])
+  })
+
+  it('renames a mailbox and keeps the server’s answer, and forgets one the server no longer has', async () => {
+    const mailbox = account({ id: 'acc_0000000000000001' })
+    const renamed = { ...mailbox, display_name: 'Vendas' }
+    let gone = false
+    const { store, fetch } = await signedIn(({ path, method }) => {
+      if (path === '/v1/accounts' && method === 'GET') return json([mailbox])
+      if (path === `/v1/accounts/${mailbox.id}` && method === 'PATCH') return gone ? failure('not_found', 404) : json(renamed)
+      return failure('not_found', 404)
+    })
+    await store.loadAccounts()
+    expect(await store.renameAccount(mailbox.id, '  Vendas ')).toBeNull()
+    const sent = fetch.mock.calls.filter(([url, init]) => String(url).endsWith(`/v1/accounts/${mailbox.id}`) && init?.method === 'PATCH')
+    expect(sent.map(([, init]) => JSON.parse(String(init!.body)))).toEqual([{ display_name: 'Vendas' }])
+    expect(store.accounts.list[0]!.display_name).toBe('Vendas')
+    gone = true
+    expect(await store.renameAccount(mailbox.id, 'Compras')).toEqual({ op: 'rename-account', code: 'not_found' })
+    expect(store.accounts.list).toEqual([])
+  })
+
+  it('lets an edition keep what it needs with a provider trip, and leaves for no provider when it could not', async () => {
+    const { store, navigate } = await signedIn(starting)
+    const kept: unknown[] = []
+    const stop = store.keepWithProviderTrip(start => { kept.push(start); return true })
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(kept).toEqual([expect.objectContaining({ link_id: 'lnk_0000000000000001', provider: 'gmail' })])
+    expect(navigate).toHaveBeenCalledTimes(1)
+    stop()
+    const refuse = store.keepWithProviderTrip(() => false)
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(store.connect.failure).toEqual({ op: 'start-link', code: 'storage_refused' })
+    expect(navigate).toHaveBeenCalledTimes(1)
+    // The core's own start was taken back: a return could not be told whose it is.
+    expect(sessionStorage.getItem('mailie.oauthStart')).toBeNull()
+    refuse()
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(navigate).toHaveBeenCalledTimes(2)
+  })
+
+  it('shows a page that left for the provider again when the browser restores it from its back/forward cache', async () => {
+    const shown: ((event: { persisted: boolean }) => void)[] = []
+    vi.stubGlobal('window', { addEventListener: (type: string, listener: (event: { persisted: boolean }) => void) => { if (type === 'pageshow') shown.push(listener) } })
+    const { store } = await signedIn(starting)
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(store.connect.phase).toBe('redirecting')
+    expect(shown).toHaveLength(1)
+    shown[0]!({ persisted: false })
+    expect(store.connect.phase).toBe('redirecting')
+    shown[0]!({ persisted: true })
+    expect(store.connect.phase).toBe('idle')
+    expect(store.connect.provider).toBe('')
+    // Installed once, however many attempts leave.
+    await store.connectAtProvider({ provider: 'gmail' })
+    expect(shown).toHaveLength(1)
+  })
+
+  it('keeps the providers it read for the person when the workspace shown changes meanwhile', async () => {
+    let answer: (() => void) | undefined
+    const providers = [{ id: 'gmail', oauth: true, password: false, flows: ['web'] }]
+    const { store } = await signedIn(({ path }) => path === '/v1/providers'
+      ? new Promise<Response>(resolve => { answer = () => resolve(json(providers)) })
+      : failure('not_found', 404))
+    const { workspaces } = await import('../src/state/workspaces')
+    const reading = store.loadProviders()
+    await vi.waitFor(() => expect(answer).toBeDefined())
+    // Another workspace shown while the providers are read: the list's generation moves, the person's does not.
+    workspaces.currentID = 'wsp_000000000000bbbb'
+    answer!()
+    await reading
+    expect(store.accounts.providersLoaded).toBe(true)
+    expect(store.accounts.providers).toEqual(providers)
+  })
+
 })

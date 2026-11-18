@@ -128,7 +128,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // Account ids have their own counter, past the fixtures below: sharing the
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
-  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], callbackBodies: [], links: [], linkReads: 0, removed: [], created: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
+  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], callbackBodies: [], links: [], linkReads: 0, removed: [], created: [], renamed: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
   /**
    * The links at the provider (service.Link), by id: waiting for the
    * provider's return, finishing, connected or failed, each its starter's.
@@ -614,6 +614,17 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       if (one) {
         const index = mine.findIndex(item => item.id === one[1])
         if (index < 0) return fail(404, 'not_found')
+        // A rename, by whoever manages it (the daemon's one name rule: trimmed, 200 characters, no control character).
+        if (method === 'PATCH') {
+          const sent = body()
+          if (typeof sent.display_name !== 'string' || Object.keys(sent).length !== 1) return fail(400, 'bad_request')
+          const name = sent.display_name.trim()
+          if ([...name].length > 200 || /\p{Cc}/u.test(name)) return fail(400, 'bad_request')
+          if (mine[index].access && !mine[index].access.manage) return fail(403, 'not_authorized')
+          calls.renamed.push({ id: one[1], display_name: name })
+          mine[index].display_name = name
+          return json(present(mine[index]))
+        }
         if (method === 'DELETE') {
           // As the daemon does: nothing is removed unless the id is repeated.
           if (url.searchParams.get('confirm') !== one[1]) return fail(400, 'bad_request')

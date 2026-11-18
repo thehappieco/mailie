@@ -101,6 +101,22 @@ describe('application languages', () => {
     expect([...all].filter(key => !used.has(key))).toEqual([])
   })
 
+  it('has each provider’s whole sentences in every locale, never a name filled into a template', () => {
+    const entries = Object.assign({}, ...Object.values(catalogs)) as Record<string, string[]>
+    const sentences: Record<string, string[]> = {
+      'Continue to Google': ['Continuar no Google', 'Continuar en Google', 'Continuer vers Google', 'Weiter zu Google'],
+      'Continue to Microsoft': ['Continuar na Microsoft', 'Continuar en Microsoft', 'Continuer vers Microsoft', 'Weiter zu Microsoft'],
+      'Opening Google…': ['Abrindo o Google…', 'Abriendo Google…', 'Ouverture de Google…', 'Google wird geöffnet…'],
+      'Opening Microsoft…': ['Abrindo a Microsoft…', 'Abriendo Microsoft…', 'Ouverture de Microsoft…', 'Microsoft wird geöffnet…'],
+      'Add a Google account': ['Adicionar conta Google', 'Añadir una cuenta de Google', 'Ajouter un compte Google', 'Google-Konto hinzufügen'],
+      'Add a Microsoft account': ['Adicionar conta Microsoft', 'Añadir una cuenta de Microsoft', 'Ajouter un compte Microsoft', 'Microsoft-Konto hinzufügen'],
+      'Add an iCloud account': ['Adicionar conta iCloud', 'Añadir una cuenta de iCloud', 'Ajouter un compte iCloud', 'iCloud-Konto hinzufügen'],
+      'Other server (IMAP)': ['Outro servidor (IMAP)', 'Otro servidor (IMAP)', 'Autre serveur (IMAP)', 'Anderer Server (IMAP)'],
+    }
+    for (const [source, translations] of Object.entries(sentences)) expect(entries[source], source).toEqual(translations)
+    expect(Object.keys(entries).filter(key => /^(Continue to|Opening) \{provider\}/.test(key))).toEqual([])
+  })
+
   it('never says that managing a mailbox is enough to give access to it', () => {
     expect(managersGivingAccess({ old: { 'Whoever manages it can give you access.': [], 'Joining gives no access until someone who manages one gives it.': [] } })).toHaveLength(2)
     expect(managersGivingAccess(catalogs)).toEqual([])

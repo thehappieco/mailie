@@ -203,9 +203,9 @@ describe('connecting an address removed and kept', () => {
       return failure('not_found', 404)
     })
     await Promise.all([loadAccounts(), loadProviders(), loadConsent()])
-    mounted = mount(AddAccountDialog, { resume: null })
+    // The IMAP button opens its form straight away.
+    mounted = mount(AddAccountDialog, { provider: 'imap' })
     await flush()
-    await click(find('dialog .provider-option', 'Other provider (IMAP)'))
     await fill(find('dialog input[name=mailbox]'), 'billing@example.test')
     await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
     await submit(find('dialog form'))
@@ -239,7 +239,9 @@ describe('connecting an address removed and kept', () => {
     await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
     await submit(find('dialog form'))
     await vi.waitFor(() => expect(sent('POST', '/v1/accounts')).toHaveLength(2))
-    await vi.waitFor(() => expect(words(find('dialog')!)).toContain('Account connected'))
+    await vi.waitFor(() => expect(words(find('dialog')!)).toContain('billing@example.test is connected.'))
+    // What comes after a link: its nickname.
+    expect(find('dialog input[name=nickname]')).not.toBeNull()
   })
 
   it('tells an admin an owner can recover it, and asks for no removed mailboxes', async () => {

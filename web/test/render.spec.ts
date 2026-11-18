@@ -8,6 +8,7 @@ import AccountFields from '../src/components/AccountFields.vue'
 import AccountSheet from '../src/components/AccountSheet.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import AddAccountDialog from '../src/components/AddAccountDialog.vue'
+import ConnectButtons from '../src/components/ConnectButtons.vue'
 import KeysPanel from '../src/components/KeysPanel.vue'
 import OpenAccount from '../src/open/OpenAccount.vue'
 import SignInView from '../src/components/SignInView.vue'
@@ -32,9 +33,9 @@ const hostile = '<img src=x onerror=alert(1)>'
 const literal = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** A provider choice's label, as rendered. */
 const choiceLabel = (label: string) => `<strong[^>]*>${literal(label)}</strong>`
-/** The provider choice's button whose label is `label`, as rendered. */
-function option(html: string, label: string): string {
-  return html.match(new RegExp(`<button[^>]*class="provider-option"[^>]*>(?:(?!</button>).)*${choiceLabel(label)}(?:(?!</button>).)*</button>`, 's'))?.[0] ?? ''
+/** A provider's button whose label is `label`, as rendered. */
+function button(html: string, label: string): string {
+  return html.match(new RegExp(`<button[^>]*class="provider-button"[^>]*>(?:(?!</button>).)*${choiceLabel(label)}(?:(?!</button>).)*</button>`, 's'))?.[0] ?? ''
 }
 
 /** The page as a browser would get it: the app plus whatever it teleported to <body>. */
@@ -105,7 +106,7 @@ describe('what the console renders', () => {
     Object.assign(accounts, { list: [failing], loaded: true })
     Object.assign(connect, { phase: 'failed', provider: 'gmail', email: failing.email, accountID: failing.id, created: true, flow: 'loopback',
       failure: { op: 'wait-auth', code: 'flow_failed', account: { provider: 'gmail', email: failing.email, state: 'error', state_reason: REASON_NOT_GRANTED } } })
-    const html = await render(AddAccountDialog, { resume: null })
+    const html = await render(AddAccountDialog, { provider: 'gmail' })
     expect(alertText(html)).toBe('O Google não deu ao Mailie acesso a esta caixa de email. Tente novamente e, na tela do Google, permita o acesso ao Gmail (marque a caixa, se aparecer uma).')
     expect(html).toContain('Tentar novamente')
     expect(html).not.toContain(REASON_NOT_GRANTED)
@@ -161,8 +162,9 @@ describe('what the console renders', () => {
     expect(password).toContain('autocomplete="off"')
   })
 
-  it('offers only the providers this server can connect, and says why the others are off', async () => {
+  it('draws a button for each provider this server connects, and none for the others', async () => {
     signIn()
+    Object.assign(workspaces, { list: [], loaded: true, supported: false, currentID: '' })
     Object.assign(accounts, {
       providersLoaded: true,
       providers: [
@@ -172,32 +174,37 @@ describe('what the console renders', () => {
         { id: 'imap', oauth: false, password: true, flows: [] },
       ],
     })
-    const html = await render(AddAccountDialog, { resume: null })
-    const gmail = option(html, 'Gmail or Google Workspace')
-    expect(gmail).toContain('disabled')
-    expect(gmail).toContain('Not configured on this server')
-    expect(html.match(/Not configured on this server/g)).toHaveLength(1)
+    const html = await render(ConnectButtons)
+    expect(html).not.toContain('Add a Google account')
+    expect(html).not.toContain('Not configured on this server')
+    for (const label of ['Add a Microsoft account', 'Add an iCloud account', 'Other server (IMAP)']) expect(button(html, label), label).not.toBe('')
+    Object.assign(accounts, { providers: [] })
+    expect(await render(ConnectButtons)).toContain('This server has no way to connect a mailbox yet.')
   })
 
-  it('lists iCloud between Microsoft and IMAP, and closes it on a server that does not offer it', async () => {
+  it('lists Google, Microsoft, iCloud and IMAP in that order, each described, as one named group', async () => {
     signIn()
-    const listed = [
-      { id: 'gmail', oauth: true, password: false, flows: ['web'] },
-      { id: 'microsoft', oauth: true, password: false, flows: ['web'] },
-      { id: 'icloud', oauth: false, password: true, flows: [] },
-      { id: 'imap', oauth: false, password: true, flows: [] },
-    ]
-    Object.assign(accounts, { providersLoaded: true, providers: listed })
-    let html = await render(AddAccountDialog, { resume: null })
-    const order = ['Gmail or Google Workspace', 'Microsoft 365 or Outlook', 'iCloud Mail', 'Other provider (IMAP)'].map(label => html.search(new RegExp(choiceLabel(label))))
+    Object.assign(workspaces, { list: [], loaded: true, supported: false, currentID: '' })
+    Object.assign(accounts, {
+      providersLoaded: true,
+      providers: [
+        { id: 'gmail', oauth: true, password: false, flows: ['web'] },
+        { id: 'microsoft', oauth: true, password: false, flows: ['web'] },
+        { id: 'icloud', oauth: false, password: true, flows: [] },
+        { id: 'imap', oauth: false, password: true, flows: [] },
+      ],
+    })
+    const html = await render(ConnectButtons)
+    const order = ['Add a Google account', 'Add a Microsoft account', 'Add an iCloud account', 'Other server (IMAP)'].map(label => html.search(new RegExp(choiceLabel(label))))
     expect(order).not.toContain(-1)
     expect([...order].sort((a, b) => a - b)).toEqual(order)
-    expect(option(html, 'iCloud Mail')).not.toContain('disabled')
-    expect(option(html, 'iCloud Mail')).toContain('app-specific password')
-    Object.assign(accounts, { providers: listed.filter(provider => provider.id !== 'icloud') })
-    html = await render(AddAccountDialog, { resume: null })
-    expect(option(html, 'iCloud Mail')).toContain('disabled')
-    expect(option(html, 'iCloud Mail')).toContain('Not configured on this server')
+    expect(button(html, 'Add an iCloud account')).toMatch(/aria-describedby="[^"]+"/)
+    expect(html).toContain('icloud.com, me.com, mac.com or an iCloud+ domain, with an app-specific password')
+    // One group, named by its visible heading.
+    const heading = html.match(/<h3 id="([^"]+)"[^>]*>Connect an email account<\/h3>/)
+    expect(heading).not.toBeNull()
+    expect(html).toContain(`role="group" aria-labelledby="${heading![1]}"`)
+    expect(html.match(/role="status"/g)).toHaveLength(1)
   })
 
   it('asks iCloud for the address and an app-specific password, no servers, and never writes the password into the markup', async () => {

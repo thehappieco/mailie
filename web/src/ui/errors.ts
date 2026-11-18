@@ -81,7 +81,7 @@ function specific(failure: Failure): string | undefined {
       if (code === 'unavailable' || code === 'internal') return t('Could not load your email accounts. Try again in a moment.')
       return undefined
     case 'load-providers':
-      return t('Could not check which providers this server supports. You can still try to connect.')
+      return t('Could not check which providers this server connects. Try again in a moment.')
     case 'add-account':
       // Connected already, or removed and still kept (docs/workspaces.md, "Removed mailboxes"): the code is the same.
       if (code === 'conflict') return t('This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.')
@@ -130,6 +130,12 @@ function specific(failure: Failure): string | undefined {
       if (code === 'bad_request') return specific({ op: 'start-link', code })
       if (code === 'not_authorized') return specific({ op: 'add-account', code })
       if (code === 'not_found') return specific({ op: 'complete-auth', code })
+      return undefined
+    case 'rename-account':
+      if (code === 'bad_request') return t('Mailie did not accept this nickname: use at most 200 characters, on one line.')
+      if (code === 'not_authorized') return t('Only someone who manages this mailbox changes its nickname: its workspace’s owners and admins, or a member allowed to manage it.')
+      if (code === 'not_found') return t('This mailbox no longer exists.')
+      if (code === 'conflict') return t('Nothing in this team can be changed while it is closed.')
       return undefined
     case 'remove-account':
       if (code === 'conflict') return t('This account cannot be removed right now. Try again in a moment.')

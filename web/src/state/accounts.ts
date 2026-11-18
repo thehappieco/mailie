@@ -29,7 +29,14 @@
 // ended, every 2 s while it is finishing; one the server asked to wait for
 // while it took nothing is posted again, once. A tab that cannot keep the
 // start until the return (a browser that refuses site storage) links
-// nothing at the provider, and asks for the address instead.
+// nothing at the provider, and asks for the address instead. The start goes
+// into the workspace shown, always named, and carries no name and no team
+// agreement: a mailbox this tab connected is its arrival, which asks for
+// both once it is connected (components/NewMailbox.vue). An edition that
+// keeps something of its own across the provider's trip says so
+// (keepWithProviderTrip), and reads how the last return ended (lastReturn).
+// A page the browser restores from its back/forward cache while it was
+// leaving for the provider shows itself again.
 //
 // Removing a mailbox keeps it 30 days, recoverable by its workspace's owners
 // (docs/workspaces.md, "Removed mailboxes"), or, for one that never
@@ -38,7 +45,7 @@
 // (removed, below), read for the workspace shown, from which they recover
 // one or delete it for good.
 
-import { reactive, watch } from 'vue'
+import { reactive, shallowRef, watch } from 'vue'
 import * as api from '../api/accounts'
 import { ApiError } from '../api/http'
 import { listProviders } from '../api/providers'
@@ -47,10 +54,13 @@ import { CeremonyError } from '../crypto/errors'
 import { linkKey } from '../crypto/mailbox'
 import { announce } from '../ui/announce'
 import { noticeText } from '../ui/notices'
-import type { LinkFacts, ReasonFacts } from '../ui/reasons'
+import { REASON_EXPIRED, type LinkFacts, type ReasonFacts } from '../ui/reasons'
 import { server } from './connection'
 import { failure, type Failure, type Operation } from './failure'
-import { canKeepOAuthStart, FLOW_LIFETIME_MS, isLinkStart, peekOAuthReturn, peekOAuthStart, rememberOAuthStart, takeOAuthReturn, takeOAuthStart, type LinkStart, type OAuthReturn } from './oauthReturn'
+import {
+  canKeepOAuthStart, FLOW_LIFETIME_MS, isLinkStart, oauthStartRef, peekOAuthReturn, peekOAuthStart, rememberOAuthStart, routableOAuthStart, takeOAuthReturn,
+  takeOAuthStart, type ConsentStart, type LinkStart, type OAuthReturn, type OAuthStart, type OAuthStartInput, type OAuthStartRef,
+} from './oauthReturn'
 import { authorized, identity, session } from './session'
 import { StepUpCancelled, withStepUp } from './stepUp'
 import { loadWorkspaces, selectWorkspace, settleWorkspace, workspaces, workspaceVanished, WorkspacesUnknown } from './workspaces'
@@ -155,6 +165,79 @@ export const accounts = reactive<AccountsState>(freshAccounts())
 export const connect = reactive<ConnectState>(freshConnect())
 export const removed = reactive<RemovedState>(freshRemoved())
 
+/**
+ * A mailbox this tab just connected, by its id: a link at the provider's
+ * return that connected it, or a consent's return for a mailbox the attempt
+ * that left created. The accounts section draws it with what comes after a
+ * link (components/NewMailbox.vue) until it is done with (dismissArrival);
+ * it goes with the person.
+ */
+export const arrival = reactive<{ accountID: string }>({ accountID: '' })
+
+/** Done with the mailbox this tab just connected: its card goes. */
+export function dismissArrival(): void {
+  arrival.accountID = ''
+}
+
+/**
+ * How the last provider return this tab finished ended, for an edition's
+ * page to say: the start it was (by its id, as oauthStartRef named it when
+ * the return was taken, a trip past its ten minutes included; null when the
+ * tab kept none), whether that attempt created its mailbox, and the mailbox
+ * connected, or the failure and the address it named. It goes with the
+ * person.
+ */
+export type ProviderReturn =
+  | { start: OAuthStartRef | null; created: boolean; outcome: 'connected'; account: Account }
+  | { start: OAuthStartRef | null; created: boolean; outcome: 'failed'; email: string; failure: Failure }
+export const lastReturn = shallowRef<ProviderReturn | null>(null)
+
+/** What an edition keeps with a provider's trip, once the core kept its start: false when it could not, and nothing leaves. */
+export type TripKeeper = (start: OAuthStart) => boolean
+let tripKeeper: TripKeeper | null = null
+
+/**
+ * Registers what an edition keeps with each trip to the provider this tab
+ * starts: called with the start right after the core kept it, before the
+ * page leaves; when it answers false, the start is taken back and the
+ * attempt fails (storage_refused) without leaving. One at a time; the
+ * function returned unregisters it. Without one, nothing changes.
+ */
+export function keepWithProviderTrip(keep: TripKeeper): () => void {
+  tripKeeper = keep
+  return () => { if (tripKeeper === keep) tripKeeper = null }
+}
+
+/**
+ * Keeps a start for the trip, the core's and the edition's: false when
+ * either could not, the start taken back.
+ */
+function keepStart(start: OAuthStartInput): boolean {
+  if (!rememberOAuthStart(start)) return false
+  if (!tripKeeper) return true
+  const kept = peekOAuthStart()
+  if (kept && tripKeeper(kept)) return true
+  takeOAuthStart()
+  return false
+}
+
+/**
+ * A page that left for the provider and that the browser shows again from
+ * its back/forward cache (the person pressed Back there) is no longer
+ * leaving: its attempt is back where it started, so the page offers it
+ * again. Installed once, by the first attempt that leaves.
+ */
+let restoreWatched = false
+function watchRestore(): void {
+  if (restoreWatched || typeof window === 'undefined') return
+  restoreWatched = true
+  window.addEventListener('pageshow', event => {
+    if (!event.persisted || connect.phase !== 'redirecting') return
+    stopConnect()
+    Object.assign(connect, freshConnect())
+  })
+}
+
 /** How the page leaves for the provider. A seam, so tests can watch it instead of navigating. */
 export const navigation = { assign: (url: string) => { location.assign(url) } }
 
@@ -173,6 +256,8 @@ watch(identity, () => {
   Object.assign(accounts, freshAccounts())
   Object.assign(connect, freshConnect())
   Object.assign(removed, freshRemoved())
+  arrival.accountID = ''
+  lastReturn.value = null
 }, { flush: 'sync' })
 
 let removedGeneration = 0
@@ -290,8 +375,14 @@ async function readAccounts(): Promise<void> {
   }
 }
 
+/**
+ * Reads which providers the server connects for the person. The answer is
+ * the person's, not the workspace shown's: another workspace shown
+ * meanwhile keeps it.
+ */
 export async function loadProviders(): Promise<void> {
-  const current = currentAccounts()
+  const person = identity()
+  const current = () => identity() === person
   accounts.providersFailure = null
   try {
     const providers = await authorized(token => listProviders(token))
@@ -315,6 +406,51 @@ export async function refreshAccount(id: string): Promise<Account | undefined> {
     if (current() && error instanceof ApiError && error.code === 'not_found') forget(id)
     return undefined
   }
+}
+
+/**
+ * Names a mailbox (trimmed; "" clears its name), as whoever manages it: the
+ * card takes the server's answer. A mailbox gone meanwhile leaves the list.
+ * Answers the failure, or null.
+ */
+export async function renameAccount(id: string, name: string): Promise<Failure | null> {
+  const current = currentAccounts()
+  try {
+    const account = await authorized(token => api.renameAccount(token, id, name.trim()))
+    if (current()) upsert(account)
+    return null
+  } catch (error) {
+    if (current() && error instanceof ApiError && error.code === 'not_found') forget(id)
+    return failure('rename-account', error)
+  }
+}
+
+/**
+ * Reads a link at the provider this person started, once: null when it is
+ * forgotten, someone else's, or not answered. What an edition's page reads
+ * for a trip it finds it left with.
+ */
+export async function readLink(id: string): Promise<Link | null> {
+  try {
+    return await authorized(token => api.getLink(token, id))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Removes a mailbox a trip left unconnected (pending its authorization, or
+ * failed), as closing the attempt that created it does: one that connected
+ * meanwhile stays. Already gone is what was asked for.
+ */
+export async function removeUnconnected(id: string): Promise<void> {
+  let account: Account
+  try {
+    account = await authorized(token => api.getAccount(token, id))
+  } catch {
+    return
+  }
+  if (account.state !== 'active') await removeQuietly(id)
 }
 
 /** Replaces an account's sync block with a newer one the server answered. */
@@ -643,8 +779,12 @@ function follow(generation: number, flow: AuthFlow, baseline: Baseline): void {
     case 'web': {
       const url = providerURL(flow.auth_url)
       if (!url || !connect.provider) { fail(generation, 'start-auth', 'flow_unsupported'); return }
-      rememberOAuthStart({ account_id: connect.accountID, provider: connect.provider, email: connect.email, back: location.pathname })
+      const start: Omit<ConsentStart, 'started_at'> = { account_id: connect.accountID, provider: connect.provider, email: connect.email, back: location.pathname }
+      if (connect.created) start.created = true
+      // Without storage a consent's return still finishes on the page that receives it; only an edition's keeper can refuse.
+      if (!keepStart(start) && tripKeeper) { fail(generation, connect.created ? 'add-account' : 'start-auth', 'storage_refused'); return }
       connect.phase = 'redirecting'
+      watchRestore()
       navigation.assign(url)
       return
     }
@@ -762,17 +902,16 @@ function backToForm(generation: number): void {
 }
 
 /**
- * Connects a mailbox that signs in with Google or Microsoft: into a team the
- * person owns or administers when workspaceID names one, otherwise into their
- * personal workspace. Into a team, syncConsentVersion gives the team's
- * agreement to sync it, to the revision of the text the person was shown.
+ * Connects a mailbox that signs in with Google or Microsoft by its address:
+ * into the workspace workspaceID names (the workspace shown: the person's
+ * personal workspace, or a team they own or administer), or, with none, a
+ * server without workspaces. No name and no team agreement: a team mailbox
+ * is connected with sync off, and both are asked once it is connected.
  */
-export async function connectOAuthAccount(input: { provider: ProviderID; email: string; displayName?: string; workspaceID?: string; syncConsentVersion?: string }): Promise<void> {
+export async function connectOAuthAccount(input: { provider: ProviderID; email: string; workspaceID?: string }): Promise<void> {
   const generation = begin({ provider: input.provider, email: input.email })
   const body: AddAccountRequest = { email: input.email, provider: input.provider }
-  if (input.displayName) body.display_name = input.displayName
   if (input.workspaceID) body.workspace_id = input.workspaceID
-  if (input.workspaceID && input.syncConsentVersion) body.sync_consent_version = input.syncConsentVersion
   let result
   try {
     result = await addWithKey(body)
@@ -826,20 +965,19 @@ export function linksAtProvider(provider: ProviderID | ''): provider is Link['pr
 }
 
 /**
- * Connects a Gmail or Microsoft mailbox at the provider: into a team the
- * person owns or administers when workspaceID names one, otherwise into their
- * personal workspace, as connectOAuthAccount does, with no address. The page
- * leaves for the provider's account chooser, having noted the link (not an
- * address) and the path it left from; the return finishes it
+ * Connects a Gmail or Microsoft mailbox at the provider: into the workspace
+ * workspaceID names (the workspace shown, the person's personal one
+ * included), as connectOAuthAccount does, with no address, no name and no
+ * team agreement. The page leaves for the provider's account chooser, having
+ * noted the link (not an address) and the path it left from, and anything an
+ * edition keeps with the trip (keepWithProviderTrip); the return finishes it
  * (finishOAuthReturn). Nothing is stored before then, so nothing is left to
  * clean up when the person stops here or never comes back.
  */
-export async function connectAtProvider(input: { provider: Link['provider']; displayName?: string; workspaceID?: string; syncConsentVersion?: string }): Promise<void> {
+export async function connectAtProvider(input: { provider: Link['provider']; workspaceID?: string }): Promise<void> {
   const generation = begin({ provider: input.provider })
   const body: LinkRequest = { provider: input.provider, flow: 'web' }
-  if (input.displayName) body.display_name = input.displayName
   if (input.workspaceID) body.workspace_id = input.workspaceID
-  if (input.workspaceID && input.syncConsentVersion) body.sync_consent_version = input.syncConsentVersion
   // A tab that would lose the start on the way leaves for no provider: its return could not be finished.
   if (!canKeepOAuthStart()) { fail(generation, 'start-link', 'storage_refused'); return }
   let started
@@ -860,12 +998,13 @@ export async function connectAtProvider(input: { provider: Link['provider']; dis
   if (!url || auth.flow !== 'web') { fail(generation, 'start-link', 'flow_unsupported'); return }
   connect.flow = 'web'
   connect.expiresAt = auth.expires_at ?? link.expires_at
-  if (!rememberOAuthStart({ link_id: link.id, provider: link.provider, ...(link.workspace_id ? { workspace_id: link.workspace_id } : {}), back: location.pathname })) {
+  if (!keepStart({ link_id: link.id, provider: link.provider, ...(link.workspace_id ? { workspace_id: link.workspace_id } : {}), back: location.pathname })) {
     // Nothing waits on it: the link expires on its own.
     fail(generation, 'start-link', 'storage_refused')
     return
   }
   connect.phase = 'redirecting'
+  watchRestore()
   navigation.assign(url)
 }
 
@@ -969,16 +1108,30 @@ export async function finishOAuthReturn(now = Date.now()): Promise<void> {
   const waiting = peekOAuthReturn()
   if (!waiting) return
   const started = peekOAuthStart(now)
-  if (isLinkStart(started) && waiting.url && now - waiting.at <= FLOW_LIFETIME_MS) { await finishLinkReturn(waiting, started); return }
+  // The start the return was routed by, a trip past its ten minutes included: what lastReturn names.
+  const routed = routableOAuthStart(now)
+  const ref = oauthStartRef(now)
+  if (isLinkStart(started) && waiting.url && now - waiting.at <= FLOW_LIFETIME_MS) { await finishLinkReturn(waiting, started, ref); return }
   const found = takeOAuthReturn()
   takeOAuthStart(now)
   if (!found) return
   const start = started && !isLinkStart(started) ? started : null
+  const created = start?.created === true
   const person = identity()
   const email = start?.email ?? ''
-  const op = isLinkStart(started) ? 'complete-link' : 'complete-auth'
-  if (now - found.at > FLOW_LIFETIME_MS) { accounts.notice = { kind: 'failed', email, failure: { op, code: 'return_expired' } }; return }
-  if (!found.url) { accounts.notice = { kind: 'failed', email, failure: { op, code: 'return_invalid' } }; return }
+  const op = isLinkStart(started) || isLinkStart(routed) ? 'complete-link' : 'complete-auth'
+  const failed = (failure: Failure, address = email) => {
+    accounts.notice = { kind: 'failed', email: address, failure }
+    lastReturn.value = { start: ref, created, outcome: 'failed', email: address, failure }
+  }
+  // A link whose start is past its ten minutes expired at the server with it: nothing to post, and no step-up to ask for.
+  if (isLinkStart(routed) && !isLinkStart(started)) {
+    showLinkWorkspace(routed.workspace_id)
+    failed({ op: 'complete-link', code: 'return_expired', link: { provider: routed.provider, reason: REASON_EXPIRED } }, '')
+    return
+  }
+  if (now - found.at > FLOW_LIFETIME_MS) { failed({ op, code: 'return_expired' }); return }
+  if (!found.url) { failed({ op, code: 'return_invalid' }); return }
   // Which workspaces there are, to show the one the mailbox lands in; read
   // first, so nothing waits on it once the provider's code is exchanged. Not
   // knowing them is no reason to let the code expire. A page that comes back
@@ -993,12 +1146,12 @@ export async function finishOAuthReturn(now = Date.now()): Promise<void> {
     if (!current()) return
     showWorkspaceOf(account)
     upsert(account)
-    if (account.state === 'active') notify({ kind: 'connected', email: account.email, syncing: account.sync.enabled })
+    if (account.state === 'active') connected(account, ref, created)
     // A grant the server stored and then found unusable is not a connection.
-    else accounts.notice = { kind: 'failed', email: account.email, failure: { op: 'complete-auth', code: 'flow_failed', account: failing(account) } }
+    else failed({ op: 'complete-auth', code: 'flow_failed', account: failing(account) }, account.email)
   } catch (error) {
     if (!current()) return
-    const failed = failure('complete-auth', error)
+    const refused = failure('complete-auth', error)
     if (start?.account_id) {
       // The server records a refused consent on the account, with a reason
       // the notice may be able to name; and no answer, or a broken one, says
@@ -1007,15 +1160,27 @@ export async function finishOAuthReturn(now = Date.now()): Promise<void> {
       await refreshAccount(start.account_id)
       if (!current()) return
       const account = accounts.list.find(item => item.id === start.account_id)
-      if (account?.state === 'active' && (failed.code === 'unavailable' || failed.code === 'internal')) {
-        notify({ kind: 'connected', email: account.email, syncing: account.sync.enabled })
+      if (account?.state === 'active' && (refused.code === 'unavailable' || refused.code === 'internal')) {
+        connected(account, ref, created)
         return
       }
       const left = failing(account)
-      if (left) failed.account = left
+      if (left) refused.account = left
     }
-    accounts.notice = { kind: 'failed', email, failure: failed }
+    failed(refused)
   }
+}
+
+/**
+ * A provider's return connected a mailbox: said, and kept for an edition's
+ * page; when the attempt created it (a link, or a consent for a mailbox the
+ * address form made), it is this tab's arrival, which asks for its nickname
+ * and a team's agreement to sync it.
+ */
+function connected(account: Account, ref: OAuthStartRef | null, created: boolean): void {
+  if (created) arrival.accountID = account.id
+  notify({ kind: 'connected', email: account.email, syncing: account.sync.enabled })
+  lastReturn.value = { start: ref, created, outcome: 'connected', account }
 }
 
 /** The workspace a link went into, when the person still has it: a team's, or their personal one. */
@@ -1091,7 +1256,7 @@ function retryLater(error: unknown): error is ApiError & { retryAfter: number } 
  * once the provider named one. Either way, the workspace it went into is
  * shown when the person still has it.
  */
-async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<void> {
+async function finishLinkReturn(found: OAuthReturn, start: LinkStart, ref: OAuthStartRef | null): Promise<void> {
   const person = identity()
   const same = () => identity() === person
   const settleReturn = () => { takeOAuthReturn(); takeOAuthStart() }
@@ -1122,7 +1287,9 @@ async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<v
       const facts: LinkFacts = { provider: start.provider }
       if (error instanceof StepUpCancelled) {
         showLinkWorkspace(start.workspace_id)
-        accounts.notice = { kind: 'failed', email: '', failure: { op: 'complete-link', code: 'step_up_closed', link: facts } }
+        const closed: Failure = { op: 'complete-link', code: 'step_up_closed', link: facts }
+        accounts.notice = { kind: 'failed', email: '', failure: closed }
+        lastReturn.value = { start: ref, created: true, outcome: 'failed', email: '', failure: closed }
         return
       }
       const failed = failure('complete-link', error)
@@ -1146,12 +1313,12 @@ async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<v
       showLinkWorkspace(made?.workspace_id ?? link?.workspace_id ?? start.workspace_id)
       if (made) {
         upsert(made)
-        if (made.state === 'active') notify({ kind: 'connected', email: made.email, syncing: made.sync.enabled })
-        else accounts.notice = { kind: 'failed', email: made.email, failure: { op: 'complete-link', code: 'flow_failed', account: failing(made) } }
+        if (made.state === 'active') connected(made, ref, true)
+        else linkFailed(ref, made.email, { op: 'complete-link', code: 'flow_failed', account: failing(made) })
         return
       }
       if (link?.state === 'failed') facts.reason = link.reason
-      accounts.notice = { kind: 'failed', email: link?.state === 'failed' ? link.email ?? '' : '', failure: { ...failed, link: facts } }
+      linkFailed(ref, link?.state === 'failed' ? link.email ?? '' : '', { ...failed, link: facts })
       return
     }
   }
@@ -1159,7 +1326,13 @@ async function finishLinkReturn(found: OAuthReturn, start: LinkStart): Promise<v
   if (!same()) return
   showWorkspaceOf(account)
   upsert(account)
-  if (account.state === 'active') notify({ kind: 'connected', email: account.email, syncing: account.sync.enabled })
+  if (account.state === 'active') connected(account, ref, true)
   // A grant the server stored and then found unusable is not a connection.
-  else accounts.notice = { kind: 'failed', email: account.email, failure: { op: 'complete-link', code: 'flow_failed', account: failing(account) } }
+  else linkFailed(ref, account.email, { op: 'complete-link', code: 'flow_failed', account: failing(account) })
+}
+
+/** A link's return that connected nothing: said at the top of the accounts section, and kept for an edition's page. */
+function linkFailed(ref: OAuthStartRef | null, email: string, failure: Failure): void {
+  accounts.notice = { kind: 'failed', email, failure }
+  lastReturn.value = { start: ref, created: true, outcome: 'failed', email, failure }
 }

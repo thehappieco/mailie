@@ -9,9 +9,13 @@
 // team's people, access and API keys (no keys where an edition keeps them to
 // personal workspaces, personalKeysOnly). Connecting a mailbox is offered only where the
 // person may link one (docs/workspaces.md, "Mailboxes"): their personal
-// workspace, or a team they own or administer. In another team the button
-// would only ever connect to their personal workspace, so it is not there;
-// an empty list says where their own mailboxes go, and shows it on request.
+// workspace, or a team they own or administer; one button per provider
+// (ConnectButtons), always into the workspace shown, drawn once: in the
+// empty card while there is no mailbox, above the cards otherwise. A member
+// of a team is told who connects its mailboxes, and where theirs go, shown
+// on request. A mailbox this tab just connected (arrival) sits first, asking
+// for its nickname and, for a team's owners and admins, the team's
+// agreement to sync it (NewMailbox).
 // A team nothing can be used in (closed, or not offered by this server) shows
 // why instead of its mailboxes, which reach nobody. Below the cards, the
 // workspace's owners see its removed mailboxes, kept 30 days, to recover or
@@ -19,9 +23,9 @@
 // sync is paused until someone who may resumes it (a recovered one too), or
 // held because the server's operator turned it off.
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { Account } from '../api/types'
+import type { Account, ProviderID } from '../api/types'
 import { edition } from '../edition'
-import { accounts, dismissNotice, loadAccounts, openDetail, refreshRemoved } from '../state/accounts'
+import { accounts, arrival, dismissArrival, dismissNotice, loadAccounts, openDetail, refreshRemoved } from '../state/accounts'
 import { noticesChanged } from '../state/notices'
 import { consent, loadConsent, needsConsent } from '../state/sync'
 import { directoryEntry, loadDirectory, loadMembers, team } from '../state/team'
@@ -35,15 +39,17 @@ import { noticeText } from '../ui/notices'
 import AccountSheet from './AccountSheet.vue'
 import AddAccountDialog from './AddAccountDialog.vue'
 import AppIcon from './AppIcon.vue'
+import ConnectButtons from './ConnectButtons.vue'
+import NewMailbox from './NewMailbox.vue'
 import RemovedMailboxes from './RemovedMailboxes.vue'
 import StatusChip from './StatusChip.vue'
 import SyncConsentCard from './SyncConsentCard.vue'
 import SyncStatus from './SyncStatus.vue'
 import UnusableWorkspace from './UnusableWorkspace.vue'
 
-// The dialog is either adding a new mailbox or finishing an existing one's
+// The dialog is either a provider's form or finishing an existing mailbox's
 // authorization; one instance at a time, so two flows never poll at once.
-const dialog = ref<{ resume: Account | null } | null>(null)
+const dialog = ref<{ provider: ProviderID; byAddress: boolean } | { resume: Account } | null>(null)
 // Active means the server accepted the sign-in; whether mail is syncing is
 // each card's to say, since that also depends on the person's consent.
 const active = computed(() => accounts.list.filter(item => item.state === 'active').length)
@@ -76,10 +82,14 @@ const nobodyReads = (account: Account) => admin.value && !!directoryEntry(accoun
 const heading = computed(() => inTeam.value ? t('Mailboxes in {team}', { team: teamName.value }) : t('Your mailboxes'))
 /**
  * The person may link a mailbox into the workspace shown: the only place the
- * Connect buttons go. A server without workspaces (or one not read yet) has
- * only the person's own.
+ * provider's buttons go. A server without workspaces has only the person's
+ * own; before the workspaces are read, the buttons say they are loading.
  */
 const linksHere = computed(() => !workspaces.supported || (canLinkInto(shown.value) && !unusable.value))
+/** A member of the team shown, who connects nothing to it: told who does, and where theirs go. */
+const memberHere = computed(() => inTeam.value && !admin.value && !unusable.value)
+/** The mailbox this tab just connected, while it is in the list shown. */
+const arrived = computed(() => arrival.accountID ? accounts.list.find(item => item.id === arrival.accountID) ?? null : null)
 /** The person's personal workspace, where their own mailboxes are connected. */
 const personalID = computed(() => workspaces.list.find(item => item.kind === 'personal')?.id ?? '')
 
@@ -125,7 +135,14 @@ watch(() => accounts.notice, () => { noticeKey.value++ })
 const headingElement = ref<HTMLElement | null>(null)
 const headingTarget = () => headingElement.value
 
-function add() { dismissNotice(); dialog.value = { resume: null } }
+function openForm(provider: ProviderID, byAddress: boolean) { dismissNotice(); dialog.value = { provider, byAddress } }
+/** The new mailbox is done with: its card goes, and the keyboard to the section's heading. */
+function arrivalDone() {
+  dismissArrival()
+  void nextTick(() => headingElement.value?.focus())
+}
+// Its notice says what its card says: the card stands for it while it is drawn.
+const noticeShown = computed(() => !!accounts.notice && !(arrived.value && accounts.notice.kind === 'connected'))
 /** Shows the person's personal workspace; the button goes with the team's list, so the keyboard goes to the heading. */
 function showPersonal() {
   selectWorkspace(personalID.value)
@@ -139,14 +156,14 @@ const personalKeysOnly = edition().personalKeysOnly === true
 <template>
   <div class="console-section">
     <!-- Good news is said by the live region (state/accounts.ts); a failure is an alert. -->
-    <div v-if="accounts.notice" :key="noticeKey" :class="accounts.notice.kind === 'failed' ? 'alert notice' : 'success notice'" :role="accounts.notice.kind === 'failed' ? 'alert' : undefined">
+    <div v-if="noticeShown && accounts.notice" :key="noticeKey" :class="accounts.notice.kind === 'failed' ? 'alert notice' : 'success notice'" :role="accounts.notice.kind === 'failed' ? 'alert' : undefined">
       <AppIcon :name="accounts.notice.kind === 'failed' ? 'alert' : 'check'" :size="18" />
       <span class="grow">{{ noticeText(accounts.notice) }}</span>
       <button class="icon-btn notice-close" type="button" :aria-label="t('Dismiss')" @click="dismissNotice"><AppIcon name="close" :size="17" /></button>
     </div>
 
     <SyncConsentCard v-if="askConsent" />
-    <p v-if="inTeam && !admin && !unusable" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ personalKeysOnly ? t('The people of {team} and who can use each of its mailboxes are managed by its owners and admins.', { team: teamName }) : t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
+    <p v-if="memberHere" class="note team-note"><AppIcon name="users" :size="16" /><span>{{ personalKeysOnly ? t('The people of {team} and who can use each of its mailboxes are managed by its owners and admins.', { team: teamName }) : t('The people of {team}, who can use each of its mailboxes, and its API keys are managed by its owners and admins.', { team: teamName }) }}</span></p>
 
     <div v-if="!unusable" class="console-overview">
       <article><span>{{ t('Email accounts') }}</span><strong>{{ accounts.loaded ? count(accounts.list.length) : '—' }}</strong><small>{{ t('added to Mailie') }}</small></article>
@@ -158,13 +175,18 @@ const personalKeysOnly = edition().personalKeysOnly === true
       <h2 ref="headingElement" tabindex="-1">{{ heading }}</h2>
       <div class="section-actions">
         <button class="ghost small" type="button" :disabled="accounts.loading" @click="refresh"><AppIcon name="refresh" :size="16" />{{ t('Refresh') }}</button>
-        <button v-if="linksHere && (!accounts.loaded || accounts.list.length)" class="primary small" type="button" @click="add"><AppIcon name="plus" :size="16" />{{ t('Connect an email account') }}</button>
       </div>
     </div>
 
     <UnusableWorkspace v-if="unusable" :workspace="shown" />
     <div v-else-if="accounts.failure" class="alert with-action" role="alert"><span>{{ describe(accounts.failure) }}</span><button class="ghost small" type="button" @click="loadAccounts">{{ t('Try again') }}</button></div>
     <p v-if="!unusable && accounts.loading && !accounts.loaded" class="dim" role="status">{{ t('Loading your email accounts…') }}</p>
+    <div v-if="memberHere" class="member-line">
+      <p>{{ t('Only the owners and admins of {team} connect mailboxes to it. Yours are connected in your personal workspace.', { team: teamName }) }}</p>
+      <button v-if="personalID" class="ghost small" type="button" @click="showPersonal"><AppIcon name="user" :size="16" />{{ t('Show your personal workspace') }}</button>
+    </div>
+    <NewMailbox v-if="arrived && !unusable" :key="arrived.id" class="arrival" :account="arrived" @done="arrivalDone" />
+    <ConnectButtons v-if="linksHere && accounts.loaded && accounts.list.length" @form="openForm" />
 
     <section v-if="!unusable" class="cards" :aria-label="t('Email accounts')" :aria-busy="accounts.loading">
       <article v-for="account in accounts.list" :key="account.id" class="account-card">
@@ -193,23 +215,23 @@ const personalKeysOnly = edition().personalKeysOnly === true
           <button v-if="needsAuthorization(account) && accessOf(account).manage" class="ghost authorize" type="button" @click="authorize(account)"><AppIcon name="shield" :size="16" />{{ t('Finish authorization') }}</button>
         </div>
       </article>
-      <div v-if="accounts.loaded && !accounts.list.length && linksHere" class="empty-card">
+      <div v-if="accounts.loaded && !accounts.list.length && linksHere" class="empty-card connect-first">
         <span class="empty-icon"><AppIcon name="mail" :size="30" /></span>
         <h3>{{ inTeam ? t('Connect the first mailbox of {team}', { team: teamName }) : t('Connect your first email account') }}</h3>
         <p>{{ inTeam ? t('A mailbox you connect here belongs to {team}: its owners and admins manage it, and only you read it until you give other members access.', { team: teamName }) : edition().copy.mailboxesIntro() }}</p>
-        <button class="primary" type="button" @click="add"><AppIcon name="plus" :size="18" />{{ t('Connect an email account') }}</button>
+        <ConnectButtons class="first-buttons" quiet @form="openForm" />
       </div>
       <div v-else-if="accounts.loaded && !accounts.list.length" class="empty-card">
         <span class="empty-icon"><AppIcon name="mail" :size="30" /></span>
         <h3>{{ t('Nothing shared with you here yet') }}</h3>
-        <p>{{ t('A mailbox of {team} appears here once you are given access to it. Only its owners and admins connect mailboxes to it; yours are connected in your personal workspace.', { team: teamName }) }}</p>
-        <button v-if="personalID" class="ghost" type="button" @click="showPersonal"><AppIcon name="user" :size="18" />{{ t('Show your personal workspace') }}</button>
+        <p>{{ t('A mailbox of {team} appears here once you are given access to it.', { team: teamName }) }}</p>
       </div>
     </section>
 
     <RemovedMailboxes v-if="owner" />
 
-    <AddAccountDialog v-if="dialog" :resume="dialog.resume" :return-focus="headingTarget" @close="dialog = null" />
+    <AddAccountDialog v-if="dialog && 'resume' in dialog" :resume="dialog.resume" :return-focus="headingTarget" @close="dialog = null" />
+    <AddAccountDialog v-else-if="dialog" :provider="dialog.provider" :by-address="dialog.byAddress" :return-focus="headingTarget" @close="dialog = null" />
     <AccountSheet v-if="detail" :account="detail" :return-focus="headingTarget" @authorize="authorize" />
   </div>
 </template>
@@ -244,6 +266,11 @@ const personalKeysOnly = edition().personalKeysOnly === true
 .team-note .app-icon { flex: none; margin-top: 2px; }
 .empty-icon { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: var(--accent-dim); color: var(--accent); }
 .empty-card .primary, .empty-card .ghost { margin-top: 4px; }
+/* The buttons inside the first card: a block of their own, laid out as anywhere else. */
+.connect-first .first-buttons { width: 100%; max-width: 760px; text-align: left; justify-self: stretch; margin-top: 8px; }
+.member-line { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 14px; padding: 12px 14px; border: 1px solid var(--console-border); border-radius: 12px; background: var(--bg-raised); font-size: 13px; line-height: 1.5; }
+.member-line p { margin: 0; flex: 1 1 280px; color: var(--text-dim); }
+.arrival { padding: 18px; border: 1px solid var(--console-border); border-radius: 12px; background: var(--bg-raised); }
 @media (max-width: 1020px) {
   .console-overview article { padding: 16px; }
 }

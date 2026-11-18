@@ -8,7 +8,7 @@ import { checked, request } from './http'
 import {
   isAccount, isAccountList, isAddAccountResult, isAuthFlow, isFolderList, isLink, isLinkStarted, isRemoval, isRemovedMailboxList,
   type Account, type AddAccountRequest, type AddAccountResult, type AuthFlow, type CompleteOAuthRequest, type FlowKind, type Folder, type Link,
-  type LinkRequest, type LinkStarted, type Removal, type RemovedMailbox,
+  type LinkRequest, type LinkStarted, type Removal, type RemovedMailbox, type RenameAccountRequest,
 } from './types'
 
 /**
@@ -34,6 +34,12 @@ export async function listAccounts(token: string, workspace = '', signal?: Abort
 
 export async function getAccount(token: string, id: string, signal?: AbortSignal): Promise<Account> {
   return checked(await request(`/v1/accounts/${segment(id)}`, { token, signal }), isAccount)
+}
+
+/** Names a mailbox, or clears its name with "": answered as getAccount answers it. */
+export async function renameAccount(token: string, id: string, displayName: string): Promise<Account> {
+  const body: RenameAccountRequest = { display_name: displayName }
+  return checked(await request(`/v1/accounts/${segment(id)}`, { token, method: 'PATCH', body }), isAccount)
 }
 
 export async function addAccount(token: string, body: AddAccountRequest): Promise<AddAccountResult> {

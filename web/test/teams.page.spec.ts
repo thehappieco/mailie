@@ -1,7 +1,8 @@
 // Workspaces and teams as a person presses them, on a page (test/dom.ts):
-// choosing the workspace reads its mailboxes; connecting a mailbox into a
-// team shows that team first, with the sync text and a box that gives the
-// team's agreement with the link; a team mailbox's sync is switched by its
+// choosing the workspace reads its mailboxes; connecting a mailbox goes into
+// the workspace shown, always named, with no name and, into a team, sync
+// off: once it is connected its nickname, and the team's agreement after the
+// sync text, are asked; a team mailbox's sync is switched by its
 // owners and admins, on after the text and off once its address is typed; a
 // grant is ticked and saved with the request that gives exactly that; the
 // team's people change only after a question, and a refusal is said in the
@@ -20,7 +21,6 @@ import { mount, type Mounted } from './mount'
 import type { MailboxAccess, MailboxKey, Member, RemovedMailbox, Workspace } from '../src/api/types'
 import AccessPanel from '../src/components/AccessPanel.vue'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
-import AddAccountDialog from '../src/components/AddAccountDialog.vue'
 import InvitationDialog from '../src/components/InvitationDialog.vue'
 import SyncPermission from '../src/components/SyncPermission.vue'
 import WorkspaceSwitcher from '../src/components/WorkspaceSwitcher.vue'
@@ -29,7 +29,7 @@ import OpenMembers from '../src/open/OpenMembers.vue'
 import { configureEdition } from '../src/edition'
 import { openEdition } from '../src/open/edition'
 import { SYNC_TEXT_VERSION } from '../src/open/versions'
-import { accounts, loadAccounts, loadProviders, purgeRemoved } from '../src/state/accounts'
+import { accounts, loadAccounts, purgeRemoved } from '../src/state/accounts'
 import { holdInvitation, invitation } from '../src/state/invitation'
 import { session, adoptSession, signOut } from '../src/state/session'
 import { loadConsent } from '../src/state/sync'
@@ -187,169 +187,154 @@ describe('the console’s frame in a team', () => {
     mounted = mount(AccountsPanel)
     await flush()
     expect(words()).toContain('Nothing shared with you here yet')
-    expect(find('button', 'Connect an email account')).toBeNull()
-    await click(find('.empty-card button', 'Show your personal workspace'))
+    expect(words(find('.member-line')!)).toContain('Only the owners and admins of Support connect mailboxes to it. Yours are connected in your personal workspace.')
+    expect(find('.connect-buttons')).toBeNull()
+    await click(find('.member-line button', 'Show your personal workspace'))
     expect(workspaces.currentID).toBe(PERSONAL)
     await vi.waitFor(() => expect(accounts.workspace).toBe(PERSONAL))
     await flush()
     // Her own workspace, where she may connect one.
     expect(words()).toContain('Connect your first email account')
-    expect(find('.empty-card button', 'Connect an email account')).not.toBeNull()
+    expect(find('.empty-card .connect-buttons[role=group]')).not.toBeNull()
+    expect(find('.member-line')).toBeNull()
     expect(sent('GET', '/v1/accounts').map(request => request.query.workspace)).toEqual([TEAM, PERSONAL])
   })
 
   it('offers no connecting beside the mailboxes shared with a member of a team, and does to its admin', async () => {
     await consoleIn('member')
     expect(words(find('.cards')!)).toContain('suporte@example.test')
-    expect(find('button', 'Connect an email account')).toBeNull()
+    expect(find('.connect-buttons')).toBeNull()
+    // Whether the list is empty or not, a member is told why.
+    expect(words(find('.member-line')!)).toContain('Only the owners and admins of Support connect mailboxes to it.')
     mounted?.unmount()
     mounted = null
     await signOut()
     seen = []
     await consoleIn('admin')
-    expect(find('.section-actions button', 'Connect an email account')).not.toBeNull()
+    expect(find('.connect-buttons[role=group]')).not.toBeNull()
+    expect(find('.member-line')).toBeNull()
   })
 })
 
-describe('connecting a mailbox into a team', () => {
-  it('asks where, the personal workspace first, and shows the team chosen before connecting into it', async () => {
-    const posted: unknown[] = []
-    await signedIn('admin', ({ path, method, body }) => {
+describe('connecting a mailbox into the workspace shown', () => {
+  const imap = [{ id: 'imap', oauth: false, password: true, flows: [] }]
+  /**
+   * Ana, with the role given in Support and the workspace shown named, presses
+   * the IMAP button of the accounts section; the server answers a password
+   * mailbox as linked where it was asked, renames it and turns on a team's
+   * sync as asked.
+   */
+  async function connecting(role: string, shown: string, consent: object, posted: unknown[]) {
+    await signedIn(role, ({ path, method, body }) => {
       if (path === '/v1/accounts' && method === 'GET') return json([])
-      if (path === '/v1/providers') return json([{ id: 'imap', oauth: false, password: true, flows: [] }])
-      if (path === '/v1/me/sync-consent' && method === 'GET') return json({ consented: false, current_version: SYNC_TEXT_VERSION })
-      if (path === '/v1/accounts' && method === 'POST') {
-        posted.push(body)
-        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access: { ...full, manage: true } }) }, 201)
-      }
-      return failure('not_found', 404)
-    })
-    selectWorkspace(PERSONAL)
-    await loadAccounts()
-    await loadProviders()
-    mounted = mount(AddAccountDialog, { resume: null })
-    await flush()
-    await click(find('dialog .provider-option', 'Other provider (IMAP)'))
-    const places = page.querySelectorAll('dialog .place-choice input[name=workspace]')
-    expect(places.map(input => input.getAttribute('value'))).toEqual([PERSONAL, TEAM])
-    expect(find('dialog .place-choice input[name=workspace]')!.checked).toBe(true)
-    expect(words(find('dialog .place-choice')!)).toContain('It belongs to the team, and its owners and admins manage it. Only you read it until you give other members access.')
-    // The personal workspace's mailboxes sync under the person's own agreement: no box for a team's.
-    expect(find('dialog .team-sync')).toBeNull()
-    await check(places[1]!)
-    expect(find('dialog .team-sync')).not.toBeNull()
-    await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
-    await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
-    await submit(find('dialog form'))
-    await vi.waitFor(() => expect(posted).toHaveLength(1))
-    // Left unticked: linked with sync off, and no agreement given for the team.
-    expect(posted[0]).toEqual(expect.objectContaining({ email: 'vendas@example.test', provider: 'imap', workspace_id: TEAM }))
-    expect(posted[0]).not.toHaveProperty('sync_consent_version')
-    // The team was shown first: its list was read, and the new mailbox is in it.
-    expect(workspaces.currentID).toBe(TEAM)
-    expect(sent('GET', '/v1/accounts').map(request => request.query.workspace)).toEqual([PERSONAL, TEAM])
-    await vi.waitFor(() => expect(accounts.list.map(item => item.id)).toEqual(['acc_new']))
-  })
-})
-
-describe('connecting a mailbox from a team shown', () => {
-  /** Ana administers Support, shown; the server answers a password mailbox as linked where it was asked. */
-  async function connecting(consent: object, posted: unknown[]) {
-    await signedIn('admin', ({ path, method, body }) => {
-      if (path === '/v1/accounts' && method === 'GET') return json([])
-      if (path === '/v1/providers') return json([{ id: 'imap', oauth: false, password: true, flows: [] }])
+      if (path === '/v1/providers') return json(imap)
       if (path === '/v1/me/sync-consent' && method === 'GET') return json(consent)
       if (path === '/v1/accounts' && method === 'POST') {
         posted.push(body)
         const into = (body as { workspace_id?: string }).workspace_id ?? PERSONAL
-        const syncs = !!(body as { sync_consent_version?: string }).sync_consent_version
-        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: into, access: full, ...(syncs ? { sync: syncing() } : {}) }) }, 201)
+        return json({ account: account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: into, access: full }) }, 201)
       }
+      if (path === '/v1/accounts/acc_new' && method === 'PATCH') {
+        posted.push({ rename: body })
+        return json(account({ id: 'acc_new', email: 'vendas@example.test', provider: 'imap', auth_kind: 'password', state: 'active', workspace_id: TEAM, access: full, display_name: (body as { display_name: string }).display_name }))
+      }
+      if (path === '/v1/accounts/acc_new/sync' && method === 'PUT') {
+        posted.push({ sync: body })
+        return json(syncing())
+      }
+      if (path === `/v1/workspaces/${TEAM}/access`) return json([])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([])
       return failure('not_found', 404)
     })
-    await Promise.all([loadAccounts(), loadProviders(), loadConsent()])
-    mounted = mount(AddAccountDialog, { resume: null })
+    selectWorkspace(shown)
+    await Promise.all([loadAccounts(), loadConsent()])
+    mounted = mount(AccountsPanel)
+    await vi.waitFor(() => expect(find('.provider-button', 'Other server (IMAP)')).not.toBeNull())
+    await click(find('.provider-button', 'Other server (IMAP)'))
     await flush()
-    await click(find('dialog .provider-option', 'Other provider (IMAP)'))
   }
-  const placeOf = (id: string) => find(`dialog .place-choice input[name=workspace][value=${id}]`)!
   const fillPassword = async () => {
     await fill(find('dialog input[name=mailbox]'), 'vendas@example.test')
     await fill(find('dialog input[name=mailbox-password]'), 'app-password-123')
   }
   const current = { consented: false, current_version: SYNC_TEXT_VERSION }
 
-  it('connects into the team shown, as its empty list says, unless the person picks another', async () => {
+  it('offers a team’s owners and admins a button per provider, and connects into the team shown with sync off and no name', async () => {
     const posted: unknown[] = []
-    await connecting({ consented: true, consented_at: 1_790_000_000, version: SYNC_TEXT_VERSION, current_version: SYNC_TEXT_VERSION }, posted)
-    expect(placeOf(TEAM).checked).toBe(true)
-    expect(placeOf(PERSONAL).checked).toBe(false)
+    await connecting('admin', TEAM, current, posted)
+    // No choice of where, nor of a name, nor of the team's sync, before it is connected.
+    expect(find('dialog .place-choice')).toBeNull()
+    expect(find('dialog .team-sync')).toBeNull()
+    expect(find('dialog input[name=nickname]')).toBeNull()
     await fillPassword()
     await submit(find('dialog form'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toMatchObject({ workspace_id: TEAM })
-    // It stays where it was connected: no other workspace was shown for it.
+    expect(posted[0]).toMatchObject({ email: 'vendas@example.test', provider: 'imap', workspace_id: TEAM })
+    expect(posted[0]).not.toHaveProperty('sync_consent_version')
+    expect(posted[0]).not.toHaveProperty('display_name')
     expect(workspaces.currentID).toBe(TEAM)
-    expect(sent('GET', '/v1/accounts').map(request => request.query.workspace)).toEqual([TEAM])
-    await vi.waitFor(() => expect(accounts.list.map(item => item.id)).toEqual(['acc_new']))
   })
 
-  it('shows the sync text into a team, and gives the team’s agreement with the link only when ticked, to the revision shown', async () => {
+  it('names the personal workspace it connects into, the one shown', async () => {
     const posted: unknown[] = []
-    // Ana never agreed for herself: the team's agreement is not hers, and is asked for here all the same.
-    await connecting(current, posted)
-    const box = find('dialog .team-sync')!
-    expect(words(box)).toContain('Mail sync for Support')
-    expect(words(box)).toContain('Who can read the index')
-    expect(words(box)).toContain('A team’s mailbox syncs under the team’s agreement')
-    // The open text takes the team it is drawn for, and leaves it off the page.
-    expect(find('dialog .team-sync-text .consent-text')!.hasAttribute('team')).toBe(false)
-    const agree = find('dialog input[name=team-sync]')!
-    expect(agree.checked).toBe(false)
-    expect(words(box)).toContain('Turn on sync for Support')
-    await check(agree)
+    await connecting('admin', PERSONAL, current, posted)
     await fillPassword()
     await submit(find('dialog form'))
     await vi.waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).toMatchObject({ workspace_id: TEAM, sync_consent_version: SYNC_TEXT_VERSION })
+    expect(posted[0]).toMatchObject({ workspace_id: PERSONAL })
+    // Done: its nickname is asked, and no team's agreement, which a personal mailbox never takes.
+    await vi.waitFor(() => expect(find('dialog input[name=nickname]')).not.toBeNull())
+    expect(find('dialog .team-sync')).toBeNull()
+  })
+
+  it('offers the team’s agreement to sync, unticked, once a mailbox linked into the team is connected, and gives it with the nickname on Done', async () => {
+    const posted: unknown[] = []
+    await connecting('admin', TEAM, current, posted)
+    await fillPassword()
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(find('dialog .team-sync')).not.toBeNull())
+    const box = find('dialog .team-sync')!
+    expect(words(box)).toContain('Mail sync for Support')
+    expect(words(box)).toContain('A team’s mailbox syncs under the team’s agreement')
+    const agree = find('dialog input[name=team-sync]')!
+    expect(agree.checked).toBe(false)
+    await fill(find('dialog input[name=nickname]'), '  Vendas ')
+    await check(agree)
+    await submit(find('dialog .new-mailbox form'))
+    await vi.waitFor(() => expect(find('dialog')).toBeNull())
+    expect(posted.slice(1)).toEqual([{ rename: { display_name: 'Vendas' } }, { sync: { enabled: true, version: SYNC_TEXT_VERSION } }])
     // The person's own agreement was neither asked for nor given.
     expect(sent('POST', '/v1/me/sync-consent')).toEqual([])
   })
 
-  it('draws the edition’s sync text for the team chosen, the one revision whoever agrees', async () => {
+  it('sends nothing when the new mailbox is skipped, or done with nothing filled', async () => {
+    const posted: unknown[] = []
+    await connecting('admin', TEAM, current, posted)
+    await fillPassword()
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(find('dialog .new-mailbox')).not.toBeNull())
+    await click(find('dialog .new-mailbox button', 'Skip'))
+    await vi.waitFor(() => expect(find('dialog')).toBeNull())
+    expect(posted).toHaveLength(1)
+  })
+
+  it('draws the edition’s sync text for the team it is agreed for', async () => {
     await withSyncProbe(async () => {
-      await connecting(current, [])
+      await connecting('admin', TEAM, current, [])
+      await fillPassword()
+      await submit(find('dialog form'))
+      await vi.waitFor(() => expect(find('dialog .team-sync-text')).not.toBeNull())
       expect(words(find('dialog .team-sync-text')!)).toBe('drawn for the team Support')
     })
   })
 
-  it('forgets a ticked agreement when another team or the personal workspace is chosen, and sends none there', async () => {
-    const posted: unknown[] = []
-    await connecting(current, posted)
-    await check(find('dialog input[name=team-sync]')!)
-    await check(placeOf(PERSONAL))
-    expect(find('dialog .team-sync')).toBeNull()
-    await check(placeOf(TEAM))
-    expect(find('dialog input[name=team-sync]')!.checked).toBe(false)
-    await check(placeOf(PERSONAL))
+  it('offers a reload in place of the box when the server asks about another text than this page shows', async () => {
+    await connecting('admin', TEAM, { consented: false, current_version: '2027-01-open-sync-4' }, [])
     await fillPassword()
     await submit(find('dialog form'))
-    await vi.waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).not.toHaveProperty('sync_consent_version')
-    expect(posted[0]).not.toHaveProperty('workspace_id', TEAM)
-  })
-
-  it('offers a reload in place of the box when the server asks about another text than this page shows, and links with sync off', async () => {
-    const posted: unknown[] = []
-    await connecting({ consented: false, current_version: '2027-01-open-sync-4' }, posted)
-    const box = find('dialog .team-sync')!
+    await vi.waitFor(() => expect(find('dialog .team-sync')).not.toBeNull())
     expect(find('dialog input[name=team-sync]')).toBeNull()
     expect(find('dialog .team-sync button', 'Reload page')).not.toBeNull()
-    expect(words(box)).not.toContain('Who can read the index')
-    await fillPassword()
-    await submit(find('dialog form'))
-    await vi.waitFor(() => expect(posted).toHaveLength(1))
-    expect(posted[0]).not.toHaveProperty('sync_consent_version')
   })
 })
 
@@ -948,7 +933,8 @@ describe('a team nothing can be used in', () => {
     const notice = () => words(find('[data-unusable]')!)
     expect(notice()).toContain('Support is closed')
     expect(notice()).toContain('Nothing in Support can be used until it reopens')
-    expect(find('button', 'Connect an email account')).toBeNull()
+    expect(find('.connect-buttons')).toBeNull()
+    expect(find('.member-line')).toBeNull()
     expect(find('.console-overview')).toBeNull()
     for (const section of ['Members', 'API keys & MCP', 'Storage']) {
       await open(section)
@@ -973,6 +959,7 @@ describe('a team nothing can be used in', () => {
     expect(words(find('[data-unusable]')!)).toContain('Support is not available on this server')
     expect(words(find('[data-unusable]')!)).toContain('This server does not offer team workspaces yet')
     expect(find('[role=alert]')).toBeNull()
+    expect(find('.connect-buttons')).toBeNull()
     expect(words()).not.toContain('The people of Support')
     mounted.unmount()
     mounted = mount(WorkspaceSwitcher)

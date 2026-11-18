@@ -178,14 +178,18 @@ manages the mailbox. `POST /v1/accounts` takes an optional `workspace_id`; witho
 into their personal workspace and an instance key into the operator workspace. Into a team it also
 takes `sync_consent_version`: naming the current revision of the sync text gives the team's consent
 to sync it, on the team's behalf, in the same transaction; left out, the mailbox is linked with sync
-off, until an owner or an admin turns it on. A personal or operator link refuses it.
+off, until an owner or an admin turns it on, which is how the console gives it now, once the
+mailbox is connected. A personal or operator link refuses it. The console always names the
+workspace shown, the person's personal one included, which lands there as one that names none.
 
 **A link at the provider** (`POST /v1/accounts/oauth/links`, a person signed in, Gmail and Microsoft
 through the web flow; [`console.md`](console.md#linking-at-the-provider)) follows the same rules
 with no address typed: the person chooses the account on the provider's page, and the provider's
 answer names the address. Nothing of the mailbox exists until that answer comes back: the link
 keeps where it goes (a team's id, or none for the starter's personal workspace, which is the one
-they have at the return), the name asked for and, into a team, the sync text the box agreed to.
+they have at the return), and a name and, into a team, a sync text when the request carried them:
+the console sends neither, and asks for both once the mailbox is connected (a rename, and the
+team's turn-on).
 Who may link there is asked at its start, again at its return before the code is taken, and in the
 transaction that creates the mailbox, which is the answer that counts; the team's agreement is
 recorded then, by whoever finishes the link, to the text that is current then, and a text that

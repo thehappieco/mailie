@@ -20,7 +20,14 @@
 //   The address becomes the start's back, while the start is fresh and back is
 //   a path of this origin; else /.
 // Both expire with the provider's flow, ten minutes, and are taken, not read,
-// when used: one return is posted once. A link's return is taken only once the
+// when used: one return is posted once. The start's back alone routes a
+// return for twenty minutes (BACK_LIFETIME_MS, the server's whole life of a
+// link: ten waiting, ten kept for its starter to read how it ended), so a
+// trip longer than ten minutes still comes back to the page it left from,
+// to be told it expired; nothing else of a start counts past its ten
+// minutes. The start a return was routed by is named to an edition
+// (oauthStartRef), by its id alone, so a page of its own may tie what it
+// keeps to it (keepWithProviderTrip, state/accounts.ts). A link's return is taken only once the
 // server answered it: the step-up it may need first can send the whole tab
 // elsewhere (an edition's own step-up), and the return waits in the tab for
 // the page that comes back; the server takes a link once, so a return posted
@@ -43,17 +50,28 @@ const START_KEY = 'mailie.oauthStart'
 const RETURN_KEY = 'mailie.oauthReturn'
 /** The server keeps a pending flow for ten minutes; nothing here outlives it. */
 export const FLOW_LIFETIME_MS = 10 * 60_000
+/**
+ * How long a start's back routes its provider's return: twenty minutes, a
+ * link's whole life on the server (ten waiting, ten kept for its starter to
+ * read how it ended). Nothing else of a start is used past FLOW_LIFETIME_MS.
+ */
+export const BACK_LIFETIME_MS = 2 * FLOW_LIFETIME_MS
 
 interface StartCommon {
   started_at: number
   /** The path of the page the flow left from, where its return comes back to: a path alone (oauthBack). */
   back?: string
 }
-/** A consent for a mailbox that exists: the mailbox, by its id and its address. */
+/**
+ * A consent for a mailbox that exists: the mailbox, by its id and its
+ * address; created when the attempt that left made it, so its return asks
+ * for what comes after a link (its nickname).
+ */
 export interface ConsentStart extends StartCommon {
   account_id: string
   provider: ProviderID
   email: string
+  created?: true
 }
 /**
  * A link at the provider: the link, and the team it goes into (none for the
@@ -160,22 +178,61 @@ function startShape(record: Record<string, unknown>): boolean {
       && !('account_id' in record) && !('email' in record)
   }
   return typeof record.account_id === 'string' && typeof record.email === 'string' && providerIDs.includes(record.provider as ProviderID)
+    && (record.created === undefined || record.created === true)
+}
+
+/** Whether a start record is one this page wrote, at most within ms of now. */
+function startWithin(start: unknown, now: number, ms: number): start is OAuthStart {
+  if (!start || typeof start !== 'object') return false
+  const record = start as Record<string, unknown>
+  return startShape(record) && typeof record.started_at === 'number' && now - record.started_at <= ms && record.started_at <= now
 }
 
 /** Whether a start record is one this page wrote, for a flow still open. */
 function freshStart(start: unknown, now: number): start is OAuthStart {
-  if (!start || typeof start !== 'object') return false
-  const record = start as Record<string, unknown>
-  return startShape(record) && typeof record.started_at === 'number' && now - record.started_at <= FLOW_LIFETIME_MS && record.started_at <= now
+  return startWithin(start, now, FLOW_LIFETIME_MS)
 }
 
 /**
  * Where a provider's return comes back to: the start's back, when the start
- * is fresh and its back a path of this origin (checkBack); null otherwise,
- * and the return goes to /.
+ * is at most BACK_LIFETIME_MS old and its back a path of this origin
+ * (checkBack); null otherwise, and the return goes to /.
  */
 export function oauthBack(start: unknown, origin: string, now = Date.now()): string | null {
-  return freshStart(start, now) ? checkBack(start.back, origin) : null
+  return startWithin(start, now, BACK_LIFETIME_MS) ? checkBack(start.back, origin) : null
+}
+
+/**
+ * The start this page load's return was routed by, held in memory once the
+ * stored one may be swept (past its ten minutes): what names a slow trip's
+ * start until it is taken.
+ */
+let routed: OAuthStart | null = null
+
+/**
+ * The start this tab keeps whose back may still route its return (twenty
+ * minutes), read and left where it is: the stored one, or the one this page
+ * load's return was routed by. A link's past its ten minutes is one whose
+ * return can only be told it expired.
+ */
+export function routableOAuthStart(now = Date.now()): OAuthStart | null {
+  const stored = read<unknown>(START_KEY)
+  if (startWithin(stored, now, BACK_LIFETIME_MS)) return stored
+  return routed && startWithin(routed, now, BACK_LIFETIME_MS) ? routed : null
+}
+
+/** A start named by its id alone: a link's, or a consent's mailbox's. */
+export type OAuthStartRef = { link_id: string } | { account_id: string }
+
+/**
+ * The id of the start this tab keeps, while its back may still route its
+ * return (routableOAuthStart), read and left where it is: what an edition
+ * ties a record of its own to, for the trip it left with. No address.
+ */
+export function oauthStartRef(now = Date.now()): OAuthStartRef | null {
+  const start = routableOAuthStart(now)
+  if (!start) return null
+  return isLinkStart(start) ? { link_id: start.link_id } : { account_id: start.account_id }
 }
 
 /**
@@ -190,6 +247,7 @@ export function rememberOAuthStart(start: OAuthStartInput, now = Date.now()): bo
   const { back, ...rest } = start
   const kept = typeof location === 'undefined' ? null : checkBack(back, location.origin)
   captured = null
+  routed = null
   remove(RETURN_KEY)
   return write(START_KEY, { ...rest, started_at: now, ...(kept ? { back: kept } : {}) } satisfies OAuthStart)
 }
@@ -215,10 +273,11 @@ export function peekOAuthStart(now = Date.now()): OAuthStart | null {
   return freshStart(start, now) ? start : null
 }
 
-/** Takes the start record, if this tab left one recently. */
+/** Takes the start record, if this tab left one recently: a stale one goes too, and the one a return was routed by. */
 export function takeOAuthStart(now = Date.now()): OAuthStart | null {
   const start = peekOAuthStart(now)
   remove(START_KEY)
+  routed = null
   return start
 }
 
@@ -236,8 +295,10 @@ export function captureOAuthReturn(now = Date.now()): boolean {
   if (!found) return false
   captured = found
   write(RETURN_KEY, found)
-  const back = oauthBack(read<unknown>(START_KEY), location.origin, now) ?? '/'
-  try { history.replaceState(null, '', back) } catch { /* The stored copy is what gets used either way. */ }
+  const start = read<unknown>(START_KEY)
+  const back = oauthBack(start, location.origin, now)
+  routed = back && startWithin(start, now, BACK_LIFETIME_MS) ? start : null
+  try { history.replaceState(null, '', back ?? '/') } catch { /* The stored copy is what gets used either way. */ }
   return true
 }
 

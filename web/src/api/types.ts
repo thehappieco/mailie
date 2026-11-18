@@ -308,16 +308,23 @@ export type LinkState = 'waiting' | 'finishing' | 'connected' | 'failed'
  * the account on its page. It carries no address and no key: the mailbox's
  * key goes with the return (CompleteOAuthRequest), which creates it.
  */
+/**
+ * A link at the provider's start, as this console sends it: no name and no
+ * team agreement, which come once the mailbox is connected (renameAccount, a
+ * team's sync switch). The server still takes both, from a console of the
+ * release before and from API callers.
+ */
 export interface LinkRequest {
   provider: 'gmail' | 'microsoft'
   /** web, the only flow a link takes; left out, it is the one. */
   flow?: 'web'
-  /** A team the caller owns or administers; left out, the caller's personal workspace. */
+  /** The workspace shown: the caller's personal workspace, or a team they own or administer; left out, the personal one. */
   workspace_id?: string
-  /** Into a team only: the sync text's revision, the team's agreement recorded at the return. */
-  sync_consent_version?: string
-  display_name?: string
 }
+/** The longest name a mailbox keeps, in characters: the server's one name rule. */
+export const MAILBOX_NAME_MAX = 200
+/** A mailbox renamed (PATCH /v1/accounts/{id}): "" clears its name. */
+export interface RenameAccountRequest { display_name: string }
 /**
  * A link at the provider as its starter reads it (GET
  * /v1/accounts/oauth/links/{id}): never the mailbox it created, which GET

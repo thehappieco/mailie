@@ -4,7 +4,6 @@ import type { AddAccountRequest, ProviderID, SMTPSecurity } from '../api/types'
 
 export interface AccountDraft {
   email: string
-  displayName: string
   password: string
   imapHost: string
   imapPort: number
@@ -19,7 +18,7 @@ export const IMAP_PORT = 993
 export const SMTP_PORTS: Record<SMTPSecurity, number> = { implicit: 465, starttls: 587 }
 
 export function emptyDraft(): AccountDraft {
-  return { email: '', displayName: '', password: '', imapHost: '', imapPort: IMAP_PORT, smtpHost: '', smtpPort: SMTP_PORTS.implicit, smtpTLS: 'implicit', loginUser: '' }
+  return { email: '', password: '', imapHost: '', imapPort: IMAP_PORT, smtpHost: '', smtpPort: SMTP_PORTS.implicit, smtpTLS: 'implicit', loginUser: '' }
 }
 
 /** Apple's own page on creating an app-specific password, which iCloud needs in place of the Apple Account password. */
@@ -62,8 +61,6 @@ export function portForSecurity(current: number, from: SMTPSecurity, to: SMTPSec
  */
 export function draftRequest(provider: ProviderID, draft: AccountDraft): AddAccountRequest {
   const body: AddAccountRequest = { email: draft.email.trim(), provider }
-  const displayName = draft.displayName.trim()
-  if (displayName) body.display_name = displayName
   if (!signsInWithPassword(provider)) return body
   body.password = draft.password
   const loginUser = draft.loginUser.trim()

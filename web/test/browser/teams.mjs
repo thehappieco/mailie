@@ -47,8 +47,9 @@
 // Every pass fails on a page error, a CSP violation, horizontal scrolling
 // and any server message drawn on a screen.
 //
-// QA_ONLY (teams: the passes above; removed: the removed mailbox's; pause:
-// the pause's), and
+// QA_ONLY (teams: the passes above; short: the short way to connect a
+// mailbox and an owner's access; removed: the removed mailbox's; pause: the
+// pause's), and
 // QA_ORIGIN, QA_SCREENSHOTS, QA_PLAYWRIGHT_MODULE, QA_BROWSER,
 // QA_BROWSER_EXECUTABLE and QA_BROWSER_CHANNEL as for console.mjs.
 import { mkdir, readdir, readFile } from 'node:fs/promises'
@@ -62,7 +63,7 @@ const engine = process.env.QA_BROWSER || 'chromium'
 const origin = (process.env.QA_ORIGIN || 'http://localhost:5174').replace(/\/$/, '')
 const screenshots = process.env.QA_SCREENSHOTS ? resolve(process.env.QA_SCREENSHOTS) : ''
 const only = process.env.QA_ONLY || ''
-if (!['', 'teams', 'removed', 'pause'].includes(only)) throw new Error(`teams.mjs: QA_ONLY is teams, removed or pause, not ${only}`)
+if (!['', 'teams', 'short', 'removed', 'pause'].includes(only)) throw new Error(`teams.mjs: QA_ONLY is teams, short, removed or pause, not ${only}`)
 const browser = await playwright[engine].launch({
   headless: true,
   ...(process.env.QA_BROWSER_EXECUTABLE ? { executablePath: process.env.QA_BROWSER_EXECUTABLE } : {}),
@@ -407,9 +408,10 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
         const account = teamOf(accountID)
         if (!account || !any(grantOf(account, user.id))) return fail(404, 'not_found')
         calls.access.push({ method, account: accountID, user: target, body: method === 'PUT' ? body() : undefined, flags: query.get('flags') ?? '' })
-        // Only owners and admins change who holds what.
+        // Only owners and admins change who holds what; an owner's, only an owner (platform decision 0060).
         if (!managesByRole(account.workspace_id, user.id)) return fail(403, 'not_authorized')
         if (!membership(account.workspace_id, target)) return fail(404, 'not_found')
+        if (membership(account.workspace_id, user.id).role === 'admin' && membership(account.workspace_id, target).role === 'owner') return fail(403, 'not_authorized')
         const before = stored(accountID, target)
         const map = grants.get(accountID) ?? new Map()
         grants.set(accountID, map)
@@ -565,6 +567,15 @@ function teamModel({ users, accountsByUser, present, calls, keys }, { archive })
           const entry = { account, removedAt: now(), removedBy: user.id, purgeAfter: now() + 30 * 86400 }
           removedAccounts.push(entry)
           return json({ account_id: account.id, purged: false, purge_after: entry.purgeAfter })
+        }
+        // A rename, by whoever manages it (the daemon's one name rule).
+        if (!one[2] && method === 'PATCH') {
+          if (!held.manage) return fail(403, 'not_authorized')
+          const name = String(body().display_name ?? '').trim()
+          if ([...name].length > 200 || /\p{Cc}/u.test(name)) return fail(400, 'bad_request')
+          account.display_name = name
+          calls.renamed.push({ id: account.id, display_name: name })
+          return json(presentTeam(account, user))
         }
         if (!one[2]) return json(presentTeam(account, user))
         calls.folders.push({ user: user.id, account: account.id })
@@ -988,6 +999,93 @@ for (const { language, mobile, scheme, full: everything } of only && only !== 't
 // Members section does not ask for again; Bea, an admin, sees the same
 // protection with the mailbox as a count, and never asks for them; and once
 // Ana deletes it for good, Carol is offered for disabling and removal again.
+// The short way to connect a mailbox, in a team, and an owner's access
+// (platform decision 0060): Bea, an admin of Atendimento, sees Ana's access,
+// an owner's, read only, while she still changes Carol's, a member's; she
+// links a Gmail mailbox into the team from its button, straight to Google's
+// account chooser, and it comes back with its nickname and the team's
+// agreement to sync, unticked, asked, which she gives with a nickname; and
+// Carol, a member, is told who connects the team's mailboxes, with no button.
+const shortPasses = [
+  { language: 'en-US', mobile: false, scheme: 'light' },
+  { language: 'pt-BR', mobile: true, scheme: 'dark' },
+]
+for (const { language, mobile, scheme } of only && only !== 'short' ? [] : shortPasses) {
+  const tr = (key, values) => say(language, key, values)
+  const team = 'Atendimento'
+  const fresh = 'novo.atendimento@gmail.com'
+  const label = `${language}-${mobile ? '390' : 'desktop'}-${scheme}`
+  const viewport = mobile ? { width: 390, height: 844 } : { width: 1360, height: 900 }
+  const { context, page, fake, errors, shot, chooseWorkspace, plain, card, sheet, openSheet, closeSheet, signIn, signOut } = await begin({ language, mobile, scheme, viewport, label: `short-${label}` })
+  await context.route('https://accounts.google.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: providerChooser(route.request().url(), [fresh]) ?? '<!doctype html><title>Google</title>' }))
+  try {
+    await page.goto(origin + '/')
+    await signIn('bea@example.test')
+    await chooseWorkspace(TEAM)
+    await card('suporte@atendimento.example').waitFor()
+
+    // --- an owner's access, read only to an admin ---------------------------------
+    await openSheet('suporte@atendimento.example')
+    await sheet.locator('.access-panel .access-rows').waitFor()
+    const anaRow = sheet.locator(`li[data-user="${ANA}"]`)
+    await anaRow.getByText(tr('Only an owner changes an owner’s access.')).waitFor()
+    for (const flag of ['read', 'act', 'send', 'manage']) assert.equal(await sheet.locator(`input[name="${ANA}-${flag}"]`).isDisabled(), true, `${label}: an owner's ${flag} is not an admin's to change`)
+    assert.equal(await anaRow.getByRole('button', { name: tr('Save access') }).count(), 0)
+    assert.equal(await sheet.locator(`input[name="${CAROL}-send"]`).isDisabled(), false, `${label}: a member's stays the admin's to change`)
+    await anaRow.scrollIntoViewIfNeeded()
+    await shot('owner-row-read-only')
+    await closeSheet()
+
+    // --- a link into the team, straight to Google, then its nickname and the team's sync
+    const group = page.getByRole('group', { name: tr('Connect an email account') })
+    await group.waitFor()
+    await group.getByText(tr('A mailbox you connect here belongs to {team}. It is connected with sync off; you can turn on sync for {team} once it is connected.', { team })).waitFor()
+    await group.scrollIntoViewIfNeeded()
+    await shot('team-buttons')
+    const started = fake.calls.links.length
+    await group.locator('.provider-button').filter({ hasText: tr('Add a Google account') }).click()
+    await page.waitForURL(/^https:\/\/accounts\.google\.com\//, { timeout: 15_000 })
+    assert.deepEqual(fake.calls.links.slice(started), [{ provider: 'gmail', flow: 'web', workspace_id: TEAM }], `${label}: into the team shown, with no name and no agreement`)
+    await page.getByRole('link', { name: fresh, exact: true }).click()
+    await page.waitForURL(url => url.origin === origin && url.pathname === '/', { timeout: 15_000 })
+    const arrival = page.locator('.new-mailbox').filter({ hasText: tr('{email} is connected.', { email: fresh }) })
+    await arrival.waitFor({ timeout: 20_000 })
+    await page.waitForFunction(() => document.activeElement?.classList.contains('new-mailbox-heading'))
+    const agree = arrival.locator('input[name=team-sync]')
+    assert.equal(await agree.isChecked(), false, `${label}: the team's agreement is not given unless ticked`)
+    await arrival.getByText(tr('Mail sync for {team}', { team })).first().waitFor()
+    await arrival.scrollIntoViewIfNeeded()
+    await shot('team-arrival')
+    await arrival.getByLabel(tr('Nickname (optional)')).fill('Novo')
+    await agree.check()
+    const syncs = fake.calls.teamSync.length
+    await arrival.getByRole('button', { name: tr('Done') }).click()
+    await arrival.waitFor({ state: 'detached' })
+    assert.deepEqual(fake.calls.renamed.at(-1)?.display_name, 'Novo', `${label}: the nickname is a rename`)
+    assert.deepEqual(fake.calls.teamSync.slice(syncs).map(call => call.body), [{ enabled: true, version: VERSIONS.sync }], `${label}: the team's agreement names the revision shown`)
+    await card(fresh).filter({ hasText: 'Novo' }).waitFor()
+    await shot('team-connected')
+    await signOut()
+
+    // --- a member: no button, and why ----------------------------------------------
+    await signIn('carol@example.test')
+    await chooseWorkspace(TEAM)
+    await page.locator('.member-line').waitFor()
+    assert.ok(plain(await page.locator('.member-line').innerText()).includes(tr('Only the owners and admins of {team} connect mailboxes to it. Yours are connected in your personal workspace.', { team })), `${label}: a member is told who connects them`)
+    assert.equal(await page.locator('.connect-buttons').count(), 0, `${label}: a member is offered no button`)
+    await shot('member-line')
+
+    assert.deepEqual(errors, [], 'no page, script or CSP errors')
+    console.log(`ok short ${label}`)
+  } catch (error) {
+    failures.push(`short ${label}: ${error.message}`)
+    console.log(`FAIL short ${label}: ${error.stack}`)
+    if (screenshots) await page.screenshot({ path: resolve(screenshots, `teams-failure-short-${label}.png`) }).catch(() => {})
+  } finally {
+    await context.close()
+  }
+}
+
 const removedPasses = [
   { language: 'en-US', mobile: false, scheme: 'light' },
   { language: 'en-US', mobile: true, scheme: 'dark' },
@@ -1023,14 +1121,9 @@ for (const { language, mobile, scheme } of only && only !== 'removed' ? [] : rem
    * alike are told.
    */
   const linkRemovedAtGoogle = async who => {
-    await page.getByRole('button', { name: tr('Connect an email account') }).first().click()
-    await page.locator('dialog .provider-option').filter({ hasText: tr('Gmail or Google Workspace') }).click()
-    const dialog = page.locator('dialog[open]').filter({ hasText: tr('You will choose the account on Google’s page, and Google tells Mailie its address.') })
-    await dialog.waitFor()
-    assert.equal(await dialog.locator('input[name=mailbox]').count(), 0, `${who}: no address field`)
-    assert.equal(await dialog.locator('input[name=workspace]:checked').getAttribute('value'), TEAM, `${who}: into the team shown`)
     const started = fake.calls.links.length
-    await dialog.getByRole('button', { name: tr('Continue to {provider}', { provider: 'Gmail' }) }).click()
+    // The Google button goes straight to Google's account chooser, into the team shown.
+    await page.locator('.connect-buttons .provider-button').filter({ hasText: tr('Add a Google account') }).click()
     await page.getByRole('link', { name: archive, exact: true }).click()
     const refused = tr('{email} was not connected. {reason}', { email: archive, reason: tr('This address is already connected in this workspace, or was removed from it and is still kept. If it is waiting for authorization, finish it from its card; if it was removed, an owner of the workspace can recover it, or delete it for good to connect it again.') })
     await page.locator('.notice').filter({ hasText: archive }).waitFor({ timeout: 20_000 })

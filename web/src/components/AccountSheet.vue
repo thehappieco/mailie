@@ -21,10 +21,13 @@
 // person, or for a team by its owners and admins, agreeing again for the
 // team; where the edition offers it, a syncing one is paused here too. One
 // the server's operator turned off is held until its person turns it on.
-import { computed, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import type { Account } from '../api/types'
+// Its nickname is shown always, and changed in place by whoever manages it
+// (state/accounts.ts renameAccount): the field takes the focus, Save and
+// Cancel give it back to Change, and a refusal is said beside the field.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { MAILBOX_NAME_MAX, type Account } from '../api/types'
 import { edition } from '../edition'
-import { accounts, closeDetail, loadFolders, removeAccount } from '../state/accounts'
+import { accounts, closeDetail, loadFolders, removeAccount, renameAccount } from '../state/accounts'
 import type { Failure } from '../state/failure'
 import { session } from '../state/session'
 import { consent, liftHeldSync, reviewConsent, syncNow, syncRequests } from '../state/sync'
@@ -122,7 +125,39 @@ function roleBadge(folder: { role?: string; display_name: string; name: string }
   return label && label.toLowerCase() !== (folder.display_name || folder.name).toLowerCase() ? label : ''
 }
 
-watch(() => props.account.id, () => { confirming.value = false; typed.value = '' })
+/** The nickname being changed in place: the field's text, whether it is saving, and what refused it. */
+const naming = ref(false)
+const nameDraft = ref('')
+const nameBusy = ref(false)
+const nameProblem = ref<Failure | null>(null)
+const nameID = useId()
+const nameProblemID = useId()
+const nameField = ref<HTMLInputElement | null>(null)
+const nameChange = ref<HTMLButtonElement | null>(null)
+async function startNaming() {
+  nameDraft.value = props.account.display_name ?? ''
+  nameProblem.value = null
+  naming.value = true
+  await nextTick()
+  nameField.value?.focus()
+}
+async function stopNaming() {
+  naming.value = false
+  nameProblem.value = null
+  await nextTick()
+  nameChange.value?.focus()
+}
+async function saveName(name: string) {
+  if (nameBusy.value) return
+  nameBusy.value = true
+  nameProblem.value = await renameAccount(props.account.id, name)
+  nameBusy.value = false
+  if (nameProblem.value) return
+  announce(name.trim() ? t('{email} is named {name} now.', { email: props.account.email, name: name.trim() }) : t('{email} has no nickname now.', { email: props.account.email }))
+  await stopNaming()
+}
+
+watch(() => props.account.id, () => { confirming.value = false; typed.value = ''; naming.value = false; nameProblem.value = null })
 
 onMounted(() => {
   origin = document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -198,7 +233,25 @@ function authorize() {
           <dl class="facts">
             <div><dt>{{ t('Status') }}</dt><dd><StatusChip :state="account.state" /><span class="fact-note">{{ stateDetail(account) }}</span></dd></div>
             <div><dt>{{ t('Address') }}</dt><dd>{{ account.email }}</dd></div>
-            <div v-if="account.display_name"><dt>{{ t('Display name') }}</dt><dd>{{ account.display_name }}</dd></div>
+            <div class="nickname"><dt><label v-if="naming" :for="nameID">{{ t('Nickname') }}</label><template v-else>{{ t('Nickname') }}</template></dt><dd>
+              <form v-if="naming" class="nickname-edit" autocomplete="off" @submit.prevent="saveName(nameDraft)">
+                <input :id="nameID" ref="nameField" v-model="nameDraft" name="nickname" :maxlength="MAILBOX_NAME_MAX" autocomplete="off" :placeholder="t('For example: Support')"
+                  :aria-describedby="nameProblem ? nameProblemID : undefined" :aria-invalid="nameProblem ? 'true' : undefined" :disabled="nameBusy" @keydown.escape.stop.prevent="stopNaming" />
+                <p v-if="nameProblem" :id="nameProblemID" class="alert" role="alert">{{ describe(nameProblem) }}</p>
+                <span class="nickname-actions">
+                  <button class="ghost small" type="button" :disabled="nameBusy" @click="stopNaming">{{ t('Cancel') }}</button>
+                  <button class="primary small" type="submit" :disabled="nameBusy">{{ nameBusy ? t('Saving…') : t('Save name') }}</button>
+                </span>
+              </form>
+              <template v-else>
+                <span>{{ account.display_name || t('None|nickname') }}</span>
+                <span v-if="access.manage" class="nickname-actions">
+                  <button ref="nameChange" class="linkish" type="button" :aria-label="account.display_name ? t('Change the nickname') : t('Add a nickname')" @click="startNaming">{{ account.display_name ? t('Change|nickname') : t('Add|nickname') }}</button>
+                  <button v-if="account.display_name" class="linkish" type="button" :aria-label="t('Remove the nickname')" :disabled="nameBusy" @click="saveName('')">{{ t('Remove') }}</button>
+                </span>
+                <p v-if="nameProblem" class="alert" role="alert">{{ describe(nameProblem) }}</p>
+              </template>
+            </dd></div>
             <div><dt>{{ t('Provider') }}</dt><dd>{{ providerName(account.provider) }}</dd></div>
             <div><dt>{{ t('Sign-in method') }}</dt><dd>{{ authKindLabel(account.auth_kind) }}</dd></div>
             <div><dt>{{ t('Connected on') }}</dt><dd>{{ stamp(account.created_at) }}</dd></div>
@@ -339,6 +392,13 @@ function authorize() {
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .fact-note { display: block; margin-top: 6px; color: var(--text-dim); line-height: 1.5; }
 .connection-action { margin-top: 18px; }
+.nickname dd { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.nickname-actions { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; }
+.nickname-actions .linkish { min-height: 32px; padding: 4px 0; }
+.nickname-edit { display: grid; gap: 8px; width: 100%; }
+.nickname-edit input { color: var(--text); background: var(--bg-input); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; width: 100%; }
+.nickname-edit .alert, .nickname dd > .alert { margin: 0; width: 100%; }
+.nickname-edit .nickname-actions { justify-content: flex-end; }
 .section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .section-head h3 { margin: 0; }
 .section-head h3:focus { outline: none; }
@@ -374,6 +434,6 @@ function authorize() {
   .folder-name { min-width: min(100%, 150px); }
   .sheet-footer { padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   .sheet-footer button { flex: 1; }
-  .danger-zone input { font-size: 16px; }
+  .danger-zone input, .nickname-edit input { font-size: 16px; }
 }
 </style>

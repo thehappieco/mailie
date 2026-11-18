@@ -62,14 +62,14 @@ describe('the add-account form', () => {
   it('sends only what the person filled, and nothing IMAP-shaped for an OAuth provider', () => {
     const draft = { ...emptyDraft(), email: ' ana@example.test ', password: 'secret', imapHost: 'imap.example.test' }
     expect(draftRequest('gmail', draft)).toEqual({ email: 'ana@example.test', provider: 'gmail' })
-    expect(draftRequest('imap', { ...draft, smtpHost: 'smtp.example.test', displayName: ' Vendas ' })).toEqual({
-      email: 'ana@example.test', provider: 'imap', display_name: 'Vendas', password: 'secret',
+    expect(draftRequest('imap', { ...draft, smtpHost: 'smtp.example.test' })).toEqual({
+      email: 'ana@example.test', provider: 'imap', password: 'secret',
       imap_host: 'imap.example.test', imap_port: 993, smtp_host: 'smtp.example.test', smtp_port: 465, smtp_tls: 'implicit',
     })
   })
   it('sends an iCloud address with its password and nothing server-shaped, since the server fills in Apple’s servers', () => {
-    const draft = { ...emptyDraft(), email: ' ana@icloud.com ', password: 'abcd-efgh-ijkl-mnop', displayName: ' Pessoal ', imapHost: 'imap.elsewhere.example', smtpHost: 'smtp.elsewhere.example' }
-    expect(draftRequest('icloud', draft)).toEqual({ email: 'ana@icloud.com', provider: 'icloud', display_name: 'Pessoal', password: 'abcd-efgh-ijkl-mnop' })
+    const draft = { ...emptyDraft(), email: ' ana@icloud.com ', password: 'abcd-efgh-ijkl-mnop', imapHost: 'imap.elsewhere.example', smtpHost: 'smtp.elsewhere.example' }
+    expect(draftRequest('icloud', draft)).toEqual({ email: 'ana@icloud.com', provider: 'icloud', password: 'abcd-efgh-ijkl-mnop' })
   })
   it('sends the iCloud address a custom domain signs in with, since Apple refuses the custom-domain one', () => {
     const draft = { ...emptyDraft(), email: 'ana@lima.example', password: 'abcd-efgh-ijkl-mnop', imapHost: 'imap.elsewhere.example', loginUser: ' ana@icloud.com ' }
