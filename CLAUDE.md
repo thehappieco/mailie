@@ -480,7 +480,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mailbox, or one the caller neither holds anything on nor manages, is `not_found`, never
   `forbidden`; listing filters in SQL with the same rule as fetching one. No role reads, acts or
   sends: `read` passes only from an owner or an admin who reads the mailbox now, `act` and `send`
-  from any owner or admin (`act` to a reader), stored `manage` to members only. A team mailbox
+  from any owner or admin (`act` to a reader), stored `manage` to members only; an admin never
+  gives, takes or removes an owner's flags (platform decision 0060, `ownerAccessTx`: before the
+  freshness hook, and again in the write with the target's role then), owners change each other's,
+  and supplying a waiting owner the key is no flag change. A team mailbox
   someone reads always keeps a reader (keys and roles never count). An API key belongs to its
   workspace: only its owners and admins, signed in, create, list and revoke keys (a key never
   mints one; an edition with `KeysInPersonalWorkspaceOnly` creates none in a team, and lets none

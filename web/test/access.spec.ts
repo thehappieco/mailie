@@ -75,6 +75,32 @@ describe('who may give what on a team mailbox', () => {
     }
   })
 
+  it('lets an admin change no flag of an owner’s, and an owner every flag of another owner’s', () => {
+    const owner = member(ANA, { role: 'owner' })
+    const held = flags({ read: true, act: true, send: true })
+    const byAdmin = grantPermissions(context({ callerRole: 'admin', member: owner, held }))
+    expect(byAdmin.lock).toBe('owner')
+    expect(byAdmin.canAdd).toEqual(nothing)
+    expect(byAdmin.canRemove).toEqual(nothing)
+    // An owner holding nothing is listed all the same, to be read.
+    expect(grantPermissions(context({ callerRole: 'admin', member: owner })).lock).toBe('owner')
+    const byOwner = grantPermissions(context({ callerRole: 'owner', member: owner, held }))
+    expect(byOwner.lock).toBe('')
+    expect(byOwner.canRemove).toEqual({ read: true, act: true, send: true, manage: true })
+    expect(byOwner.canAdd).toEqual({ read: true, act: true, send: true, manage: false })
+  })
+
+  it('still lets an admin change an admin’s and a member’s flags', () => {
+    for (const role of ['admin', 'member']) {
+      const rules = grantPermissions(context({ callerRole: 'admin', member: member(BEA, { role }), held: flags({ send: true }) }))
+      expect(rules.lock, role).toBe('')
+      expect(rules.canAdd.read, role).toBe(true)
+      expect(rules.canRemove.send, role).toBe(true)
+    }
+    // An inactive owner holding nothing stays out of the list, as anyone.
+    expect(grantPermissions(context({ callerRole: 'admin', member: member(ANA, { role: 'owner', status: 'disabled' }) })).lock).toBe('inactive')
+  })
+
   it('ticks read with act, and unticks act with read: act never stands without read', () => {
     expect(toggleFlag(flags(), 'act', true)).toEqual(flags({ read: true, act: true }))
     expect(toggleFlag(flags({ read: true, act: true, send: true }), 'read', false)).toEqual(flags({ send: true }))

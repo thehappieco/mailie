@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Who in a team can use one of its mailboxes, and changing it
 // (docs/workspaces.md, "Grant rules"), for the team's owners and admins, the
-// only people who change it. Each person's flags are ticked and then saved;
+// only people who change it, an owner's by another owner alone (platform
+// decision 0060). Each person's flags are ticked and then saved;
 // what the caller may not change is shown as such beforehand, with why: Read
 // passes only from someone who reads the mailbox now, so an owner or an admin
 // who does not gives none, not even to themselves; Act goes only to someone
@@ -74,7 +75,9 @@ function rank(row: Row): number {
 const rows = computed<Row[]>(() => team.members.list
   .map(member => {
     const held = grantOf(member.user_id)
-    const rules = grantPermissions({ administers: admin.value, mine: mine.value, member, held, lastReader: lastReader(member) })
+    const rules = grantPermissions({
+      administers: admin.value, callerRole: workspace.value?.role, mine: mine.value, member, held, lastReader: lastReader(member),
+    })
     return { member, held, rules }
   })
   .filter(row => row.rules.lock !== 'inactive')
@@ -138,8 +141,9 @@ async function save(row: Row) {
  */
 const sealsKey = (row: Row): boolean => changed(row) && readRecipient(props.accountId, row.member.user_id, row.held, shown(row)) !== null
 
-/** Why a row's Read cannot go: said beside it, before anyone tries. */
+/** Why a row's flags, or its Read, cannot change: said beside it, before anyone tries. */
 function lockText(row: Row): string {
+  if (row.rules.lock === 'owner') return t('Only an owner changes an owner’s access.')
   if (!row.rules.lastReader || !row.held.read) return ''
   return row.member.user_id === me.value
     ? t('You are the only person who can read this mailbox: give someone else Read before you give yours up.')

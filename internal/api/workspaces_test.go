@@ -602,3 +602,46 @@ func TestTheOperatorClosesATeamOverRESTAndNobodyReachesItsMailboxUntilItReopens(
 		t.Errorf("reopened, Ana lists the team closed at %d", at)
 	}
 }
+
+func TestAnAdminChangingAnOwnersAccessIsAForbiddenAnswer(t *testing.T) {
+	// Platform decision 0060: only an owner changes an owner's access. Bea,
+	// an admin, is refused Carol's, another owner's, whatever the change;
+	// Ana, an owner, changes it.
+	h := newHarness(t, false)
+	tm := newSupportTeam(t, h)
+	h.person(t, "carol@example.com", auth.RoleMember)
+	carol, err := h.users.GetByEmail(t.Context(), "carol@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.Write(t.Context(), func(tx *sql.Tx) error {
+		ws := workspace.NewRepository(h.store, nil)
+		if _, err := tx.ExecContext(t.Context(), `UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ? AND user_id = ?`,
+			tm.id, tm.beaID); err != nil {
+			return err
+		}
+		return ws.AddMemberTx(t.Context(), tx, tm.id, carol.ID, workspace.RoleOwner, time.Now())
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refused := func(resp *http.Response, what string) {
+		t.Helper()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("%s: %d, want 403", what, resp.StatusCode)
+		}
+		if code, _ := decodeError(t, resp); code != string(service.CodeNotAuthorized) {
+			t.Errorf("%s: %s, want not_authorized", what, code)
+		}
+	}
+	path := "/v1/accounts/" + tm.shared + "/access/" + carol.ID
+	refused(h.do(t, http.MethodPut, path, tm.bea, `{"read":false,"act":false,"send":true,"manage":false}`),
+		"Bea giving Carol send")
+	if resp := h.do(t, http.MethodPut, path, tm.ana, `{"read":false,"act":false,"send":true,"manage":false}`); resp.StatusCode != http.StatusOK {
+		t.Fatalf("Ana giving Carol send: %d", resp.StatusCode)
+	}
+	refused(h.do(t, http.MethodDelete, path+"?flags=send", tm.bea, ""), "Bea taking Carol's send")
+	refused(h.do(t, http.MethodDelete, path, tm.bea, ""), "Bea taking all of Carol's access")
+	if resp := h.do(t, http.MethodDelete, path, tm.ana, ""); resp.StatusCode != http.StatusNoContent {
+		t.Errorf("Ana taking all of Carol's access: %d", resp.StatusCode)
+	}
+}

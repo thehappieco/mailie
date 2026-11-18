@@ -454,12 +454,12 @@ describe('who can use a mailbox', () => {
   const reader = { read: true, act: true, send: true, manage: false }
 
   /** Ana administers Support and reads a mailbox Bea reads too; Carol holds nothing yet. */
-  async function panel(route: Route = () => failure('not_found', 404)) {
+  async function panel(route: Route = () => failure('not_found', 404), roles: { ana?: string; carol?: string } = {}) {
     grants = [[BEA, reader], [ana.id, reader]]
     keys = []
-    await signedIn('admin', request => {
+    await signedIn(roles.ana ?? 'admin', request => {
       const { path, method } = request
-      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: 'admin' }), member(BEA, { name: 'Bea Lima' }), member(CAROL, { name: 'Carol Dias' })])
+      if (path === `/v1/workspaces/${TEAM}/members`) return json([member(ana.id, { email: ana.email, name: ana.name, role: roles.ana ?? 'admin' }), member(BEA, { name: 'Bea Lima' }), member(CAROL, { name: 'Carol Dias', role: roles.carol ?? 'member' })])
       if (path === `/v1/workspaces/${TEAM}/access`) return json(directory())
       if (path === '/v1/accounts' && method === 'GET') return json([shared])
       return route(request)
@@ -536,11 +536,33 @@ describe('who can use a mailbox', () => {
     expect(words()).toContain('You do not read this mailbox, so you cannot give Read on it, not even to yourself')
   })
 
+  it('shows an admin an owner’s access read only, and an owner every row to change', async () => {
+    await panel(undefined, { carol: 'owner' })
+    grants.push([CAROL, { ...none, read: true, send: true }])
+    await loadDirectory()
+    await flush()
+    expect(find(`li[data-user="${CAROL}"] fieldset`)!.disabled).toBe(true)
+    for (const flag of ['read', 'act', 'send', 'manage']) expect(box(CAROL, flag).disabled, flag).toBe(true)
+    expect(words(row(CAROL))).toContain('Only an owner changes an owner’s access.')
+    expect(find(`li[data-user="${CAROL}"] button`, 'Save access')).toBeNull()
+    // Bea, a member, stays Ana's to change.
+    expect(box(BEA, 'send').disabled).toBe(false)
+    mounted?.unmount()
+
+    await panel(undefined, { ana: 'owner', carol: 'owner' })
+    grants.push([CAROL, { ...none, read: true, send: true }])
+    await loadDirectory()
+    await flush()
+    expect(find(`li[data-user="${CAROL}"] fieldset`)!.disabled).toBe(false)
+    expect(box(CAROL, 'send').disabled).toBe(false)
+    expect(words(row(CAROL))).not.toContain('Only an owner changes an owner’s access.')
+  })
+
   it('says a refused change in the console’s words, never the server’s, and keeps what was ticked', async () => {
     await panel(() => failure('not_authorized', 403))
     await check(box(CAROL, 'manage'))
     await click(find(`li[data-user="${CAROL}"] button`, 'Save access'))
-    expect(words(find(`li[data-user="${CAROL}"] .alert`)!)).toBe('Only the owners and admins of the team change who has access, and they give Read only on a mailbox they read themselves.')
+    expect(words(find(`li[data-user="${CAROL}"] .alert`)!)).toBe('Only the owners and admins of the team change who has access (an owner’s, only another owner), and they give Read only on a mailbox they read themselves.')
     expect(words()).not.toContain('hunter2')
     expect(box(CAROL, 'manage').checked).toBe(true)
   })

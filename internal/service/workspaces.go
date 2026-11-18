@@ -299,6 +299,10 @@ var (
 		"members and admins do not leave a team by themselves: an owner removes an admin, and an owner or an admin a member", nil)
 	errGrantReadNotHeld = E(CodeNotAuthorized,
 		"you can grant read on a mailbox only while you read it yourself", nil)
+	// errOwnerAccess is an admin changing an owner's access to a mailbox
+	// (platform decision 0060).
+	errOwnerAccess = E(CodeNotAuthorized,
+		"only an owner changes an owner's access to a mailbox; ask another owner of the team", nil)
 	// errTeamClosed is a closed team asked to be used or changed. Its
 	// mailboxes are not found instead: they reach nobody.
 	errTeamClosed = E(CodeConflict,
@@ -888,7 +892,8 @@ func (s *Service) presentMailboxConsent(c workspace.Consent) *MailboxConsent {
 //     reads after the change; manage to members only, whom owners and admins
 //     manage beside by their role;
 //   - to whom: an active member of the mailbox's workspace, the caller
-//     included;
+//     included; never an owner by an admin (platform decision 0060), whom
+//     only another owner changes;
 //   - with what: on a mailbox that has a key, read comes with the person's
 //     grant (docs/key-scheme.md sections 9.3 and 12.13), which the giver's
 //     browser sealed from their own, after a fresh step-up, to the account
@@ -925,6 +930,17 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 	}
 	a, err := s.accessTarget(ctx, p, accountID)
 	if err != nil {
+		return Grant{}, err
+	}
+	// An admin's change of an owner's access is refused before the
+	// freshness hook is asked about it; the write asks again.
+	if err := s.precheck(ctx, func(tx *sql.Tx) error {
+		me, err := s.administratorTx(ctx, tx, p, a)
+		if err != nil {
+			return err
+		}
+		return ownerAccessTx(ctx, tx, me, a.WorkspaceID, userID)
+	}); err != nil {
 		return Grant{}, err
 	}
 	if err := s.freshGrant(ctx, p, a, userID, flags, sealed != nil); err != nil {
@@ -972,8 +988,9 @@ func (s *Service) freshGrant(ctx context.Context, p Principal, a account.Account
 
 // RevokeAccess takes flags away from a person's grant on a mailbox; none
 // named takes every one. An owner or an admin of the workspace, their own
-// flags included, or the operator; a member never, not even their own. The
-// last reader of a team mailbox keeps read.
+// flags included, or the operator; a member never, not even their own; an
+// admin never an owner's (platform decision 0060). The last reader of a team
+// mailbox keeps read.
 func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags) error {
 	if err := administers(p); err != nil {
 		return err
@@ -983,8 +1000,11 @@ func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, user
 		return err
 	}
 	_, err = s.workspaces.Revoke(ctx, a.ID, userID, drop, func(tx *sql.Tx) error {
-		_, err := s.administratorTx(ctx, tx, p, a)
-		return err
+		me, err := s.administratorTx(ctx, tx, p, a)
+		if err != nil {
+			return err
+		}
+		return ownerAccessTx(ctx, tx, me, a.WorkspaceID, userID)
 	})
 	if err != nil {
 		return fromWorkspace(err, "revoking the access failed")
@@ -1108,7 +1128,11 @@ func (s *Service) mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a acc
 		_, err := s.administratorTx(ctx, tx, p, a)
 		return err
 	}
-	if _, err := s.administratorTx(ctx, tx, p, a); err != nil {
+	me, err := s.administratorTx(ctx, tx, p, a)
+	if err != nil {
+		return err
+	}
+	if err := ownerAccessTx(ctx, tx, me, a.WorkspaceID, userID); err != nil {
 		return err
 	}
 	if !added.Read {
@@ -1120,6 +1144,32 @@ func (s *Service) mayGrantTx(ctx context.Context, tx *sql.Tx, p Principal, a acc
 	}
 	if !reads {
 		return errGrantReadNotHeld
+	}
+	return nil
+}
+
+// ownerAccessTx refuses an admin any change of an owner's access to a team
+// mailbox (platform decision 0060): giving a flag, taking one away, taking
+// all access away, the same flags again included. me is the caller's
+// membership as administratorTx read it (none for the operator, whom it does
+// not concern); the target's role is read in tx, so a target who became an
+// owner since the caller looked is refused too, whatever their membership's
+// status. Owners change each other's access; an admin an admin's, their own
+// included, and a member's. Supplying a waiting owner the mailbox's key
+// changes no flag and is not this rule's.
+func ownerAccessTx(ctx context.Context, tx *sql.Tx, me workspace.Member, workspaceID, userID string) error {
+	if me.Role != workspace.RoleAdmin {
+		return nil
+	}
+	target, err := workspace.MemberTx(ctx, tx, workspaceID, userID)
+	switch {
+	case errors.Is(err, workspace.ErrNotMember):
+		// The repository refuses a grant to someone outside the workspace.
+		return nil
+	case err != nil:
+		return err
+	case target.Role == workspace.RoleOwner:
+		return errOwnerAccess
 	}
 	return nil
 }

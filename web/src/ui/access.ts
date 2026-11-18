@@ -243,8 +243,12 @@ export function managesByRole(role: string | undefined): boolean {
   return role === 'owner' || role === 'admin'
 }
 
-/** Why nothing of a person's grant changes from here: they are not an active member, and hold nothing. */
-export type GrantLock = '' | 'inactive'
+/**
+ * Why nothing of a person's grant changes from here: they are not an active
+ * member, and hold nothing; or they are an owner and the caller an admin,
+ * who changes no owner's access (platform decision 0060).
+ */
+export type GrantLock = '' | 'inactive' | 'owner'
 
 export interface GrantPermissions {
   lock: GrantLock
@@ -261,6 +265,8 @@ export interface GrantPermissions {
 export interface GrantContext {
   /** The caller owns or administers the mailbox's workspace. */
   administers: boolean
+  /** The caller's role in the mailbox's workspace, where it is a team: an admin changes no owner's access. */
+  callerRole?: string
   /** What the caller holds on the mailbox. */
   mine: GrantFlags
   /** The person the row is for, and what they hold on the mailbox. */
@@ -278,12 +284,15 @@ export interface GrantContext {
  * who reads it after the change, and Send to anyone, without holding them;
  * Manage is given to members only, as owners and admins have it by their
  * role. Any flag may be taken away, but the last reader's Read. A member
- * changes nothing, not even their own.
+ * changes nothing, not even their own; an admin nothing of an owner's
+ * (platform decision 0060), whose access only another owner changes.
  */
 export function grantPermissions(context: GrantContext): GrantPermissions {
-  const { administers: admin, mine, member, held } = context
+  const { mine, member, held } = context
   const active = activeMember(member)
   const byRole = managesByRole(member.role)
+  const ownersOwn = context.callerRole === 'admin' && member.role === 'owner'
+  const admin = context.administers && !ownersOwn
   const canAdd = {
     read: admin && active && mine.read,
     act: admin && active,
@@ -291,7 +300,7 @@ export function grantPermissions(context: GrantContext): GrantPermissions {
     manage: admin && active && !byRole,
   }
   const canRemove = { read: admin && !context.lastReader, act: admin, send: admin, manage: admin }
-  const lock: GrantLock = !active && !holdsAny(held) ? 'inactive' : ''
+  const lock: GrantLock = !active && !holdsAny(held) ? 'inactive' : ownersOwn ? 'owner' : ''
   return { lock, canAdd, canRemove, lastReader: context.lastReader, byRole }
 }
 

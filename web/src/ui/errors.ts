@@ -284,7 +284,7 @@ function specific(failure: Failure): string | undefined {
       if (code === 'not_authorized') return t('Only the owners and admins of the team see who has access to its mailboxes.')
       return undefined
     case 'change-access':
-      if (code === 'not_authorized') return t('Only the owners and admins of the team change who has access, and they give Read only on a mailbox they read themselves.')
+      if (code === 'not_authorized') return t('Only the owners and admins of the team change who has access (an owner’s, only another owner), and they give Read only on a mailbox they read themselves.')
       if (code === 'conflict') return t('This is the only person who can read this mailbox: give someone else Read on it first.')
       if (code === 'bad_request') return t('The server did not accept this access: Act needs Read, Manage is given to members only, and only active members of the team can be given access.')
       if (code === 'not_found') return t('This person, or this mailbox, is no longer in the team.')

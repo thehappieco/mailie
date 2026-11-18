@@ -850,7 +850,9 @@ whose rules are tests of their own). A refusal is said in the console's words, f
   not even to themselves, and one who waits for its key, that they can once someone who reads it
   hands it over; a mailbox nobody can read
   (`no_reader`) says so, and that an owner removing it, and deleting it for good to link it again,
-  is the way out.
+  is the way out. To an admin an owner's row is read only (`grantPermissions`' `owner` lock: every
+  box disabled, no Save, "Only an owner changes an owner's access", platform decision 0060); an
+  owner changes every row.
   A change that only takes flags away is `DELETE …/access/{user}?flags=` naming them; one that gives
   anything sets the grant exactly (`PUT`, all four). The sheet also shows the mailbox's sync for
   the team — who turned it on, when and to which revision, and whether it is the current one or a
@@ -1053,8 +1055,8 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `DELETE /v1/workspaces/{id}/members/{user}` | owner: anyone, themselves while another owner remains; admin: members; operator | 204; their grants there go, their invites there expire |
 | `GET/POST /v1/workspaces/{id}/invites`, `DELETE …/invites/{invite}` | owner; admin (member invites); operator | team invites: `{email, role?}` → `TeamInvite` with its `url` (201) |
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`: every mailbox, its grants (each with `sealed`: its person holds the key at the current epoch), `readers` (by the one rule), `no_reader`, `epoch` (its key's current one; absent without a key), its own consent to sync (`sync`) and `linked_by`; never the index |
-| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)); operator: `manage` to members only | `{read, act, send, manage, grant?, public_key?}`, all four flags → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, after a fresh step-up when they are someone else, and `public_key`, the account key it was sealed to, with it ([Mailbox keys](#mailbox-keys)) |
-| `DELETE /v1/accounts/{id}/access/{user}?flags=` | owner or admin, their own flags included; operator | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it; taking `read` takes the person's grants |
+| `PUT /v1/accounts/{id}/access/{user}` | owner or admin (see [Workspaces](#workspaces)), an owner's only by an owner (0060); operator: `manage` to members only | `{read, act, send, manage, grant?, public_key?}`, all four flags → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, after a fresh step-up when they are someone else, and `public_key`, the account key it was sealed to, with it ([Mailbox keys](#mailbox-keys)) |
+| `DELETE /v1/accounts/{id}/access/{user}?flags=` | owner or admin, their own flags included, an owner's only by an owner (0060); operator | 204; `flags` (`read,act,send,manage`) names what goes, every flag without it; taking `read` takes the person's grants |
 | `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it | `MailboxKeyState` ([Mailbox keys](#mailbox-keys)) |
 | `POST /v1/accounts/{id}/mailbox-key` | session reading it, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant, public_key}]}` → `MailboxKeyPair` (201): the first key of a mailbox without one |
 | `PUT /v1/accounts/{id}/mailbox-key` | session, a personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`: its next key |

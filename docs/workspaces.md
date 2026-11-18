@@ -775,11 +775,11 @@ a pause.
 | see the removed mailboxes, recover one | yes | no | no | sees every workspace's; recovers operator mailboxes only |
 | delete a removed mailbox for good | yes | no | no | any |
 | re-authorize a mailbox | yes | yes | with a stored `manage` on it | operator mailboxes only |
-| grant `read` | on a mailbox they read themselves, now | likewise | no | no |
-| grant `act` | to someone who reads after the change, themselves included | likewise | no | no |
-| grant `send` | to any active member, themselves included | likewise | no | no |
+| grant `read` | on a mailbox they read themselves, now | likewise, never to an owner (platform decision 0060) | no | no |
+| grant `act` | to someone who reads after the change, themselves included | likewise, never to an owner | no | no |
+| grant `send` | to any active member, themselves included | likewise, never to an owner | no | no |
 | grant `manage` | to members | to members | no | to members |
-| revoke | any flag, their own included | any flag, their own included | no, not their own | any flag |
+| revoke | any flag, their own included | any flag, their own included, never an owner's | no, not their own | any flag |
 | create a key; list the workspace's keys; revoke any of them | yes, signed in | yes, signed in | no | lists and revokes every key (`/v1/apikeys`, with `MAIL_ADMIN_API=true`) |
 | give a key `read` on a mailbox | while they read it themselves, now | likewise | no | no |
 | give a key `act` (where it reads) or `send`; take anything out of a key | yes | yes | no | no |
@@ -796,7 +796,14 @@ included: these routes take a session or the operator's key.
 
 1. **Who.** An active owner or admin of the mailbox's workspace, re-read inside the transaction; or
    the operator, who grants `manage` to members and revokes. A member who holds a grant on it sees
-   the mailbox and is `403`; anyone else is `404`.
+   the mailbox and is `403`; anyone else is `404`. **An owner's access is changed only by another
+   owner** (platform decision 0060): an admin gives an owner no flag, takes none away and takes none
+   of their access, the same flags again included (`403`, "only an owner changes an owner's
+   access"). It is checked read-only before the freshness hook is asked, so a refused act asks
+   nothing, and again in the write's transaction with the target's role then, so a target who
+   became an owner meanwhile is refused too. Owners change each other's; an admin still changes an
+   admin's, their own included, and a member's. Supplying a waiting owner the mailbox's key is no
+   flag change, and any reader does it.
 2. **What.** `read` that the person did not hold passes only from an owner or an admin who **reads
    the mailbox themselves, now** (the flag, and on a mailbox that has a key their grant at its
    current epoch), checked in the same transaction: this stands in for Wappie's sealed grant,
@@ -817,7 +824,8 @@ included: these routes take a session or the operator's key.
 3. **To whom.** An active member of the mailbox's workspace. Nobody else, and nobody in a personal
    or the operator workspace.
 4. **Revoking** any flag is an owner's, an admin's or the operator's, under the
-   [last-reader rule](#protections); an owner or an admin drops their own flags, a member does not.
+   [last-reader rule](#protections); an owner or an admin drops their own flags, a member does not;
+   an admin never takes an owner's (1).
 5. The grant records `granted_by`: `usr_…` for a person signed in (the linker's own grant
    included), `key:<prefix>` for the operator, whose command line goes through the daemon with an
    instance admin key, or `migration` for a grant migration 0008 made; empty once the person who
@@ -1183,8 +1191,8 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `DELETE /v1/workspaces/{id}/invites/{invite_id}` | owner or admin; operator | `204`; the unused invite is deleted |
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins with the invite's role |
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`, every mailbox of the workspace |
-| `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant); session; operator for `manage` | `{read, act, send, manage, grant?, public_key?}`, all four flags required, not all false → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, beside the `public_key` it was sealed to, which must be theirs now |
-| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included; operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it; taking `read` deletes the person's grants on the mailbox |
+| `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant), an owner's only by an owner (platform decision 0060); session; operator for `manage` | `{read, act, send, manage, grant?, public_key?}`, all four flags required, not all false → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, beside the `public_key` it was sealed to, which must be theirs now |
+| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included, an owner's only by an owner (0060); operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it; taking `read` deletes the person's grants on the mailbox |
 | `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it (a person who sees only its card: `403`) | `MailboxKeyState`: the key pair, the caller's own grant, and whom they may seal to or who may seal to them |
 | `POST /v1/accounts/{id}/mailbox-key` | session reading it by the flag, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant, public_key}]}` → `MailboxKeyPair` (201), the first key of a mailbox without one; each grant names the account key it was sealed to, which must be its person's now |
 | `PUT /v1/accounts/{id}/mailbox-key` | session, the personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`, the next key; older grants deleted |
@@ -2132,6 +2140,13 @@ Test names state the guarantee. At least:
   `TestAGrantOnlyGoesToAnActiveMemberOfTheMailboxesWorkspace`;
   `TestAnotherWorkspacesMailboxIsNotFoundNeverForbidden`;
   `TestOnlyOwnersAndAdminsSeeMembersAndTheDirectory`.
+- An owner's access (platform decision 0060), in `internal/service/owneraccess_test.go`:
+  `TestAnAdminCannotGiveAnOwnerAnyFlag`, `TestAnAdminCannotTakeAFlagFromAnOwnerNorAllTheirAccess`,
+  `TestAnOwnerStillChangesAnotherOwnersAccess`, `TestAnAdminStillChangesAnAdminsAndAMembersAccess`,
+  `TestAnAdminsChangeIsRefusedInItsWriteWhenItsTargetBecameAnOwnerMeanwhile`,
+  `TestAnAdminsRefusedChangeOfAnOwnersAccessAsksTheFreshnessHookNothing`,
+  `TestTheOperatorStillRevokesAnOwnersFlags`, `TestAnAdminStillHandsAWaitingOwnerTheMailboxKey`;
+  over REST `TestAnAdminChangingAnOwnersAccessIsAForbiddenAnswer`.
 - Links and team mailboxes: `TestTheSameAddressInTwoWorkspacesIsTwoIndependentMailboxes`;
   `TestAnAddressIsLinkedOnceInAWorkspace`;
   `TestATeamMailboxNamesNoPersonAndItsLinkerHoldsReadActAndSend`;
