@@ -1233,7 +1233,12 @@ uses `POST /v1/accounts` with the address.
   grants is drawn beside the buttons and in the form, before any is granted. The providers are read
   for the person, not the workspace shown, and a read that does not answer within 15 seconds says
   so, with Try again, a late answer still landing. A page the browser restores from its
-  back/forward cache while it was leaving for the provider shows itself again, its buttons back.
+  back/forward cache while it was leaving for the provider shows itself again: a link's start,
+  which stored nothing, with its buttons back (Microsoft's address form as it was filled, when the
+  person went back to the chooser from it); an attempt that made its mailbox (the address form's)
+  or resumes one, failed as one that came back (`came_back`), its mailbox kept, so Try again goes
+  back to the provider for it and Close removes what the attempt created, as for any failure.
+  Each provider button is named by its label alone and described by its line.
   The start kept in the tab names the link, never an address. How its return ends is under
   [OAuth flows](#oauth-flows), "How the web flow ends".
 - **After the return** (`components/NewMailbox.vue`). A mailbox this tab just connected (a link's
@@ -1245,8 +1250,10 @@ uses `POST /v1/accounts` with the address.
   agreement to the revision the page shows; a server that already names another offers a reload).
   Done sends the rename when a name was typed (`PATCH /v1/accounts/{id}`) and the agreement when
   ticked, each once: a refusal is said under its own part, what succeeded is not sent again. Skip
-  sends nothing. The focus goes back to the section's heading. A password mailbox's form ends on the
-  same card.
+  sends nothing. The focus goes back to the section's heading, and the success notice the card
+  stood for goes with it. A password mailbox's form ends on the same card; a card's "Finish
+  authorization" ends on the mailbox said connected, never asked for a nickname or an agreement as
+  a new one is.
 - **For an edition** (`state/accounts.ts`, `state/oauthReturn.ts`). `keepWithProviderTrip(keep)`
   registers what an edition keeps with each trip to the provider, called with the start right after
   the core kept it; `false` takes the start back and the attempt fails `storage_refused` without
@@ -1254,7 +1261,8 @@ uses `POST /v1/accounts` with the address.
   an address, while its back may still route its return. `lastReturn` says how the last return this
   tab finished ended: the start it was, whether its attempt created the mailbox, and the mailbox or
   the failure. `readLink(id)` and `removeUnconnected(id)` read a link this person started and remove
-  a mailbox a trip left unconnected. A start's `back` routes its return for twenty minutes
+  a mailbox a trip left unconnected: only one that never connected (`neverConnected`, the server's
+  `connected`), never one that connected since and needs attention now. A start's `back` routes its return for twenty minutes
   (`BACK_LIFETIME_MS`, a link's whole life on the server), so a trip longer than ten minutes still
   comes back to the page it left from, told it expired; nothing else of a start is used past its
   ten minutes.

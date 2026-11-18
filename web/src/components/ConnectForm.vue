@@ -14,7 +14,9 @@
 // that keeps nothing for the trip), and Microsoft's address form, which the
 // person asks for (byAddress: a shared mailbox, or an organization whose
 // administrator approved only the mail permissions), with the way back to
-// the account chooser. resume finishes an existing mailbox's authorization.
+// the account chooser. resume finishes an existing mailbox's authorization,
+// which ends with the mailbox said connected, never asked for a nickname or
+// a team's agreement as a new one is.
 //
 // A new link carries the mailbox's first key (docs/key-scheme.md section
 // 12.11, state/accounts.ts), which needs the person's password from the last
@@ -65,8 +67,8 @@ const password = computed(() => signsInWithPassword(provider.value))
 const atProvider = ref(false)
 /** Microsoft links at the provider here, so its address form has the way back to the account chooser. */
 const offersChooser = computed(() => !props.resume && provider.value === 'microsoft' && linksAtProvider('microsoft'))
-/** The mailbox this attempt connected, as listed. */
-const connected = computed(() => accounts.list.find(item => item.id === connect.accountID))
+/** The mailbox this attempt created and connected, as listed: a resumed authorization's is no new mailbox. */
+const connected = computed(() => connect.created ? accounts.list.find(item => item.id === connect.accountID) : undefined)
 /** Whether the server offers iCloud, so an Apple address typed into the IMAP form is pointed there. */
 const icloudOffered = computed(() => !accounts.providersLoaded || !!accounts.providers.find(item => item.id === 'icloud')?.password)
 
@@ -149,6 +151,9 @@ async function again() {
 
 watch(() => connect.phase, phase => {
   clearInterval(ticker)
+  // Back where it began (a closed step-up, a page the browser showed again from its back/forward cache while it was
+  // leaving for the account chooser): the address form, as it was filled, never a wait for a trip that is over.
+  if (phase === 'idle') atProvider.value = false
   if (phase === 'waiting') ticker = setInterval(() => { now.value = Date.now() }, 1000)
   // Said through the live region: these paragraphs are created with their
   // text, which screen readers often skip. A failure is a role="alert"; the
@@ -244,7 +249,7 @@ onBeforeUnmount(() => {
       <div class="dialog-actions"><button class="ghost" type="button" @click="close">{{ t('Cancel') }}</button></div>
     </div>
 
-    <!-- Connected: its nickname, and a team's agreement to sync it. -->
+    <!-- Connected, made by this attempt: its nickname, and a team's agreement to sync it. A resumed one is only said. -->
     <NewMailbox v-else-if="connect.phase === 'done' && connected" :account="connected" @done="close" />
     <div v-else-if="connect.phase === 'done'" class="outcome">
       <div class="success"><AppIcon name="check" :size="18" /><span>{{ t('{email} is connected.', { email: connect.email }) }}</span></div>

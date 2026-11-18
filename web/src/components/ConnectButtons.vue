@@ -39,6 +39,8 @@ const PROVIDERS_WAIT_MS = 15_000
 
 const accessNote = edition().legal?.accountAccess
 const ids = { heading: useId(), status: useId(), alert: useId(), address: useId() }
+/** A button's name is its label alone, and its line describes it: inside the button, the line would be said twice. */
+const labelID = (id: ProviderID) => `${ids.heading}-${id}-label`
 const lineID = (id: ProviderID) => `${ids.heading}-${id}`
 const shown = computed(currentWorkspace)
 const inTeam = computed(() => shown.value?.kind === 'team')
@@ -140,9 +142,9 @@ function dismiss() {
       <p v-if="inTeam" class="hint team-line">{{ t('A mailbox you connect here belongs to {team}. It is connected with sync off; you can turn on sync for {team} once it is connected.', { team: teamName }) }}</p>
       <ul class="choices-list">
         <li v-for="id in choices" :key="id" :data-provider="id">
-          <button class="provider-button" type="button" :disabled="busy" :aria-describedby="lineID(id)" @click="press(id)">
+          <button class="provider-button" type="button" :disabled="busy" :aria-labelledby="labelID(id)" :aria-describedby="lineID(id)" @click="press(id)">
             <span class="provider-tile"><AppIcon :name="providerIcon(id)" :size="20" /></span>
-            <span class="button-text"><strong>{{ label(id) }}</strong><small :id="lineID(id)">{{ line(id) }}</small></span>
+            <span class="button-text"><strong :id="labelID(id)">{{ label(id) }}</strong><small :id="lineID(id)">{{ line(id) }}</small></span>
             <AppIcon name="chevron-right" :size="18" />
           </button>
           <div v-if="id === 'microsoft' && linksAtProvider('microsoft')" class="address-switch">

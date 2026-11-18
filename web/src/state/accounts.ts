@@ -36,7 +36,9 @@
 // keeps something of its own across the provider's trip says so
 // (keepWithProviderTrip), and reads how the last return ended (lastReturn).
 // A page the browser restores from its back/forward cache while it was
-// leaving for the provider shows itself again.
+// leaving for the provider shows itself again: a link's start back where it
+// began, an attempt that made or resumes a mailbox failed as one that came
+// back, its mailbox kept for Try again or Close.
 //
 // Removing a mailbox keeps it 30 days, recoverable by its workspace's owners
 // (docs/workspaces.md, "Removed mailboxes"), or, for one that never
@@ -49,7 +51,7 @@ import { reactive, shallowRef, watch } from 'vue'
 import * as api from '../api/accounts'
 import { ApiError } from '../api/http'
 import { listProviders } from '../api/providers'
-import { enrolled, type Account, type AccountState, type AccountSync, type AddAccountRequest, type AddAccountResult, type AuthFlow, type Folder, type Link, type LinkRequest, type Provider, type ProviderID, type RemovedMailbox } from '../api/types'
+import { enrolled, neverConnected, type Account, type AccountState, type AccountSync, type AddAccountRequest, type AddAccountResult, type AuthFlow, type Folder, type Link, type LinkRequest, type Provider, type ProviderID, type RemovedMailbox } from '../api/types'
 import { CeremonyError } from '../crypto/errors'
 import { linkKey } from '../crypto/mailbox'
 import { announce } from '../ui/announce'
@@ -138,7 +140,12 @@ export interface ConnectState {
   provider: ProviderID | ''
   email: string
   accountID: string
-  /** This attempt created the account, so abandoning it removes the account again. */
+  /**
+   * This attempt created the account: abandoning it before it connected
+   * removes the account again, and once it connected the form asks for its
+   * nickname and a team's agreement to sync it (NewMailbox), which a resumed
+   * authorization never does.
+   */
   created: boolean
   flow: AuthFlow['flow'] | ''
   /** The provider page, for a flow the person opens themselves (loopback). Always https. */
@@ -174,9 +181,15 @@ export const removed = reactive<RemovedState>(freshRemoved())
  */
 export const arrival = reactive<{ accountID: string }>({ accountID: '' })
 
-/** Done with the mailbox this tab just connected: its card goes. */
+/**
+ * Done with the mailbox this tab just connected: its card goes, and so does
+ * the notice that said it connected, which the card stood for while it was
+ * drawn: shown after it, it would repeat the card, or say sync is off just
+ * after the card turned it on.
+ */
 export function dismissArrival(): void {
   arrival.accountID = ''
+  if (accounts.notice?.kind === 'connected') accounts.notice = null
 }
 
 /**
@@ -224,8 +237,12 @@ function keepStart(start: OAuthStartInput): boolean {
 /**
  * A page that left for the provider and that the browser shows again from
  * its back/forward cache (the person pressed Back there) is no longer
- * leaving: its attempt is back where it started, so the page offers it
- * again. Installed once, by the first attempt that leaves.
+ * leaving. A link's start stored nothing: its attempt is back where it
+ * started, so the page offers it again. An attempt that made a mailbox, or
+ * resumes one, keeps it: it failed as one that came back (came_back), so Try
+ * again goes back to the provider for that mailbox, and closing it removes
+ * what it created, as for any other failure. Installed once, by the first
+ * attempt that leaves.
  */
 let restoreWatched = false
 function watchRestore(): void {
@@ -233,8 +250,10 @@ function watchRestore(): void {
   restoreWatched = true
   window.addEventListener('pageshow', event => {
     if (!event.persisted || connect.phase !== 'redirecting') return
+    const { provider, email, accountID, created } = connect
     stopConnect()
-    Object.assign(connect, freshConnect())
+    if (accountID) Object.assign(connect, freshConnect(), { provider, email, accountID, created, phase: 'failed', failure: { op: 'wait-auth', code: 'came_back' } })
+    else Object.assign(connect, freshConnect())
   })
 }
 
@@ -440,8 +459,11 @@ export async function readLink(id: string): Promise<Link | null> {
 
 /**
  * Removes a mailbox a trip left unconnected (pending its authorization, or
- * failed), as closing the attempt that created it does: one that connected
- * meanwhile stays. Already gone is what was asked for.
+ * failed), as closing the attempt that created it does: only one that never
+ * connected (neverConnected). One that connected meanwhile stays, whatever it
+ * needs now (its grant revoked, authorized again): it is a mailbox its
+ * workspace uses, never this trip's to undo. Already gone is what was asked
+ * for.
  */
 export async function removeUnconnected(id: string): Promise<void> {
   let account: Account
@@ -450,7 +472,7 @@ export async function removeUnconnected(id: string): Promise<void> {
   } catch {
     return
   }
-  if (account.state !== 'active') await removeQuietly(id)
+  if (account.state !== 'active' && neverConnected(account)) await removeQuietly(id)
 }
 
 /** Replaces an account's sync block with a newer one the server answered. */
@@ -1019,7 +1041,9 @@ export async function connectPasswordAccount(body: AddAccountRequest): Promise<b
     const result = await addWithKey(body)
     if (generation !== connectGeneration) return false
     upsert(result.account)
+    // Made by this attempt: the form asks for its nickname once it is connected.
     connect.accountID = result.account.id
+    connect.created = true
     connect.phase = 'done'
     return true
   } catch (error) {

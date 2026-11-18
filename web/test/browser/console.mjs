@@ -1509,6 +1509,8 @@ for (const { language, mobile, scheme, full } of only && only !== 'links' ? [] :
       await card.getByRole('button', { name: text.done }).click()
     } else await card.getByRole('button', { name: text.skip }).click()
     await card.waitFor({ state: 'hidden' })
+    // The notice the card stood for goes with it: it would repeat the card, or contradict what Done did.
+    assert.equal(await page.locator('.notice').filter({ hasText: email }).count(), 0, 'no notice is left once the card goes')
   }
   try {
     await page.goto(origin + '/')

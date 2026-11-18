@@ -274,6 +274,77 @@ describe('abandoning a connection', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(fetch.mock.calls.some(([, init]) => init?.method === 'DELETE')).toBe(false)
   })
+
+  it('removes a mailbox a trip left only while it never connected, never one that connected since and needs attention now', async () => {
+    let shown = account()
+    const { store, fetch } = await signedIn(({ path, method }) => {
+      if (method === 'DELETE') return new Response(null, { status: 204 })
+      return path === '/v1/accounts/acc_0000000000000001' ? json(shown) : failure('not_found', 404)
+    })
+    // Connected once: its grant revoked at the provider, its client gone, or authorized again (pending once more), it stays.
+    for (const left of [
+      account({ state: 'needs_reauth', connected: true }),
+      account({ state: 'error', state_reason: 'client_missing', connected: true }),
+      account({ state: 'pending_auth', connected: true }),
+      account({ state: 'active', connected: true }),
+    ]) {
+      shown = left
+      await store.removeUnconnected(left.id)
+      expect(deletes(fetch), left.state).toEqual([])
+    }
+    // Never connected: pending its authorization, or failed (the consent declined), it goes.
+    for (const left of [account({ state: 'pending_auth', connected: false }), account({ state: 'error', connected: false })]) {
+      shown = left
+      await store.removeUnconnected(left.id)
+    }
+    expect(deletes(fetch)).toHaveLength(2)
+  })
+})
+
+describe('a page the browser restores from its back/forward cache', () => {
+  const web = { flow: 'web', auth_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize?state=x', state: 'x', expires_at: now() + 600 }
+  function restores() {
+    const shown: ((event: { persisted: boolean }) => void)[] = []
+    vi.stubGlobal('window', { addEventListener: (type: string, listener: (event: { persisted: boolean }) => void) => { if (type === 'pageshow') shown.push(listener) } })
+    return () => { for (const listener of shown) listener({ persisted: true }) }
+  }
+
+  it('keeps an attempt that created its mailbox, as one that came back: Try again resumes it, and closing removes it', async () => {
+    const restore = restores()
+    const { store, fetch, navigate } = await signedIn(({ path, method }) => {
+      if (path === '/v1/accounts' && method === 'POST') return json({ account: account({ provider: 'microsoft', email: 'compartilhada@example.test' }), auth: web }, 201)
+      if (path.endsWith('/oauth/start')) return json(web)
+      if (method === 'DELETE') return new Response(null, { status: 204 })
+      return json(account({ provider: 'microsoft', email: 'compartilhada@example.test' }))
+    })
+    await store.connectOAuthAccount({ provider: 'microsoft', email: 'compartilhada@example.test' })
+    expect(store.connect.phase).toBe('redirecting')
+    restore()
+    expect(store.connect).toMatchObject({ phase: 'failed', provider: 'microsoft', email: 'compartilhada@example.test', accountID: 'acc_0000000000000001', created: true })
+    expect(store.connect.failure).toEqual({ op: 'wait-auth', code: 'came_back' })
+    // Try again goes back to the provider for the same mailbox, still this attempt's.
+    expect(await store.retryConnect()).toBe(true)
+    expect(starts(fetch)).toBe(1)
+    expect(navigate).toHaveBeenCalledTimes(2)
+    restore()
+    expect(store.connect).toMatchObject({ phase: 'failed', accountID: 'acc_0000000000000001', created: true })
+    store.cancelConnect()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(deletes(fetch)).toEqual([expect.stringMatching(/\/v1\/accounts\/acc_0000000000000001\?confirm=acc_0000000000000001$/)])
+  })
+
+  it('keeps a resumed authorization as one that came back, and never removes its mailbox when it is closed', async () => {
+    const restore = restores()
+    const existing = account({ provider: 'microsoft', state: 'needs_reauth', connected: true })
+    const { store, fetch } = await signedIn(({ path }) => path.endsWith('/oauth/start') ? json(web) : json(existing))
+    await store.resumeAuthorization(existing)
+    expect(store.connect.phase).toBe('redirecting')
+    restore()
+    expect(store.connect).toMatchObject({ phase: 'failed', accountID: existing.id, created: false, failure: { op: 'wait-auth', code: 'came_back' } })
+    store.cancelConnect()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(deletes(fetch)).toEqual([])
+  })
 })
 
 describe('leaving for the provider', () => {

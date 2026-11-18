@@ -868,6 +868,17 @@ export function isUser(v: unknown, strict = false): v is User {
     && optional(v.public_key, isB64(32))
 }
 
+/**
+ * Whether a mailbox never connected: nothing to sign in to it with was ever
+ * stored, so removing it deletes it at once. The server says (connected); its
+ * state does not, since authorizing a mailbox that connected again puts it
+ * back to pending_auth. A daemon that does not say leaves its state alone to
+ * tell.
+ */
+export function neverConnected(account: Pick<Account, 'state' | 'connected'>): boolean {
+  return account.connected === undefined ? account.state === 'pending_auth' : !account.connected
+}
+
 /** Whether the person holds an account key: enrolled in the key scheme, with a public key the server serves. */
 export function enrolled(user: User | null | undefined): boolean {
   return !!user?.public_key && !!user.seal_id

@@ -16,10 +16,11 @@ import { mount, type Mounted } from './mount'
 import type { FlowKind } from '../src/api/types'
 import AccountsPanel from '../src/components/AccountsPanel.vue'
 import StepUpPrompt from '../src/components/StepUpPrompt.vue'
-import { accounts, arrival, connect, loadAccounts, navigation, resetConnect } from '../src/state/accounts'
+import { accounts, arrival, connect, finishOAuthReturn, loadAccounts, navigation, resetConnect } from '../src/state/accounts'
+import { captureOAuthReturn, rememberOAuthStart } from '../src/state/oauthReturn'
 import { adoptSession, signOut } from '../src/state/session'
 import { stepUpPrompt } from '../src/state/stepUp'
-import { account, failure, json, now, reply, type Route, serve, stubPage } from './support'
+import { account, failure, json, now, ORIGIN, reply, type Route, serve, stubPage } from './support'
 
 interface Seen { path: string; method: string; body: unknown }
 let seen: Seen[] = []
@@ -75,11 +76,34 @@ async function section(options: Options = {}) {
 }
 const button = (label: string) => find('.provider-button', label)
 
+/**
+ * What the page hears of the back/forward cache: the listeners the core
+ * installs on pageshow, once for the whole file (state/accounts.ts installs
+ * its own at the first attempt that leaves), which a spec sends.
+ */
+const pageshow: ((event: { persisted: boolean }) => void)[] = []
+const restoreFromCache = () => { for (const listener of pageshow) listener({ persisted: true }) }
+
+/**
+ * The provider's return to this page for a consent of mailbox, which the
+ * attempt that left created (the address form's), captured as the page loads
+ * it: finishOAuthReturn then posts it.
+ */
+function returnFor(mailbox: ReturnType<typeof account>) {
+  vi.stubGlobal('location', new URL(`${ORIGIN}/oauth/return?code=c0de&state=${'s'.repeat(43)}`))
+  expect(rememberOAuthStart({ account_id: mailbox.id, provider: mailbox.provider, email: mailbox.email, created: true, back: '/' })).toBe(true)
+  expect(captureOAuthReturn()).toBe(true)
+  vi.stubGlobal('location', new URL(`${ORIGIN}/`))
+}
+
 beforeEach(() => {
   stubPage()
   seen = []
   navigate.mockReset()
   navigation.assign = navigate
+  vi.spyOn(window, 'addEventListener').mockImplementation(((type: string, listener: (event: { persisted: boolean }) => void) => {
+    if (type === 'pageshow') pageshow.push(listener)
+  }) as typeof window.addEventListener)
 })
 afterEach(async () => {
   for (const each of mounted) each.unmount()
@@ -102,6 +126,8 @@ describe('the buttons that connect a mailbox', () => {
     expect(group.querySelectorAll('.provider-button').map(item => words(item.querySelector('strong')!)))
       .toEqual(['Add a Google account', 'Add a Microsoft account', 'Add an iCloud account', 'Other server (IMAP)'])
     const google = button('Add a Google account')!
+    // Named by its label alone, and described by its line: a screen reader says the line once.
+    expect(words(page.querySelector(`[id="${google.getAttribute('aria-labelledby')}"]`)!)).toBe('Add a Google account')
     expect(words(page.querySelector(`[id="${google.getAttribute('aria-describedby')}"]`)!)).toBe('Gmail or Google Workspace')
     expect(group.querySelectorAll('[role=status]')).toHaveLength(1)
     expect(group.querySelectorAll('[role=alert]')).toHaveLength(1)
@@ -207,6 +233,53 @@ describe('the buttons that connect a mailbox', () => {
     expect(find('dialog input[name=mailbox]')).not.toBeNull()
   })
 
+  it('shows Microsoft’s address form again, as it was filled, when the page comes back from the account chooser it went back to', async () => {
+    await section()
+    await vi.waitFor(() => expect(button('Add a Microsoft account')).not.toBeNull())
+    await click(find('.connect-buttons .address-switch button', 'Enter the mailbox’s address instead'))
+    await flush()
+    await fill(find('dialog input[name=mailbox]'), 'compartilhada@example.test')
+    await click(find('dialog .address-switch button', 'Use the account I choose at Microsoft'))
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledTimes(1))
+    // Back at Microsoft: the same page, from the cache. A link stored nothing, so its attempt is back where it began.
+    restoreFromCache()
+    await flush()
+    expect(connect.phase).toBe('idle')
+    expect(find('dialog input[name=mailbox]')?.value).toBe('compartilhada@example.test')
+    expect(words(find('dialog')!)).not.toContain('Preparing the sign-in…')
+  })
+
+  it('keeps the mailbox Microsoft’s address form made when the page comes back from Microsoft: Try again goes back, and Close removes it', async () => {
+    const web = { flow: 'web', auth_url: CHOOSER, state: 'x', expires_at: now() + 600 }
+    await section({
+      route: ({ path, method }) => {
+        if (path === '/v1/accounts/acc_0000000000000002/oauth/start' && method === 'POST') return json(web)
+        if (path === '/v1/accounts/acc_0000000000000002' && method === 'DELETE') return new Response(null, { status: 204 })
+        return undefined as never
+      },
+    })
+    await vi.waitFor(() => expect(button('Add a Microsoft account')).not.toBeNull())
+    await click(find('.connect-buttons .address-switch button', 'Enter the mailbox’s address instead'))
+    await flush()
+    await fill(find('dialog input[name=mailbox]'), 'compartilhada@example.test')
+    await submit(find('dialog form'))
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledTimes(1))
+    restoreFromCache()
+    await flush()
+    expect(words(find('dialog [role=alert]')!)).toBe('You came back from the provider before the authorization was finished. Try again to finish it.')
+    // Not the form again, which the server would refuse for the address its pending mailbox holds.
+    expect(find('dialog input[name=mailbox]')).toBeNull()
+    await click(find('dialog .dialog-actions button', 'Try again'))
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledTimes(2))
+    expect(sent('POST', '/v1/accounts')).toHaveLength(1)
+    expect(sent('POST', '/v1/accounts/acc_0000000000000002/oauth/start')).toHaveLength(1)
+    restoreFromCache()
+    await flush()
+    await click(find('dialog .dialog-actions button', 'Close'))
+    await vi.waitFor(() => expect(sent('DELETE', '/v1/accounts/acc_0000000000000002')).toHaveLength(1))
+    expect(find('dialog')).toBeNull()
+  })
+
   it.each(['Add a Google account', 'Add a Microsoft account'])('asks for the address behind %s on a server with only the installed client’s flow', async label => {
     await section({ flows: ['loopback'] })
     await vi.waitFor(() => expect(button(label)).not.toBeNull())
@@ -282,6 +355,70 @@ describe('the buttons that connect a mailbox', () => {
     await vi.waitFor(() => expect(find('.new-mailbox')).toBeNull())
     expect(sent('PATCH', `/v1/accounts/${made.id}`)).toEqual([{ display_name: 'Vendas' }, { display_name: 'Vendas' }])
     expect(accounts.list.find(item => item.id === made.id)!.display_name).toBe('Vendas')
+  })
+})
+
+describe('a mailbox connected again', () => {
+  it('leaves no notice behind once the new mailbox is done with, after Skip or Done', async () => {
+    const made = account({ id: 'acc_0000000000000009', email: 'ana.lima@gmail.com', provider: 'microsoft', state: 'active', connected: true })
+    await section({
+      route: ({ path, method, body }) => {
+        if (path === '/v1/accounts/oauth/callback' && method === 'POST') return json(made)
+        if (path === `/v1/accounts/${made.id}` && method === 'PATCH') return json({ ...made, display_name: (body as { display_name: string }).display_name })
+        return undefined as never
+      },
+    })
+    await vi.waitFor(() => expect(accounts.loaded).toBe(true))
+    for (const press of ['Skip', 'Done']) {
+      returnFor(made)
+      await finishOAuthReturn()
+      await flush()
+      // The card stands for the notice that says it connected.
+      expect(find('.new-mailbox'), press).not.toBeNull()
+      expect(find('.notice'), press).toBeNull()
+      if (press === 'Done') {
+        await fill(find('.new-mailbox input[name=nickname]'), 'Vendas')
+        await submit(find('.new-mailbox form'))
+      } else await click(find('.new-mailbox button', 'Skip'))
+      await vi.waitFor(() => expect(find('.new-mailbox'), press).toBeNull())
+      await flush()
+      expect(find('.notice'), press).toBeNull()
+      expect(accounts.notice, press).toBeNull()
+    }
+  })
+
+  it('says a mailbox whose authorization was finished is connected, and asks nothing a new one is asked', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    const lapsed = account({ id: 'acc_0000000000000005', email: 'ana.lima@gmail.com', state: 'needs_reauth', connected: true, access: { read: true, act: true, send: true, manage: true } })
+    let state: 'needs_reauth' | 'pending_auth' | 'active' = 'needs_reauth'
+    await section({
+      flows: ['loopback'],
+      list: [lapsed],
+      route: ({ path, method }) => {
+        if (path === `/v1/accounts/${lapsed.id}/oauth/start` && method === 'POST') {
+          state = 'pending_auth'
+          return json({ flow: 'loopback', auth_url: CHOOSER, state: 'x', expires_at: now() + 600 })
+        }
+        if (path === `/v1/accounts/${lapsed.id}` && method === 'GET') {
+          const answer = json({ ...lapsed, state })
+          if (state === 'pending_auth') state = 'active'
+          return answer
+        }
+        return undefined as never
+      },
+    })
+    await vi.waitFor(() => expect(accounts.loaded).toBe(true))
+    await click(find('.account-card button.authorize', 'Finish authorization'))
+    await vi.waitFor(() => expect(connect.phase).toBe('waiting'))
+    await vi.advanceTimersByTimeAsync(7_000)
+    await vi.waitFor(() => expect(connect.phase).toBe('done'))
+    await flush()
+    expect(words(find('dialog')!)).toContain('ana.lima@gmail.com is connected.')
+    expect(find('dialog .new-mailbox')).toBeNull()
+    expect(find('dialog input[name=nickname]')).toBeNull()
+    expect(find('dialog input[name=team-sync]')).toBeNull()
+    await click(find('dialog .dialog-actions button', 'Done'))
+    expect(find('dialog')).toBeNull()
   })
 })
 

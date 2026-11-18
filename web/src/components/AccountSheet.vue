@@ -25,7 +25,7 @@
 // (state/accounts.ts renameAccount): the field takes the focus, Save and
 // Cancel give it back to Change, and a refusal is said beside the field.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
-import { MAILBOX_NAME_MAX, type Account } from '../api/types'
+import { MAILBOX_NAME_MAX, neverConnected as isNeverConnected, type Account } from '../api/types'
 import { edition } from '../edition'
 import { accounts, closeDetail, loadFolders, removeAccount, renameAccount } from '../state/accounts'
 import type { Failure } from '../state/failure'
@@ -85,7 +85,7 @@ const linker = computed(() => admin.value ? actorName(directoryEntry(props.accou
  * once. The server says (connected); its state does not, since authorizing
  * it again puts a mailbox that connected back to pending_auth.
  */
-const neverConnected = computed(() => props.account.connected === undefined ? props.account.state === 'pending_auth' : !props.account.connected)
+const neverConnected = computed(() => isNeverConnected(props.account))
 /**
  * A workspace's mailboxes are removed by its owners: a team's active owners,
  * a personal mailbox's person; and an admin abandons a link of their own that
