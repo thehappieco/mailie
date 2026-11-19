@@ -1559,15 +1559,27 @@ one, leaves all of it empty.
 - **An extension's own state** (`extension_state`): a few keys and values per extension, a value of
   a mebibyte at most, kept beside the data it describes so that a restore takes both back together
   (`store.ExtensionState`, `ExtensionStateKeys`, `WriteExtensionState`).
-- **What changed** (`workspace_changes`, migration 0023): one row per workspace from another
-  source, with the seq of the last change to anything a snapshot of who holds what there shows —
-  its mailboxes (linked, deleted, their state, name, removal, sync consent and hold), the flags,
-  mailbox keys and sealed grants on them, its members (their role, status and hold) and those
-  members' own status, suspension, account key and sync consent, its name and closure, and its
-  journal. The schema's triggers write it in the transaction of the change; a seq is never reused
-  and a workspace's only rises; a deleted workspace's last mark stays, so an extension learns it is
-  gone. An extension reads the marks above the last it saw (`store.WorkspaceChanges`). A local
-  workspace is never marked.
+- **What changed** (`workspace_changes`, migrations 0023 and 0027): one row per workspace from
+  another source, with the seq of the last change to anything an extension reports of it — its
+  mailboxes (linked, deleted, their state and its reason, name, removal, attribution, sync consent,
+  agreement and its text, hold, pause and who paused, sent copy, host, first connection and what
+  their server is), the flags, mailbox keys and sealed grants on them, its members (their role,
+  status and hold) and those members' own status, suspension, account key and sync consent, its
+  name and closure, and its journal. How much of a mailbox is indexed and when it last synced are
+  measured at each report, never marked. The schema's triggers write it in the transaction of the
+  change; a seq is never reused and a workspace's only rises; a deleted workspace's last mark stays,
+  so an extension learns it is gone. An extension reads the marks above the last it saw
+  (`store.WorkspaceChanges`). A local workspace is never marked.
+- **Which people changed** (`person_changes`, migration 0027): one row per person an external
+  identity signs in, with the seq of the last change to their own settings as an extension reports
+  them — their consents (moment, revision, withdrawal), their account key, their last sign-out
+  everywhere, and their notices: given, dismissed, withdrawn, gone with their journal entry, or
+  changed by what they show (the mailbox removed, recovered or deleted for good, its label, hint
+  and actor forgotten, the actor leaving or rejoining the notice's workspace, that workspace
+  deleted). A first sign-in, which links the identity, marks the new person. Each person has one
+  mark however many notices one write touched (the triggers select each holder once); a deleted
+  person's mark goes with their identity. A person no identity signs in is never marked, so the
+  table stays empty on a server that follows no directory (`store.PersonChanges`).
 - **The journal as an outbox.** An extension reads a workspace's journal in order, from a cursor
   (`mailbox_events_workspace`), and reports it elsewhere: the strandings, with the person each
   lost, and a link that never connected deleted in such a workspace
@@ -1698,7 +1710,47 @@ nothing, and one question it asks. No transport calls any of them, and none take
   `MailboxJournalHead` is the newest seq.
 - **The followed workspaces** (`FollowedWorkspaces`: every workspace whose source is not the local
   one, with its kind, its person and whether it is closed) and **which changed**
-  (`WorkspaceChanges`: the marks the schema writes, after a seq, with the head, read at one moment).
+  (`WorkspaceChanges`: the marks the schema writes of what an extension reports of a workspace,
+  after a seq, with the head, read at one moment).
+- **A workspace's settings** (`service.WorkspaceReport`: its snapshot, below, and its settings, in
+  one read-only transaction, measured at one moment): whether it is used now (`closed`, then
+  `withheld` for a team where the edition withholds teams, then `usable`), the least role that may
+  link a mailbox there (the owner of a personal workspace, an admin of a team, nobody where it is
+  not usable), the sync text a team's agreement names now, and, in the snapshot's order, every
+  mailbox, live and removed until it is deleted for good: its provider as presented (`icloud` for
+  generic IMAP on Apple's servers), how it signs in, its state and, in error or needing a new
+  authorization, a reason from a fixed list matched exactly on its state's fixed text
+  (`scope_missing`, `mailbox_refused`, `token_rejected`, `unproved`, else `other`), when it first
+  connected (not known for an OAuth mailbox connected before migration 0027), the person who linked
+  it, its key's epoch, whether Mailie itself files the copy of what is sent from it (the send
+  path's own rule, by what the last login recorded of the server: never for Gmail or Microsoft,
+  nor a Gmail server reached as generic IMAP, nor while no login recorded it), whether nobody reads
+  it (or would once recovered), whether its sync is on (its person's consent, or its team's
+  agreement, and nothing holding it), the team's agreement (who, when, to which text, and whether
+  it is still the one migration 0011 bound to its linker), its pause (who, when; a recovery's names
+  the recoverer), the operator's hold, how much of it is indexed (`none`, `partial`, `complete`)
+  and when it last synced, both as of the read, and a removed one's removal, end and whether any
+  of its index is still there (a folder or a message, never its consent); and every member, with
+  their role, their status (`disabled` here, `suspended`, `held`, a membership `disabled`
+  otherwise, else `active`) and whether they have an account key. Never an address, a folder's
+  name or a server's error. Each list has its own bound (1000 mailboxes, 5000 members): over it,
+  the list is left out and said to be (`MailboxesOver`, `MembersOver`), and a workspace too large
+  for its snapshot (`SnapshotTooLarge`) still has its settings read. `MailboxReasons`,
+  `MailboxStates`, `MailboxProviders`, `IndexStates`, `MemberStatuses` and `Availabilities` are
+  every value it says, for an extension to map one by one.
+- **A person's own settings** (`service.PersonSettings`, in one read, for anybody here): their
+  consents to sync, actions and sending (moment, revision, whether it is the revision accepted now,
+  and for actions and sending when they last withdrew it), the revisions accepted now
+  (`ConsentTexts`), whether they have an account key, when they last signed out of every session
+  (`users.signed_out_everywhere_at`, migration 0027: written by that act alone, not by a password
+  change, a reset, a recovery or a directory's revocation), and their newest notices, at most a
+  thousand at a time and saying when there were more, each named by what the journal kept of its
+  mailbox (its label and masked hint, never the address the console's own list shows while the
+  mailbox is kept), with where the mailbox stands now (live, removed until when, deleted and when),
+  its entry's actor and cause raw, and the person who acted while they are a member of the
+  notice's workspace. A notice that does not match where its mailbox stands is left out and logged.
+- **Which people changed** (`service.PersonChanges`: the marks migration 0027 writes, after a seq,
+  with the head, read at one moment), for people an identity signs in only.
 - **A snapshot** of who holds what on a followed workspace (`service.AccessSnapshot`, in one
   read-only transaction, `store.ReadTx`), at most 1000 mailboxes and 5000 people on one (`409`
   otherwise): every mailbox, live and removed until it is deleted for good, with its label and
@@ -2054,6 +2106,23 @@ refuses every older binary: the way back is the backup taken before. The tests i
 `internal/store/migrate_twentyfive_test.go` hold every table's rows, the journal's high-water mark
 and its triggers, the conversion case by case, and each new trigger.
 
+## Migration 0027
+
+`0027_person_changes.sql`, an ordinary migration: `users.signed_out_everywhere_at`,
+`accounts.connected_at` and `accounts.server_kind`, the table `person_changes` and its triggers
+([What an extension reads](#what-an-extension-reads-and-the-freshness-of-an-act)), the trigger that
+records a mailbox's first connection with its first credential (`credentials_connected`, which an
+upsert that updates fires not), and `accounts_change_update` written again to watch every column of
+a mailbox a workspace's settings show. Nobody has signed out everywhere that the schema knows of;
+`connected_at` takes `created_at` only for a password mailbox with its password stored, whose row
+is written only once a login with it worked, and stays 0, not known, for every other mailbox,
+since an OAuth mailbox's row may have waited days for its consent and nothing kept its first
+credential's moment; `server_kind` is empty until a login records it (a password mailbox's check
+when it is added, every sync login when it changes). The migration marks nothing. No other value
+of a schema-26 database changes. The tests in `internal/store/migrate_twentyseven_test.go` hold
+every row and every object as they were but those, which mailboxes take a moment, the new
+values' bounds, and every column the workspace marks watch now.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -2119,6 +2188,42 @@ with no children of its own, is the one exception, named in the test).
 
 Test names state the guarantee. At least:
 
+- What an extension reports of a workspace's settings and a person's own (migration 0027): the
+  migration's in `internal/store/migrate_twentyseven_test.go`
+  (`TestMigrationTwentySevenAddsThePersonMarksTheSignOutRecordAndTheFirstConnectionAndChangesNothingElse`,
+  `TestAWorkspaceIsMarkedWhenAMailboxsReasonAttributionAgreementPauseSentCopyOrServerKindChanges`);
+  the store's marks in `personchanges_test.go` and `settingsmarks_test.go`
+  (`TestAPersonIsMarkedWhenANoticeIsGivenDismissedWithdrawnOrSwept`,
+  `TestAPersonIsMarkedWhenANoticeGoesWithItsJournalEntryOrItsClosedPersonsMailboxes`,
+  `TestAPersonNoIdentitySignsInIsNeverMarked`, `TestADeletedPersonsMarkGoesWithThem`,
+  `TestPersonChangesListEachPersonOnceAtTheirLastMark`,
+  `TestAMailboxsSyncBookkeepingFoldersAndMessagesMarkNothing`); the sign-out's in
+  `internal/auth/sessions_test.go` (`TestSigningOutEverywhereRecordsItsMomentInTheSameWrite`,
+  `TestSigningOutOfOneSessionOrChangingThePasswordRecordsNoSignOutEverywhere`); what a login found
+  the server to be and when a mailbox first connected, in `internal/account/serverkind_test.go`,
+  `internal/sync/serverkind_test.go` and `cmd/mailserver/rewrap_test.go`
+  (`TestAPasswordMailboxRecordsWhatItsServerIsWhenItIsAdded`,
+  `TestASyncLoginRecordsWhetherTheServerIsGmailsAndWritesOnlyOnAChange`,
+  `TestAMailboxKeepsTheMomentItFirstConnectedThroughAReauthorization`,
+  `TestARewrapKeepsTheMomentEachMailboxFirstConnected`); the workspace's read in
+  `internal/workspace/settings_test.go` and `personmarks_test.go`
+  (`TestTheSettingsReadTheSnapshotsMailboxesInItsOrder`, `TestASettingsReadNeverCarriesAnAddress`,
+  `TestASettingsReadSaysWhenAListIsOverItsBoundAndReadsTheOtherWhole`,
+  `TestARemovedMailboxKeepsItsIndexExactlyWhileFoldersOrMessagesRemain`,
+  `TestALocalLeaveAndRejoinMarkTheHoldersOfTheirNoticesOnceAndCommit`); the service's in
+  `internal/service/settings_test.go` and `personsettings_test.go`
+  (`TestAWorkspaceReportReadsItsSnapshotAndItsSettingsAtOneMoment`,
+  `TestAWorkspaceReportTooLargeForItsSnapshotStillReadsItsSettings`,
+  `TestEveryStateReasonMapsToOneReasonCodeAndOnlyOnAnErrorOrANeedsReauth`,
+  `TestAMailboxFilesItsSentCopyInTheReportExactlyWhereTheSendPathWould`,
+  `TestARemovedMailboxSaysItsEndAndWhetherItsIndexIsStillThere`,
+  `TestAMembersStatusIsDisabledSuspendedHeldThenActiveInThatOrder`,
+  `TestAClosedTeamIsClosedBeforeItIsWithheldAndNobodyLinksInEither`,
+  `TestAPersonsNoticesComeFromTheJournalsLabelAndHintNeverFromTheAddress`,
+  `TestANoticesActorIsKnownOnlyWhileTheyAreAMemberOfItsWorkspace`,
+  `TestOnlyAnOwnerOrAnAdminIsTheActorOfATeamMailboxsNoticeThatNamesOne`,
+  `TestAPersonHoldingSeveralNoticesOfOneMailboxOrOneActorIsMarkedOnceAndEveryWriteSucceeds`,
+  `TestAFirstSignInThroughAnIdentityMarksTheNewPerson`, and the rest).
 - Pausing one mailbox's sync (migration 0025): the migration's in
   `internal/store/migrate_twentyfive_test.go` (`TestMigrationTwentyFiveRebuildsTheJournalAndPausesOnlyWhatARecoveryHeld`,
   `TestMigrationTwentyFiveTurnsARecoverysHoldIntoItsPauseAndKeepsTheOperators`, and one per trigger);

@@ -506,9 +506,13 @@ func (r *Registry) Add(ctx context.Context, req AddRequest) (Account, *AuthFlow,
 		return Account{}, nil, err
 	}
 	if a.AuthKind == "password" {
-		if err := r.checkLogin(checkCtx, a, req.Password); err != nil {
+		// What the server turned out to be is kept with the mailbox from
+		// its first moment (Account.ServerKind).
+		kind, err := r.checkLogin(checkCtx, a, req.Password)
+		if err != nil {
 			return Account{}, nil, err
 		}
+		a.ServerKind = kind
 	}
 
 	// The login check above can take seconds; the person may have been
@@ -562,11 +566,12 @@ func (r *Registry) checkHosts(ctx context.Context, hosts ...string) error {
 }
 
 // checkLogin dials the account's IMAP server and logs in with the password,
-// through exactly the code that will later sync it.
-func (r *Registry) checkLogin(ctx context.Context, a Account, password string) error {
+// through exactly the code that will later sync it, and returns what the
+// server is (ServerKindOf), from what it advertised once logged in.
+func (r *Registry) checkLogin(ctx context.Context, a Account, password string) (string, error) {
 	mb, err := imapprovider.New(r.providerConfig(a, provider.Credentials{User: a.LoginUser, Password: password}))
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrUnreachable, err)
+		return "", fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
 	session, err := mb.Open(ctx, provider.RoleInteractive)
 	if err != nil {
@@ -578,16 +583,17 @@ func (r *Registry) checkLogin(ctx context.Context, a Account, password string) e
 	}
 	switch {
 	case errors.Is(err, netguard.ErrPrivateAddress):
-		return fmt.Errorf("%w: %w", ErrPrivateHost, err)
+		return "", fmt.Errorf("%w: %w", ErrPrivateHost, err)
 	case errors.Is(err, provider.ErrAuthFailed), errors.Is(err, provider.ErrNeedsReauth),
 		errors.Is(err, provider.ErrNotConnected):
-		return fmt.Errorf("%w: %w", ErrLoginRefused, err)
+		return "", fmt.Errorf("%w: %w", ErrLoginRefused, err)
 	case err != nil:
-		return fmt.Errorf("%w: %w", ErrUnreachable, err)
+		return "", fmt.Errorf("%w: %w", ErrUnreachable, err)
 	}
+	kind := ServerKindOf(session.Caps(), a.IMAPHost)
 	//nolint:errcheck // the login worked, which is all this was for
 	_ = session.Close()
-	return nil
+	return kind, nil
 }
 
 // StartAuth begins or restarts consent for an account.

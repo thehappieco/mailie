@@ -140,11 +140,12 @@ func TestEveryChangeToWhatASnapshotShowsMarksItsWorkspace(t *testing.T) {
 	}
 	// What a snapshot does not show moves no mark: a mailbox's sync
 	// bookkeeping, a state written again as it was, a member's role written
-	// again, a person's name.
+	// again, a person's name. (Its state's reason marks since 0027, which
+	// a workspace's settings show.)
 	a, b = f.mark("ext_a"), f.mark("ext_b")
 	for what, query := range map[string]string{
 		"a mailbox's bookkeeping": `UPDATE accounts SET last_ok_at = 999, consecutive_failures = 3, next_retry_at = 999,
-			state_reason = 'x', last_idle_event_at = 999, last_error = 'y', sync_tier_resolved = 'uidpoll' WHERE id = 'acc_a1'`,
+			last_idle_event_at = 999, last_error = 'y', sync_tier_resolved = 'uidpoll' WHERE id = 'acc_a1'`,
 		"a state written again":  `UPDATE accounts SET state = state, display_name = display_name WHERE id = 'acc_a1'`,
 		"a role written again":   `UPDATE workspace_members SET role = role, status = status WHERE workspace_id = 'ext_a'`,
 		"flags written again":    `UPDATE mailbox_access SET read = read WHERE account_id = 'acc_a1'`,

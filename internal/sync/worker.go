@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/store"
 )
@@ -319,6 +320,13 @@ func (w *worker) connected(ctx context.Context) (err error) {
 	w.setTier(tier)
 	if tier != acct.SyncTierResolved {
 		if err := w.m.accounts.SetResolvedTier(ctx, w.id, tier); err != nil {
+			return err
+		}
+	}
+	// What the server is, as the send path would find it: kept for what an
+	// extension reports of the mailbox (account.Account.ServerKind).
+	if kind := account.ServerKindOf(caps, acct.IMAPHost); kind != acct.ServerKind {
+		if err := w.m.accounts.SetServerKind(ctx, w.id, kind); err != nil {
 			return err
 		}
 	}

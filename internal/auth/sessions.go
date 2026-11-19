@@ -169,11 +169,18 @@ func (u *Users) EndSession(ctx context.Context, id string) error {
 
 // EndAllSessions revokes every session a user has, on every device, and ends
 // every link at the provider they started: one started with a session that
-// ends here is not finished with the next.
+// ends here is not finished with the next. It records when they signed out
+// everywhere (users.signed_out_everywhere_at, migration 0027), in the same
+// write: the person's own act, which nothing else that ends sessions is (a
+// password change, a reset, a recovery, a directory's revocation).
 func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 	return u.store.Write(ctx, func(tx *sql.Tx) error {
-		if _, err := revokeSessionsTx(ctx, tx, userID, u.now().Unix()); err != nil {
+		now := u.now().Unix()
+		if _, err := revokeSessionsTx(ctx, tx, userID, now); err != nil {
 			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE users SET signed_out_everywhere_at = ? WHERE id = ?`, now, userID); err != nil {
+			return fmt.Errorf("auth: record the sign-out everywhere: %w", err)
 		}
 		return store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID})
 	})

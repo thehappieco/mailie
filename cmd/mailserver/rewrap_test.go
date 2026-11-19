@@ -343,3 +343,50 @@ func dumpSealed(t *testing.T, db *store.Store) []byte {
 	}
 	return out
 }
+
+func TestARewrapKeepsTheMomentEachMailboxFirstConnected(t *testing.T) {
+	// A rewrap writes every credential again; when each mailbox first
+	// connected is its first credential's moment (migration 0027), which
+	// a credential written again never moves.
+	cfg := localConfig(t)
+	cfg.Credentials = config.Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{1: keyOf(0xA1)}}
+	previous, err := secrets.NewKeyring(1, map[uint8][]byte{1: keyOf(0xA1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSealedDatabase(t, cfg, previous)
+	connected := func() string {
+		var out []string
+		rows, err := d.db.Reader().QueryContext(t.Context(), `SELECT id || ' ' || connected_at FROM accounts ORDER BY id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var s string
+			if err := rows.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(out, ", ")
+	}
+	before := connected()
+	if strings.Contains(before, " 0") {
+		t.Fatalf("a mailbox with a credential never connected: %s", before)
+	}
+	// The credentials' moment moves forward with the rewrap.
+	if _, err := d.db.Writer().ExecContext(t.Context(), `UPDATE credentials SET updated_at = 1`); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = config.Credentials{ActiveKeyID: 2, Keys: map[uint8][]byte{1: keyOf(0xA1), 2: keyOf(0xD4)}}
+	if err := rewrapCommand(t.Context(), cfg, nil); err != nil {
+		t.Fatalf("rewrap-credentials: %v", err)
+	}
+	if after := connected(); after != before {
+		t.Errorf("the mailboxes connected at %s after the rewrap, and at %s before", after, before)
+	}
+}

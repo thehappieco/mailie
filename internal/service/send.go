@@ -590,6 +590,18 @@ func appendsSentCopy(a account.Account) bool {
 	return a.Provider == provider.KindIMAP && a.SaveSentCopy
 }
 
+// filesSentCopy reports whether Mailie itself files the copy of what is sent
+// from the account, as a report says it without dialing: where the send
+// path would append it (appendsSentCopy) and then not find the server to be
+// Gmail's (fileSentCopy's provider.IsGmailServer), by what the last login
+// recorded of the server (account.Account.ServerKind), never by the
+// address. Not known yet is false: a Gmail server reached as generic IMAP
+// is never said to get a copy from Mailie.
+func filesSentCopy(a account.Account) bool {
+	return appendsSentCopy(a) && !provider.IsGmailServer(provider.Caps{}, a.IMAPHost) &&
+		a.ServerKind == account.ServerOther
+}
+
 // fileSentCopy adds the copy the adapter kept — exactly the bytes sent, with
 // the Bcc header the wire never carries — to the account's Sent folder,
 // unless the folder already holds the Message-ID: the server filed it after

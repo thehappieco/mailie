@@ -143,6 +143,13 @@ type Account struct {
 	// keeping it; its state says nothing of this, since authorizing a
 	// mailbox again puts it back to pending_auth.
 	Connected bool
+	// ServerKind is what the last login recorded found its IMAP server to
+	// be (migration 0027): ServerGmail, ServerOther, or empty while none
+	// recorded it. A password mailbox's login check records it when the
+	// mailbox is added, and every sync login when it changes
+	// (SetServerKind). Only a report reads it: the send path asks the
+	// server itself at every send.
+	ServerKind string
 }
 
 // Removed reports whether the mailbox is removed: kept, for a recovery, and
@@ -338,7 +345,7 @@ const accountColumns = `id, workspace_id, email, display_name, provider, auth_ki
 	last_ok_at, last_error, consecutive_failures, next_retry_at, created_at, updated_at,
 	linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version, sync_enabled_via = 'migration',
 	removed_at, removed_by, purge_after, sync_held_at, sync_paused_at, sync_paused_by,
-	EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = accounts.id)`
+	EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = accounts.id), server_kind`
 
 // OAuth clients an account's grant can come from.
 const (
@@ -553,12 +560,14 @@ func (r *Repository) create(ctx context.Context, a Account, linker string, key *
 			`INSERT INTO accounts(id, workspace_id, email, display_name, provider, auth_kind, imap_host, imap_port,
 			 smtp_host, smtp_port, smtp_tls, login_user, oauth_tenant, owner_user_id, oauth_client,
 			 sync_tier, save_sent_copy, initial_days, folder_overrides, state, state_reason,
-			 state_changed_at, created_at, updated_at, linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)`,
+			 state_changed_at, created_at, updated_at, linked_by, sync_enabled_at, sync_enabled_by, sync_consent_version,
+			 server_kind)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?)`,
 			a.ID, a.WorkspaceID, a.Email, a.DisplayName, string(a.Provider), a.AuthKind, a.IMAPHost, a.IMAPPort,
 			a.SMTPHost, a.SMTPPort, a.SMTPTLS, a.LoginUser, a.Tenant, nullable(a.OwnerUserID), a.OAuthClient,
 			orDefault(a.SyncTier, "auto"), boolToInt(a.SaveSentCopy), a.InitialDays, string(overrides),
-			string(a.State), now.Unix(), now.Unix(), now.Unix(), a.LinkedBy, consent.At, consent.By, consent.Version)
+			string(a.State), now.Unix(), now.Unix(), now.Unix(), a.LinkedBy, consent.At, consent.By, consent.Version,
+			a.ServerKind)
 		if store.IsUnique(err) {
 			return duplicateTx(ctx, tx, a.WorkspaceID, a.Email)
 		}
@@ -1186,6 +1195,39 @@ func (r *Repository) SetResolvedTier(ctx context.Context, id, tier string) error
 	})
 }
 
+// What a login found a mailbox's IMAP server to be (Account.ServerKind).
+const (
+	// ServerGmail is Gmail's server, whatever the mailbox calls it: one of
+	// Google's IMAP hosts, or one that advertised Gmail's extension
+	// (provider.IsGmailServer). Gmail files the copy of what is sent itself.
+	ServerGmail = "gmail"
+	// ServerOther is any other server.
+	ServerOther = "other"
+)
+
+// ServerKindOf is what a server is, from what it advertised after login and
+// the host the mailbox dials: the send path's own test
+// (provider.IsGmailServer).
+func ServerKindOf(caps provider.Caps, host string) string {
+	if provider.IsGmailServer(caps, host) {
+		return ServerGmail
+	}
+	return ServerOther
+}
+
+// SetServerKind records what a login found a mailbox's server to be, and
+// writes nothing when the row says so already.
+func (r *Repository) SetServerKind(ctx context.Context, id, kind string) error {
+	return r.store.Write(ctx, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE accounts SET server_kind = ? WHERE id = ? AND server_kind IS NOT ?`, kind, id, kind)
+		if err != nil {
+			return fmt.Errorf("account: record the server's kind: %w", err)
+		}
+		return nil
+	})
+}
+
 // SetFolderOverrides records which folder plays which role, when the server
 // does not say and the name table guesses wrong.
 func (r *Repository) SetFolderOverrides(ctx context.Context, id string, overrides map[string]string) error {
@@ -1602,7 +1644,7 @@ func scanAccount(row scanner) (Account, error) {
 		&saveSent, &a.InitialDays, &overrides, &a.State, &a.StateReason,
 		&lastOK, &a.LastError, &a.ConsecutiveFailures, &nextRetry, &created, &updated,
 		&a.LinkedBy, &a.SyncConsent.At, &a.SyncConsent.By, &a.SyncConsent.Version, &a.SyncConsent.Migrated,
-		&removed, &a.RemovedBy, &purgeAfter, &held, &paused, &a.SyncPausedBy, &a.Connected)
+		&removed, &a.RemovedBy, &purgeAfter, &held, &paused, &a.SyncPausedBy, &a.Connected, &a.ServerKind)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Account{}, err

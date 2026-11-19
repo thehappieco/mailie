@@ -181,9 +181,10 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
   published only after the commit. Replay always comes from the `events` table; there is no history
   in memory. The mailbox journal (`mailbox_events`) is written the same way, and an extension that
   reports a workspace from another source elsewhere reads it as an outbox, per workspace from a
-  cursor; which of those workspaces changed what a snapshot of them shows the schema's triggers
-  mark in the transaction of the change (`workspace_changes`), so nothing is missed between two
-  reads and nothing is kept in memory.
+  cursor; which of those workspaces changed what it reports of them, and which people an identity
+  signs in changed their own settings, the schema's triggers mark in the transaction of the change
+  (`workspace_changes`, `person_changes`), so nothing is missed between two reads and nothing is
+  kept in memory.
 - **Secrets** are never stored in plain text, logged (the `obs` package redacts) or put in URLs.
   What the server must open again is sealed by a `secrets.Sealer`, for its binding, under the
   context of the call that needs it: the credentials, and the send-hash root (the key of a send

@@ -426,7 +426,8 @@ func TestAPauseMarksItsWorkspaceFromAnotherSourceChanged(t *testing.T) {
 		moves       bool
 	}{
 		{"a pause", `UPDATE accounts SET sync_paused_at = 910, sync_paused_by = 'usr_0000000000000002' WHERE id = 'acc_a1'`, true},
-		{"who paused it forgotten", `UPDATE accounts SET sync_paused_by = '' WHERE id = 'acc_a1'`, false},
+		// Since 0027, which reports who paused it.
+		{"who paused it forgotten", `UPDATE accounts SET sync_paused_by = '' WHERE id = 'acc_a1'`, true},
 		{"its end", `UPDATE accounts SET sync_paused_at = 0 WHERE id = 'acc_a1'`, true},
 		{"a local team's pause", `UPDATE accounts SET sync_paused_at = 920 WHERE id = 'acc_t1'`, false},
 	} {

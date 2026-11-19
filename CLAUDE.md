@@ -93,9 +93,22 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `workspace_members.held_at` (`HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no
   access), `extension_state` (`extstate.go`, values of a mebibyte at most) and `workspace_changes`
   (`changes.go`: a mark per workspace from another source, written by triggers in the transaction
-  of every change its snapshot shows, only rising). What an extension reads of them: the journal
+  of every change its snapshot or its settings show, only rising; since migration 0027 a mailbox's
+  reason, attribution, agreement and its text, who paused it, sent copy, host, first connection
+  and server too, never its sync bookkeeping, folders or messages, which a report measures).
+  Migration 0027 adds `person_changes` (`changes.go`: a mark per person an identity signs in, in
+  the transaction of every change to their own settings as reported — consents, account key,
+  sign-out everywhere, a notice given or gone or changed by its mailbox, label, hint or actor's
+  membership — one per person however many notices one write touched, the triggers selecting
+  each holder once; gone with the person's identity; empty on a self-hosted server),
+  `users.signed_out_everywhere_at` (written by a sign-out everywhere alone), `accounts.connected_at`
+  (the first credential's moment, by trigger; known for password mailboxes and every mailbox
+  connected since, 0 for an OAuth one connected before) and `accounts.server_kind` (`gmail`,
+  `other`, or empty until a login records it). What an extension reads of them: the journal
   per workspace from a cursor, with its readers and a key's creator (`JournalOf`, `JournalHead`),
-  the workspaces from another source (`FollowedWorkspaces`), and why a mailbox does not sync
+  the workspaces from another source (`FollowedWorkspaces`), a person's settings and notices from
+  the journal's label and hint, never an address (`PersonSettingsTx`, `personsettings.go`), which
+  people changed (`PersonChanges`), and why a mailbox does not sync
   (`PauseSQL`, one order of causes beside the engine's rule, a pause, `paused`, last, empty
   exactly when it may sync, held to `SyncEligible` by test), all in one read when it must be (`ReadTx`, a deferred BEGIN on the
   query-only pool).
@@ -143,7 +156,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   key scheme's ceremonies, `accountkeys.go`, store an auth verifier, the account public key written
   once, the password and recovery wraps, the target salt and parameters; an old server-side password hash of a person who
   never enrolled is checked by nothing, and a reset invitation clears it), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
-  never extended, with a step-up time), the ceremonies' single-use tickets and reset invitations,
+  never extended, with a step-up time; signing out everywhere, `EndAllSessions`, records its moment
+  in the same write, `users.signed_out_everywhere_at`, which nothing else that ends sessions does),
+  the ceremonies' single-use tickets and reset invitations,
   and single-use invites, to the instance or into a team.
   External identities (issuer + subject, linked only to the new person a first sign-in with a
   verified address creates; an existing address is a conflict, never a link) and their key pins
@@ -226,7 +241,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   recovery and a sign-out everywhere). A finished link keeps no verifier, a connected one no
   address; a failed one its reason and the address named (a duplicate's only while the workspace
   still holds a mailbox under it), which a purge of that mailbox deletes.
-  Re-authorizing keeps the mailbox's scopes and `login_hint`.
+  Re-authorizing keeps the mailbox's scopes and `login_hint`. What a login found the IMAP server to
+  be (`ServerKind`, `ServerKindOf`: the send path's `provider.IsGmailServer`) is kept with the
+  mailbox (`accounts.server_kind`, migration 0027): a password mailbox's login check records it
+  when it is added, and every sync login when it changes (`SetServerKind`); only a report reads it.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -252,10 +270,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   one read transaction): every mailbox, live and removed until deleted for good, its pause, label
   and masked hint, never its address; each person with a flag or a sealed grant, whether they read,
   wait, are enrolled and hold the key at its epoch; the people a team mailbox cannot lose. It
-  decides nothing. See `docs/workspaces.md`.
+  decides nothing. `settings.go` reads, beside it and with bounds of its own, a workspace's
+  settings (`SettingsTx`): each mailbox's row (provider, sign-in, state and reason, first
+  connection, attribution, key epoch, sent copy and server, consent, agreement, pause, hold, index
+  and last sync, removal and whether any index is kept) and each member's status, never an
+  address. See `docs/workspaces.md`.
 - `internal/sync` — one worker per account, three sessions of fixed role (`idle`, `sync`,
   `interactive`); a paused mailbox has no worker and keeps only its interactive session, logged in
-  between calls as a worker's is (`store.PausedAccounts`).
+  between calls as a worker's is (`store.PausedAccounts`). Every sync login records what the
+  server is when it changed (`account.Repository.SetServerKind`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
   concrete struct, not an interface. `directory.go` is what an extension that follows an external
   directory calls, with no principal and from no transport: a person's document applied in one
@@ -268,7 +291,16 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `snapshot.go` are what it reports: the journal as its outbox (`MailboxJournal`), the followed
   workspaces and their change marks, its own state, and a snapshot of a followed workspace
   (`AccessSnapshot`, which reports a removed mailbox's people as they would be once it is
-  recovered, its kept last readers protected, until it is deleted for good). `links.go`: a link at
+  recovered, its kept last readers protected, until it is deleted for good). `settings.go` is what
+  it reports beside it: a followed workspace's snapshot and settings in one read
+  (`WorkspaceReport`: availability, who may link, the team sync text, each mailbox from fixed lists
+  — a reason matched exactly on `account.Reason*`, `filesSentCopy` beside the send path's rule —
+  and each member, each list with its own bound, the settings read even when the snapshot is too
+  large), a person's own settings (`PersonSettings`: consents against the texts accepted now,
+  enrolment, the last sign-out everywhere, notices from the journal's label and hint, never the
+  notice API's address, the actor known only while a member) and which people changed
+  (`PersonChanges`); the lists it says (`MailboxReasons`, `MemberStatuses` and the rest) are what an
+  extension maps one by one. `links.go`: a link at
   the provider for a person signed in (`StartLink`, `GetLink`, its starter's alone, and the return
   `CompleteOAuth` sends there when no consent of the caller's has its state), which names no address
   and carries no key at its start; its return with a code carries the mailbox's key and is checked,

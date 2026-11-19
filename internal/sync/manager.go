@@ -42,6 +42,7 @@ import (
 type Accounts interface {
 	Get(ctx context.Context, id string) (account.Account, error)
 	SetResolvedTier(ctx context.Context, id, tier string) error
+	SetServerKind(ctx context.Context, id, kind string) error
 }
 
 // MailboxSource hands out an account's provider mailbox. The daemon passes

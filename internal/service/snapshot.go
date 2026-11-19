@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"time"
 
@@ -108,17 +109,8 @@ var ErrSnapshotTooLarge = workspace.ErrSnapshotTooLarge
 // are read as they are: the pause says the team is closed, and who reads
 // them is computed without the closure.
 func (s *Service) AccessSnapshot(ctx context.Context, workspaceID string) (AccessSnapshot, error) {
-	if err := s.following(); err != nil {
+	if err := s.reportedWorkspace(ctx, workspaceID); err != nil {
 		return AccessSnapshot{}, err
-	}
-	w, err := s.workspaces.Get(ctx, workspaceID)
-	switch {
-	case errors.Is(err, workspace.ErrNotFound):
-		return AccessSnapshot{}, errNoSnapshotWorkspace
-	case err != nil:
-		return AccessSnapshot{}, E(CodeInternal, "reading the workspace failed", err)
-	case w.Source == workspace.SourceLocal:
-		return AccessSnapshot{}, errNoSnapshotWorkspace
 	}
 	tx, err := s.store.ReadTx(ctx)
 	if err != nil {
@@ -126,15 +118,41 @@ func (s *Service) AccessSnapshot(ctx context.Context, workspaceID string) (Acces
 	}
 	//nolint:errcheck // a read-only transaction: rolling back loses nothing
 	defer func() { _ = tx.Rollback() }()
-	measured := s.now()
+	out, err := s.accessSnapshotTx(ctx, tx, workspaceID, s.now())
+	if errors.Is(err, workspace.ErrSnapshotTooLarge) {
+		return AccessSnapshot{}, errSnapshotTooLarge(err)
+	}
+	return out, err
+}
+
+// reportedWorkspace refuses a workspace an extension reports nothing of: on
+// a server that follows no directory (conflict, ErrNotFollowing), and one
+// that is not from the directory's source or that nobody knows (not_found).
+func (s *Service) reportedWorkspace(ctx context.Context, workspaceID string) error {
+	if err := s.following(); err != nil {
+		return err
+	}
+	w, err := s.workspaces.Get(ctx, workspaceID)
+	switch {
+	case errors.Is(err, workspace.ErrNotFound):
+		return errNoSnapshotWorkspace
+	case err != nil:
+		return E(CodeInternal, "reading the workspace failed", err)
+	case w.Source == workspace.SourceLocal:
+		return errNoSnapshotWorkspace
+	}
+	return nil
+}
+
+// accessSnapshotTx reads a workspace's snapshot in the caller's read,
+// measured at measured. ErrSnapshotTooLarge past its bounds, as it is.
+func (s *Service) accessSnapshotTx(ctx context.Context, tx *sql.Tx, workspaceID string, measured time.Time) (AccessSnapshot, error) {
 	read, err := workspace.SnapshotTx(ctx, tx, workspaceID, workspace.SnapshotOptions{Withheld: s.teamsWithheld})
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		return AccessSnapshot{}, errNoSnapshotWorkspace
 	case errors.Is(err, workspace.ErrSnapshotTooLarge):
-		return AccessSnapshot{}, Ef(CodeConflict, err,
-			"the workspace is larger than a snapshot holds: %d mailboxes, %d people on a mailbox",
-			SnapshotMaxMailboxes, SnapshotMaxPeople)
+		return AccessSnapshot{}, err
 	case err != nil:
 		return AccessSnapshot{}, E(CodeInternal, "reading the snapshot failed", err)
 	}
@@ -159,6 +177,13 @@ func (s *Service) AccessSnapshot(ctx context.Context, workspaceID string) (Acces
 		out.Mailboxes = append(out.Mailboxes, m)
 	}
 	return out, nil
+}
+
+// errSnapshotTooLarge is a snapshot past its bounds, as AccessSnapshot
+// answers it.
+func errSnapshotTooLarge(err error) error {
+	return Ef(CodeConflict, err, "the workspace is larger than a snapshot holds: %d mailboxes, %d people on a mailbox",
+		SnapshotMaxMailboxes, SnapshotMaxPeople)
 }
 
 var errNoSnapshotWorkspace = E(CodeNotFound, "no such workspace from the directory's source", nil)
