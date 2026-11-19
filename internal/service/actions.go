@@ -492,6 +492,7 @@ func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) er
 		return E(CodeInternal, "reading the access to the mailbox failed", err)
 	}
 	if !held[a.ID].Act {
+		s.issuedUseRefused(ctx, p, a.ID, needAct, UseNoFlag)
 		return errNoAct
 	}
 	consenting := p.UserID
@@ -499,7 +500,9 @@ func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) er
 		if err := s.keyStillLive(ctx, p); err != nil {
 			return err
 		}
-		if !earlierKey(p) && !s.keysActUnderCreator {
+		// A key an issuer made acts only under its creator's consent,
+		// always: what it does stands on no edition's switch.
+		if p.Issuer == "" && !earlierKey(p) && !s.keysActUnderCreator {
 			return nil
 		}
 		consenting = p.CreatedBy
@@ -507,10 +510,12 @@ func (s *Service) mayAct(ctx context.Context, p Principal, a account.Account) er
 	c, err := s.store.ActionsConsentOf(ctx, consenting)
 	switch {
 	case errors.Is(err, store.ErrNoSuchUser):
+		s.issuedUseRefused(ctx, p, a.ID, needAct, UseCreatorConsent)
 		return errActionsOff
 	case err != nil:
 		return E(CodeInternal, "reading the actions consent failed", err)
 	case c.At == 0 || c.Version != s.consent.Actions:
+		s.issuedUseRefused(ctx, p, a.ID, needAct, UseCreatorConsent)
 		return errActionsOff
 	}
 	return nil

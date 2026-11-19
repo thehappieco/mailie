@@ -97,6 +97,13 @@ type fixtureOptions struct {
 	// pauseWithheld is an edition that does not offer a person's pause of
 	// one mailbox's sync: every other fixture offers it, as serve does.
 	pauseWithheld bool
+	// keyIssuer is an extension whose keys this server mirrors; nil follows
+	// none.
+	keyIssuer service.KeyIssuer
+	// keysIssuedElsewhere is an edition whose API keys their issuer makes.
+	keysIssuedElsewhere bool
+	// issuedKeysRefused is an edition that refuses every issued key.
+	issuedKeysRefused bool
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -185,6 +192,9 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		KeysInPersonalWorkspaceOnly: f.opts.keysPersonalOnly,
 		Freshness:                   f.opts.freshness,
 		SyncPauseOffered:            !f.opts.pauseWithheld,
+		KeyIssuer:                   f.opts.keyIssuer,
+		KeysIssuedElsewhere:         f.opts.keysIssuedElsewhere,
+		IssuedKeysRefused:           f.opts.issuedKeysRefused,
 	}), registry
 }
 

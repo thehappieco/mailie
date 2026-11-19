@@ -107,23 +107,23 @@ func (h *Handler) authenticated(scope auth.Scope, o routeOptions, fn func(*reque
 			logger: obs.LoggerFrom(r.Context()).With("route", route),
 		}
 
-		token, ok := bearerToken(r)
+		values := r.Header.Values("Authorization")
+		token, ok := service.Bearer(values)
 		if !ok {
 			h.metricAuthFailure("malformed")
-			q.fail(service.E(service.CodeUnauthorized, "a bearer api key or session token is required", nil))
+			q.fail(h.Service.BearerRefused(values,
+				service.E(service.CodeUnauthorized, "a bearer api key or session token is required", nil)))
 			return
 		}
 		// Rate limit before verifying: the Argon2id derivation is the
 		// expensive part, so a limiter that ran after it would be protecting
-		// nothing. A key's prefix is the subject its failures are charged
-		// to, reserved now and given back unless this turns out to be a
-		// miss; a session token has no public part to charge, and a key
-		// whose prefix matches nothing is charged to its address, by the
-		// gate, only once the lookup has found nothing.
-		subject := ""
-		if prefix, _, ok := auth.SplitKey(token); ok {
-			subject = "key:" + prefix
-		}
+		// nothing. A key's prefix (or an issued key's selector) is the
+		// subject its failures are charged to, reserved now and given back
+		// unless this turns out to be a miss; a session token has no public
+		// part to charge, and a key whose prefix matches nothing is charged
+		// to its address, by the gate, only once the lookup has found
+		// nothing.
+		subject := h.Service.CredentialSubject(token)
 		if allowed, retry := h.Limits.Admit(r, subject); !allowed {
 			h.metricAuthFailure("rate_limited")
 			q.fail(service.Retryable("too many requests", retry, nil))
@@ -193,29 +193,6 @@ func (h *Handler) public(o routeOptions, fn func(*request)) http.HandlerFunc {
 			logger: obs.LoggerFrom(r.Context()).With("route", route),
 		})
 	}
-}
-
-// bearerToken extracts the credential.
-//
-// Exactly one Authorization header, the Bearer scheme, and a bounded length.
-// More than one header is ambiguous and a long one is an invitation to make
-// the server hash something enormous.
-const maxTokenLen = 4096
-
-func bearerToken(r *http.Request) (string, bool) {
-	values := r.Header.Values("Authorization")
-	if len(values) != 1 {
-		return "", false
-	}
-	scheme, token, ok := strings.Cut(values[0], " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", false
-	}
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxTokenLen {
-		return "", false
-	}
-	return token, true
 }
 
 // finish serialises a successful response.

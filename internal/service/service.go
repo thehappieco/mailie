@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -105,6 +106,16 @@ type Service struct {
 	// syncPauseOffered is an edition that offers a person's pause of one
 	// mailbox's sync (Deps.SyncPauseOffered).
 	syncPauseOffered bool
+	// issuer is the extension whose keys this server mirrors
+	// (issuedkeys.go); nil follows none.
+	issuer KeyIssuer
+	// keysIssuedElsewhere is an edition whose API keys are made by their
+	// issuer: none of this server's own is created or given more, and one
+	// outside the operator workspace is refused.
+	keysIssuedElsewhere bool
+	// issuedKeysRefused is an edition that refuses every issued key, while
+	// its issuer's records still apply.
+	issuedKeysRefused bool
 }
 
 // Deps is what the service needs.
@@ -215,6 +226,26 @@ type Deps struct {
 	// everyone; a recovery still pauses and a resume still ends a pause.
 	// Only internal/app sets it, from its Options.
 	SyncPauseOffered bool
+	// KeyIssuer, when set, is the extension that makes API keys elsewhere,
+	// which this server mirrors (issuedkeys.go): a credential it claims is
+	// checked against the keys it made, and never reaches this server's own
+	// keys or sessions. nil, the default, follows none. Only internal/app
+	// sets it, from its Options, and only beside ExternalSignInOnly.
+	KeyIssuer KeyIssuer
+	// KeysIssuedElsewhere is an edition whose API keys are made by their
+	// issuer: creating a key of this server's own, and raising what one
+	// holds, are refused, not_authorized, before anything else is asked;
+	// one outside the operator workspace (a database restored with live ones)
+	// is refused as invalid, and the daemon revokes every live one at start
+	// (RevokeOwnWorkspaceKeys). Listing, revoking and taking access away
+	// stay. The operator's keys are as they were. Only internal/app sets it,
+	// from its Options.
+	KeysIssuedElsewhere bool
+	// IssuedKeysRefused is an edition that refuses every key its issuer made
+	// (held, as its issuer hears it), while their records still apply: the
+	// way back from taking them, with nothing to undo. Only internal/app
+	// sets it, from its Options.
+	IssuedKeysRefused bool
 }
 
 // New builds the service.
@@ -271,23 +302,47 @@ func New(d Deps) *Service {
 		keysPersonalOnly:    d.KeysInPersonalWorkspaceOnly,
 		freshness:           d.Freshness,
 		syncPauseOffered:    d.SyncPauseOffered,
+		issuer:              d.KeyIssuer,
+		keysIssuedElsewhere: d.KeysIssuedElsewhere,
+		issuedKeysRefused:   d.IssuedKeysRefused,
 	}
 }
 
 // Principal is the authenticated caller.
 type Principal = auth.Principal
 
-// Authenticate identifies the caller behind a bearer token.
+// Authenticate identifies the caller behind a bearer token: raw, as Bearer
+// read it, never trimmed.
 //
 // Here rather than in a transport so REST and MCP accept exactly the same
-// credentials. The shape of the token picks the check — a key has a dot, a
-// session token never does — so a session costs a SHA-256, never the Argon2id a
-// key's secret needs.
+// credentials. A credential the issuer claims (KeyIssuer) is checked first,
+// against the keys it made, and never reaches this server's own keys or
+// sessions; any other is trimmed, and its shape picks the check — a key has
+// a dot, a session token never does — so a session costs a SHA-256, never
+// the Argon2id a key's secret needs.
 //
-// unknownKey is asked before a key whose prefix matches nothing is hashed:
-// the transport's per-address limit on checks that can only fail. nil admits
-// every one.
-func (s *Service) Authenticate(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
+// unknownKey is asked before a key whose prefix or selector matches nothing
+// is checked: the transport's per-address limit on checks that can only
+// fail. nil admits every one.
+func (s *Service) Authenticate(ctx context.Context, raw string, unknownKey auth.Gate) (Principal, error) {
+	return s.authenticate(ctx, raw, unknownKey, false)
+}
+
+// authenticate is Authenticate, and with tool AuthenticateTool's refusal of
+// a console session.
+func (s *Service) authenticate(ctx context.Context, raw string, unknownKey auth.Gate, tool bool) (Principal, error) {
+	if selector, claimed := s.claim(raw); claimed {
+		p, err := s.authenticateIssued(ctx, raw, selector, unknownKey)
+		if err != nil {
+			return Principal{}, err
+		}
+		p.Tool = tool
+		return p, nil
+	}
+	token := strings.TrimSpace(raw)
+	if tool && !auth.IsAPIKey(token) {
+		return Principal{}, errToolNeedsKey
+	}
 	var (
 		p   Principal
 		err error
@@ -295,6 +350,13 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 	switch {
 	case auth.IsAPIKey(token):
 		p, err = s.keys.Authenticate(ctx, token, unknownKey)
+		if err == nil && s.keysIssuedElsewhere && p.IsWorkspaceKey() {
+			// A key of this server's own outside the operator workspace,
+			// where an issuer makes them: one a database restored under a
+			// running edition still holds live. Refused after its
+			// comparison, as any dead key is.
+			err = auth.ErrInvalidKey
+		}
 	case s.users != nil:
 		p, err = s.users.AuthenticateSession(ctx, token)
 	default:
@@ -308,9 +370,12 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 		// agreed to the key terms, which say what a tool holding it can do.
 		// Migration 0012 revoked every person's key nobody agreed to them
 		// through; this refuses one on every transport, not only on the
-		// tools', should one ever be live.
+		// tools', should one ever be live. An issued key's terms were
+		// judged once, when it was stored, and one not current holds
+		// nothing.
 		return Principal{}, errKeyNotAgreed
 	}
+	p.Tool = tool
 	return p, nil
 }
 
@@ -326,19 +391,12 @@ func (s *Service) Authenticate(ctx context.Context, token string, unknownKey aut
 //     configuration must not work.
 //   - A workspace key reaches the mailboxes it holds something on, as over
 //     REST, and works only if the person who created it agreed to the key
-//     terms — here as everywhere (Authenticate).
+//     terms — here as everywhere (Authenticate). So does a key an issuer
+//     made (KeyIssuer).
 //   - An instance key sees only the operator workspace's mailboxes, here as
 //     over REST, never a person's (see visibility).
-func (s *Service) AuthenticateTool(ctx context.Context, token string, unknownKey auth.Gate) (Principal, error) {
-	if !auth.IsAPIKey(token) {
-		return Principal{}, errToolNeedsKey
-	}
-	p, err := s.Authenticate(ctx, token, unknownKey)
-	if err != nil {
-		return Principal{}, err
-	}
-	p.Tool = true
-	return p, nil
+func (s *Service) AuthenticateTool(ctx context.Context, raw string, unknownKey auth.Gate) (Principal, error) {
+	return s.authenticate(ctx, raw, unknownKey, true)
 }
 
 // Errors of Authenticate and AuthenticateTool.
@@ -356,9 +414,16 @@ var (
 // must not see its answer.
 func (s *Service) Recheck(ctx context.Context, p Principal) error {
 	var err error
-	if p.IsSession() {
+	switch {
+	case p.IsSession():
 		err = s.users.RecheckSession(ctx, p)
-	} else {
+	case p.Issuer != "" && s.issuedKeysRefused,
+		p.Issuer == "" && s.keysIssuedElsewhere && p.IsWorkspaceKey():
+		// An issued key where the edition refuses them all, and an own key
+		// outside the operator workspace where an issuer makes them: refused
+		// as Authenticate refuses them, for a principal held since before.
+		err = auth.ErrInvalidKey
+	default:
 		err = s.keys.Recheck(ctx, p)
 	}
 	if err != nil {
@@ -431,6 +496,9 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 	a, err := s.accounts.Repo().GetVisible(ctx, accountID, v)
 	switch {
 	case errors.Is(err, account.ErrNotFound):
+		// An issued key's issuer hears of a mailbox of its own workspace it
+		// holds nothing on, and of nothing else.
+		s.issuedNotFound(ctx, p, accountID, need)
 		return account.Account{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
 		return account.Account{}, E(CodeInternal, "reading the account failed", err)
@@ -438,9 +506,10 @@ func (s *Service) authorizeAccount(ctx context.Context, p Principal, scope auth.
 	if err := s.mailboxWithheld(ctx, a); err != nil {
 		return account.Account{}, err
 	}
-	if s.keysPersonalOnly && p.IsWorkspaceKey() && teamMailbox(a) {
+	if s.keysPersonal(p) && teamMailbox(a) {
 		// A team's key, or a carried-over one holding a team's mailbox,
 		// that a database still holds: refused by name, as creating one is.
+		s.issuedUseRefused(ctx, p, a.ID, need, UseNotOffered)
 		return account.Account{}, errTeamKeys
 	}
 	if err := s.requireFlags(ctx, p, a, need); err != nil {
@@ -468,7 +537,14 @@ func (s *Service) visibility(p Principal) account.Visibility {
 	case p.IsSession():
 		return account.Visibility{UserID: p.UserID, NoTeams: s.teamsWithheld}
 	}
-	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld || s.keysPersonalOnly}
+	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld || s.keysPersonal(p)}
+}
+
+// keysPersonal reports whether p is a key that reaches personal workspaces
+// alone: every workspace key where an edition keeps keys there
+// (Deps.KeysInPersonalWorkspaceOnly), and a key an issuer made, always.
+func (s *Service) keysPersonal(p Principal) bool {
+	return p.IsWorkspaceKey() && (s.keysPersonalOnly || p.Issuer != "")
 }
 
 // readable is visibility narrowed to the mailboxes whose index the caller may

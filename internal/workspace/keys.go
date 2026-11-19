@@ -168,7 +168,8 @@ func MailboxWorkspaceTx(ctx context.Context, tx *sql.Tx, accountID string) (stri
 }
 
 // KeyRefTx reads a key inside the caller's transaction; ErrNoKey when there
-// is none, or for an operator key, which holds no mailbox here.
+// is none, for an operator key, which holds no mailbox here, and for a key an
+// issuer made, which only its issuer changes.
 func KeyRefTx(ctx context.Context, tx *sql.Tx, prefix string) (KeyRef, error) {
 	return keyRefOn(ctx, tx, prefix)
 }
@@ -179,7 +180,7 @@ func keyRefOn(ctx context.Context, q querier, prefix string) (KeyRef, error) {
 		revoked, expires int64
 	)
 	err := q.QueryRowContext(ctx, `SELECT prefix, coalesce(workspace_id, ''), scope, created_by, revoked_at, expires_at
-		FROM api_keys WHERE prefix = ? AND (workspace_id IS NULL OR workspace_id <> ?)`, prefix, OperatorID).
+		FROM api_keys WHERE prefix = ? AND issuer = '' AND (workspace_id IS NULL OR workspace_id <> ?)`, prefix, OperatorID).
 		Scan(&k.Prefix, &k.WorkspaceID, &k.Scope, &k.CreatedBy, &revoked, &expires)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -452,13 +453,14 @@ type MailboxKey struct {
 	CarriedOver bool
 }
 
-// mailboxKeys lists the live keys holding something on each mailbox of a
-// workspace, by mailbox, oldest first.
+// mailboxKeys lists the live keys of this server's own holding something on
+// each mailbox of a workspace, by mailbox, oldest first: a key an issuer made
+// is listed by its issuer.
 func (r *Repository) mailboxKeys(ctx context.Context, workspaceID string) (map[string][]MailboxKey, error) {
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT x.account_id, k.prefix, k.name, k.scope, x.read, x.act,
 		       x.send, k.created_by, x.granted_by, x.updated_at, k.workspace_id IS NULL
 		  FROM key_access x JOIN api_keys k ON k.prefix = x.key_prefix
-		 WHERE x.workspace_id = ? AND k.revoked_at = 0 AND (k.expires_at = 0 OR k.expires_at > ?)
+		 WHERE x.workspace_id = ? AND k.issuer = '' AND k.revoked_at = 0 AND (k.expires_at = 0 OR k.expires_at > ?)
 		 ORDER BY x.created_at, k.created_at, k.prefix`, workspaceID, r.now().Unix())
 	if err != nil {
 		return nil, fmt.Errorf("workspace: list the keys on the workspace's mailboxes: %w", err)

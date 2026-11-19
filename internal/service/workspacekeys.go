@@ -260,11 +260,17 @@ func (s *Service) ListWorkspaceKeys(ctx context.Context, p Principal, workspaceI
 // server whose keys may not send refuses. It lasts what they chose; the
 // person who created it leaving the workspace, or being disabled or deleted,
 // revokes it sooner. Where an edition keeps keys to personal workspaces, a
-// team's is refused (errTeamKeys).
+// team's is refused (errTeamKeys); where an issuer makes the keys, every one
+// is (errKeysIssuedElsewhere).
 func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspaceID string, req WorkspaceKeyRequest) (CreatedWorkspaceKey, error) {
 	w, err := s.keyAdminOf(ctx, p, workspaceID)
 	if err != nil {
 		return CreatedWorkspaceKey{}, err
+	}
+	if s.keysIssuedElsewhere {
+		// Refused before anything else is asked, the freshness hook
+		// included: nothing here makes a key.
+		return CreatedWorkspaceKey{}, errKeysIssuedElsewhere
 	}
 	if s.teamKeysRefused(w) {
 		return CreatedWorkspaceKey{}, errTeamKeys
@@ -416,13 +422,18 @@ func (s *Service) RevokeWorkspaceKey(ctx context.Context, p Principal, workspace
 // server whose keys may send. Taking flags away needs nothing held. A key
 // carried over from a person's may only lose flags. Where an edition keeps
 // keys to personal workspaces, a flag raised in a team is refused
-// (errTeamKeys), and only taking away is left there.
+// (errTeamKeys), and only taking away is left there; where an issuer makes
+// the keys, a flag raised anywhere (errKeysIssuedElsewhere). A key an issuer
+// made is not found here: only its issuer changes what it holds.
 func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, prefix, accountID string, req KeyAccessRequest) (KeyMailbox, error) {
 	w, err := s.keyAdminOf(ctx, p, workspaceID)
 	if err != nil {
 		return KeyMailbox{}, err
 	}
+	// Where an issuer makes the keys, none is given more here, and that is
+	// refused before the freshness hook is asked; taking away stays.
 	teamRefused := s.teamKeysRefused(w)
+	refused := teamRefused || s.keysIssuedElsewhere
 	if req.Read == nil || req.Act == nil || req.Send == nil {
 		return KeyMailbox{}, E(CodeBadRequest,
 			"read, act and send are all required: what the key holds is set to exactly them", nil)
@@ -435,14 +446,18 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 	if flags.Send && s.keysMayNotSend {
 		return KeyMailbox{}, errKeysMayNotSend
 	}
-	if s.asksFresh(p) || teamRefused {
+	if s.asksFresh(p) || refused {
 		// Only a flag the key does not hold yet asks, or is refused in a
-		// team; the write checks both again.
+		// team or where an issuer makes the keys; the write checks both
+		// again.
 		before, err := s.workspaces.KeyAccessOf(ctx, prefix, []string{accountID})
 		if err != nil {
 			return KeyMailbox{}, E(CodeInternal, "reading what the key holds failed", err)
 		}
 		if raised(before[accountID], flags) {
+			if s.keysIssuedElsewhere {
+				return KeyMailbox{}, errKeysIssuedElsewhere
+			}
 			if teamRefused {
 				return KeyMailbox{}, errTeamKeys
 			}
@@ -456,8 +471,13 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 			if err := s.keyTargetTx(ctx, tx, p, workspaceID, key, mailboxWorkspace, before); err != nil {
 				return err
 			}
-			if teamRefused && raised(before, flags) {
-				return errTeamKeys
+			if raised(before, flags) {
+				switch {
+				case s.keysIssuedElsewhere:
+					return errKeysIssuedElsewhere
+				case teamRefused:
+					return errTeamKeys
+				}
 			}
 			if !flags.Read || before.Read {
 				return nil
@@ -617,10 +637,15 @@ func (s *Service) withoutTeams(ctx context.Context, keys []auth.Key) ([]auth.Key
 }
 
 // CreateMyAPIKey is refused: a key is created in a workspace, by its owners
-// and admins (CreateWorkspaceKey). Kept so that a console of before says why.
+// and admins (CreateWorkspaceKey), or, where an issuer makes the keys, by
+// that issuer (errKeysIssuedElsewhere). Kept so that a console of before
+// says why.
 func (s *Service) CreateMyAPIKey(_ context.Context, p Principal) error {
 	if err := requireSession(p); err != nil {
 		return err
+	}
+	if s.keysIssuedElsewhere {
+		return errKeysIssuedElsewhere
 	}
 	return errKeysCreated
 }
@@ -739,8 +764,5 @@ func (s *Service) keyStillLive(ctx context.Context, p Principal) error {
 	if !p.IsWorkspaceKey() || s.keys == nil {
 		return nil
 	}
-	if err := s.keys.Recheck(ctx, p); err != nil {
-		return fromCredential(err)
-	}
-	return nil
+	return s.Recheck(ctx, p)
 }

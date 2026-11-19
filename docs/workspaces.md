@@ -1102,6 +1102,77 @@ an operator key whose restriction lost a mailbox.
 `AuthenticateTool` keeps refusing sessions on `/mcp`, and a key nobody agreed to the key terms
 through, which migration 0012 revoked, everywhere.
 
+### Keys an issuer makes
+
+An extension of the daemon may follow an **issuer** of API keys: keys made somewhere else, for
+the people of a directory it follows ([Following an external directory](#following-an-external-directory)),
+which this server mirrors and enforces as its own workspace keys (migration 0028). The core names
+no issuer's format: the extension registers a `service.KeyIssuer` (`app.Options.KeyIssuer`, which
+`serve` never sets, refused at start unless `ExternalSignInOnly` is set too, `app.ErrKeyIssuer`: no
+password, reset or recovery here may stand beside keys a person's account elsewhere answers for).
+It recognises its own credentials (`Claim`), compares one with the hash this server holds for its
+selector in constant time (`Verify`) and hears each use (`Used`); its methods never block.
+
+**Recognising one.** Every transport reads the bearer in one place, `service.Bearer`: exactly one
+`Authorization` value, `Bearer` in any case, one space, at most 4096 bytes, returned **as
+presented, never trimmed**. `Service.Authenticate` and `AuthenticateTool` take it and ask the
+issuer first: a credential it claims is checked against the keys it made and never reaches this
+server's own keys or sessions; any other is trimmed and goes on as before (a dot: an own key,
+Argon2id; none: a session, SHA-256). A credential of a session token's shape (43 base64url
+characters, `auth.IsSessionToken`) is never offered to the issuer, so a session that happens to
+begin like one of its keys stays a session. An issued credential costs one indexed read and the
+issuer's comparison, never Argon2id; a selector that matches nothing asks the address's
+unknown-key gate first, then compares against nothing all the same.
+
+**One answer for every refusal.** An unknown or malformed credential, a wrong secret, a key
+revoked, past its expiry **by this server's clock**, held here (`issued_key_stops`) or refused by
+the edition (`app.Options.IssuedKeysRefused`) is `401` "invalid or expired api key". A header
+`Bearer` refuses (a tab for the space, two headers, no scheme) answers that same body when any of
+its values carries a credential the issuer claims (`Service.BearerRefused`); one with no such value
+keeps the transport's own message. Only once the secret matched does the issuer hear the use,
+accepted or refused (revoked, expired, held); a wrong secret counts for no key. The rate limit
+charges an issued key's failures to `key:<selector>` (`Service.CredentialSubject`), as an own
+key's to its prefix, and gives them back when the key proves.
+
+**What it is once authenticated.** A workspace key's principal (`auth.Principal.Issuer` set,
+`KeyPrefix` its selector, the `write` scope, its creator's `usr_…` in `CreatedBy`), so every rule
+above holds for it, in REST and MCP alike, written once. And, whatever the edition says:
+
+- it reaches personal workspaces alone (as `KeysInPersonalWorkspaceOnly` does for every key): a
+  team's mailbox, one a database holds included, is listed nowhere and refused by name (`403`);
+- it reads and acts, `act` only beside `read` (0012's checks); it never holds `send` (the schema
+  refuses a `send` flag at the `write` scope) and never sends;
+- it acts only while its creator allows actions at the current revision, whatever
+  `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` says;
+- it is never a reader, passes no `read`, reaches no member, key, consent, sync switch, pause,
+  removal or recovery route, and is asked no freshness question;
+- it never records a use (`last_used_at` stays 0: no time of use is kept); the action log names it
+  `key:<selector>`;
+- its terms were judged once, when it was stored, so `Authenticate`'s check of an own key's agreed
+  terms is not asked of it.
+
+A use refused on a mailbox is told to the issuer from the one place it is decided (`no_flag`,
+`creator_consent`, `not_offered`; `service.UseRefusals`), with the mailbox and the use, and only
+for a live mailbox of the key's own workspace: an id of anywhere else, or a made-up one, is
+answered `not_found` and told to nobody.
+
+**Only its issuer changes it.** The own-key listings and counts read `issuer = ''` (the workspace's
+keys, a person's, the operator's `/v1/apikeys`, the access directory, the 20-key limit, a personal
+workspace's replacement); revoking one in its workspace, as its creator's or as the operator's,
+setting or taking what it holds and listing its sends answer `not_found` for an issued key. A
+person's deletion leaves it alone until their personal workspace goes, and it goes with it.
+
+**Own keys withdrawn.** An edition whose keys their issuer makes sets
+`app.Options.KeysIssuedElsewhere` (`serve` never does): creating a key of this server's own
+(`POST /v1/workspaces/{id}/apikeys`, `POST /v1/me/apikeys`) and raising what one holds answer
+`403` "this server's API keys are made by their issuer; none is created or given more here",
+before anything else is asked, the freshness hook included; listing, revoking and taking away
+stay. An own key outside the operator workspace is refused as invalid, should a restored database
+hold one live, and the daemon revokes every live one at start, before anything listens
+(`Service.RevokeOwnWorkspaceKeys`, `stop_reason = 'manual'`), logging `workspace keys revoked: this
+edition takes keys from their issuer` with `revoked`, `unexpired` and `at`; every later start
+revokes none. The operator's keys are kept.
+
 ## Choosing the workspace in a request
 
 There is no "current workspace" on the server for a session, which reaches the person's mailboxes
@@ -2123,6 +2194,30 @@ of a schema-26 database changes. The tests in `internal/store/migrate_twentyseve
 every row and every object as they were but those, which mailboxes take a moment, the new
 values' bounds, and every column the workspace marks watch now.
 
+## Migration 0028
+
+`0028_issued_keys.sql`, an ordinary migration: `api_keys.issuer` (`''` for this server's own keys;
+an issued key always expires, is never the operator's, has no name, origin, restriction or last
+use, the `write` scope and a person who created it, and its issuer, hash, creator, creation and
+workspace never change; once revoked it is never live again, and its expiry never moves later),
+and seven tables with their triggers: `issued_keys` (an issued key's id at its issuer, the version
+of its record applied, whether the reset's pass listed it, its creation in microseconds, its key
+terms judged once, when and how it ended, its last day of use), `issued_key_stops` (this server's
+own stops, `operator` and `creator`, each on its own), `issued_key_grants` (per mailbox and use,
+who gave it at the issuer and when, and whether it is held, waiting, refused with its cause or a
+removed tombstone; a mailbox removed turns its held and waiting ones into tombstones, which a
+recovery never brings back), `issued_key_uses` (refusals per day until reported),
+`issued_key_tell` (what is owed to the issuer: a refusal, or a key held narrower than a reset's
+pass listed it, one per key), `issued_key_ends` (what stays of an issued key once its row goes,
+written by the delete trigger on every path, the cascade from its workspace included, and never
+changed; a selector it holds is never stored again) and `directory_keys` (per issuer, its feed's
+place under its directory's reset, going back only with a reset). The workspace marks
+(`workspace_changes`) follow `key_access`, an issued key's revocation, expiry and end, and its
+stops, for a workspace from another source. No row of a schema-27 database changes. The tests in
+`internal/store/migrate_twentyeight_test.go` hold every row and object as they were, each rule
+above, and that a workspace deleted takes its issued keys and leaves only their selector, how and
+when they ended, the stops read in that cascade.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -2621,6 +2716,36 @@ Test names state the guarantee. At least:
   `TestADaemonFollowingADirectoryNamesThePersonalWorkspacesADocumentWouldNotReplace`; the console
   (vitest), `a failure keeps the server’s Retry-After` and `a workspace that vanished under a live
   session falls back to the personal one`.
+- Keys an issuer makes (with `issuertest`, a made-up issuer of the core's tests): the schema
+  (`internal/store`), `TestMigration28ChangesNoRowOfASchema27Database`,
+  `TestAnIssuedKeyIsNeverAnOperatorKey`, `TestAnIssuedKeyHasNoNameNoOriginAndTheWriteScope`,
+  `TestAnIssuedKeysIssuerNeverChanges`, `TestAnIssuedKeysHashCreatorCreationAndWorkspaceNeverChange`,
+  `TestARevokedIssuedKeyIsNeverLiveAgain`, `TestAnIssuedKeysExpiryNeverMovesLater`,
+  `TestAnIssuedKeyNeverHasANeverExpiringExpiry`,
+  `TestAnIssuedKeyThatGoesWithItsWorkspaceLeavesOnlyItsSelectorHowAndEnd`,
+  `TestTheSchemaNeverStoresAForgottenSelectorAgain`, `TestTheKeysCursorGoesBackOnlyWithAReset`,
+  `TestTheSchemaRecordsAnIssuedGrantWithItsCause`, `TestTheSchemaCountsAnIssuedKeysRefusedUsesByKind`,
+  `TestAnIssuedKeysChangeMarksItsWorkspace`, `TestAnIssuersKeyFeedIsMadeOnceForADirectoryAlreadyFollowed`
+  and `TestEveryRefusalOfTheSchemaIsAConstraint`; authentication, `TestAnIssuedCredentialNeverReachesTheArgon2idPath`
+  (`internal/auth`), `TestEveryRefusalOfAnIssuedKeyIsOneUnauthorized`, `TestAWrongSecretCountsForNoKey`,
+  `TestTheIssuerSeesTheBearerUntrimmed`, `TestAnExpiredIssuedKeyIsRefusedByThisServersClock`,
+  `TestAnIssuedKeyNeverWritesItsLastUse`, `TestASessionTokenThatBeginsLikeAnIssuedKeyStillAuthenticates`,
+  `TestTheRateLimitChargesAnIssuedKeysFailuresToItsSelector`,
+  `TestARefusedHeaderCarryingAnIssuedKeyAnswersTheOneUnauthorizedBody` (`internal/api`) and
+  `TestRESTAndMCPTakeTheSameIssuedKeys` (`internal/app`); what it reaches,
+  `TestAnIssuedKeyReachesOnlyWhatItsIssuerGranted`, `TestAnIssuedKeyNeverHoldsSendAndNeverSends`,
+  `TestAnIssuedKeyActsOnlyWhileItsCreatorAllowsActions`,
+  `TestAnIssuedKeyActsOnlyUnderItsCreatorsConsentWhateverTheSwitch`,
+  `TestAnIssuedKeyNeverReachesATeamsMailbox`, `TestAnIssuedKeyIsNeverAReaderOrABackup`,
+  `TestAnIssuedKeyNeverPausesResumesOrTurnsOffSync`, `TestAnIssuedKeyReachesNoMemberKeyOrConsentRoute`,
+  `TestAnIssuedKeysActionIsLoggedUnderItsSelector`, `TestAUseRefusalIsReportedOnlyForAMailboxOfTheKeysWorkspace`
+  and `TestIssuedKeysRefusedRefusesEveryKeyAtAuthenticationAndRecheck`; own keys,
+  `TestOwnWorkspaceKeysAreRevokedAtStartWhereKeysAreIssuedElsewhere`,
+  `TestAnOwnKeyRestoredWhereKeysAreIssuedElsewhereIsRefused`,
+  `TestNoOwnWorkspaceKeyIsCreatedOrWidenedWhereKeysAreIssuedElsewhere`,
+  `TestOwnKeyListingsNeverShowIssuedKeys`, `TestOnlyItsIssuerChangesAnIssuedKey` and
+  `TestAKeyIssuerNeedsExternalSignInOnly` (`internal/app`); the log (`internal/obs`),
+  `TestTheLogNeverHoldsAnIssuedCredential`.
 
 ## Conflicts and resolutions
 

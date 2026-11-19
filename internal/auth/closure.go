@@ -467,11 +467,13 @@ func (u *Users) DeleteTx(ctx context.Context, tx *sql.Tx, id string, force bool)
 	// alone in below, with what they held (both cascade on the workspace);
 	// another team's stays as the team's record, without their name. One
 	// still live says it stopped with them; one stopped before keeps its
-	// moment and its reason.
+	// moment and its reason. A key an issuer made for them is their personal
+	// workspace's alone, and goes with it as it is, leaving only what is
+	// left of an issued key (migration 0028's issued_key_ends).
 	if out.Keys, err = execCount(ctx, tx, `UPDATE api_keys
 		SET revoked_at = CASE revoked_at WHEN 0 THEN ? ELSE revoked_at END,
 		    stop_reason = CASE revoked_at WHEN 0 THEN ? ELSE stop_reason END, created_by = ''
-		WHERE created_by = ?`, u.now().Unix(), string(workspace.KeyStopCreatorDeleted), id); err != nil {
+		WHERE created_by = ? AND issuer = ''`, u.now().Unix(), string(workspace.KeyStopCreatorDeleted), id); err != nil {
 		return Removed{}, fmt.Errorf("auth: revoke the user's keys: %w", err)
 	}
 	if out.Invites, err = execCount(ctx, tx,

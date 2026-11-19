@@ -93,7 +93,10 @@ repository ignores that directory (`.gitignore`, `go.mod`'s `ignore`, the `Makef
   the answer may apply a document. The act's write then asks again who may, in its transaction (an
   act that writes nothing first asks again at once), so an answer that ended the actor's place
   stops it, and nothing changes. An outage is `internal`, "upstream: …", with a `Retry-After`.
-- **A console session is a bearer token, never a cookie.** It travels only in `Authorization`;
+- **A console session is a bearer token, never a cookie.** It travels only in `Authorization`,
+  which `service.Bearer` alone reads, as presented; a credential an extension's key issuer claims
+  (`service.KeyIssuer`, [`workspaces.md`](workspaces.md), "Keys an issuer makes") is checked first,
+  against the keys it made and never by Argon2id; otherwise
   sessions and API keys are told apart by their shape (a key has a dot). Person routes
   (`/v1/auth/*`) refuse API keys. A session lasts what it was started for, 14 days or less for one
   an extension starts (`SignInExternal`, `EnrolExternal`), and nothing extends it; the schema

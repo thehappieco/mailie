@@ -20,6 +20,19 @@ func IsUnique(err error) bool {
 // IsForeignKey reports whether err is a foreign-key violation.
 func IsForeignKey(err error) bool { return hasCode(err, sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY) }
 
+// IsConstraint reports whether err is any constraint the schema enforces: a
+// CHECK, a NOT NULL, a UNIQUE or PRIMARY KEY, a FOREIGN KEY, or a trigger's
+// RAISE(ABORT). A writer that must apply what the schema refuses narrower
+// (an issued key's record, say) tells it apart from a write that failed for
+// any other reason this way.
+func IsConstraint(err error) bool {
+	var e *sqlite.Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	return e.Code()&0xff == sqlite3.SQLITE_CONSTRAINT
+}
+
 // IsBusy reports whether err is a lock conflict, including
 // SQLITE_BUSY_SNAPSHOT. Seeing one of these on the writer pool means a
 // transaction was opened without the immediate lock; the fix is the call site,

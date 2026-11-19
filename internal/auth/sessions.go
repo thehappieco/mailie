@@ -71,6 +71,28 @@ type Session struct {
 // has none, and a key always does.
 func IsAPIKey(token string) bool { return strings.Contains(token, ".") }
 
+// IsSessionToken reports whether a bearer token has a console session token's
+// shape: 32 random bytes in unpadded base64url, 43 characters and no dot. A
+// key an issuer makes (internal/service, KeyIssuer) is never claimed in this
+// shape, so a session token that happens to begin as one of an issuer's keys
+// stays a session.
+func IsSessionToken(token string) bool {
+	if len(token) != sessionTokenLen {
+		return false
+	}
+	for i := 0; i < len(token); i++ {
+		switch c := token[i]; {
+		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '-', c == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// sessionTokenLen is a session token's length: base64url of 32 bytes.
+const sessionTokenLen = 43
+
 // AuthenticateSession resolves a session token to the person behind it.
 //
 // A SHA-256 and an indexed lookup, not Argon2id: the token is 32 random bytes,

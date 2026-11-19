@@ -450,9 +450,9 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 				continue
 			case err != nil:
 				return nil, E(CodeInternal, "listing workspaces failed", err)
-			case s.teamKeysRefused(w):
+			case s.keysPersonal(p) && w.Kind != workspace.KindPersonal:
 				// A key reaches no team where keys are personal
-				// workspaces' alone.
+				// workspaces' alone, nor a key an issuer made, ever.
 				continue
 			}
 			out = append(out, s.presentWorkspace(w, false))

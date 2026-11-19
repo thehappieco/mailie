@@ -18,7 +18,6 @@ import (
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/ratelimit"
@@ -51,8 +50,6 @@ const (
 	DefaultMaxSessionsPerKey = 16
 	// maxRequestBody bounds a request, as the compose routes' body is.
 	maxRequestBody = 16 << 20
-	// maxTokenLen bounds the Authorization header, as REST does.
-	maxTokenLen = 4096
 )
 
 // HTTPOptions configure the HTTP transport.
@@ -155,18 +152,18 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, log, service.E(service.CodeNotAuthorized, "requests from other web origins are refused", nil))
 		return
 	}
-	token, ok := bearerToken(r)
+	values := r.Header.Values("Authorization")
+	token, ok := service.Bearer(values)
 	if !ok {
 		h.metricAuthFailure("malformed")
-		h.fail(w, log, service.E(service.CodeUnauthorized, "a bearer api key is required", nil))
+		h.fail(w, log, h.server.svc.BearerRefused(values,
+			service.E(service.CodeUnauthorized, "a bearer api key is required", nil)))
 		return
 	}
 	// As REST: rate limited before the Argon2id, with a key's failures
-	// charged to its prefix and given back when the key proves.
-	subject := ""
-	if prefix, _, ok := auth.SplitKey(token); ok {
-		subject = "key:" + prefix
-	}
+	// charged to its prefix (or an issued key's selector) and given back
+	// when the key proves.
+	subject := h.server.svc.CredentialSubject(token)
 	if allowed, retry := h.limits.Admit(r, subject); !allowed {
 		h.metricAuthFailure("rate_limited")
 		h.fail(w, log, service.Retryable("too many requests", retry, nil))
@@ -400,24 +397,6 @@ func originOf(raw string) string {
 		return ""
 	}
 	return strings.ToLower(u.Scheme + "://" + u.Host)
-}
-
-// bearerToken extracts the credential: exactly one Authorization header,
-// the Bearer scheme and a bounded length, as REST takes it.
-func bearerToken(r *http.Request) (string, bool) {
-	values := r.Header.Values("Authorization")
-	if len(values) != 1 {
-		return "", false
-	}
-	scheme, token, ok := strings.Cut(values[0], " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") {
-		return "", false
-	}
-	token = strings.TrimSpace(token)
-	if token == "" || len(token) > maxTokenLen || strings.ContainsAny(token, " \t") {
-		return "", false
-	}
-	return token, true
 }
 
 // fail answers as REST does: {code, message}, the status the code means, a

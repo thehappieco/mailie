@@ -13,7 +13,10 @@ same consent. No authorization rule lives in `internal/mcp`.
 - **stdio:** `mailserver mcp connect --url <server>`, a local server for a client that launches one,
   relaying to a server's `/mcp` (on any machine); or `mailserver serve --mcp-stdio`, for a client that
   launches the whole daemon itself. See [Connect a client](#connect-a-client).
-- **Credential:** an API key in `Authorization: Bearer <key>`. There is no OAuth.
+- **Credential:** an API key in `Authorization: Bearer <key>`, read as REST reads it
+  (`service.Bearer`, never trimmed) and checked by `Service.AuthenticateTool`, which takes the raw
+  bearer: a key an extension's issuer made ([`workspaces.md`](workspaces.md), "Keys an issuer
+  makes") is checked first, and works here as over REST. There is no OAuth.
 
 ## Who gets in, and what they see
 

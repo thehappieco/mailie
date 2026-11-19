@@ -829,7 +829,9 @@ func (s *Service) maySendFrom(ctx context.Context, p Principal, a account.Accoun
 		// Unreachable while visibility holds.
 		return errNotSendingOperator
 	}
-	if p.IsWorkspaceKey() && (s.keysMayNotSend || earlierKey(p)) {
+	if p.IsWorkspaceKey() && (s.keysMayNotSend || earlierKey(p) || p.Issuer != "") {
+		// A key an issuer made never sends, whatever the edition says.
+		s.issuedUseRefused(ctx, p, a.ID, needSend, UseNotOffered)
 		return errKeysMayNotSend
 	}
 	return s.requireFlags(ctx, p, a, needSend)

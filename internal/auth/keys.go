@@ -81,6 +81,12 @@ type Principal struct {
 	// is a person's key migration 0012 carried over, and empty for a key made
 	// as keys are now.
 	Origin string
+	// Issuer is, for a key an issuer made elsewhere and this server mirrors
+	// (an issued key, AuthenticateIssued), that issuer; empty for this
+	// server's own keys and for a session. An issued key is a workspace key
+	// in every other way: KeyPrefix is its selector, and it reaches exactly
+	// what it holds.
+	Issuer string
 }
 
 // IsSession reports whether the caller is a person signed in to the console.
@@ -313,7 +319,8 @@ func (k *Keys) Issue(ctx context.Context, req NewKeyRequest) (secret string, key
 		if req.MaxLive > 0 {
 			var live int
 			if err := tx.QueryRowContext(ctx,
-				`SELECT count(*) FROM api_keys WHERE workspace_id = ? AND origin = '' AND revoked_at = 0 AND expires_at > ?`,
+				`SELECT count(*) FROM api_keys WHERE workspace_id = ? AND origin = '' AND issuer = '' AND revoked_at = 0
+				   AND expires_at > ?`,
 				ws, now.Unix()).Scan(&live); err != nil {
 				return fmt.Errorf("auth: count live keys: %w", err)
 			}
@@ -472,7 +479,7 @@ func (k *Keys) Authenticate(ctx context.Context, presented string, unknown Gate)
 	)
 	err := k.store.Reader().QueryRowContext(ctx,
 		`SELECT hash, scope, expires_at, revoked_at, terms_version, coalesce(workspace_id, ''), created_by, origin
-		   FROM api_keys WHERE prefix = ?`, prefix,
+		   FROM api_keys WHERE prefix = ? AND issuer = ''`, prefix,
 	).Scan(&hash, &scopeStr, &expiresAt, &revokedAt, &terms, &ws, &createdBy, &origin)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -539,12 +546,15 @@ func miss(ctx context.Context, secret string, unknown Gate) error {
 // mailboxes is not part of the principal: every use reads it live.
 func (k *Keys) Recheck(ctx context.Context, p Principal) error {
 	var (
-		scopeStr, ws         string
+		scopeStr, ws, issuer string
 		expiresAt, revokedAt int64
+		stopped              bool
 	)
 	err := k.store.Reader().QueryRowContext(ctx,
-		`SELECT scope, expires_at, revoked_at, coalesce(workspace_id, '') FROM api_keys WHERE prefix = ?`, p.KeyPrefix,
-	).Scan(&scopeStr, &expiresAt, &revokedAt, &ws)
+		`SELECT scope, expires_at, revoked_at, coalesce(workspace_id, ''), issuer,
+		        EXISTS (SELECT 1 FROM issued_key_stops s WHERE s.prefix = api_keys.prefix)
+		   FROM api_keys WHERE prefix = ?`, p.KeyPrefix,
+	).Scan(&scopeStr, &expiresAt, &revokedAt, &ws, &issuer, &stopped)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return ErrInvalidKey
@@ -553,6 +563,11 @@ func (k *Keys) Recheck(ctx context.Context, p Principal) error {
 	}
 	now := k.now()
 	if revokedAt != 0 || (expiresAt != 0 && !now.Before(time.Unix(expiresAt, 0))) {
+		return ErrInvalidKey
+	}
+	// An issued key is the one its issuer made, and one this server stopped
+	// (issued_key_stops) is refused as a revoked one is.
+	if issuer != p.Issuer || stopped {
 		return ErrInvalidKey
 	}
 	// A scope that shrank mid-request is also a reason to stop: the answer
@@ -606,14 +621,15 @@ func (k *Keys) recheckRestriction(ctx context.Context, p Principal) error {
 	return nil
 }
 
-// List returns every key, including revoked ones, newest first: the
-// operator's listing, with each instance key's restriction and what each
-// workspace key holds.
+// List returns every one of this server's own keys, including revoked ones,
+// newest first: the operator's listing, with each instance key's restriction
+// and what each workspace key holds. A key an issuer made is listed by its
+// issuer, never here.
 //
 // Revoked keys stay listed deliberately: they are part of the answer to "what
 // could have reached this mailbox", and deleting the row destroys that answer.
 func (k *Keys) List(ctx context.Context) ([]Key, error) {
-	return k.list(ctx, "", `1`)
+	return k.list(ctx, "", `k.issuer = ''`)
 }
 
 // ListIn returns the keys of a workspace, revoked and expired ones too, live
@@ -621,7 +637,7 @@ func (k *Keys) List(ctx context.Context) ([]Key, error) {
 // own keys, and the carried-over keys that hold one of its mailboxes, which
 // count the other workspaces they reach without naming them.
 func (k *Keys) ListIn(ctx context.Context, workspaceID string) ([]Key, error) {
-	keys, err := k.list(ctx, workspaceID, `(k.workspace_id = ?1
+	keys, err := k.list(ctx, workspaceID, `k.issuer = '' AND (k.workspace_id = ?1
 		OR (k.workspace_id IS NULL AND EXISTS (SELECT 1 FROM key_access x WHERE x.key_prefix = k.prefix AND x.workspace_id = ?1)))`,
 		workspaceID)
 	if err != nil {
@@ -637,7 +653,7 @@ func (k *Keys) ListCreatedBy(ctx context.Context, userID string) ([]Key, error) 
 	if userID == "" {
 		return nil, nil
 	}
-	keys, err := k.list(ctx, "", `k.created_by = ?1 AND (k.workspace_id IS NULL OR k.workspace_id <> '`+
+	keys, err := k.list(ctx, "", `k.created_by = ?1 AND k.issuer = '' AND (k.workspace_id IS NULL OR k.workspace_id <> '`+
 		workspace.OperatorID+`')`, userID)
 	if err != nil {
 		return nil, err
@@ -645,9 +661,10 @@ func (k *Keys) ListCreatedBy(ctx context.Context, userID string) ([]Key, error) 
 	return liveFirst(keys, k.now()), nil
 }
 
-// Get reads one key, with everything it holds; ErrNotFound when there is none.
+// Get reads one of this server's own keys, with everything it holds;
+// ErrNotFound when there is none, and for a key an issuer made.
 func (k *Keys) Get(ctx context.Context, prefix string) (Key, error) {
-	keys, err := k.list(ctx, "", `k.prefix = ?1`, prefix)
+	keys, err := k.list(ctx, "", `k.prefix = ?1 AND k.issuer = ''`, prefix)
 	if err != nil {
 		return Key{}, err
 	}
@@ -764,14 +781,15 @@ func (k *Keys) holds(ctx context.Context, key *Key, workspaceID string) error {
 // ErrNotFound means no key carries that prefix, or none the caller may see.
 var ErrNotFound = errors.New("auth: no such key")
 
-// Revoke marks a key unusable: the operator's, for any key, which says it
-// was revoked (KeyStopManual). Revoking an already-revoked key is not an
-// error: the caller asked for a state, and the state holds, with the reason
-// it stopped for first.
+// Revoke marks a key unusable: the operator's, for any of this server's own
+// keys, which says it was revoked (KeyStopManual). Revoking an
+// already-revoked key is not an error: the caller asked for a state, and the
+// state holds, with the reason it stopped for first. A key an issuer made is
+// ErrNotFound: only its issuer revokes it.
 func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE prefix = ? AND revoked_at = 0`,
+			`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE prefix = ? AND issuer = '' AND revoked_at = 0`,
 			k.now().Unix(), string(workspace.KeyStopManual), prefix)
 		if err != nil {
 			return fmt.Errorf("auth: revoke key: %w", err)
@@ -782,7 +800,8 @@ func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 		}
 		if n == 0 {
 			var exists int
-			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM api_keys WHERE prefix = ?`, prefix).Scan(&exists); err != nil {
+			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM api_keys WHERE prefix = ? AND issuer = ''`,
+				prefix).Scan(&exists); err != nil {
 				return fmt.Errorf("auth: revoke key: %w", err)
 			}
 			if exists == 0 {
@@ -798,8 +817,8 @@ func (k *Keys) Revoke(ctx context.Context, prefix string) error {
 // holds mailboxes of the workspace loses them, since it is not this
 // workspace's alone, and is revoked first, for the same reason, when they are
 // the last it holds (the schema's trigger would say its last mailbox went).
-// Any other key is ErrNotFound. check runs first in the transaction.
-// Revoking a key already revoked is not an error.
+// Any other key is ErrNotFound, a key an issuer made included. check runs
+// first in the transaction. Revoking a key already revoked is not an error.
 func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check func(*sql.Tx) error) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		if check != nil {
@@ -814,7 +833,7 @@ func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check f
 		)
 		err := tx.QueryRowContext(ctx, `SELECT coalesce(workspace_id, ''), revoked_at,
 			       (SELECT count(*) FROM key_access x WHERE x.key_prefix = k.prefix AND x.workspace_id = ?)
-			  FROM api_keys k WHERE prefix = ?`, workspaceID, prefix).Scan(&ws, &revoked, &held)
+			  FROM api_keys k WHERE prefix = ? AND issuer = ''`, workspaceID, prefix).Scan(&ws, &revoked, &held)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNotFound
@@ -847,14 +866,15 @@ func (k *Keys) RevokeIn(ctx context.Context, workspaceID, prefix string, check f
 }
 
 // RevokeCreatedBy revokes a workspace key a person created, in any
-// workspace, saying it was revoked (KeyStopManual). Anyone else's key, or an
-// instance key, is ErrNotFound: to this caller it does not exist. Revoking
-// one already revoked is not an error.
+// workspace, saying it was revoked (KeyStopManual). Anyone else's key, an
+// instance key, or a key an issuer made for them, is ErrNotFound: to this
+// caller it does not exist here. Revoking one already revoked is not an
+// error.
 func (k *Keys) RevokeCreatedBy(ctx context.Context, prefix, userID string) error {
 	return k.store.Write(ctx, func(tx *sql.Tx) error {
 		var revokedAt int64
 		err := tx.QueryRowContext(ctx,
-			`SELECT revoked_at FROM api_keys WHERE prefix = ? AND created_by = ? AND created_by <> ''
+			`SELECT revoked_at FROM api_keys WHERE prefix = ? AND created_by = ? AND created_by <> '' AND issuer = ''
 			    AND (workspace_id IS NULL OR workspace_id <> ?)`, prefix, userID, workspace.OperatorID).Scan(&revokedAt)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
@@ -928,7 +948,8 @@ func (k *Keys) RevokeCreatedBeforeTx(ctx context.Context, tx *sql.Tx, userID str
 func (k *Keys) CarriedOverLive(ctx context.Context) (int, error) {
 	var n int
 	if err := k.store.Reader().QueryRowContext(ctx, `SELECT count(*) FROM api_keys
-		WHERE workspace_id IS NULL AND revoked_at = 0 AND (expires_at = 0 OR expires_at > ?)`, k.now().Unix()).Scan(&n); err != nil {
+		WHERE workspace_id IS NULL AND issuer = '' AND revoked_at = 0 AND (expires_at = 0 OR expires_at > ?)`,
+		k.now().Unix()).Scan(&n); err != nil {
 		return 0, fmt.Errorf("auth: count carried-over keys: %w", err)
 	}
 	return n, nil

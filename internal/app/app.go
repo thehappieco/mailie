@@ -19,8 +19,12 @@
 // for one whose API keys belong to personal workspaces alone, the one that
 // refuses a team's (KeysInPersonalWorkspaceOnly); for one whose sync text
 // says what pausing one mailbox's sync does, the one that offers it
-// (SyncPauseOffered, which `serve` sets); and, for a binary whose workspaces come from a directory elsewhere, the
-// question asked before an act that widens access (Freshness). Nothing else
+// (SyncPauseOffered, which `serve` sets); for a binary whose workspaces come from a directory elsewhere, the
+// question asked before an act that widens access (Freshness); and, for one
+// whose API keys an issuer makes elsewhere, that issuer (KeyIssuer, only
+// beside ExternalSignInOnly), the end of this server's own workspace keys
+// (KeysIssuedElsewhere) and the refusal of every issued key
+// (IssuedKeysRefused). Nothing else
 // of the assembly is open to a caller, because a server that differed from
 // `mailserver serve` in what it checks, sweeps or refuses would be a second
 // implementation of it.
@@ -141,7 +145,37 @@ type Options struct {
 	// Only a binary that embeds the daemon sets it: there is no environment
 	// variable, and `serve` never does.
 	Pages webui.Pages
+	// KeyIssuer, when set, is an extension that makes API keys elsewhere,
+	// for the people of a directory it follows, and has this server mirror
+	// and enforce them as workspace keys (service.KeyIssuer): a credential
+	// it claims is checked only against the keys it made. Refused at start
+	// unless ExternalSignInOnly is set too (ErrKeyIssuer): no local password,
+	// reset or recovery may exist beside keys a person's account elsewhere
+	// answers for. Only a binary that embeds the daemon sets it: there is no
+	// environment variable, and `serve` never does.
+	KeyIssuer service.KeyIssuer
+	// KeysIssuedElsewhere says this edition's API keys are made by their
+	// issuer: the core refuses, not_authorized, creating a key of its own and
+	// raising what one holds, before anything else is asked; refuses one of
+	// its own outside the operator workspace; and revokes every live one at
+	// start, before anything listens, logging how many (the operator's keys,
+	// which the command line holds, are kept). Listing, revoking and taking
+	// access away stay. The service decides it, for every transport. Only a
+	// binary that embeds the daemon sets it: there is no environment
+	// variable, and `serve` never does.
+	KeysIssuedElsewhere bool
+	// IssuedKeysRefused says this edition refuses every key its issuer made,
+	// at authentication and before every answer, while their records still
+	// apply: the way back from taking them, with nothing to undo once it is
+	// lifted. Only a binary that embeds the daemon sets it: there is no
+	// environment variable, and `serve` never does.
+	IssuedKeysRefused bool
 }
+
+// ErrKeyIssuer is a KeyIssuer given without ExternalSignInOnly: keys an
+// issuer makes stand on a person's account elsewhere, and a password, a
+// reset or a recovery here would be a second account behind them.
+var ErrKeyIssuer = errors.New("app: a key issuer needs people to sign in only through an extension (ExternalSignInOnly)")
 
 // Run runs the daemon until ctx ends, a listener fails, or the stdio client
 // hangs up, and then shuts it down: its listeners within fifteen seconds,
@@ -153,6 +187,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	// console's absence.
 	if err := opts.Pages.Check(); err != nil {
 		return err
+	}
+	if opts.KeyIssuer != nil && !opts.ExternalSignInOnly {
+		return ErrKeyIssuer
 	}
 	if opts.MCPStdio {
 		// Standard output is the MCP client's: one stray line there and the
@@ -373,7 +410,24 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
 		Freshness:                   opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
 		SyncPauseOffered: opts.SyncPauseOffered,
+		KeyIssuer:        opts.KeyIssuer, KeysIssuedElsewhere: opts.KeysIssuedElsewhere,
+		IssuedKeysRefused: opts.IssuedKeysRefused,
 	})
+	if opts.KeysIssuedElsewhere {
+		// Before any extension runs and anything listens: no key of this
+		// server's own outside the operator workspace works past this start.
+		// Every later start stops none.
+		revoked, err := svc.RevokeOwnWorkspaceKeys(ctx)
+		if err != nil {
+			return err
+		}
+		logger.Info("workspace keys revoked: this edition takes keys from their issuer",
+			"revoked", revoked.Revoked, "unexpired", revoked.Unexpired, "at", revoked.At.Format(time.RFC3339))
+	}
+	if opts.IssuedKeysRefused {
+		logger.Info("keys an issuer made are refused in this edition: their records still apply, and every one " +
+			"is refused until a release lifts this")
+	}
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err
 	}

@@ -243,7 +243,7 @@ func ReplacePersonalTx(ctx context.Context, tx *sql.Tx, userID, newID string, no
 		var mailboxes, live, keys int
 		if err := tx.QueryRowContext(ctx, `SELECT
 			  (SELECT count(*) FROM accounts a WHERE a.workspace_id = ?1),
-			  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = ?1 AND k.revoked_at = 0
+			  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = ?1 AND k.issuer = '' AND k.revoked_at = 0
 			     AND (k.expires_at = 0 OR k.expires_at > ?2)),
 			  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = ?1)`, cur.ID, at).
 			Scan(&mailboxes, &live, &keys); err != nil {
@@ -518,9 +518,9 @@ func (r *Repository) PersonalReplacementBlocks(ctx context.Context) ([]PersonalB
 	now := r.now().UTC().Unix()
 	rows, err := r.store.Reader().QueryContext(ctx, `SELECT u.id, w.id,
 		  (SELECT count(*) FROM accounts a WHERE a.workspace_id = w.id),
-		  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = w.id AND k.revoked_at = 0
+		  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = w.id AND k.issuer = '' AND k.revoked_at = 0
 		     AND (k.expires_at = 0 OR k.expires_at > ?1)),
-		  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = w.id AND NOT (k.revoked_at = 0
+		  (SELECT count(*) FROM api_keys k WHERE k.workspace_id = w.id AND k.issuer = '' AND NOT (k.revoked_at = 0
 		     AND (k.expires_at = 0 OR k.expires_at > ?1)))
 		  FROM users u JOIN workspaces w ON w.person_id = u.id AND w.kind = 'personal' AND w.source = 'local'
 		 WHERE EXISTS (SELECT 1 FROM user_identities i WHERE i.user_id = u.id)

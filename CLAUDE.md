@@ -62,9 +62,21 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   policy that sends another origin the path; `Whole`: `no-store`, conditional and range headers
   ignored) and serves small files beside them (`Files`: their own type, `no-store`, whole),
   refused at start, `webui.ErrPages`, for a path the console would not serve.
+  `Options.KeyIssuer` (never set by `serve`; `service.KeyIssuer`) is an extension whose API keys
+  are made elsewhere and mirrored here, refused at start unless `ExternalSignInOnly`
+  (`app.ErrKeyIssuer`). `Options.KeysIssuedElsewhere` (never set by `serve`) withdraws this
+  server's own keys: creating one and raising what one holds are `not_authorized`
+  (`errKeysIssuedElsewhere`) before anything else is asked, the freshness hook included, an own
+  key outside the operator workspace is refused as invalid, and every live one is revoked at
+  start, before anything listens (`Service.RevokeOwnWorkspaceKeys`, `manual`, logged with
+  `revoked`, `unexpired` and `at`; the operator's kept). `Options.IssuedKeysRefused` (never set by
+  `serve`) refuses every issued key, at authentication and every re-check, while their records
+  still apply.
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
-- `internal/obs` — `log/slog` with redaction of addresses and credentials, Prometheus metrics.
+- `internal/obs` — `log/slog` with redaction of addresses and credentials (an own key's secret
+  after its prefix, and the generic shape of an issued key's after its selector), Prometheus
+  metrics.
 - `internal/lockfile` — the data directory's lock: two daemons on one database corrupt the index.
 - `internal/store` — SQLite (modernc, no cgo): a writer pool with `_txlock=immediate` and
   `MaxOpenConns(1)`, a reader pool with `query_only`, embedded `.sql` migrations plus
@@ -111,7 +123,20 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   people changed (`PersonChanges`), and why a mailbox does not sync
   (`PauseSQL`, one order of causes beside the engine's rule, a pause, `paused`, last, empty
   exactly when it may sync, held to `SyncEligible` by test), all in one read when it must be (`ReadTx`, a deferred BEGIN on the
-  query-only pool).
+  query-only pool). Migration 0028 (`docs/workspaces.md`, "Keys an issuer makes"; empty on a
+  self-hosted server) adds `api_keys.issuer` (`''` for this server's own keys; an issued key always
+  expires, is never the operator's, has no name, origin or last use, the `write` scope and a
+  `usr_…` creator, and its issuer, hash, creator, creation and workspace never change, nor does
+  its revocation undo or its expiry move later) and `issued_keys` (id at the issuer, version,
+  listed, creation in microseconds, terms judged once, end and how), `issued_key_stops`
+  (`operator`, `creator`, each lifted alone), `issued_key_grants` (per mailbox and use: giver's
+  subject and time, held, waiting, refused with a cause, or a removed tombstone, which a mailbox's
+  removal makes of the held and waiting ones), `issued_key_uses`, `issued_key_tell` (owed to the
+  issuer), `issued_key_ends` (the selector, how and when, written by `issued_keys`' delete trigger
+  on every path, the cascade from a workspace included, never changed, never stored again) and
+  `directory_keys` (per issuer, its feed's cursor under its directory's reset); the workspace
+  marks follow `key_access`, an issued key's revocation, expiry, end and stops. `IsConstraint`
+  tells any schema refusal from another failure.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -149,7 +174,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   expiry, revocation (a stopped key says why, `stop_reason`, migration 0017). Every key belongs to a workspace and acts as no person: an operator key
   (`wsp_operator`, any scope, optionally restricted to operator mailboxes) or a workspace key
   (`read`/`write`/`send`, holding its mailboxes in `key_access`, `internal/workspace/keys.go`);
-  `Principal.IsInstance` means the operator workspace's. Also the console's people: users (instance
+  `Principal.IsInstance` means the operator workspace's. A key an issuer made (`issued.go`,
+  migration 0028) is a workspace key's principal with `Principal.Issuer` set and its selector as
+  `KeyPrefix`, checked by `AuthenticateIssued` (one indexed read, the issuer's constant-time
+  comparison, never Argon2id, `ErrInvalidKey` for every refusal, `IssuedCheck` naming the key only
+  once its secret matched), never touching `last_used_at`; `Recheck` refuses one stopped here, and
+  every own-key listing, count, revocation and `key_access` change reads `issuer = ''` only.
+  `IsSessionToken` is a session token's shape, which no issuer is asked to claim. Also the console's people: users (instance
   roles `owner`/`member`; active, disabled here, or suspended by an extension (`Suspend`/`Resume`,
   `suspended_at`, migration 0018: `status = 'disabled'` with the grants kept, unusable, until a
   resume; a disable here clears it and stands over it); a password the server never receives: the
@@ -178,7 +209,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   too), `Keys.RevokeCreatedBeforeTx`; and `ExternalSignIn.PersonCreatedTx`, run in the transaction
   that creates a new person, right after their identity is linked, which rolls it all back on an
   error. `authtest` creates cheap users and keys for tests.
-- `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix. An
+- `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix (an issued
+  key's selector: `Service.CredentialSubject`). An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
   is never charged to the whole address, which would refuse valid credentials behind the same NAT.
 - `internal/backup` — the snapshot (`VACUUM INTO` from a `mode=ro` connection), `integrity_check`,
@@ -280,7 +312,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   between calls as a worker's is (`store.PausedAccounts`). Every sync login records what the
   server is when it changed (`account.Repository.SetServerKind`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
-  concrete struct, not an interface. `directory.go` is what an extension that follows an external
+  concrete struct, not an interface. `issuedkeys.go`: keys an issuer makes (`KeyIssuer`: `Claim`,
+  `Verify`, `Used`, never blocking), the bearer read in one place for every transport (`Bearer`:
+  one value, `Bearer` in any case, one space, at most 4096 bytes, never trimmed), a credential the
+  issuer claims checked first and never reaching own keys or sessions, a session's shape never
+  offered to it, one `401` for every refusal of one (`BearerRefused` for a malformed header that
+  carries one), the rate-limit subject (`CredentialSubject`), a use refused reported only for a
+  live mailbox of the key's own workspace (`UseRefusals`), and `RevokeOwnWorkspaceKeys`. An issued
+  key reaches personal workspaces alone, never sends, and acts only under its creator's actions
+  consent whatever `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` says. `directory.go` is what an extension that follows an external
   directory calls, with no principal and from no transport: a person's document applied in one
   write (`ApplyDirectoryDocument`, and at a first sign-in in the transaction that creates them,
   `ExternalSignIn.Directory`; a new person under the directory's source without one is not
@@ -463,9 +503,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `--new-salt-key` replace one under another KMS key or `MAIL_ENV` only with `--kms-key-lost`. Only an envelope that does not open (`secrets.DoesNotOpen`)
   is a lost key: nothing replaces, or tells the operator to replace, what a sealer could not try. TLS
   is mandatory for IMAP/SMTP; `AllowInsecureAuth` is set only by tests.
-- **Console session = bearer, never a cookie.** The token goes only in `Authorization`; sessions and
-  API keys are told apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API
-  keys.
+- **Console session = bearer, never a cookie.** The token goes only in `Authorization`, read by
+  `service.Bearer` alone, never trimmed there; a credential an issuer claims (`service.KeyIssuer`)
+  is checked first, against its keys only; any other is trimmed, and sessions and API keys are told
+  apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API keys.
 - **The server never receives a password** (`docs/key-scheme.md`, normative; its vectors are never
   edited by hand). A sign-in proves an auth key the browser derived under the salt and parameters
   the challenge answers (the address's target for every address without an enrolled account, so it
@@ -523,7 +564,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   someone reads always keeps a reader (keys and roles never count). An API key belongs to its
   workspace: only its owners and admins, signed in, create, list and revoke keys (a key never
   mints one; an edition with `KeysInPersonalWorkspaceOnly` creates none in a team, and lets none
-  reach a team's mailbox); a key reaches
+  reach a team's mailbox; one with `KeysIssuedElsewhere` creates none and widens none, and a key
+  an issuer made reaches a personal workspace's alone, never sends, acts only while its creator
+  allows actions whatever the switch, and is changed by its issuer alone); a key reaches
   exactly what it holds in `key_access`, read live — `read` given only by an owner or an admin who
   reads that mailbox then, `act` and `send` by any of them — and keeps it
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator

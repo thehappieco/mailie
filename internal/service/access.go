@@ -31,6 +31,8 @@ var (
 	needCard = workspace.Flags{}
 	// needRead opens the index: folders, messages, events, storage.
 	needRead = workspace.Flags{Read: true}
+	// needAct is changing the mailbox's messages.
+	needAct = workspace.Flags{Act: true}
 	// needSend is sending from the mailbox.
 	needSend = workspace.Flags{Send: true}
 	// needManage is re-authorising the mailbox.
@@ -93,7 +95,8 @@ func (s *Service) grantsOf(ctx context.Context, p Principal, accountIDs ...strin
 		if err != nil {
 			return nil, err
 		}
-		if s.keysMayNotSend {
+		if s.keysMayNotSend || p.Issuer != "" {
+			// An issued key never sends, whatever it holds.
 			for id, f := range held {
 				f.Send = false
 				held[id] = f
@@ -116,6 +119,7 @@ func (s *Service) requireFlags(ctx context.Context, p Principal, a account.Accou
 		return E(CodeInternal, "reading the access to the mailbox failed", err)
 	}
 	if !held[a.ID].Covers(need) {
+		s.issuedUseRefused(ctx, p, a.ID, need, UseNoFlag)
 		return errMissingFlag(need)
 	}
 	return nil
@@ -172,7 +176,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 		return errNoWorkspace
 	case p.IsWorkspaceKey() && p.WorkspaceID != "":
 		if workspaceID == p.WorkspaceID {
-			return s.keyWorkspace(ctx, workspaceID)
+			return s.keyWorkspace(ctx, p, workspaceID)
 		}
 		return errNoWorkspace
 	case p.IsWorkspaceKey():
@@ -181,7 +185,7 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 			return E(CodeInternal, "reading the workspace failed", err)
 		}
 		if slices.Contains(reached, workspaceID) {
-			return s.keyWorkspace(ctx, workspaceID)
+			return s.keyWorkspace(ctx, p, workspaceID)
 		}
 		return errNoWorkspace
 	}
@@ -198,11 +202,12 @@ func (s *Service) inWorkspace(ctx context.Context, p Principal, workspaceID stri
 }
 
 // keyWorkspace refuses a key a workspace it reaches that is a team, where
-// teams are withheld (errTeamsWithheld) or where an edition keeps keys to
-// personal workspaces (errTeamKeys): a team's key, or a carried-over key
-// holding a team's mailbox, that a database still holds.
-func (s *Service) keyWorkspace(ctx context.Context, workspaceID string) error {
-	if err := s.workspaceWithheld(ctx, workspaceID); err != nil || !s.keysPersonalOnly {
+// teams are withheld (errTeamsWithheld) or where the key reaches personal
+// workspaces alone (errTeamKeys: an edition that keeps keys there, and a key
+// an issuer made): a team's key, or a carried-over key holding a team's
+// mailbox, that a database still holds.
+func (s *Service) keyWorkspace(ctx context.Context, p Principal, workspaceID string) error {
+	if err := s.workspaceWithheld(ctx, workspaceID); err != nil || !s.keysPersonal(p) {
 		return err
 	}
 	w, err := s.workspaces.Get(ctx, workspaceID)
@@ -211,7 +216,7 @@ func (s *Service) keyWorkspace(ctx context.Context, workspaceID string) error {
 		return errNoWorkspace
 	case err != nil:
 		return E(CodeInternal, "reading the workspace failed", err)
-	case s.teamKeysRefused(w):
+	case w.Kind != workspace.KindPersonal:
 		return errTeamKeys
 	}
 	return nil

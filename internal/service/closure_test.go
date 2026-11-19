@@ -22,6 +22,7 @@ import (
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/service/issuertest"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -219,6 +220,22 @@ func (f *fixture) mentionsIn(t *testing.T, name string, needles []string) []stri
 		t.Fatal(err)
 	}
 	return found
+}
+
+// issuedKey stores a key an issuer made for userID, of their personal
+// workspace, holding read on accountID, stopped by the operator here, with a
+// use refused and a refusal owed; and returns its selector.
+func (f *fixture) issuedKey(t *testing.T, userID, accountID string) string {
+	t.Helper()
+	_, selector := issuertest.Store(t, f.db, issuertest.Key{WorkspaceID: authtest.Personal(t, f.db, userID),
+		CreatorID: userID, Stops: []string{"operator"},
+		Grants: []workspace.KeyGrant{{AccountID: accountID, Flags: workspace.Flags{Read: true}}}})
+	f.exec(t, `INSERT INTO issued_key_uses(prefix, day, account_id, use, refused, count) VALUES (?, '2026-11-19', ?, 'act',
+		'no_flag', 2)`, selector, accountID)
+	f.exec(t, `INSERT INTO issued_key_tell(issuer, kind, external_id, prefix, version, account_id, use, cause, received_at)
+		VALUES (?, 'refusal', 'key-' || ?, ?, 1, ?, 'act', 'not_offered', ?)`, issuertest.Issuer, selector, selector,
+		accountID, time.Now().Unix())
+	return selector
 }
 
 func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
@@ -438,6 +455,17 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		}
 	}
 
+	// Keys an issuer made for ana and for bob, each of its owner's personal
+	// workspace, holding its owner's mailbox, stopped here once, with a use
+	// refused and a refusal owed to the issuer; and what is left of a key
+	// of somebody else's, long gone. Deleting her takes her key's record
+	// with her workspace, and leaves only its selector, how it ended and
+	// when (migration 0028).
+	anaIssued := f.issuedKey(t, ana.UserID, anaHome)
+	bobIssued := f.issuedKey(t, bob.UserID, bobs)
+	f.exec(t, `INSERT INTO issued_key_ends(prefix, how, ended_at, forget_at) VALUES ('00000000000000ee', 'expired', ?, ?)`,
+		now-100, now+3600)
+
 	// The scan below proves something only about tables that hold rows. A
 	// table a later migration adds starts out empty here, and would pass
 	// without anyone having decided what deleting a person does to it; this
@@ -449,6 +477,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		"directory_people": "what an external directory says of the people it follows, nobody here; a followed " +
 			"person's row outlives them, marked gone, until an extension releases them (store's and auth's tests)",
 		"extension_state":   "an extension's own state, which that extension keeps and forgets",
+		"directory_keys":    "an issuer's feed's place, by its issuer; nothing about anyone",
 		"workspace_changes": "marks only workspaces from another source, none of hers here",
 	}
 	for _, name := range f.tables(t) {
@@ -484,6 +513,7 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		anaHome, anaWork, "ana@mail.example", "ana.work@mail.example",
 		"state-by-ana", "state-on-anas", anaPersonal.ID, anaAlone.ID, "Ana alone",
 		"subject-of-ana", "key-of-ana", "link-state-of-ana", "verifier-of-ana", "ana.new@mail.example",
+		"key-" + anaIssued, // her issued key's id at its issuer, in what was owed of it
 	}
 	if found := f.mentions(t, needles); len(found) > 0 {
 		t.Errorf("rows still name ana or her mailboxes:\n  %s", strings.Join(found, "\n  "))
@@ -537,6 +567,15 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 			WHERE e.account_id = ? AND e.kind = 'removed' AND e.actor = '' AND n.user_id = ?`, removed.ID, bob.UserID),
 		"what bob did, its readers bob alone": f.count(t, `SELECT count(*) FROM mailbox_event_readers r
 			JOIN mailbox_events e ON e.seq = r.event_seq WHERE e.account_id = ? AND e.actor = ?`, teamBox.ID, bob.UserID),
+		"what is left of her issued key": f.count(t, `SELECT count(*) FROM issued_key_ends WHERE prefix = ?
+			AND how = 'revoked' AND ended_at > 0`, anaIssued),
+		"bob's issued key": f.count(t, `SELECT count(*) FROM api_keys k JOIN issued_keys i ON i.prefix = k.prefix
+			WHERE k.prefix = ? AND k.created_by = ?`, bobIssued, bob.UserID),
+		"what it holds":      f.count(t, `SELECT count(*) FROM key_access WHERE key_prefix = ?`, bobIssued),
+		"who gave it":        f.count(t, `SELECT count(*) FROM issued_key_grants WHERE prefix = ?`, bobIssued),
+		"its stop":           f.count(t, `SELECT count(*) FROM issued_key_stops WHERE prefix = ?`, bobIssued),
+		"its use refused":    f.count(t, `SELECT count(*) FROM issued_key_uses WHERE prefix = ?`, bobIssued),
+		"what is owed of it": f.count(t, `SELECT count(*) FROM issued_key_tell WHERE prefix = ?`, bobIssued),
 	} {
 		if n != 1 {
 			t.Errorf("%s: %d rows, want 1", what, n)

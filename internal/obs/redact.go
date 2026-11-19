@@ -39,6 +39,12 @@ var (
 	// apiKeyRE is this project's key format: an 8-hex lookup prefix, a dot,
 	// and 32 random bytes in base64url.
 	apiKeyRE = regexp.MustCompile(`\b([0-9a-f]{8})\.[A-Za-z0-9_-]{20,}`)
+	// issuedKeyRE is the shape of a key an issuer makes elsewhere and this
+	// server mirrors: a short word and an underscore, a selector of 16 hex
+	// characters, a dot, and 32 random bytes in base64url. apiKeyRE never
+	// matches it (no word boundary before the selector's last 8 hex). The
+	// selector stays, as an own key's prefix does.
+	issuedKeyRE = regexp.MustCompile(`\b([a-z]{2,8}_[0-9a-f]{16})\.[A-Za-z0-9_-]{43}`)
 	// bearerRE catches a credential that arrived as a header value.
 	bearerRE = regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`)
 	// xoauth2RE catches the SASL initial response, which is a base64 blob
@@ -57,6 +63,7 @@ const redacted = "[redacted]"
 func Redact(s string) string {
 	s = xoauth2RE.ReplaceAllString(s, "$1 $2 "+redacted)
 	s = bearerRE.ReplaceAllString(s, "$1 "+redacted)
+	s = issuedKeyRE.ReplaceAllString(s, "$1."+redacted)
 	s = apiKeyRE.ReplaceAllString(s, "$1."+redacted)
 	return emailRE.ReplaceAllString(s, "$1…$2")
 }

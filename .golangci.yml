@@ -87,6 +87,8 @@ linters:
               desc: workspaces, members and grants are decided in internal/service
             - pkg: github.com/thehappieco/mailie/internal/auth/authtest
               desc: test helper; mints users and keys straight into the store
+            - pkg: github.com/thehappieco/mailie/internal/service/issuertest
+              desc: test helper; a made-up key issuer that mints keys straight into the store
 
   exclusions:
     rules:

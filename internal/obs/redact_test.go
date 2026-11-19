@@ -48,6 +48,33 @@ func TestAnAPIKeyKeepsItsPrefixAndLosesItsSecret(t *testing.T) {
 	}
 }
 
+func TestTheLogNeverHoldsAnIssuedCredential(t *testing.T) {
+	// A key an issuer makes: a short word, a selector of 16 hex, a dot and
+	// 43 characters of secret. The selector stays, as an own key's prefix
+	// does; the secret never reaches a line, as a message, an attribute or
+	// an error.
+	const selector, secret = "tst_9f3c0a7be41d2c58", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+	for _, in := range []string{
+		"refused " + selector + "." + secret + " at once",
+		"(" + selector + "." + secret + ")",
+		selector + "." + secret,
+	} {
+		got := obs.Redact(in)
+		if strings.Contains(got, secret[:12]) || !strings.Contains(got, selector+".[redacted]") {
+			t.Errorf("Redact(%q) = %q", in, got)
+		}
+	}
+	for _, format := range []string{"json", "text"} {
+		var buf bytes.Buffer
+		lg := obs.NewLoggerTo(&buf, "info", format)
+		lg.Warn("a credential "+selector+"."+secret, "presented", selector+"."+secret,
+			"err", fmt.Errorf("checking %s.%s: refused", selector, secret))
+		if out := buf.String(); strings.Contains(out, secret[:12]) || !strings.Contains(out, selector) {
+			t.Errorf("%s: %s", format, out)
+		}
+	}
+}
+
 func TestAnAuthorizationHeaderNeverSurvives(t *testing.T) {
 	got := obs.Redact("Authorization: Bearer ya29.a0AfH6SMBx-very-long-google-token")
 	if strings.Contains(got, "ya29") {
