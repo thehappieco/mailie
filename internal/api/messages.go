@@ -162,7 +162,20 @@ func boolFilter(name, raw string) (*bool, error) {
 func (q *request) download(dl service.Download) {
 	//nolint:errcheck // closing removes the spooled copy; nothing to report
 	defer func() { _ = dl.Body.Close() }()
-	if err := q.h.Service.Recheck(q.ctx(), q.principal); err != nil {
+	// The caller is checked again before the first byte, and between two
+	// chunks once a commit may have changed what anyone reaches
+	// (Service.AccessChanged): a key revoked, expired or stopped, or read
+	// taken, while the mail server was read or since, sends nothing more,
+	// within a second. The channel is taken before the first check, so a
+	// commit is either seen by that check or closes it.
+	changed := q.h.Service.AccessChanged()
+	check := func() error {
+		if dl.Still == nil {
+			return q.h.Service.Recheck(q.ctx(), q.principal)
+		}
+		return dl.Still(q.ctx())
+	}
+	if err := check(); err != nil {
 		q.fail(err)
 		return
 	}
@@ -196,11 +209,7 @@ func (q *request) download(dl service.Download) {
 	}
 	extend()
 	q.w.WriteHeader(http.StatusOK)
-	// Between two chunks, once a commit may have changed what anyone
-	// reaches (Service.AccessChanged), the caller is checked again: a key
-	// revoked or stopped, or read taken, ends the transfer within a second,
-	// the body cut short.
-	changed := q.h.Service.AccessChanged()
+	// Past the header, a check that fails cuts the body short.
 	still := func() error {
 		select {
 		case <-changed:
@@ -208,10 +217,7 @@ func (q *request) download(dl service.Download) {
 			return nil
 		}
 		changed = q.h.Service.AccessChanged()
-		if dl.Still == nil {
-			return q.h.Service.Recheck(q.ctx(), q.principal)
-		}
-		return dl.Still(q.ctx())
+		return check()
 	}
 	n, err := copyExtending(q.w, dl.Body, extend, still)
 	q.h.observe(q.route, q.r.Method, http.StatusOK, time.Since(q.started))

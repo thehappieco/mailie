@@ -474,18 +474,21 @@ func (s *Service) IssuedKeyUsesReported(ctx context.Context, issuer, through str
 // what is owed of it, which marks its workspace for an extension's report;
 // and answers the next expiry of a live issued key, zero when none. The
 // hourly housekeeping runs it, and so may an extension at that next moment,
-// so that an expired key leaves what is reported within seconds.
+// so that an expired key leaves what is reported within seconds. Once a key
+// ended, open streams and downloads check their access again, so that one
+// of the key's ends within a second of its expiry.
 func (s *Service) EndExpiredIssuedKeys(ctx context.Context, now time.Time) (time.Time, error) {
 	if s.store == nil {
 		return time.Time{}, nil
 	}
 	var next int64
+	type expired struct {
+		prefix string
+		at     int64
+	}
+	var ended []expired
 	err := s.store.Write(ctx, func(tx *sql.Tx) error {
-		type expired struct {
-			prefix string
-			at     int64
-		}
-		var ended []expired
+		ended = nil
 		if err := scanAll(ctx, tx, `SELECT k.prefix, k.expires_at FROM api_keys k
 			JOIN issued_keys i ON i.prefix = k.prefix
 			WHERE k.issuer <> '' AND k.revoked_at = 0 AND i.ended_at = 0 AND k.expires_at <= ?`, []any{now.Unix()},
@@ -510,6 +513,9 @@ func (s *Service) EndExpiredIssuedKeys(ctx context.Context, now time.Time) (time
 	})
 	if err != nil {
 		return time.Time{}, E(CodeInternal, "ending the issued keys that expired failed", err)
+	}
+	if len(ended) > 0 {
+		s.accessChanged()
 	}
 	return secondsOrZero(next), nil
 }

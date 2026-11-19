@@ -1318,19 +1318,25 @@ the key the same way (`Service.StopIssuedKey`, by its id or selector).
 - Never its name, a reading key, or a time of use.
 
 `Service.EndExpiredIssuedKeys` records each key's end at its expiry (marking its workspace for the
-extension's report) and answers the next one, which an extension can wait for;
+extension's report, and waking what holds a request open) and answers the next one, which an
+extension can wait for;
 `Service.SweepIssuedKeys` deletes, one key per write, a failure logged and the next one tried. The
 daemon's hourly housekeeping runs both, at start too.
 
 #### Streams and downloads close within a second
 
 `Service.AccessChanged` is closed at every commit that may have given or taken access from anyone
-(a record applied, a hold, a disable, a flag taken). An event stream checks its caller at once
-then, beside every batch and ping; a long poll (`GET /v1/events/wait`) too, answering `401` when
-its credential stopped; and a download (a raw message or an attachment, sent from its spooled copy)
-asks its `Download.Still` between two chunks (the credential again, and read on the mailbox), and
-is cut off, never ended as a whole file, when the caller may no longer read it. So a key revoked,
-held or losing read stops within a second of the write, for sessions and own keys alike.
+(a record applied, a hold, a disable, a flag taken, a key ended at its expiry). An event stream
+checks its caller at once then, beside every batch and ping; a long poll (`GET /v1/events/wait`)
+too, answering `401` when its credential stopped; and a download (a raw message or an attachment,
+sent from its spooled copy) asks its `Download.Still` (the credential again, and read on the
+mailbox) before its first byte and between two chunks, and is refused, or cut off and never ended
+as a whole file, when the caller may no longer read it. Each takes the channel **before** it
+checks its caller, never after, so a commit is either seen by the check or closes the channel it
+waits on: what changed while the mail server was read, or between two checks, is never missed. A
+message's body, and an attachment handed back whole, are checked for read on the mailbox once the
+mail server was read, before anything of them is answered. So a key revoked, held, expired or
+losing read stops within a second of the write, for sessions and own keys alike.
 
 ## Choosing the workspace in a request
 
@@ -2953,10 +2959,15 @@ Test names state the guarantee. At least:
   what is reported, `TestTheSnapshotListsTheLiveIssuedKeysOnEachMailbox`,
   `TestAnExpiredIssuedKeyMarksItsWorkspaceAtItsExpiry` and
   `TestAnIssuedKeysChangeMarksItsWorkspaceFromItsRecord`; and what holds a request open
-  (`internal/api`), `TestAStreamEndsWithinASecondOfItsKeysRevocation`,
-  `TestALongPollEndsWithinASecondOfItsKeysRevocation`, `TestADownloadStopsWithinASecondOfItsKeysRevocation`
-  (an original and an attachment; a revocation, a hold and read taken away) and
-  `TestADownloadOfAKeyStillReadingIsSentWhole`. The console (vitest): `keys.page.spec.ts`, an
+  (`internal/api` unless named), `TestAStreamEndsWithinASecondOfItsKeysRevocation`,
+  `TestALongPollEndsWithinASecondOfItsKeysRevocation`,
+  `TestALongPollOfAKeyRevokedSinceItAuthenticatedEndsAtOnce`,
+  `TestAStreamOrALongPollEndsWithinASecondHoweverCloseItsKeysHoldComes`,
+  `TestADownloadStopsWithinASecondOfItsKeysRevocation` (an original and an attachment; a revocation,
+  a hold and read taken away), `TestNothingIsSentOfAMessageWhoseAccessGoesWhileTheMailServerIsRead`
+  (an original, an attachment and a message's body; the same, and the mailbox removed),
+  `TestADownloadStopsAtItsKeysExpiry`, `TestAnIssuedKeyEndedAtItsExpiryChecksOpenRequestsAgain`
+  (`internal/service`) and `TestADownloadOfAKeyStillReadingIsSentWhole`. The console (vitest): `keys.page.spec.ts`, an
   edition without key terms offers no Create key.
 
 ## Conflicts and resolutions

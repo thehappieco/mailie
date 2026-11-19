@@ -253,6 +253,14 @@ func (s *Service) WaitForNewMail(ctx context.Context, p Principal, since int64, 
 	case timeout < time.Second || timeout > MaxWait:
 		return WaitResult{}, Ef(CodeBadRequest, nil, "timeout must be between 1 and %d seconds", int(MaxWait/time.Second))
 	}
+	// Taken before the caller is checked, and each time before they are
+	// checked again: a commit that may have changed what anyone reaches is
+	// either seen by the check or closes the channel the wait is on. The
+	// first check covers the moment since the transport authenticated.
+	changed := s.AccessChanged()
+	if err := s.Recheck(ctx, p); err != nil {
+		return WaitResult{}, err
+	}
 	filter.Types = []string{string(events.TypeMessageNew)}
 	f, gate, err := s.eventFilter(ctx, p, since, filter)
 	if err != nil {
@@ -271,7 +279,6 @@ func (s *Service) WaitForNewMail(ctx context.Context, p Principal, since int64, 
 	var first *events.Event
 wait:
 	for {
-		changed := s.AccessChanged()
 		select {
 		case ev, ok := <-sub.Events():
 			if ok {
@@ -283,6 +290,7 @@ wait:
 			// caller is checked again at once, so that a credential revoked
 			// or stopped ends its wait within a second, answered as any
 			// request with a dead credential is.
+			changed = s.AccessChanged()
 			if err := s.Recheck(ctx, p); err != nil {
 				sub.Close()
 				return WaitResult{}, err

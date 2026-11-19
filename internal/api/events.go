@@ -63,6 +63,10 @@ func (h *Handler) streamEvents(q *request) {
 		q.fail(err)
 		return
 	}
+	// Taken before every check of the caller, never after one: a commit
+	// that may have changed what anyone reaches is either seen by the check
+	// or closes the channel the stream waits on.
+	changed := h.Service.AccessChanged()
 	stream, err := h.Service.Subscribe(q.ctx(), q.principal, since, service.EventFilter{
 		AccountIDs: list(params["account"]), Types: list(params["types"]), Workspace: params["workspace"],
 	})
@@ -117,8 +121,9 @@ func (h *Handler) streamEvents(q *request) {
 	}
 	// credentialWorks checks the caller again, and what they may still
 	// read, and ends the stream when the credential no longer works or
-	// nothing it follows is left.
+	// nothing it follows is left. It takes the next AccessChanged first.
 	credentialWorks := func() bool {
+		changed = h.Service.AccessChanged()
 		err := h.Service.Recheck(q.ctx(), q.principal)
 		if err == nil {
 			var changes []service.AccessChange
@@ -164,12 +169,11 @@ func (h *Handler) streamEvents(q *request) {
 		return sse.event(strconv.FormatInt(ev.Seq, 10), ev.Type, ev)
 	}
 	for {
-		// A commit that may have changed what anyone reaches: checked at
-		// once, rather than at the next batch or ping, so that a credential
-		// revoked or stopped ends its stream within a second.
-		changed := h.Service.AccessChanged()
 		select {
 		case <-changed:
+			// A commit that may have changed what anyone reaches: checked at
+			// once, rather than at the next batch or ping, so that a
+			// credential revoked or stopped ends its stream within a second.
 			if !credentialWorks() || !sse.flush() {
 				return
 			}

@@ -166,9 +166,11 @@ func (s *Service) accessChanged() {
 
 // AccessChanged is closed at the next commit that may have given or taken
 // access from somebody (accessChanged): a credential revoked or stopped, a
-// flag taken, a person disabled. What holds a request open — an event
-// stream, a long poll, a download — waits on it and checks its caller
-// again at once, then takes the next one.
+// flag taken, a person disabled, a key expired. What holds a request open —
+// an event stream, a long poll, a download — takes it before it checks its
+// caller, never after, and once it is closed takes the next one before it
+// checks them again: a commit is then either seen by the check or closes
+// the channel it waits on.
 func (s *Service) AccessChanged() <-chan struct{} {
 	s.accessMu.Lock()
 	defer s.accessMu.Unlock()

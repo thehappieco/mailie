@@ -480,6 +480,12 @@ func (s *Service) GetMessage(ctx context.Context, p Principal, req GetMessageReq
 	if err != nil {
 		return Message{}, err
 	}
+	// Read on the mailbox, again: read taken, or the mailbox removed, while
+	// the mail server was read gets nothing of what it sent. The transport
+	// checks the credential before it answers.
+	if err := s.readsStill(ctx, p, a.ID); err != nil {
+		return Message{}, err
+	}
 
 	// Decoded after the connection is released: the spooled sections are
 	// the only copy, and they go when this returns.
@@ -579,24 +585,32 @@ func (s *Service) GetRaw(ctx context.Context, p Principal, id int64) (Download, 
 }
 
 // stillReads is a Download's Still: the caller's credential checked again
-// (Recheck), and read on the mailbox, one indexed read.
+// (Recheck), and read on the mailbox (readsStill).
 func (s *Service) stillReads(p Principal, accountID string) func(context.Context) error {
 	return func(ctx context.Context) error {
 		if err := s.Recheck(ctx, p); err != nil {
 			return err
 		}
-		if !p.MayAccess(accountID) {
-			return E(CodeNotFound, "no such account", nil)
-		}
-		_, err := s.accounts.Repo().GetVisible(ctx, accountID, s.readable(p))
-		switch {
-		case errors.Is(err, account.ErrNotFound):
-			return E(CodeNotFound, "no such account", err)
-		case err != nil:
-			return E(CodeInternal, "reading the account failed", err)
-		}
-		return nil
+		return s.readsStill(ctx, p, accountID)
 	}
+}
+
+// readsStill checks again that the caller reads a mailbox, one indexed read:
+// what a message's body, or an attachment handed back whole, is checked with
+// once the mail server was read for it. A mailbox the caller no longer reads
+// is answered as readableMessage answers it: no such message.
+func (s *Service) readsStill(ctx context.Context, p Principal, accountID string) error {
+	if !p.MayAccess(accountID) {
+		return errNoMessage
+	}
+	_, err := s.accounts.Repo().GetVisible(ctx, accountID, s.readable(p))
+	switch {
+	case errors.Is(err, account.ErrNotFound):
+		return errNoMessage
+	case err != nil:
+		return E(CodeInternal, "reading the account failed", err)
+	}
+	return nil
 }
 
 // GetAttachment returns one part of a message, named by its IMAP section,
@@ -661,6 +675,10 @@ func (s *Service) GetAttachmentInline(ctx context.Context, p Principal, id int64
 	}
 	//nolint:errcheck // closing removes the spooled section; nothing to report
 	defer func() { _ = d.Body.Close() }()
+	// As a message's body is, before anything of it is handed back.
+	if err := s.readsStill(ctx, p, a.ID); err != nil {
+		return InlineAttachment{}, err
+	}
 	data, err := io.ReadAll(io.LimitReader(d.Body, maxBytes+1))
 	if err != nil {
 		return InlineAttachment{}, E(CodeInternal, "reading the attachment failed", err)

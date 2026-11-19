@@ -350,11 +350,14 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`IssuedStopCauses`: `operator`, `creator`, `withdrawn` under `IssuedKeysRefused`, never stored),
   the operator's hold (`HoldIssuedKey`, `ReleaseIssuedKey`, an unrestricted instance admin key;
   `StopIssuedKey` for an extension), `EndExpiredIssuedKeys` (a key's end at its expiry, the next
-  one answered) and `SweepIssuedKeys` (one key per write, the periods of `docs/workspaces.md`).
-  `AccessSnapshot` lists each mailbox's live issued keys (`SnapshotMailbox.Keys`), never among its
-  people. `AccessChanged` is closed at every `accessChanged`: event streams, the long poll and a
-  download's `Download.Still` (checked between chunks) stop within a second of the write that took
-  a caller's access. `directory.go` is what an extension that follows an external
+  one answered, and open requests woken) and `SweepIssuedKeys` (one key per write, the periods of
+  `docs/workspaces.md`). `AccessSnapshot` lists each mailbox's live issued keys
+  (`SnapshotMailbox.Keys`), never among its people. `AccessChanged` is closed at every
+  `accessChanged`, and taken before every check of a caller, never after: event streams, the long
+  poll and a download's `Download.Still` (checked before the first byte and between chunks) stop
+  within a second of the write that took a caller's access; a message's body and an inline
+  attachment are checked for read again once the mail server was read. `directory.go` is what an
+  extension that follows an external
   directory calls, with no principal and from no transport: a person's document applied in one
   write (`ApplyDirectoryDocument`, and at a first sign-in in the transaction that creates them,
   `ExternalSignIn.Directory`; a new person under the directory's source without one is not
@@ -396,9 +399,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   operator's acts, or a key's own acts, nor for renaming a mailbox (`RenameAccount`, `PATCH
   /v1/accounts/{id}`: a name widens no access; the platform's `item.rename` has no freshness gate).
 - `internal/api` — REST `/v1/...`, SSE and the long poll, each checking its caller again at
-  `Service.AccessChanged`, and downloads checking between chunks, cut off (never ended whole) once
-  the caller may no longer read; the operator's hold of an issued key
-  (`PUT|DELETE /v1/issued-keys/{selector}/hold`); a link at the provider's routes sit beside
+  `Service.AccessChanged`, and downloads checking before the first byte and between chunks, refused
+  or cut off (never ended whole) once the caller may no longer read; the operator's hold of an
+  issued key (`PUT|DELETE /v1/issued-keys/{selector}/hold`); a link at the provider's routes sit beside
   `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
   `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks,
   its take and its finish. `internal/mcp` — tools, resources and the

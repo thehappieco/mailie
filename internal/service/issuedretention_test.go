@@ -392,6 +392,32 @@ func TestAnExpiredIssuedKeyMarksItsWorkspaceAtItsExpiry(t *testing.T) {
 	}
 }
 
+func TestAnIssuedKeyEndedAtItsExpiryChecksOpenRequestsAgain(t *testing.T) {
+	w := newKeysWorld(t, fixtureOptions{})
+	expiring := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+	expiring.ExpiresAt = w.clock.now().Add(time.Hour)
+	w.keys(t, expiring)
+	// Nothing ended: nothing to check.
+	quiet := w.svc.AccessChanged()
+	if _, err := w.svc.EndExpiredIssuedKeys(t.Context(), w.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-quiet:
+		t.Error("ending no key woke what holds a request open")
+	default:
+	}
+	w.clock.advance(2 * time.Hour)
+	if _, err := w.svc.EndExpiredIssuedKeys(t.Context(), w.clock.now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-quiet:
+	default:
+		t.Error("a key that ended at its expiry left open streams and downloads unchecked")
+	}
+}
+
 func TestAnIssuedKeysChangeMarksItsWorkspaceFromItsRecord(t *testing.T) {
 	w := newKeysWorld(t, fixtureOptions{})
 	w.exec(t, `DELETE FROM workspace_changes`)
