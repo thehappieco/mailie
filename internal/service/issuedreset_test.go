@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -320,6 +321,61 @@ func TestAResetReportsTheRefusedAndRemovedGrantsThePassLists(t *testing.T) {
 	}
 }
 
+func TestWhatIsOwedAsKeptOffNeverNamesAGrantGivenAgainSince(t *testing.T) {
+	for name, before := range map[string]func(w *keysWorld) []service.IssuedGrant{
+		// An old grant not held at the reset: a tombstone.
+		"an old grant": func(w *keysWorld) []service.IssuedGrant { return nil },
+		// A grant refused before the reset, which the pass lists again.
+		"a grant refused": func(w *keysWorld) []service.IssuedGrant {
+			return []service.IssuedGrant{w.given(w.other, "read", "sub-nobody")}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newKeysWorld(t, fixtureOptions{})
+			first := append([]service.IssuedGrant{w.given(w.box, "read", anaSub)}, before(w)...)
+			w.keys(t, w.record(t, "tok-1", 1, first...))
+			w.publishedThrough(t, w.clock.now())
+			w.reset(t, "generation-2")
+			w.anaDoc(t, 1)
+			off := w.given(w.other, "read", anaSub)
+			if len(before(w)) > 0 {
+				off = before(w)[0]
+			}
+			w.keys(t, w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub), off))
+			if h, ok := w.heldOf(t, "tok-1"); !ok ||
+				!slices.Equal(h.Removed, []service.IssuedGrantRef{{AccountID: w.other, Use: "read"}}) {
+				t.Fatalf("held %+v %v", h, ok)
+			}
+			// Before the issuer took that, Ana gives read on the mailbox
+			// again: held, and no longer owed as kept off.
+			again := service.IssuedGrant{AccountID: w.other, Use: "read", GivenBy: anaSub, GivenAt: w.clock.now()}
+			w.keys(t, w.record(t, "tok-1", 2, w.given(w.box, "read", anaSub), again))
+			if w.flags(t, "tok-1", w.other) != "read" {
+				t.Fatalf("the grant given again: %q", w.grantState(t, "tok-1", w.other, "read"))
+			}
+			if h, ok := w.heldOf(t, "tok-1"); ok {
+				t.Errorf("still owed as held narrower: %+v", h)
+			}
+		})
+	}
+	// What a key is held narrower by besides stays owed: its revocation,
+	// its earlier expiry.
+	w := newKeysWorld(t, fixtureOptions{})
+	short := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+	w.keys(t, short)
+	short.Version, short.ExpiresAt = 2, w.clock.now().Add(48*time.Hour)
+	w.keys(t, short)
+	w.publishedThrough(t, w.clock.now())
+	w.reset(t, "generation-2")
+	w.anaDoc(t, 1)
+	w.keys(t, w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub), w.given(w.other, "read", anaSub)))
+	again := service.IssuedGrant{AccountID: w.other, Use: "read", GivenBy: anaSub, GivenAt: w.clock.now()}
+	w.keys(t, w.record(t, "tok-1", 2, w.given(w.box, "read", anaSub), again))
+	if h, ok := w.heldOf(t, "tok-1"); !ok || len(h.Removed) != 0 || !h.ExpiresAt.Equal(short.ExpiresAt) {
+		t.Errorf("held %+v %v", h, ok)
+	}
+}
+
 func TestAnOldGrantNotHeldAtTheResetIsNeverJudgedLaterInTheGeneration(t *testing.T) {
 	w := newKeysWorld(t, fixtureOptions{})
 	w.keys(t, w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub)))
@@ -358,6 +414,57 @@ func TestAKeyThePassDidNotListIsRevokedWhenThePassEnds(t *testing.T) {
 	if err := w.db.Reader().QueryRowContext(t.Context(), `SELECT end_kind FROM issued_keys WHERE prefix = ?`,
 		w.cred(t, "tok-gone").selector).Scan(&kind); err != nil || kind != "unlisted" {
 		t.Errorf("ended %q: %v", kind, err)
+	}
+}
+
+func TestAKeyStoppedForARecordThePassCouldNotApplyIsNotRevokedAsUnlisted(t *testing.T) {
+	w := newKeysWorld(t, fixtureOptions{})
+	w.keys(t, w.record(t, "tok-stuck", 1, w.given(w.box, "read", anaSub)),
+		w.record(t, "tok-stopped", 1, w.given(w.box, "read", anaSub)))
+	w.reset(t, "generation-2")
+	// tok-stuck's record cannot be written even narrowed (a test's trigger
+	// on its version); tok-stopped's could not be applied, and the extension
+	// stopped its key by itself, as it does a record it applies alone.
+	w.exec(t, `CREATE TRIGGER test_stuck BEFORE UPDATE OF version ON issued_keys WHEN NEW.prefix = '`+
+		w.cred(t, "tok-stuck").selector+`' BEGIN SELECT RAISE(ABORT, 'test'); END`)
+	if stopped, err := w.svc.StopIssuedKey(t.Context(), dirIssuer, "tok-stopped", w.cred(t, "tok-stopped").selector); err != nil || !stopped {
+		t.Fatalf("stopping: %v %v", stopped, err)
+	}
+	got := w.keys(t, w.record(t, "tok-stuck", 1, w.given(w.box, "read", anaSub)))
+	if got.Faults != 1 || !got.PassClosed || got.Unlisted != 0 {
+		t.Fatalf("applied %+v", got)
+	}
+	for _, id := range []string{"tok-stuck", "tok-stopped"} {
+		if w.count(t, `SELECT count(*) FROM api_keys WHERE prefix = ? AND revoked_at = 0`, w.cred(t, id).selector) != 1 {
+			t.Errorf("%s, a key the pass named, was revoked as unlisted", id)
+		}
+	}
+	if got := w.stopsOf(t); !slices.Equal(got, []string{"tok-stopped operator", "tok-stuck operator"}) {
+		t.Errorf("stops %q", got)
+	}
+}
+
+func TestUnderTheEditionsWithdrawalEachKeyIsStoppedOnceAndTheListSaysWhenThereIsMore(t *testing.T) {
+	w := newKeysWorld(t, fixtureOptions{issuedKeysRefused: true})
+	var page []service.IssuedKey
+	for i := range service.MaxIssuedReportEntries + 1 {
+		page = append(page, w.record(t, fmt.Sprintf("tok-%04d", i), 1))
+	}
+	w.keys(t, page...)
+	// The operator's own hold beside the edition's withdrawal: one stop.
+	if err := w.svc.HoldIssuedKey(t.Context(), admin(), w.cred(t, "tok-0000").selector); err != nil {
+		t.Fatal(err)
+	}
+	rep := w.report(t)
+	seen := map[string]bool{}
+	for _, st := range rep.Suspended {
+		if seen[st.ExternalID] {
+			t.Errorf("%s stopped twice", st.ExternalID)
+		}
+		seen[st.ExternalID] = true
+	}
+	if len(rep.Suspended) != service.MaxIssuedReportEntries || !rep.SuspendedMore {
+		t.Errorf("%d stops, more %v", len(rep.Suspended), rep.SuspendedMore)
 	}
 }
 
@@ -661,14 +768,16 @@ func TestIssuedKeysRefusedRefusesEveryKeyAndReportsItStopped(t *testing.T) {
 	if w.works(t, w.cred(t, "tok-1").raw) {
 		t.Fatal("a key works where the edition refuses them")
 	}
-	if got := w.stopsOf(t); !slices.Equal(got, []string{"tok-1 withdrawn", "tok-2 operator", "tok-2 withdrawn"}) {
+	// The operator's hold stands under the edition's withdrawal: each key is
+	// stopped once.
+	if got := w.stopsOf(t); !slices.Equal(got, []string{"tok-1 withdrawn", "tok-2 withdrawn"}) {
 		t.Errorf("stops %q", got)
 	}
 	// Its records still apply: a revocation ends its report.
 	revoked := w.record(t, "tok-1", 2)
 	revoked.Revoked = true
 	w.keys(t, revoked)
-	if got := w.stopsOf(t); !slices.Equal(got, []string{"tok-2 operator", "tok-2 withdrawn"}) {
+	if got := w.stopsOf(t); !slices.Equal(got, []string{"tok-2 withdrawn"}) {
 		t.Errorf("stops after a revocation %q", got)
 	}
 	if w.count(t, `SELECT count(*) FROM issued_key_stops WHERE cause NOT IN ('operator', 'creator')`) != 0 {

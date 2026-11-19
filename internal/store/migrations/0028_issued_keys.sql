@@ -220,6 +220,7 @@ CREATE TABLE issued_key_tell (
 CREATE UNIQUE INDEX issued_key_tell_held ON issued_key_tell(issuer, external_id) WHERE kind = 'held';
 CREATE INDEX issued_key_tell_issuer ON issued_key_tell(issuer, id);
 CREATE INDEX issued_key_tell_prefix ON issued_key_tell(prefix) WHERE prefix <> '';
+CREATE INDEX issued_key_tell_refusal ON issued_key_tell(issuer, external_id) WHERE kind = 'refusal';
 
 -- What stays of an issued key once its row goes, until a year after its
 -- creation.
@@ -242,9 +243,10 @@ END;
 
 -- An issued key's row leaves its end on every path that deletes it, the
 -- cascade from its workspace included, while its stops are still there to
--- read, and takes what is owed of it with it. Never INSERT OR REPLACE: a
--- trigger's statement takes the conflict clause of the statement that fired
--- it.
+-- read, and takes what is owed of it with it: under its selector, and the
+-- refusals owed by its id at the issuer before it was stored here. Never
+-- INSERT OR REPLACE: a trigger's statement takes the conflict clause of the
+-- statement that fired it.
 CREATE TRIGGER issued_keys_leave_their_end BEFORE DELETE ON issued_keys
 BEGIN
   INSERT INTO issued_key_ends(prefix, how, ended_at, forget_at)
@@ -256,6 +258,7 @@ BEGIN
          OLD.created_at_us / 1000000 + 31536000
    WHERE NOT EXISTS (SELECT 1 FROM issued_key_ends e WHERE e.prefix = OLD.prefix);
   DELETE FROM issued_key_tell WHERE prefix = OLD.prefix;
+  DELETE FROM issued_key_tell WHERE kind = 'refusal' AND issuer = OLD.issuer AND external_id = OLD.external_id;
 END;
 
 -- Per issuer that issues keys, its feed's place, counted under its

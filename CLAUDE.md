@@ -344,10 +344,14 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   document's own write) and stop, terms judged once, grants judged once (read only from a giver who
   reads the mailbox here, waiting for a giver not followed since the reset and judged in their
   document's write, act only beside read, read leaving taking act in the same statement, never
-  send); a reset never widens and its pass owes what is held narrower, its last page revoking what
-  it did not list. `issuedreport.go`: what is owed (`IssuedKeysReport`, `IssuedKeysTold`), uses per
-  day (`RecordIssuedKeyUses`, `IssuedKeyUsage`, `IssuedKeyUsesReported`), the stops reported
-  (`IssuedStopCauses`: `operator`, `creator`, `withdrawn` under `IssuedKeysRefused`, never stored),
+  send; a partial record's grant no row can hold refused with none); a key's end the earliest of
+  what ends it, and what is owed of it gone with it by selector or id; a reset never widens and its
+  pass owes what is held narrower (kept to what is still kept off at every later write), its last
+  page revoking what it did not list, never a key stopped for a record it named.
+  `issuedreport.go`: what is owed (`IssuedKeysReport`, `IssuedKeysTold`), uses per
+  day (`RecordIssuedKeyUses`, `IssuedKeyUsage`, `IssuedKeyUsesReported`), the stops reported, one
+  per key and cause, the first stopped first (`IssuedStopCauses`: `operator`, `creator`,
+  `withdrawn` under `IssuedKeysRefused` in place of an operator's hold, never stored),
   the operator's hold (`HoldIssuedKey`, `ReleaseIssuedKey`, an unrestricted instance admin key;
   `StopIssuedKey` for an extension), `EndExpiredIssuedKeys` (a key's end at its expiry, the next
   one answered, and open requests woken) and `SweepIssuedKeys` (one key per write, the periods of

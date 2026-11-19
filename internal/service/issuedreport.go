@@ -30,7 +30,8 @@ const (
 	// server, or suspended outside the directory's documents.
 	IssuedStopCreator IssuedStopCause = "creator"
 	// IssuedStopWithdrawn: this edition refuses every issued key
-	// (Deps.IssuedKeysRefused); computed, never stored.
+	// (Deps.IssuedKeysRefused); computed, never stored, and reported in
+	// place of an operator's hold, which it stands over.
 	IssuedStopWithdrawn IssuedStopCause = "withdrawn"
 )
 
@@ -63,7 +64,9 @@ type IssuedKeysReport struct {
 	Waiting     []IssuedWaiting
 	WaitingMore bool
 	// Suspended are this server's own stops of live keys, one per key and
-	// cause; SuspendedMore says more.
+	// cause, the first stopped first (where the edition refuses every
+	// issued key, withdrawn in place of the operator's hold); SuspendedMore
+	// says more.
 	Suspended     []IssuedStop
 	SuspendedMore bool
 	// Held are the keys held narrower than a reset's pass listed them, one
@@ -203,15 +206,21 @@ func (s *Service) issuedKeysReportTx(ctx context.Context, tx *sql.Tx, issuer str
 		return IssuedKeysReport{}, err
 	}
 	out.Waiting, out.WaitingMore = cut(out.Waiting, limit)
-	stops := `SELECT i.external_id, s.cause FROM issued_key_stops s JOIN issued_keys i ON i.prefix = s.prefix
+	// One entry per key and cause, the first stopped first. Where the
+	// edition refuses every issued key, its withdrawal stands over the
+	// operator's own hold: each live key is withdrawn once (from when it was
+	// made, as no moment of the withdrawal is kept), beside the creator's
+	// stop, and the hold is said again once the edition takes keys.
+	stops := `SELECT i.external_id, s.cause, s.at FROM issued_key_stops s JOIN issued_keys i ON i.prefix = s.prefix
 		  JOIN api_keys k ON k.prefix = s.prefix
 		 WHERE i.issuer = ?1 AND i.ended_at = 0 AND k.revoked_at = 0 AND k.expires_at > ?2`
 	if s.issuedKeysRefused {
-		// Every live key is stopped by the edition, beside the stops kept.
-		stops += ` UNION SELECT i.external_id, 'withdrawn' FROM issued_keys i JOIN api_keys k ON k.prefix = i.prefix
+		stops += ` AND s.cause <> 'operator'
+		 UNION ALL SELECT i.external_id, 'withdrawn', i.created_at_us / 1000000 FROM issued_keys i
+		  JOIN api_keys k ON k.prefix = i.prefix
 		 WHERE i.issuer = ?1 AND i.ended_at = 0 AND k.revoked_at = 0 AND k.expires_at > ?2`
 	}
-	if err := scanAll(ctx, tx, `SELECT external_id, cause FROM (`+stops+`) ORDER BY external_id, cause LIMIT ?3`,
+	if err := scanAll(ctx, tx, `SELECT external_id, cause FROM (`+stops+`) ORDER BY at, external_id, cause LIMIT ?3`,
 		[]any{issuer, now.Unix(), limit + 1}, func(rows *sql.Rows) error {
 			var st IssuedStop
 			var cause string

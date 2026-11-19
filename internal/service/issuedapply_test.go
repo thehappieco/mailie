@@ -581,6 +581,45 @@ func TestAPartialRecordOfAKeyNeverHeldRefusesItsGrants(t *testing.T) {
 	}
 }
 
+func TestAPartialRecordWhoseGrantNoRowCanHoldStillNarrows(t *testing.T) {
+	for name, bad := range map[string]func(*keysWorld) service.IssuedGrant{
+		"a grant given at no time": func(w *keysWorld) service.IssuedGrant {
+			return service.IssuedGrant{AccountID: w.box, Use: "read", GivenBy: anaSub}
+		},
+		"a giver longer than any subject": func(w *keysWorld) service.IssuedGrant {
+			return service.IssuedGrant{AccountID: w.box, Use: "read", GivenBy: strings.Repeat("s", 300), GivenAt: w.givenAt}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newKeysWorld(t, fixtureOptions{})
+			w.keys(t, w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub), w.given(w.box, "act", anaSub),
+				w.given(w.other, "read", anaSub)))
+			// The issuer's record that fails its checks: an earlier expiry,
+			// and a grant the schema could not hold in place of those held.
+			bad := w.record(t, "tok-1", 2, bad(w))
+			bad.ExpiresAt = w.clock.now().Add(24 * time.Hour)
+			got := w.keys(t, bad)
+			if got.Faults != 0 || w.count(t, `SELECT count(*) FROM issued_key_stops`) != 0 {
+				t.Fatalf("the record stopped its key rather than narrowing it: %+v", got)
+			}
+			var expires int64
+			if err := w.db.Reader().QueryRowContext(t.Context(), `SELECT expires_at FROM api_keys WHERE prefix = ?`,
+				w.cred(t, "tok-1").selector).Scan(&expires); err != nil || expires != bad.ExpiresAt.Unix() {
+				t.Errorf("the earlier expiry: %d %v", expires, err)
+			}
+			if f := w.flags(t, "tok-1", w.box) + w.flags(t, "tok-1", w.other); f != "" {
+				t.Errorf("the key still holds %q", f)
+			}
+			if got := w.refusals(t); !slices.Equal(got, []string{"tok-1 v2 " + w.box + " read invalid"}) {
+				t.Errorf("owed %q", got)
+			}
+			if !w.works(t, w.cred(t, "tok-1").raw) {
+				t.Error("a key narrowed was stopped")
+			}
+		})
+	}
+}
+
 func TestNoRefusalIsOwedAtVersionZero(t *testing.T) {
 	w := newKeysWorld(t, fixtureOptions{})
 	partial := w.record(t, "tok-1", 0, w.given(w.box, "read", anaSub))
@@ -685,11 +724,14 @@ func TestAForgottenSelectorsGrantsAreRefusedOutsideAPass(t *testing.T) {
 	if got := w.refusals(t); !slices.Equal(got, want) {
 		t.Errorf("owed %q, want %q", got, want)
 	}
-	// One revoked, or past its expiry, changes nothing.
+	// One revoked, or past its expiry, refuses nothing, and what was owed of
+	// the key goes with its end.
 	revoked := w.record(t, "tok-1", 5, w.given(w.box, "read", anaSub))
 	revoked.Revoked = true
-	w.keys(t, revoked)
-	if got := w.refusals(t); !slices.Equal(got, want) {
+	if got := w.keys(t, revoked); got.Refused != 0 {
+		t.Errorf("a revoked record refused %d", got.Refused)
+	}
+	if got := w.refusals(t); len(got) != 0 {
 		t.Errorf("owed %q after a revoked record", got)
 	}
 }

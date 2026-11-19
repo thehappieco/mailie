@@ -63,7 +63,7 @@ func TestMigration28ChangesNoRowOfASchema27Database(t *testing.T) {
 	if want := []string{
 		"index api_keys_issuer", "index issued_key_grants_account", "index issued_key_grants_waiting",
 		"index issued_key_tell_held", "index issued_key_tell_issuer", "index issued_key_tell_prefix",
-		"index sqlite_autoindex_directory_keys_1", "index sqlite_autoindex_issued_key_ends_1",
+		"index issued_key_tell_refusal", "index sqlite_autoindex_directory_keys_1", "index sqlite_autoindex_issued_key_ends_1",
 		"index sqlite_autoindex_issued_key_grants_1", "index sqlite_autoindex_issued_key_stops_1",
 		"index sqlite_autoindex_issued_key_uses_1", "index sqlite_autoindex_issued_keys_1",
 		"index sqlite_autoindex_issued_keys_2",

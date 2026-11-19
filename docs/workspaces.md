@@ -1194,7 +1194,9 @@ the whole page, which the extension tries again. A record is partial when the ex
 (a member out of its bounds, no version or creation, a grant without its mailbox, use, giver or
 time, one listed twice, act without read on its mailbox). Of a partial record only what narrows
 applies: its revocation, an earlier expiry, and every grant it no longer lists; each grant it
-lists that is not held already is refused (`invalid`).
+lists that is not held already is refused (`invalid`), and one whose giver or moment no row can
+hold (a subject over 255 bytes, no moment) is refused with no row, as one it no longer lists, so
+that such a record narrows rather than stopping its key.
 
 **Times as the issuer means them.** A revocation is the record's own (its presence, never a
 time's value) at its own moment, now when later or unknown; an expiry is floored to the second,
@@ -1262,16 +1264,21 @@ issued). Nothing else changes — revocations, expiries, grants held and waiting
 so a reset **never widens** a key. During the pass, each record lists its key again and applies as
 above, and a key held narrower than listed is owed once, merged (`issued_key_tell`, `held`):
 revoked when it is revoked here; the earlier expiry; the grants it lists that this server keeps off
-(refused or removed before, or an old grant made a tombstone). A stub is owed as what it says: a
+(refused or removed before, or an old grant made a tombstone). What is owed as kept off follows
+every later write of the key's grants until the issuer takes it: a grant given again since (held or
+waiting now), or no longer listed, leaves it, and the row goes once it says nothing narrower, so
+the issuer is never told to remove a grant this server holds. A stub is owed as what it says: a
 revoked one as a revocation, an expired one (or one held here) as its end, never a revocation. The
 pass's last page revokes every key it did not list (`manual`, ended `unlisted`), owing nothing of
-them.
+them; a key a record of the pass named, stopped because that record could not be applied, was
+listed, and is never revoked for it.
 
 `Service.IssuedKeysReport` reads, in one read, what the extension acknowledges with: the
 generation, reset and cursor, when the last page applied, whether the pass is open, the refusals
-owed, the grants waiting (of keys listed since the reset), this server's own stops of live keys
-(`operator`, `creator`, and `withdrawn` for every live key where the edition refuses them), and the
-keys held narrower, each list at most 1000 with a flag for more. `Service.IssuedKeysTold` forgets
+owed, the grants waiting (of keys listed since the reset), this server's own stops of live keys,
+one per key and cause, the first stopped first (`operator`, `creator`, and `withdrawn` for every
+live key where the edition refuses them, in place of the operator's hold, which it stands over), and
+the keys held narrower, each list at most 1000 with a flag for more. `Service.IssuedKeysTold` forgets
 what the issuer accepted. Uses are counted by the extension (`KeyIssuer.Used`) and recorded per day
 (`RecordIssuedKeyUses`: the last day accepted, never a time, and refusals added to the day's
 count), read back absolute (`IssuedKeyUsage`) and marked reported (`IssuedKeyUsesReported`).
@@ -1289,7 +1296,7 @@ its people.
 | The creator suspended outside the directory's documents (`SuspendPerson`) | revoked | the `creator` stop, which their resume lifts |
 | The creator deleted or forgotten | revoked, kept without their name | gone with their personal workspace, its stub left (`revoked` for a key still live) |
 | The operator's hold (`PUT /v1/issued-keys/{selector}/hold`) | — | the `operator` stop, which only the release lifts |
-| The edition refuses issued keys (`IssuedKeysRefused`) | — | every one refused, reported `withdrawn`, stored nowhere |
+| The edition refuses issued keys (`IssuedKeysRefused`) | — | every one refused, reported `withdrawn` (an operator's hold too, said again once the edition takes keys), stored nowhere |
 
 Each stop is a row of its own (`issued_key_stops`): a key with any is refused at authentication and
 before every answer, and each lift deletes only its own, so a key held by the operator whose creator
@@ -1316,6 +1323,12 @@ the key the same way (`Service.StopIssuedKey`, by its id or selector).
 - **Refused uses** per day for **30 days**, a day older than yesterday sooner once a report carried
   it.
 - Never its name, a reading key, or a time of use.
+
+A key ends at the **earliest** of what ends it: a revocation heard after its expiry was recorded,
+or after this server's own revocation (the belt), lowers its end to the revocation's moment, and a
+revocation after an expiry it passed first ends it at the expiry. Refusals owed of it go at its
+end and with its row whether they were owed under its selector or, before it was stored here, by
+its id at the issuer.
 
 `Service.EndExpiredIssuedKeys` records each key's end at its expiry (marking its workspace for the
 extension's report, and waking what holds a request open) and answers the next one, which an
@@ -2928,6 +2941,7 @@ Test names state the guarantee. At least:
   `TestAGrantOnARemovedMailboxIsRefusedAndARecoveryGivesNothingBack`,
   `TestReadLeavingTakesActInTheSameWrite`, `TestAnActWithoutReadRecordTakesBothFlagsAndTheFeedMovesOn`,
   `TestAPartialRecordOnlyNarrows`, `TestAPartialRecordOfAKeyNeverHeldRefusesItsGrants`,
+  `TestAPartialRecordWhoseGrantNoRowCanHoldStillNarrows`,
   `TestNoRefusalIsOwedAtVersionZero`, `TestAZeroExpiryEndsAnIssuedKeyAtOnce`,
   `TestARevocationAtAnUnknownTimeStillRevokes`, `TestAForgottenSelectorIsNeverStoredAgain`,
   `TestAForgottenSelectorsGrantsAreRefusedOutsideAPass` and
@@ -2940,7 +2954,9 @@ Test names state the guarantee. At least:
   `TestAResetNeverWidensAnIssuedKey`, `TestWhatIsHeldNarrowerIsOwedToTheIssuer`,
   `TestASecondResetDuringThePassNeverWidens`, `TestAResetReportsTheRefusedAndRemovedGrantsThePassLists`,
   `TestAnOldGrantNotHeldAtTheResetIsNeverJudgedLaterInTheGeneration`,
-  `TestAKeyThePassDidNotListIsRevokedWhenThePassEnds` and
+  `TestAKeyThePassDidNotListIsRevokedWhenThePassEnds`,
+  `TestAKeyStoppedForARecordThePassCouldNotApplyIsNotRevokedAsUnlisted`,
+  `TestWhatIsOwedAsKeptOffNeverNamesAGrantGivenAgainSince` and
   `TestAnExpiredStubIsReportedAsItsEndNotAsARevocation`; the belt and the stops,
   `TestTheBeltStopsOnlyIssuedKeysCreatedBeforeTheDirectorysMoment`, `TestTheBeltHoldsWhicheverArrivesFirst`,
   `TestARecoveryStopsOwnKeysWithItsMarginAndIssuedKeysWithout`,
@@ -2948,12 +2964,15 @@ Test names state the guarantee. At least:
   `TestTheTwoStopsLiftApart`, `TestTheOperatorHoldsAndReleasesAnIssuedKeyBySelector`,
   `TestAHoldOfASelectorNotHeldIsNotFound`, `TestOnlyAnUnrestrictedInstanceAdminKeyHoldsAKey`,
   `TestASuspensionOutsideDocumentsStopsIssuedKeysUntilTheResume`,
-  `TestIssuedKeysRefusedRefusesEveryKeyAndReportsItStopped`, `TestTheHoldRoutesAreTheOperatorsAlone`
+  `TestIssuedKeysRefusedRefusesEveryKeyAndReportsItStopped`,
+  `TestUnderTheEditionsWithdrawalEachKeyIsStoppedOnceAndTheListSaysWhenThereIsMore`,
+  `TestTheHoldRoutesAreTheOperatorsAlone`
   (`internal/api`) and `TestTheHoldCommandsHoldAndReleaseAKeyItsIssuerMadeBySelector`
   (`cmd/mailserver`); what is kept, `TestAnIssuedKeysRecordGoesThirtyDaysAfterItEnds`,
   `TestARecordEndedLongAgoIsNeverStoredInFull`, `TestAnIssuedKeyGoesWithItsCreatorsAccount`,
   `TestAnAccountDeletedWithALiveIssuedKeyLeavesARevokedStub`, `TestTheSweepDeletesKeyByKey`,
-  `TestAKeysRefusalsOwedGoWithItsEnd`, `TestABadRecordsRevocationOfAKeyNeverHeldLeavesItsStub`,
+  `TestAKeysRefusalsOwedGoWithItsEnd`, `TestARefusalOwedBeforeAKeyWasStoredGoesWithItsEnd`,
+  `TestAnIssuedKeyEndsAtTheEarliestOfWhatEndsIt`, `TestABadRecordsRevocationOfAKeyNeverHeldLeavesItsStub`,
   `TestWhatIsLeftOfAnIssuedKeyGoesAYearAfterItsCreation`, `TestWhatIsOwedToTheIssuerGoesAfterThirtyDays`,
   `TestAnIssuedKeysUsesAreKeptAsAbsoluteCountsPerDay` and `TestUseCountsOlderThanYesterdayGoOnceReported`;
   what is reported, `TestTheSnapshotListsTheLiveIssuedKeysOnEachMailbox`,

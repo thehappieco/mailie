@@ -354,8 +354,7 @@ func (k IssuedKey) whole() bool {
 	seen := map[grantKey]bool{}
 	for _, g := range k.Grants {
 		key := grantKey{g.AccountID, g.Use}
-		if g.AccountID == "" || !knownUse(g.Use) || !boundedText(g.GivenBy, 255) || g.GivenAt.IsZero() ||
-			g.GivenAt.UnixMicro() < 0 || seen[key] {
+		if g.AccountID == "" || !knownUse(g.Use) || !storableGrant(g) || seen[key] {
 			return false
 		}
 		seen[key] = true
@@ -579,6 +578,14 @@ func (a *keyApplier) storable(ctx context.Context, k IssuedKey) (string, IssuedR
 // never apply here.
 func (a *keyApplier) forgotten(ctx context.Context, k IssuedKey, st keyStub, ended bool, expiresAt int64) (keyOutcome, error) {
 	out := keyOutcome{forgotten: true}
+	if ended && k.ExternalID != "" {
+		// Nothing is owed of a key past its end: what was refused of its
+		// records once it was forgotten goes.
+		if _, err := a.tx.ExecContext(ctx, `DELETE FROM issued_key_tell WHERE issuer = ? AND external_id = ?
+			AND kind = 'refusal'`, a.issuer, k.ExternalID); err != nil {
+			return keyOutcome{}, fmt.Errorf("service: drop what was owed of an ended key: %w", err)
+		}
+	}
 	if a.feed.PassOpen {
 		if k.Revoked || !boundedText(k.ExternalID, maxIssuedID) {
 			return out, nil
@@ -634,7 +641,7 @@ func (a *keyApplier) endedNeverHeld(ctx context.Context, k IssuedKey, revokedAt,
 	}
 	how, end := "expired", expiresAt
 	if k.Revoked {
-		how, end = "revoked", revokedAt
+		how, end = "revoked", min(revokedAt, expiresAt)
 	}
 	forget := k.CreatedAt.Unix() + int64(store.IssuedKeyEndRetention/time.Second)
 	if forget <= a.now.Unix() {
@@ -746,15 +753,25 @@ func (a *keyApplier) update(ctx context.Context, h heldKey, k IssuedKey, partial
 		h.expiresAt = expiresAt
 		out.narrowed = true
 	}
-	if k.Revoked && h.revokedAt == 0 {
-		if err := revokeIssuedTx(ctx, a.tx, h.prefix, stopOf(k), revokedAt, "revoked"); err != nil {
+	if k.Revoked {
+		// It ended at the earliest of its revocation, an expiry it passed
+		// before it, and an end recorded already (an expiry, or this
+		// server's own revocation at the moment it heard of something
+		// earlier): what its retention counts from.
+		end := min(revokedAt, h.expiresAt)
+		if h.endedAt != 0 {
+			end = min(end, h.endedAt)
+		}
+		if h.revokedAt == 0 {
+			if err := revokeIssuedTx(ctx, a.tx, h.prefix, stopOf(k), revokedAt, "revoked"); err != nil {
+				return keyOutcome{}, err
+			}
+			h.revokedAt = revokedAt
+			out.revoked, out.narrowed = true, true
+		} else if err := endIssuedTx(ctx, a.tx, h.prefix, end, "revoked"); err != nil {
 			return keyOutcome{}, err
 		}
-		h.revokedAt = revokedAt
-		if h.endedAt == 0 {
-			h.endedAt = revokedAt
-		}
-		out.revoked, out.narrowed = true, true
+		h.endedAt = end
 	}
 	after, err := a.after(ctx, &h, k, partial, expiresAt)
 	if err != nil {
@@ -811,6 +828,9 @@ func (a *keyApplier) after(ctx context.Context, h *heldKey, k IssuedKey, partial
 		out.refused += res.refused
 		out.narrowed = out.narrowed || res.narrowed
 		off = res.keptOff
+		if err := pruneHeldTx(ctx, a.tx, a.issuer, h.prefix); err != nil {
+			return keyOutcome{}, err
+		}
 	}
 	if h.endedAt != 0 && h.endedAt+int64(store.IssuedKeyRecordRetention/time.Second) <= nowSec {
 		// Ended longer ago than its record is kept (a record replayed after
@@ -910,8 +930,10 @@ type grantsResult struct {
 // waiting; a new grant is judged (newGrant), act after read and only with
 // it; and what the key holds (key_access) follows the grants held, a row
 // with no flag left deleted. A partial record judges nothing new: each new
-// grant it lists is refused (RefusedInvalid). Every refusal decided here is
-// owed to the issuer at the record's version.
+// grant it lists is refused (RefusedInvalid), and one whose giver or moment
+// no row can hold (storableGrant) is refused with no row, as if unlisted
+// here. Every refusal decided here is owed to the issuer at the record's
+// version.
 func (a *keyApplier) grants(ctx context.Context, h heldKey, k IssuedKey, partial bool) (grantsResult, error) {
 	var out grantsResult
 	rows, err := a.grantRows(ctx, h.prefix)
@@ -919,13 +941,17 @@ func (a *keyApplier) grants(ctx context.Context, h heldKey, k IssuedKey, partial
 		return grantsResult{}, err
 	}
 	listed := map[grantKey]IssuedGrant{}
-	var order []grantKey
+	var order, unstorable []grantKey
+	seen := map[grantKey]bool{}
 	for _, g := range k.Grants {
 		key := grantKey{g.AccountID, g.Use}
-		if g.AccountID == "" || !knownUse(g.Use) || g.GivenBy == "" {
+		if g.AccountID == "" || !knownUse(g.Use) || g.GivenBy == "" || seen[key] {
 			continue
 		}
-		if _, dup := listed[key]; dup {
+		seen[key] = true
+		if !storableGrant(g) {
+			// Only a partial record lists one (whole refuses it).
+			unstorable = append(unstorable, key)
 			continue
 		}
 		listed[key] = g
@@ -1051,7 +1077,25 @@ func (a *keyApplier) grants(ctx context.Context, h heldKey, k IssuedKey, partial
 			out.narrowed = true
 		}
 	}
+	for _, key := range unstorable {
+		told, err := a.tellRefusal(ctx, h.externalID, h.prefix, k.Version, key.account, key.use, RefusedInvalid)
+		if err != nil {
+			return grantsResult{}, err
+		}
+		if told {
+			out.refused++
+			out.narrowed = true
+		}
+	}
 	return out, nil
+}
+
+// storableGrant reports whether a row can hold a grant's giver and moment:
+// a subject of at most 255 bytes, and a moment that is no earlier than 1970.
+// The issuer refuses every other, so only a record not usable whole lists
+// one.
+func storableGrant(g IssuedGrant) bool {
+	return boundedText(g.GivenBy, 255) && !g.GivenAt.IsZero() && g.GivenAt.UnixMicro() >= 0
 }
 
 // grantRows reads an issued key's grants.
@@ -1346,6 +1390,70 @@ func (a *keyApplier) owe(ctx context.Context, externalID, prefix string, o heldO
 	return nil
 }
 
+// pruneHeldTx keeps what a key is owed as held narrower than a reset's pass
+// listed it to what this server still keeps off of what the key's latest
+// record lists: a grant given again since (held or waiting now), or one the
+// record no longer lists, leaves its removed list, so that its issuer never
+// removes a grant this server holds; and the row goes once it says nothing
+// narrower. Its revocation and earlier expiry stay as they are: neither
+// ever widens.
+func pruneHeldTx(ctx context.Context, tx *sql.Tx, issuer, prefix string) error {
+	type owed struct {
+		id      int64
+		revoked bool
+		expires int64
+		removed []heldRemoved
+	}
+	var rows []owed
+	if err := scanAll(ctx, tx, `SELECT id, revoked, expires_at, removed FROM issued_key_tell
+		WHERE issuer = ? AND kind = 'held' AND prefix = ? AND removed <> '[]'`, []any{issuer, prefix},
+		func(r *sql.Rows) error {
+			var o owed
+			var raw string
+			if err := r.Scan(&o.id, &o.revoked, &o.expires, &raw); err != nil {
+				return err
+			}
+			if err := json.Unmarshal([]byte(raw), &o.removed); err != nil {
+				return fmt.Errorf("a held key's removed grants: %w", err)
+			}
+			rows = append(rows, o)
+			return nil
+		}); err != nil {
+		return err
+	}
+	for _, o := range rows {
+		kept := make([]heldRemoved, 0, len(o.removed))
+		for _, r := range o.removed {
+			var off bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM issued_key_grants g
+				  JOIN issued_keys i ON i.prefix = g.prefix
+				 WHERE g.prefix = ? AND g.account_id = ? AND g.use = ? AND g.state IN ('refused', 'removed')
+				   AND g.version = i.version)`, prefix, r.AccountID, r.Use).Scan(&off); err != nil {
+				return fmt.Errorf("service: read a grant owed as kept off: %w", err)
+			}
+			if off {
+				kept = append(kept, r)
+			}
+		}
+		var err error
+		switch {
+		case len(kept) == len(o.removed):
+			continue
+		case len(kept) == 0 && !o.revoked && o.expires == 0:
+			_, err = tx.ExecContext(ctx, `DELETE FROM issued_key_tell WHERE id = ?`, o.id)
+		default:
+			var body []byte
+			if body, err = json.Marshal(kept); err == nil {
+				_, err = tx.ExecContext(ctx, `UPDATE issued_key_tell SET removed = ? WHERE id = ?`, string(body), o.id)
+			}
+		}
+		if err != nil {
+			return fmt.Errorf("service: keep what is owed of a key held narrower to what it keeps off: %w", err)
+		}
+	}
+	return nil
+}
+
 // closePass ends a reset's pass: every key of the issuer it did not list,
 // still live, is revoked (manual), ended as unlisted; nothing of them is
 // owed, since the issuer no longer has them.
@@ -1364,29 +1472,45 @@ func (a *keyApplier) closePass(ctx context.Context) (int, error) {
 }
 
 // revokeIssuedTx revokes an issued key here, for reason, at a moment, and
-// ends it (how: revoked, or unlisted by a pass): its grants still waiting
-// and the refusals owed of it go; what it held stays with its record, which
-// works no more.
+// ends it (how: revoked, or unlisted by a pass) at the earlier of that
+// moment and an expiry it passed before: its grants still waiting and the
+// refusals owed of it go; what it held stays with its record, which works no
+// more.
 func revokeIssuedTx(ctx context.Context, tx *sql.Tx, prefix string, reason workspace.KeyStopReason, at int64, how string) error {
 	if _, err := tx.ExecContext(ctx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
 		WHERE prefix = ? AND revoked_at = 0`, at, string(reason), prefix); err != nil {
 		return fmt.Errorf("service: revoke an issued key: %w", err)
 	}
+	var expires int64
+	if err := tx.QueryRowContext(ctx, `SELECT expires_at FROM api_keys WHERE prefix = ?`, prefix).Scan(&expires); err != nil {
+		return fmt.Errorf("service: read an issued key's expiry: %w", err)
+	}
+	if expires > 0 {
+		at = min(at, expires)
+	}
 	return endIssuedTx(ctx, tx, prefix, at, how)
 }
 
-// endIssuedTx records that an issued key ended, at a moment and how, unless
-// it ended before, and drops what will never be judged or owed of it.
+// endIssuedTx records that an issued key ended, at a moment and how, and
+// drops what will never be judged or owed of it. An end recorded already
+// stays, but for a revocation, which records the earlier of the two moments
+// and that it was revoked: what its retention counts from.
 func endIssuedTx(ctx context.Context, tx *sql.Tx, prefix string, at int64, how string) error {
 	steps := []struct {
 		what, query string
 		args        []any
 	}{
-		{"end an issued key", `UPDATE issued_keys SET ended_at = ?, end_kind = ? WHERE prefix = ? AND ended_at = 0`,
+		{"end an issued key", `UPDATE issued_keys
+			SET ended_at = CASE ended_at WHEN 0 THEN ?1 ELSE min(ended_at, ?1) END, end_kind = ?2
+			WHERE prefix = ?3 AND (ended_at = 0 OR ?2 = 'revoked')`,
 			[]any{at, how, prefix}},
 		{"drop an ended key's waiting grants", `DELETE FROM issued_key_grants WHERE prefix = ? AND state = 'waiting'`,
 			[]any{prefix}},
-		{"drop the refusals owed of an ended key", `DELETE FROM issued_key_tell WHERE prefix = ? AND kind = 'refusal'`,
+		// Owed under its selector, or by its id at the issuer before it was
+		// stored here (with no selector).
+		{"drop the refusals owed of an ended key", `DELETE FROM issued_key_tell WHERE kind = 'refusal'
+			AND (prefix = ?1 OR EXISTS (SELECT 1 FROM issued_keys i WHERE i.prefix = ?1
+			                            AND i.issuer = issued_key_tell.issuer AND i.external_id = issued_key_tell.external_id))`,
 			[]any{prefix}},
 	}
 	for _, step := range steps {
@@ -1491,6 +1615,9 @@ func judgeWaitingOfTx(ctx context.Context, tx *sql.Tx, issuer, subject string, n
 		if _, err := writeGrantsTx(ctx, tx, h, before, final, now); err != nil {
 			return 0, err
 		}
+		if err := pruneHeldTx(ctx, tx, issuer, prefix); err != nil {
+			return 0, err
+		}
 		for key, r := range final {
 			if !decided[key] {
 				continue
@@ -1513,7 +1640,10 @@ func judgeWaitingOfTx(ctx context.Context, tx *sql.Tx, issuer, subject string, n
 }
 
 // stopIssuedKeyTx gives an issued key, named by its id at the issuer or else
-// by its selector, the operator's stop, and reports whether it holds one.
+// by its selector, the operator's stop, for a record of it that could not be
+// applied, and reports whether it holds one. The record named it: while a
+// reset's pass is open, it is listed, and the pass's end never revokes it as
+// unlisted (stopped here, it is reported so, never revoked here).
 func stopIssuedKeyTx(ctx context.Context, tx *sql.Tx, issuer, externalID, selector string, now int64) (bool, error) {
 	var prefix string
 	err := tx.QueryRowContext(ctx, `SELECT prefix FROM issued_keys WHERE issuer = ?1
@@ -1532,6 +1662,10 @@ func stopIssuedKeyTx(ctx context.Context, tx *sql.Tx, issuer, externalID, select
 	if _, err := tx.ExecContext(ctx, `INSERT INTO issued_key_stops(prefix, cause, at) VALUES (?, 'operator', ?)
 		ON CONFLICT(prefix, cause) DO NOTHING`, prefix, now); err != nil {
 		return false, fmt.Errorf("service: stop an issued key: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE issued_keys SET listed = 1 WHERE prefix = ? AND listed = 0
+		AND EXISTS (SELECT 1 FROM directory_keys d WHERE d.issuer = ? AND d.pass_open = 1)`, prefix, issuer); err != nil {
+		return false, fmt.Errorf("service: list a key stopped for its record: %w", err)
 	}
 	return true, nil
 }

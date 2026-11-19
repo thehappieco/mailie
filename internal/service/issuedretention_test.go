@@ -183,6 +183,142 @@ func TestAKeysRefusalsOwedGoWithItsEnd(t *testing.T) {
 	}
 }
 
+func TestARefusalOwedBeforeAKeyWasStoredGoesWithItsEnd(t *testing.T) {
+	// v1 refused before the key could be stored (its creator not the
+	// workspace's person), v2 stores it.
+	owedThenStored := func(t *testing.T) *keysWorld {
+		t.Helper()
+		w := newKeysWorld(t, fixtureOptions{})
+		first := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+		first.Creator = "sub-nobody"
+		w.keys(t, first)
+		w.keys(t, w.record(t, "tok-1", 2, w.given(w.box, "read", anaSub)))
+		if got := w.refusals(t); !slices.Equal(got, []string{"tok-1 v1 " + w.box + " read not_offered"}) {
+			t.Fatalf("owed %q", got)
+		}
+		return w
+	}
+	forgetAna := func(t *testing.T, w *keysWorld) {
+		t.Helper()
+		doc := document(anaEmail, 2)
+		doc.Status, doc.Workspaces = service.DirectoryClosed, nil
+		if _, err := w.svc.ForgetExternalPerson(t.Context(), doc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("the key's revocation", func(t *testing.T) {
+		w := owedThenStored(t)
+		w.revoke(t, "tok-1", 3, w.clock.now())
+		if got := w.refusals(t); len(got) != 0 {
+			t.Errorf("owed after the key ended: %q", got)
+		}
+	})
+	t.Run("its creator's account deleted", func(t *testing.T) {
+		w := owedThenStored(t)
+		forgetAna(t, w)
+		if got := w.refusals(t); len(got) != 0 {
+			t.Errorf("owed after the account went: %q", got)
+		}
+	})
+	t.Run("a forgotten key's revocation", func(t *testing.T) {
+		w := newKeysWorld(t, fixtureOptions{})
+		w.keys(t, w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub)))
+		forgetAna(t, w)
+		// The issuer still lists it, live: refused, as nothing of it is
+		// held here; then it revokes it.
+		w.keys(t, w.record(t, "tok-1", 2, w.given(w.box, "read", anaSub)))
+		if got := w.refusals(t); !slices.Equal(got, []string{"tok-1 v2 " + w.box + " read mailbox_unknown"}) {
+			t.Fatalf("owed %q", got)
+		}
+		w.revoke(t, "tok-1", 3, w.clock.now())
+		if got := w.refusals(t); len(got) != 0 {
+			t.Errorf("owed after the key ended: %q", got)
+		}
+	})
+}
+
+func TestAnIssuedKeyEndsAtTheEarliestOfWhatEndsIt(t *testing.T) {
+	ended := func(t *testing.T, w *keysWorld, id string) (int64, string) {
+		t.Helper()
+		var at int64
+		var kind string
+		if err := w.db.Reader().QueryRowContext(t.Context(), `SELECT ended_at, end_kind FROM issued_keys WHERE prefix = ?`,
+			w.cred(t, id).selector).Scan(&at, &kind); err != nil {
+			t.Fatal(err)
+		}
+		return at, kind
+	}
+	t.Run("an expiry recorded, then an earlier revocation", func(t *testing.T) {
+		w := newKeysWorld(t, fixtureOptions{})
+		t0 := w.clock.now()
+		k := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+		k.CreatedAt, k.ExpiresAt = t0.Add(-25*day), t0.Add(time.Hour)
+		w.keys(t, k)
+		w.clock.advance(2 * time.Hour)
+		if _, err := w.svc.EndExpiredIssuedKeys(t.Context(), w.clock.now()); err != nil {
+			t.Fatal(err)
+		}
+		// Heard late (a feed behind, or replayed after a restore): revoked
+		// 20 days ago.
+		k.Version, k.Grants, k.Revoked, k.RevokedAt = 2, nil, true, t0.Add(-20*day)
+		w.keys(t, k)
+		if at, kind := ended(t, w, "tok-1"); at != k.RevokedAt.Unix() || kind != "revoked" {
+			t.Errorf("ended %d %s, want its revocation %d", at, kind, k.RevokedAt.Unix())
+		}
+		w.clock.advance(k.RevokedAt.Add(30*day + time.Hour).Sub(w.clock.now()))
+		if got := w.sweep(t); got.Keys != 1 || w.stub(t, "tok-1") != "revoked" {
+			t.Errorf("30 days after its revocation: %+v, stub %q", got, w.stub(t, "tok-1"))
+		}
+	})
+	t.Run("the belt's revocation, then the issuer's earlier one", func(t *testing.T) {
+		w := newKeysWorld(t, fixtureOptions{})
+		t0 := w.clock.now()
+		k := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+		k.CreatedAt = t0.Add(-25 * day)
+		w.keys(t, k)
+		doc := document(anaEmail, 2)
+		doc.CredentialsRevokedAt = t0.Add(-time.Minute)
+		w.apply(t, doc)
+		if at, _ := ended(t, w, "tok-1"); at != t0.Unix() {
+			t.Fatalf("the belt ended it at %d", at)
+		}
+		k.Version, k.Grants, k.Revoked, k.RevokedAt = 2, nil, true, t0.Add(-20*day)
+		w.keys(t, k)
+		if at, kind := ended(t, w, "tok-1"); at != k.RevokedAt.Unix() || kind != "revoked" {
+			t.Errorf("ended %d %s, want its revocation %d", at, kind, k.RevokedAt.Unix())
+		}
+		w.clock.advance(k.RevokedAt.Add(30*day + time.Hour).Sub(w.clock.now()))
+		if got := w.sweep(t); got.Keys != 1 {
+			t.Errorf("30 days after its revocation: %+v", got)
+		}
+	})
+	t.Run("an expiry not yet recorded, then a later revocation", func(t *testing.T) {
+		w := newKeysWorld(t, fixtureOptions{})
+		t0 := w.clock.now()
+		k := w.record(t, "tok-1", 1, w.given(w.box, "read", anaSub))
+		k.ExpiresAt = t0.Add(time.Hour)
+		w.keys(t, k)
+		w.clock.advance(3 * time.Hour)
+		k.Version, k.Grants, k.Revoked, k.RevokedAt = 2, nil, true, t0.Add(2*time.Hour)
+		w.keys(t, k)
+		if at, kind := ended(t, w, "tok-1"); at != k.ExpiresAt.Unix() || kind != "revoked" {
+			t.Errorf("ended %d %s, want its expiry %d", at, kind, k.ExpiresAt.Unix())
+		}
+	})
+	t.Run("a key never held, revoked after its expiry", func(t *testing.T) {
+		w := newKeysWorld(t, fixtureOptions{})
+		t0 := w.clock.now()
+		k := w.record(t, "tok-1", 1)
+		k.ExpiresAt, k.Revoked, k.RevokedAt = t0.Add(-2*time.Hour), true, t0.Add(-time.Hour)
+		w.keys(t, k)
+		var at int64
+		if err := w.db.Reader().QueryRowContext(t.Context(), `SELECT ended_at FROM issued_key_ends WHERE prefix = ?`,
+			w.cred(t, "tok-1").selector).Scan(&at); err != nil || at != k.ExpiresAt.Unix() {
+			t.Errorf("its stub ended %d, want its expiry %d: %v", at, k.ExpiresAt.Unix(), err)
+		}
+	})
+}
+
 func TestABadRecordsRevocationOfAKeyNeverHeldLeavesItsStub(t *testing.T) {
 	w := newKeysWorld(t, fixtureOptions{})
 	bad := w.record(t, "tok-1", 0)
