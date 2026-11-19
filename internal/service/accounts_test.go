@@ -104,6 +104,8 @@ type fixtureOptions struct {
 	keysIssuedElsewhere bool
 	// issuedKeysRefused is an edition that refuses every issued key.
 	issuedKeysRefused bool
+	// now is the service's clock; nil is the wall clock.
+	now func() time.Time
 }
 
 // providerHosts are the IMAP addresses an account gets from its provider
@@ -195,6 +197,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		KeyIssuer:                   f.opts.keyIssuer,
 		KeysIssuedElsewhere:         f.opts.keysIssuedElsewhere,
 		IssuedKeysRefused:           f.opts.issuedKeysRefused,
+		Now:                         f.opts.now,
 	}), registry
 }
 

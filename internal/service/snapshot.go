@@ -82,6 +82,22 @@ type SnapshotMailbox struct {
 	// one who reads it, or on a removed one would read it once recovered.
 	// None in a personal workspace.
 	Protected []string
+	// Keys are the live keys the registered issuer made (KeyIssuer) that
+	// hold a flag on it: neither revoked, ended nor past their expiry; one
+	// stopped here included, its stop said in IssuedKeysReport. Never in
+	// People or Protected: a key reads nothing for anyone. Empty, never
+	// nil, where there are none.
+	Keys []SnapshotKey
+}
+
+// SnapshotKey is a live issued key holding a flag on a mailbox.
+type SnapshotKey struct {
+	// ExternalID is the key's id at its issuer.
+	ExternalID string
+	// Flags are what it holds there: read, and act only beside it.
+	Flags workspace.Flags
+	// Reads is the read flag: a key reads by its flag alone.
+	Reads bool
 }
 
 // SnapshotPerson is what a person holds on a mailbox and what the reading
@@ -160,10 +176,18 @@ func (s *Service) accessSnapshotTx(ctx context.Context, tx *sql.Tx, workspaceID 
 		WorkspaceID: read.WorkspaceID, Kind: read.Kind, Closed: read.Closed, MeasuredAt: measured,
 		Mailboxes: make([]SnapshotMailbox, 0, len(read.Mailboxes)),
 	}
+	keys, err := s.snapshotKeysTx(ctx, tx, workspaceID, measured)
+	if err != nil {
+		return AccessSnapshot{}, E(CodeInternal, "reading the snapshot failed", err)
+	}
 	for _, mb := range read.Mailboxes {
 		m := SnapshotMailbox{
 			ID: mb.ID, Label: mb.Label, Hint: mb.Hint, Removed: mb.Removed, Pause: SnapshotPause(mb.Pause),
 			People: make([]SnapshotPerson, 0, len(mb.People)), Protected: mb.Protected,
+			Keys: keys[mb.ID],
+		}
+		if m.Keys == nil {
+			m.Keys = []SnapshotKey{}
 		}
 		if mb.Removed {
 			m.PurgeAfter = time.Unix(mb.PurgeAfter, 0).UTC()
@@ -187,3 +211,34 @@ func errSnapshotTooLarge(err error) error {
 }
 
 var errNoSnapshotWorkspace = E(CodeNotFound, "no such workspace from the directory's source", nil)
+
+// snapshotKeysTx reads, in the snapshot's read, the live keys the registered
+// issuer made that hold a flag on each mailbox of a workspace, by mailbox.
+func (s *Service) snapshotKeysTx(ctx context.Context, tx *sql.Tx, workspaceID string, measured time.Time,
+) (map[string][]SnapshotKey, error) {
+	out := map[string][]SnapshotKey{}
+	if s.issuer == nil {
+		return out, nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT x.account_id, i.external_id, x.read, x.act, x.send
+		  FROM key_access x JOIN api_keys k ON k.prefix = x.key_prefix JOIN issued_keys i ON i.prefix = k.prefix
+		 WHERE x.workspace_id = ? AND k.issuer = ? AND k.revoked_at = 0 AND i.ended_at = 0 AND k.expires_at > ?
+		 ORDER BY x.account_id, i.external_id`, workspaceID, s.issuer.Issuer(), measured.Unix())
+	if err != nil {
+		return nil, err
+	}
+	//nolint:errcheck // read to the end below
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			account string
+			k       SnapshotKey
+		)
+		if err := rows.Scan(&account, &k.ExternalID, &k.Flags.Read, &k.Flags.Act, &k.Flags.Send); err != nil {
+			return nil, err
+		}
+		k.Reads = k.Flags.Read
+		out[account] = append(out[account], k)
+	}
+	return out, rows.Err()
+}

@@ -213,6 +213,11 @@ type Download struct {
 	ContentType string
 	// Filename is safe to name a downloaded file with, and never empty.
 	Filename string
+	// Still checks again, while Body is sent, that the caller may still read
+	// it: their credential, and read on the mailbox. A transport asks it
+	// whenever AccessChanged fired since it last did, and stops sending on
+	// a failure.
+	Still func(context.Context) error
 }
 
 // Errors of the read routes.
@@ -569,7 +574,29 @@ func (s *Service) GetRaw(ctx context.Context, p Principal, id int64) (Download, 
 		// Never the subject: a filename travels in a header, and headers
 		// end up in logs along the way.
 		Filename: fmt.Sprintf("message-%d.eml", row.ID),
+		Still:    s.stillReads(p, a.ID),
 	}, nil
+}
+
+// stillReads is a Download's Still: the caller's credential checked again
+// (Recheck), and read on the mailbox, one indexed read.
+func (s *Service) stillReads(p Principal, accountID string) func(context.Context) error {
+	return func(ctx context.Context) error {
+		if err := s.Recheck(ctx, p); err != nil {
+			return err
+		}
+		if !p.MayAccess(accountID) {
+			return E(CodeNotFound, "no such account", nil)
+		}
+		_, err := s.accounts.Repo().GetVisible(ctx, accountID, s.readable(p))
+		switch {
+		case errors.Is(err, account.ErrNotFound):
+			return E(CodeNotFound, "no such account", err)
+		case err != nil:
+			return E(CodeInternal, "reading the account failed", err)
+		}
+		return nil
+	}
 }
 
 // GetAttachment returns one part of a message, named by its IMAP section,
@@ -737,6 +764,7 @@ func (s *Service) fetchAttachment(ctx context.Context, p Principal, a account.Ac
 		Size:        -1,
 		ContentType: mime.AttachmentContentType(info),
 		Filename:    mime.DownloadName(info),
+		Still:       s.stillReads(p, a.ID),
 	}, nil
 }
 

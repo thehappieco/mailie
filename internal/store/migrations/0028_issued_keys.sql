@@ -50,8 +50,9 @@
 --   - directory_keys: per issuer that issues keys, the directory reset its
 --     feed counts under, where the feed was read up to, up to when it said it
 --     published everything, the highest of that trusted before the last
---     reset, and whether the reset's pass is open. Its cursor goes back only
---     with a reset, and what it trusted never falls.
+--     reset, whether the reset's pass is open, and when a page was last
+--     applied. Its cursor goes back only with a reset, and what it trusted
+--     never falls.
 --
 -- What a workspace from another source reports of its mailboxes now includes
 -- the issued keys on them: their workspace is marked (workspace_changes) when
@@ -265,7 +266,8 @@ CREATE TABLE directory_keys (
   cursor               INTEGER NOT NULL DEFAULT 0 CHECK (cursor >= 0),
   published_through_us INTEGER NOT NULL DEFAULT 0 CHECK (published_through_us >= 0),
   trusted_through_us   INTEGER NOT NULL DEFAULT 0 CHECK (trusted_through_us >= 0),
-  pass_open            INTEGER NOT NULL DEFAULT 0 CHECK (pass_open IN (0, 1))
+  pass_open            INTEGER NOT NULL DEFAULT 0 CHECK (pass_open IN (0, 1)),
+  applied_at_us        INTEGER NOT NULL DEFAULT 0 CHECK (applied_at_us >= 0)  -- when a page was last applied
 );
 CREATE TRIGGER directory_keys_written_at_the_reset BEFORE INSERT ON directory_keys
 WHEN NEW.reset IS NOT (SELECT d.reset FROM directories d WHERE d.issuer = NEW.issuer)

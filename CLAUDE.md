@@ -7,7 +7,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 ## Layout
 
 - `cmd/mailserver` — one binary: `serve`, `account`, `apikey`, `user`, `migrate`,
-  `rewrap-credentials`, `backup`, `mcp connect|install`. The CLI is a REST client of the daemon; only
+  `rewrap-credentials`, `backup`, `mcp connect|install`; `apikey hold|release SELECTOR`, beside
+  `apikey create|list|revoke`, holds and releases a key an extension's issuer made (the operator's
+  stop, `PUT|DELETE /v1/issued-keys/{selector}/hold`, outside `MAIL_ADMIN_API`). The CLI is a REST client of the daemon; only
   `apikey create --bootstrap`, `user invite|disable|delete|password --bootstrap` (`password` prints a
   reset invitation, never sets one), `migrate` and
   `rewrap-credentials` open the database directly, and they refuse to run while the daemon is up.
@@ -71,7 +73,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   start, before anything listens (`Service.RevokeOwnWorkspaceKeys`, `manual`, logged with
   `revoked`, `unexpired` and `at`; the operator's kept). `Options.IssuedKeysRefused` (never set by
   `serve`) refuses every issued key, at authentication and every re-check, while their records
-  still apply.
+  still apply, and reports each live one stopped (`withdrawn`). The hourly housekeeping, at start
+  too, records the end of the issued keys that expired and deletes what is no longer kept of them
+  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`).
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials (an own key's secret
@@ -134,9 +138,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   removal makes of the held and waiting ones), `issued_key_uses`, `issued_key_tell` (owed to the
   issuer), `issued_key_ends` (the selector, how and when, written by `issued_keys`' delete trigger
   on every path, the cascade from a workspace included, never changed, never stored again) and
-  `directory_keys` (per issuer, its feed's cursor under its directory's reset); the workspace
-  marks follow `key_access`, an issued key's revocation, expiry, end and stops. `IsConstraint`
-  tells any schema refusal from another failure.
+  `directory_keys` (per issuer, its feed's cursor under its directory's reset, what it trusted
+  before the last reset, its pass and when a page last applied); the workspace marks follow
+  `key_access`, an issued key's revocation, expiry, end and stops. `ResetDirectoryTx` starts an
+  issuer's keys again in the same write (`resetIssuedKeysTx`: the feed from 0 with its pass open,
+  what it trusted never lowered, every key and grant at version 0, every refusal owed dropped,
+  nothing else), and `SetDirectoryKeysCursorTx` is the feed's compare and set. `IsConstraint`
+  tells any schema refusal from another failure; `IssuedKey*Retention` are the periods kept.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -180,7 +188,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   comparison, never Argon2id, `ErrInvalidKey` for every refusal, `IssuedCheck` naming the key only
   once its secret matched), never touching `last_used_at`; `Recheck` refuses one stopped here, and
   every own-key listing, count, revocation and `key_access` change reads `issuer = ''` only.
-  `IsSessionToken` is a session token's shape, which no issuer is asked to claim. Also the console's people: users (instance
+  `IsSessionToken` is a session token's shape, which no issuer is asked to claim. Own-key
+  revocations (`endWaysInTx`, `RevokeCreatedBefore`) read `issuer = ''`: a disable here gives the
+  person's issued keys the `creator` stop instead (`stopIssuedKeysOfTx`, never revoked here),
+  `Suspend` (an extension's, outside a directory's documents) too, and `ResumeTx` lifts it once they
+  are active. Also the console's people: users (instance
   roles `owner`/`member`; active, disabled here, or suspended by an extension (`Suspend`/`Resume`,
   `suspended_at`, migration 0018: `status = 'disabled'` with the grants kept, unusable, until a
   resume; a disable here clears it and stands over it); a password the server never receives: the
@@ -320,7 +332,29 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   carries one), the rate-limit subject (`CredentialSubject`), a use refused reported only for a
   live mailbox of the key's own workspace (`UseRefusals`), and `RevokeOwnWorkspaceKeys`. An issued
   key reaches personal workspaces alone, never sends, and acts only under its creator's actions
-  consent whatever `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` says. `directory.go` is what an extension that follows an external
+  consent whatever `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` says. `issuedapply.go`: an issuer's page
+  of records and its cursor in one write (`ApplyIssuedKeys`, `IssuedKeysPage`, `IssuedKey`,
+  `IssuedGrant`; conflict `ErrDirectoryMoved`, `ErrNotKeyIssuer`), each record in its own savepoint,
+  one the schema refuses applied again partial (only what narrows), and one still refused stopped
+  (the operator's stop, `Faults`), so no record fails its page; zero times as the issuer means them
+  (a revocation at a time unknown is now, a zero expiry the earliest); per record: a selector
+  forgotten never stored again, a key never held that arrives ended only its stub, a workspace not
+  held, a team or another creator refused (`IssuedRefusals`), the creator's belt (keys created
+  before the directory's marks revoked, microseconds, no margin, at every storing and in the
+  document's own write) and stop, terms judged once, grants judged once (read only from a giver who
+  reads the mailbox here, waiting for a giver not followed since the reset and judged in their
+  document's write, act only beside read, read leaving taking act in the same statement, never
+  send); a reset never widens and its pass owes what is held narrower, its last page revoking what
+  it did not list. `issuedreport.go`: what is owed (`IssuedKeysReport`, `IssuedKeysTold`), uses per
+  day (`RecordIssuedKeyUses`, `IssuedKeyUsage`, `IssuedKeyUsesReported`), the stops reported
+  (`IssuedStopCauses`: `operator`, `creator`, `withdrawn` under `IssuedKeysRefused`, never stored),
+  the operator's hold (`HoldIssuedKey`, `ReleaseIssuedKey`, an unrestricted instance admin key;
+  `StopIssuedKey` for an extension), `EndExpiredIssuedKeys` (a key's end at its expiry, the next
+  one answered) and `SweepIssuedKeys` (one key per write, the periods of `docs/workspaces.md`).
+  `AccessSnapshot` lists each mailbox's live issued keys (`SnapshotMailbox.Keys`), never among its
+  people. `AccessChanged` is closed at every `accessChanged`: event streams, the long poll and a
+  download's `Download.Still` (checked between chunks) stop within a second of the write that took
+  a caller's access. `directory.go` is what an extension that follows an external
   directory calls, with no principal and from no transport: a person's document applied in one
   write (`ApplyDirectoryDocument`, and at a first sign-in in the transaction that creates them,
   `ExternalSignIn.Directory`; a new person under the directory's source without one is not
@@ -361,7 +395,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
   operator's acts, or a key's own acts, nor for renaming a mailbox (`RenameAccount`, `PATCH
   /v1/accounts/{id}`: a name widens no access; the platform's `item.rename` has no freshness gate).
-- `internal/api` — REST `/v1/...`, SSE and the long poll; a link at the provider's routes sit beside
+- `internal/api` — REST `/v1/...`, SSE and the long poll, each checking its caller again at
+  `Service.AccessChanged`, and downloads checking between chunks, cut off (never ended whole) once
+  the caller may no longer read; the operator's hold of an issued key
+  (`PUT|DELETE /v1/issued-keys/{selector}/hold`); a link at the provider's routes sit beside
   `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
   `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks,
   its take and its finish. `internal/mcp` — tools, resources and the
@@ -572,7 +609,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   whoever gave it; it never counts as a reader nor passes `read`, and is revoked when its creator
   leaves the workspace or is disabled, suspended or deleted (not on a demotion), and in every
   workspace when they recover their account or complete a reset (`account_recovered`, in that
-  transaction; a password change and signing out everywhere keep it). A suspended person
+  transaction; a password change and signing out everywhere keep it). A key an issuer made differs:
+  a disable here holds it (the `creator` stop) and never revokes it; a suspension outside the
+  directory's documents holds it until the resume; the directory's marks revoke only the ones
+  created before them, at microseconds with no margin, whichever arrives first; the operator holds
+  one by selector, each stop lifted on its own; a deletion takes it with the personal workspace and
+  leaves its stub (selector, how, when) for a year after its creation. A suspended person
   reads nothing, waits for no key, is supplied none and counts in no protection for anyone else
   (closing them asks it as for anyone active, counting what they would read once resumed); their
   grants persist for a resume, which restores no session and no key. A closed team (migration 0019) is a

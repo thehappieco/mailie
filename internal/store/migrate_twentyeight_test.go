@@ -547,3 +547,60 @@ func TestEveryRefusalOfTheSchemaIsAConstraint(t *testing.T) {
 		t.Error("another failure is a constraint")
 	}
 }
+
+func TestTheKeysRowIsMadeOnADirectoryThatAlreadyExists(t *testing.T) {
+	// A schema-27 database already following a directory, as production's
+	// does: a reset makes its keys' row, at the new reset, once, with its
+	// pass open; a second reset before the pass's end keeps what the first
+	// trusted.
+	f := newSchemaAt(t, 27)
+	f.accepted("a directory followed", f.exec(`INSERT INTO directories(issuer, generation, reset, changed_at)
+		VALUES (?, 'g1', 0, 900)`, testIssuer))
+	migrateTo(t, f.s, 28)
+	reset := func(gen string) DirectoryKeys {
+		t.Helper()
+		var got DirectoryKeys
+		if err := f.write(func(ctx context.Context, tx *sql.Tx) error {
+			if _, err := ResetDirectoryTx(ctx, tx, testIssuer, gen, 1000); err != nil {
+				return err
+			}
+			var ok bool
+			var err error
+			got, ok, err = DirectoryKeysTx(ctx, tx, testIssuer)
+			if err == nil && !ok {
+				t.Error("no keys' row after the reset")
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if got := reset("g2"); got != (DirectoryKeys{Issuer: testIssuer, Reset: 1, PassOpen: true}) {
+		t.Errorf("after the first reset: %+v", got)
+	}
+	f.accepted("a page published through", f.exec(`UPDATE directory_keys SET cursor = 5, published_through_us = 700
+		WHERE issuer = ?`, testIssuer))
+	if got := reset("g3"); got != (DirectoryKeys{Issuer: testIssuer, Reset: 2, TrustedThroughUS: 700, PassOpen: true}) {
+		t.Errorf("after the second reset: %+v", got)
+	}
+	// A third reset before any page said it published everything: what was
+	// trusted stays, never lowered.
+	if got := reset("g4"); got.TrustedThroughUS != 700 {
+		t.Errorf("after the third reset: %+v", got)
+	}
+	if n := queryInt(t, f.s, `SELECT count(*) FROM directory_keys`); n != 1 {
+		t.Errorf("%d keys' rows", n)
+	}
+	// A directory never followed, created by its reset, has nothing to pass.
+	if err := f.write(func(ctx context.Context, tx *sql.Tx) error {
+		_, err := ResetDirectoryTx(ctx, tx, "https://other.example.org", "h1", 1000)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if n := queryInt(t, f.s, `SELECT count(*) FROM directory_keys WHERE issuer = 'https://other.example.org'
+		AND pass_open = 0 AND reset = 0`); n != 1 {
+		t.Errorf("a directory created by its reset: %d rows", n)
+	}
+}

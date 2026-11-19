@@ -254,6 +254,12 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// refuses everyone else.
 	mux.Handle("POST /v1/accounts/{id}/sync/stop",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.stopMailboxSync))
+	// The operator's hold of a key an extension's issuer made, by its
+	// selector, and its release: for a key that leaked, until its issuer
+	// revokes it. Only an unrestricted instance admin key; the service
+	// refuses everyone else.
+	mux.Handle("PUT /v1/issued-keys/{selector}/hold", h.authenticated(auth.ScopeAdmin, opts(), h.holdIssuedKey))
+	mux.Handle("DELETE /v1/issued-keys/{selector}/hold", h.authenticated(auth.ScopeAdmin, opts(), h.releaseIssuedKey))
 	// A mailbox's sync paused, its index kept, and resumed, by its person, a
 	// team's owners and admins, or the operator for an operator mailbox; the
 	// service decides who (PauseMailboxSync). A team mailbox's resume names
@@ -477,6 +483,35 @@ func (h *Handler) revokeAPIKey(q *request) {
 		return
 	}
 	if err := h.Service.RevokeAPIKey(q.ctx(), q.principal, q.r.PathValue("prefix")); err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusNoContent, nil)
+}
+
+// holdIssuedKey serves PUT /v1/issued-keys/{selector}/hold: the operator's
+// hold of a key its issuer made. It takes no body, or an empty one, and
+// answers 204.
+func (h *Handler) holdIssuedKey(q *request) {
+	if err := q.decodeOptional(&struct{}{}); err != nil {
+		q.fail(err)
+		return
+	}
+	if err := h.Service.HoldIssuedKey(q.ctx(), q.principal, q.r.PathValue("selector")); err != nil {
+		q.fail(err)
+		return
+	}
+	q.finish(http.StatusNoContent, nil)
+}
+
+// releaseIssuedKey serves DELETE /v1/issued-keys/{selector}/hold: the
+// operator's hold lifted, and nothing else. It answers 204.
+func (h *Handler) releaseIssuedKey(q *request) {
+	if _, err := q.query(); err != nil {
+		q.fail(err)
+		return
+	}
+	if err := h.Service.ReleaseIssuedKey(q.ctx(), q.principal, q.r.PathValue("selector")); err != nil {
 		q.fail(err)
 		return
 	}

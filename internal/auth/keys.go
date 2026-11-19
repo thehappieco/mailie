@@ -896,9 +896,11 @@ func (k *Keys) RevokeCreatedBy(ctx context.Context, prefix, userID string) error
 // not know.
 var ErrStopReason = errors.New("auth: not a reason a key stops for")
 
-// RevokeCreatedBefore revokes every live key a person created before a
-// moment, in every workspace, saying why, and reports how many it revoked.
-// Keys they created at or after it stay. The moment is compared with each
+// RevokeCreatedBefore revokes every live key of this server's own a person
+// created before a moment, in every workspace, saying why, and reports how
+// many it revoked. Keys they created at or after it stay, and so does every
+// key an issuer made for them, which a directory's own marks revoke, at
+// microseconds and with no margin (internal/service, issuedBeltTx). The moment is compared with each
 // key's creation time as stored, in whole seconds: a caller that must not
 // spare a key created just before it, by a clock a little behind, adds its
 // own margin. Nobody's keys (an empty userID) are none.
@@ -934,7 +936,7 @@ func (k *Keys) RevokeCreatedBeforeTx(ctx context.Context, tx *sql.Tx, userID str
 		return 0, nil
 	}
 	n, err := execCount(ctx, tx, `UPDATE api_keys SET revoked_at = ?, stop_reason = ?
-		WHERE created_by = ? AND created_at < ? AND revoked_at = 0`,
+		WHERE created_by = ? AND created_at < ? AND revoked_at = 0 AND issuer = ''`,
 		k.now().Unix(), string(reason), userID, before.Unix())
 	if err != nil {
 		return 0, fmt.Errorf("auth: revoke the keys the person created: %w", err)

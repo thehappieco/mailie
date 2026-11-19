@@ -44,17 +44,22 @@ const hashLabel = "issuertest/secret"
 // one with the hash held for it in constant time, and remembers every use it
 // hears and every credential it was asked to claim.
 type Fake struct {
+	issuer        string
 	mu            sync.Mutex
 	uses          []service.IssuedKeyUse
 	claimed       []string
 	verifications int
 }
 
-// New is a Fake.
-func New() *Fake { return &Fake{} }
+// New is a Fake of Issuer.
+func New() *Fake { return &Fake{issuer: Issuer} }
+
+// NewFor is a Fake whose keys belong to issuer: the directory's, for a test
+// that follows one.
+func NewFor(issuer string) *Fake { return &Fake{issuer: issuer} }
 
 // Issuer is the issuer the fake's keys belong to.
-func (f *Fake) Issuer() string { return Issuer }
+func (f *Fake) Issuer() string { return f.issuer }
 
 // Claim claims a credential that, after leading spaces and tabs, begins with
 // Prefix in any case and holds a dot or is not 43 base64url characters; its

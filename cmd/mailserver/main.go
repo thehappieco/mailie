@@ -161,6 +161,8 @@ Usage:
                                           Issue an instance key (the daemon needs MAIL_ADMIN_API=true)
   mailserver apikey list                  List every key, with its workspace, revoked ones too (the same)
   mailserver apikey revoke PREFIX         Revoke any key (the same)
+  mailserver apikey hold SELECTOR         Hold a key an extension's issuer made, refused here until released
+  mailserver apikey release SELECTOR      Lift that hold, and nothing else
   mailserver user invite --email ADDR [--role owner|member]
                                           Invite a person to this server and its web console
   mailserver user invite --email ADDR --workspace ID [--role owner|admin|member]
@@ -230,7 +232,8 @@ Addresses are https://, or http:// for this machine only. See docs/mcp.md.
 
 The administrative subcommands talk to a running daemon over its REST API using
 MAIL_ADMIN_KEY; apikey create, list and revoke use its /v1/apikeys routes, which
-it mounts only with MAIL_ADMIN_API=true. Before any key exists, or with those
+it mounts only with MAIL_ADMIN_API=true (apikey hold and release do not need
+them). Before any key exists, or with those
 routes off, issue a key with the daemon stopped:
 
   mailserver apikey create --bootstrap --scope admin --name cli

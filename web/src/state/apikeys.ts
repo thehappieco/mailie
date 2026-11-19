@@ -176,8 +176,11 @@ export async function createKey(input: NewKey): Promise<Creation> {
   const id = keysWorkspace()
   if (!id) return { failure: { op: 'create-key', code: 'not_found' } }
   if (atKeyLimit()) return { failure: { op: 'create-key', code: 'key_limit' } }
+  // An edition with no key terms creates no key: nothing would be agreed to.
+  const terms = edition().keyTerms
+  if (!terms) return { failure: { op: 'create-key', code: 'not_authorized' } }
   const ok = current()
-  const body: CreateKeyRequest = { name: input.name, scope: input.scope, ttl_days: input.lifetime, terms_version: edition().keyTerms.version }
+  const body: CreateKeyRequest = { name: input.name, scope: input.scope, ttl_days: input.lifetime, terms_version: terms.version }
   const mailboxes = input.mailboxes.filter(holdsAnyKeyFlag).map(item => ({ account_id: item.account_id, read: item.read, act: item.act, send: item.send }))
   if (mailboxes.length) body.mailboxes = mailboxes
   try {

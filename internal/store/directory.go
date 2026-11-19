@@ -141,7 +141,10 @@ func EnsureDirectoryTx(ctx context.Context, tx *sql.Tx, issuer, generation strin
 // document of each applies whatever its version; what the directory revoked
 // is kept. Every workspace from another source has its version fall to 0 the
 // same way, counted under the sum of every directory's resets. The schema
-// lets a version fall in no other way (migration 0022).
+// lets a version fall in no other way (migration 0022). The keys its issuer
+// makes start again with it, in the same write (resetIssuedKeysTx): their
+// feed from 0, under the new reset, its pass open, never wider than they
+// were.
 func ResetDirectoryTx(ctx context.Context, tx *sql.Tx, issuer, generation string, now int64) (Directory, error) {
 	res, err := tx.ExecContext(ctx, `INSERT INTO directories(issuer, generation, changed_at) VALUES (?, ?, ?)
 		ON CONFLICT(issuer) DO NOTHING`, issuer, generation, now)
@@ -172,6 +175,9 @@ func ResetDirectoryTx(ctx context.Context, tx *sql.Tx, issuer, generation string
 				return Directory{}, fmt.Errorf("store: %s: %w", step.what, err)
 			}
 		}
+	}
+	if err := resetIssuedKeysTx(ctx, tx, issuer, created == 0); err != nil {
+		return Directory{}, err
 	}
 	d, ok, err := directoryOn(ctx, tx, issuer)
 	if err == nil && !ok {

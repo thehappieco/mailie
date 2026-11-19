@@ -43,9 +43,12 @@ func (h *Handler) eventPing() time.Duration {
 // do. The credential is checked again before every batch of events is written
 // and at every ping, so a session that ends or a key that is revoked receives
 // nothing more: an idle stream learns it within one interval, and never
-// through another event. So is access: a mailbox the caller gains or loses
-// read on is announced as `event: access`, and once every mailbox the stream
-// follows is gone it ends with `event: error`, not_found. A person given a
+// through another event; and at once when a commit may have changed what
+// anyone reaches (Service.AccessChanged), so that a key revoked or stopped,
+// or a flag taken, ends its stream within a second. So is access: a mailbox
+// the caller gains or loses read on is announced as `event: access`, and
+// once every mailbox the stream follows is gone it ends with `event: error`,
+// not_found. A person given a
 // notice meanwhile — a mailbox they read removed, a team mailbox's sync turned
 // off — is told at the same moments with `event: notice`, to read their
 // notices again (GET /v1/me/notices).
@@ -161,7 +164,15 @@ func (h *Handler) streamEvents(q *request) {
 		return sse.event(strconv.FormatInt(ev.Seq, 10), ev.Type, ev)
 	}
 	for {
+		// A commit that may have changed what anyone reaches: checked at
+		// once, rather than at the next batch or ping, so that a credential
+		// revoked or stopped ends its stream within a second.
+		changed := h.Service.AccessChanged()
 		select {
+		case <-changed:
+			if !credentialWorks() || !sse.flush() {
+				return
+			}
 		case ev, ok := <-events:
 			// A batch begins: the credential is checked before any of it
 			// is written, then everything already queued goes out in one

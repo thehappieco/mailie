@@ -13,6 +13,7 @@
 // why instead of its keys, which reach nothing there.
 import { computed, onMounted, ref, watch } from 'vue'
 import type { WorkspaceKey } from '../api/types'
+import { edition } from '../edition'
 import { accounts } from '../state/accounts'
 import { apiKeys, atKeyLimit, loadKeys, revokeKey } from '../state/apikeys'
 import type { Failure } from '../state/failure'
@@ -36,6 +37,8 @@ import McpConnect from './McpConnect.vue'
 import UnusableWorkspace from './UnusableWorkspace.vue'
 
 const showMcp = computed(mcpOffered)
+/** An edition with key terms creates keys here; one without (keys made elsewhere by their issuer) only lists and revokes them. */
+const creatable = !!edition().keyTerms
 const creating = ref(false)
 /** The prefix of the key whose sheet is open. */
 const opened = ref('')
@@ -137,10 +140,10 @@ watch(unusable, (now, before) => {
       <h2 ref="heading" tabindex="-1">{{ inTeam ? t('API keys of {team}', { team: teamName }) : t('Your API keys') }}</h2>
       <div class="section-actions">
         <button class="ghost small" type="button" :disabled="apiKeys.loading" @click="refresh"><AppIcon name="refresh" :size="16" />{{ t('Refresh') }}</button>
-        <button v-if="!unusable && (!apiKeys.loaded || apiKeys.list.length)" class="primary small" type="button" aria-haspopup="dialog" :disabled="limited" @click="create"><AppIcon name="plus" :size="16" />{{ t('Create key') }}</button>
+        <button v-if="creatable && !unusable && (!apiKeys.loaded || apiKeys.list.length)" class="primary small" type="button" aria-haspopup="dialog" :disabled="limited" @click="create"><AppIcon name="plus" :size="16" />{{ t('Create key') }}</button>
       </div>
     </div>
-    <p v-if="limited && !unusable" class="dim limit-note">{{ t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) }) }}</p>
+    <p v-if="creatable && limited && !unusable" class="dim limit-note">{{ t('This workspace has {count} active keys, the most it can have. Revoke one to create another.', { count: count(MAX_LIVE_KEYS) }) }}</p>
 
     <UnusableWorkspace v-if="unusable" :workspace="workspace" />
     <div v-else-if="apiKeys.failure" class="alert with-action" role="alert"><span>{{ describe(apiKeys.failure) }}</span><button class="ghost small" type="button" @click="loadKeys">{{ t('Try again') }}</button></div>
@@ -175,7 +178,7 @@ watch(unusable, (now, before) => {
         <p>{{ inTeam
           ? t('A key lets a tool, such as an AI assistant, use the mailboxes of {team} it is given: Read only from someone who reads them. Every owner and admin of the team sees it and can revoke it.', { team: teamName })
           : t('A key lets a tool, such as an AI assistant, use the mailboxes you give it. You decide what it may do on each one and for how long, and you can revoke it at any time.') }}</p>
-        <button class="primary" type="button" aria-haspopup="dialog" @click="create"><AppIcon name="plus" :size="18" />{{ t('Create key') }}</button>
+        <button v-if="creatable" class="primary" type="button" aria-haspopup="dialog" @click="create"><AppIcon name="plus" :size="18" />{{ t('Create key') }}</button>
       </div>
     </section>
 
@@ -183,7 +186,7 @@ watch(unusable, (now, before) => {
 
     <McpConnect v-if="showMcp && !unusable" />
 
-    <CreateKeyDialog v-if="creating" :return-focus="headingTarget" @close="creating = false" />
+    <CreateKeyDialog v-if="creatable && creating" :return-focus="headingTarget" @close="creating = false" />
     <KeySheet v-if="openedKey" :key-prefix="openedKey.prefix" :return-focus="headingTarget" @close="opened = ''" @revoke="askRevoke(openedKey!); opened = ''" />
 
     <ConsoleDialog v-if="revoking" :title="t('Revoke this key?')" :busy="apiKeys.revoking === revoking.prefix" :return-focus="headingTarget" @close="closeRevoke">

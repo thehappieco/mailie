@@ -72,7 +72,9 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
 `web/src` is a **core** that every edition shares, plus the open edition in `web/src/open`. An
 edition calls `configureEdition()` (`web/src/edition.ts`) before mounting: the console component
 built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, actions, a new key's
-terms) with their revisions — the sync text drawn for a team (its `team` prop, the team's name)
+terms, `keyTerms`, optional: an edition without it offers no "Create key", as for a server whose
+keys are made elsewhere by their issuer, and still lists and revokes the keys it holds) with their
+revisions — the sync text drawn for a team (its `team` prop, the team's name)
 where an owner or an admin agrees to it on the team's behalf, connecting a mailbox into it or
 turning a team mailbox's sync on, and without it where a person agrees for their own mailboxes,
 one revision either way, as the key terms take `team` — what the frame calls itself (`shell`: the breadcrumb's root and the

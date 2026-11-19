@@ -26,7 +26,7 @@ import (
 
 func apikeyCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: apikey needs a subcommand: create, list or revoke", errUsage)
+		return fmt.Errorf("%w: apikey needs a subcommand: create, list, revoke, hold or release", errUsage)
 	}
 	switch args[0] {
 	case "create":
@@ -35,6 +35,10 @@ func apikeyCommand(ctx context.Context, cfg config.Config, args []string) error 
 		return apikeyList(ctx, cfg, args[1:])
 	case "revoke":
 		return apikeyRevoke(ctx, cfg, args[1:])
+	case "hold":
+		return apikeyHold(ctx, cfg, args[1:], true)
+	case "release":
+		return apikeyHold(ctx, cfg, args[1:], false)
 	default:
 		return fmt.Errorf("%w: unknown apikey subcommand %q", errUsage, args[0])
 	}
@@ -195,6 +199,33 @@ func apikeyRevoke(ctx context.Context, cfg config.Config, args []string) error {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, "revoked")
+	return nil
+}
+
+// apikeyHold holds, or releases, a key an extension's issuer made, by its
+// selector: the operator's stop of a key that leaked, refused at once and
+// reported to its issuer as stopped here, until it is released or its
+// issuer revokes it. A release lifts the operator's hold and nothing else.
+func apikeyHold(ctx context.Context, cfg config.Config, args []string, hold bool) error {
+	verb, method := "hold", http.MethodPut
+	if !hold {
+		verb, method = "release", http.MethodDelete
+	}
+	fs := flag.NewFlagSet("apikey "+verb, flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return fmt.Errorf("%w: apikey %s: give exactly one selector of a key its issuer made", errUsage, verb)
+	}
+	if _, err := adminDo(ctx, cfg, method, "/v1/issued-keys/"+url.PathEscape(fs.Arg(0))+"/hold", nil); err != nil {
+		return err
+	}
+	if hold {
+		fmt.Fprintln(os.Stderr, "held: refused here until released; revoke it where it was made too")
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "released: refused still while anything else stops it here")
 	return nil
 }
 

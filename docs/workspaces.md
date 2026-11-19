@@ -1173,6 +1173,165 @@ hold one live, and the daemon revokes every live one at start, before anything l
 edition takes keys from their issuer` with `revoked`, `unexpired` and `at`; every later start
 revokes none. The operator's keys are kept.
 
+#### Applying the issuer's records
+
+The extension reads its issuer's feed of key records and hands each page to
+`Service.ApplyIssuedKeys` (no principal, no transport): the page's records and its cursor in **one
+write**, a compare and set on the directory's generation and reset and on the feed's cursor
+(`directory_keys`, made at the directory's reset by the first page when missing; conflict,
+`ErrDirectoryMoved`, for a page read before a reset or behind the feed; `ErrNotKeyIssuer` for
+another issuer). A crash re-applies nothing and loses nothing; a page sent again changes nothing
+(a record applies only above the version held). Open streams, long polls and downloads check
+their caller again once it committed (below).
+
+**No record fails its page.** Each record applies inside a savepoint of its own. One the schema
+refuses (any constraint, `store.IsConstraint`) applies again as a **partial** record; one that is
+still refused gets the operator's stop on the key it names (`issued_key_stops`, `operator`),
+logged at error (`issued key record not applied`, the key's id and workspace) and counted in
+`IssuedKeysApplied.Faults`; the feed moves on. Any other failure (the database, the context) fails
+the whole page, which the extension tries again. A record is partial when the extension says so
+(it did not decode, or failed its issuer's checks) or when this server finds it not usable whole
+(a member out of its bounds, no version or creation, a grant without its mailbox, use, giver or
+time, one listed twice, act without read on its mailbox). Of a partial record only what narrows
+applies: its revocation, an earlier expiry, and every grant it no longer lists; each grant it
+lists that is not held already is refused (`invalid`).
+
+**Times as the issuer means them.** A revocation is the record's own (its presence, never a
+time's value) at its own moment, now when later or unknown; an expiry is floored to the second,
+and a zero one is the earliest: now, so the key ends at once. Neither is ever written 0, which an
+own key reads as live and as never expiring (the schema refuses both for an issued key).
+
+**Per record, in this order:**
+
+1. **A selector forgotten** (`issued_key_ends`) is never stored again, whatever its record says.
+   While a reset's pass is open, what is left of it is owed when narrower than the record (below);
+   otherwise the grants of a record still live by this server's clock are refused,
+   `mailbox_unknown` when its workspace is not held here, else `not_offered`, so its issuer drops
+   what will never apply.
+2. **A key never held that arrives ended** (revoked, or past its expiry by this server's clock)
+   leaves only its stub — its selector, `revoked` or `expired`, its end, until its creation and a
+   year — and never its record; nothing at all when its selector or creation did not decode, its
+   creation is in the future or that year is over. What was owed of it goes (the refusals of a key
+   never stored, `prefix = ''`).
+3. **Not storable**: a workspace this server does not hold from the directory's source (every
+   grant refused `mailbox_unknown`), a team (`not_offered`; `team_withheld` where teams are
+   withheld), a creator who is not that personal workspace's person (`not_offered`), or a partial
+   record of a key never held (`invalid`): nothing is stored, and the refusals are owed.
+4. **The creator's belt**, at every storing and update, before any grant is judged: a key created
+   before the moment the directory last revoked its creator's credentials is revoked
+   `account_recovered`, before the moment it last disabled them `creator_suspended`, compared at
+   microseconds with no margin. The directory's marks only rise, so whichever arrives first, the
+   record or the document, the other meets it. A creator **stopped here** (disabled on this
+   server, or suspended while the directory's last document says they are active) gives the key
+   the `creator` stop in the same write.
+5. **Stored or updated**, matched by its id at the issuer, else its selector: its selector, hash,
+   workspace, creator and creation never change (a record that says otherwise applies as partial);
+   a whole record applies only above the version held, any after a reset; the expiry is the
+   earlier of the held one and the record's; the revocation is written once, with the reason the
+   extension maps (an unknown one is `manual`), and ends the key, its waiting grants and the
+   refusals owed of it gone; its terms are **judged once**, at its first storing: the key terms
+   revision this server accepts now (`MAIL_CONSENT_VERSION_KEYS`), or every grant of the key is
+   refused `terms_not_current` for its life (none named is not current).
+6. **Grants**, for a live key. A grant listed as it was (the same use, giver and moment) keeps its
+   state and is **never judged again**, but one still waiting; every row the record no longer
+   lists goes (held, waiting and refused alike), but a `removed` tombstone, which stays while its
+   mailbox does. A new grant is judged, in this order: the key's terms; a use offered (never
+   `send`: `not_offered`); a live mailbox of the key's workspace (`mailbox_unknown`); while a
+   reset's pass is open, a grant given before what this server trusted of the previous generation
+   becomes a `removed` tombstone (cause `reset`), never judged; then **read** by its giver: one who
+   signs in nobody here, or does not read the mailbox here now by the one reader rule, is refused
+   (`giver_not_reader`); one the directory has said nothing of since its last reset, or on a key
+   not listed since then, **waits**. **Act** follows read on its mailbox: held beside read held,
+   waiting beside read waiting, refused or removed with read's cause, refused (`invalid`) with no
+   read listed. What the key holds (`key_access`, the giver's `usr_…` as who gave it) follows the
+   grants held, a row with no flag left deleted: **read leaving takes act with it, in the same
+   statement, by every path**. Every refusal decided is owed at the record's version, never at 0.
+
+**Waiting grants are judged in the giver's document's own write.** Applying a person's document
+(`ApplyDirectoryDocument`, step 12) judges every grant they gave that was waiting, on keys listed
+since the last reset and live, with the act beside each, and owes each refusal at the key's
+version; the same write revokes the keys they created before the directory's marks (the belt).
+
+#### A reset, its pass, and what is owed
+
+A reset of the directory (`ResetDirectory`) starts its keys again **in the same transaction**: the
+feed from 0 under the new reset, what it trusted kept as the highest it ever trusted (never
+lowered by a second reset before the pass ended), the pass open; every key and grant waiting to be
+listed again (version 0); every refusal owed dropped (it names versions the new generation never
+issued). Nothing else changes — revocations, expiries, grants held and waiting, tombstones, stops —
+so a reset **never widens** a key. During the pass, each record lists its key again and applies as
+above, and a key held narrower than listed is owed once, merged (`issued_key_tell`, `held`):
+revoked when it is revoked here; the earlier expiry; the grants it lists that this server keeps off
+(refused or removed before, or an old grant made a tombstone). A stub is owed as what it says: a
+revoked one as a revocation, an expired one (or one held here) as its end, never a revocation. The
+pass's last page revokes every key it did not list (`manual`, ended `unlisted`), owing nothing of
+them.
+
+`Service.IssuedKeysReport` reads, in one read, what the extension acknowledges with: the
+generation, reset and cursor, when the last page applied, whether the pass is open, the refusals
+owed, the grants waiting (of keys listed since the reset), this server's own stops of live keys
+(`operator`, `creator`, and `withdrawn` for every live key where the edition refuses them), and the
+keys held narrower, each list at most 1000 with a flag for more. `Service.IssuedKeysTold` forgets
+what the issuer accepted. Uses are counted by the extension (`KeyIssuer.Used`) and recorded per day
+(`RecordIssuedKeyUses`: the last day accepted, never a time, and refusals added to the day's
+count), read back absolute (`IssuedKeyUsage`) and marked reported (`IssuedKeyUsesReported`).
+`AccessSnapshot` and `WorkspaceReport` list, on each mailbox, the live issued keys holding a flag on
+it (`SnapshotMailbox.Keys`: id, flags, reads by the flag), a key stopped here included, never among
+its people.
+
+#### This server's own stops
+
+| Event | This server's own keys | Issued keys |
+|---|---|---|
+| A document raises the creator's disable | revoked, every one | revoked, only those created before it (microseconds, no margin), `creator_suspended` |
+| A document raises the creator's credentials' revocation | revoked before it and `CredentialsMargin` | revoked before it, no margin, `account_recovered` |
+| The creator disabled here | revoked `creator_disabled` | **held**: the `creator` stop, never revoked here, lifted by nothing here |
+| The creator suspended outside the directory's documents (`SuspendPerson`) | revoked | the `creator` stop, which their resume lifts |
+| The creator deleted or forgotten | revoked, kept without their name | gone with their personal workspace, its stub left (`revoked` for a key still live) |
+| The operator's hold (`PUT /v1/issued-keys/{selector}/hold`) | — | the `operator` stop, which only the release lifts |
+| The edition refuses issued keys (`IssuedKeysRefused`) | — | every one refused, reported `withdrawn`, stored nowhere |
+
+Each stop is a row of its own (`issued_key_stops`): a key with any is refused at authentication and
+before every answer, and each lift deletes only its own, so a key held by the operator whose creator
+is then disabled here stays refused after the release. A local reset or recovery cannot exist beside
+issued keys (`app.Options.KeyIssuer` needs `ExternalSignInOnly`). **The operator's hold**, by
+selector, for a key that leaked: `PUT` and `DELETE /v1/issued-keys/{selector}/hold`
+(`Service.HoldIssuedKey`, `ReleaseIssuedKey`; `mailserver apikey hold|release SELECTOR`), an
+unrestricted instance admin key only, outside `MAIL_ADMIN_API`; a selector this server holds no
+live key under is `not_found`. An extension whose record could not be applied even narrowed stops
+the key the same way (`Service.StopIssuedKey`, by its id or selector).
+
+#### What is kept, and for how long
+
+- An issued key's **full record** (its row, hash, workspace, creator, creation and expiry, terms,
+  id and version, grants with their givers, stops, last day of use, refusals counted) until **30
+  days after it ended** — its own revocation or expiry, never when this server heard of it, or the
+  end of the pass that did not list it — and never past its creator's account (it goes with their
+  personal workspace). A record that arrives with an end already 30 days past is never stored in
+  full: a key held loses its record in that write.
+- **What is left of it** (`issued_key_ends`: selector, how it ended, when) until **a year after its
+  creation**, never refilled by a record sent again.
+- **What is owed** to the issuer until it accepts it, **30 days** at most, and never past the key's
+  end (refusals) or its row.
+- **Refused uses** per day for **30 days**, a day older than yesterday sooner once a report carried
+  it.
+- Never its name, a reading key, or a time of use.
+
+`Service.EndExpiredIssuedKeys` records each key's end at its expiry (marking its workspace for the
+extension's report) and answers the next one, which an extension can wait for;
+`Service.SweepIssuedKeys` deletes, one key per write, a failure logged and the next one tried. The
+daemon's hourly housekeeping runs both, at start too.
+
+#### Streams and downloads close within a second
+
+`Service.AccessChanged` is closed at every commit that may have given or taken access from anyone
+(a record applied, a hold, a disable, a flag taken). An event stream checks its caller at once
+then, beside every batch and ping; a long poll (`GET /v1/events/wait`) too, answering `401` when
+its credential stopped; and a download (a raw message or an attachment, sent from its spooled copy)
+asks its `Download.Still` between two chunks (the credential again, and read on the mailbox), and
+is cut off, never ended as a whole file, when the caller may no longer read it. So a key revoked,
+held or losing read stops within a second of the write, for sessions and own keys alike.
+
 ## Choosing the workspace in a request
 
 There is no "current workspace" on the server for a session, which reaches the person's mailboxes
@@ -1298,6 +1457,8 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `POST /v1/accounts/{id}/recover` | its owners, as above; the operator, an operator mailbox only (a person's or a team's: `403`) | `Account`, live again, `sync.paused` until someone who may resumes it (off where its consent is off; `sync.held` where the operator's turn-off holds a personal one); `409` past its 30 days, in a closed team, or for a team mailbox nobody who could read it is left to read; `404` for everyone else |
 | `POST /v1/accounts/{id}/purge` | its owners, as above; the operator, any workspace's | `{confirm}`, the id repeated, or `400` and nothing deleted → `204` (150 s): deleted for good; a live mailbox `409` |
 | `POST /v1/accounts/{id}/sync/stop` | the operator, any workspace's mailbox, live or removed (anyone else: `403`) | no body → `AccountSync` (150 s): its sync turned off and its index deleted, its readers told, its pause ended; a personal mailbox `held` until its person turns it on, a team's consent withdrawn ([Consents](#consents)) |
+| `PUT /v1/issued-keys/{selector}/hold` | the operator (anyone else: `403`) | no body → `204`: a key an extension's issuer made held here until released ([Keys an issuer makes](#keys-an-issuer-makes)); a selector this server holds no live key under: `404` |
+| `DELETE /v1/issued-keys/{selector}/hold` | the operator (anyone else: `403`) | `204`: the operator's hold lifted, and nothing else |
 | `POST /v1/accounts/{id}/sync/pause` | a personal mailbox's person, a team's owners and admins, signed in; the operator for an operator mailbox | no body → `AccountSync` (`paused`, `paused_since`); `409` held or consent off; `403` where the edition does not offer the pause ([Pausing a mailbox's sync](#pausing-a-mailboxs-sync)) |
 | `POST /v1/accounts/{id}/sync/resume` | the same people, in every edition | `{"version"}` for a team mailbox (the current sync text, recorded as the team's agreement; `400` otherwise; `409` nobody reads it), no body otherwise → `AccountSync` |
 | `GET /v1/me/notices` | session (a key: `403`) | `[PersonNotice]`, the newest first |
@@ -1466,6 +1627,8 @@ mailserver account recover ID                   # an operator mailbox, its sync 
 mailserver account purge   ID [--yes]           # a removed mailbox of any workspace, deleted for good
 mailserver account sync    ID off [--yes]       # any workspace's mailbox, removed too: sync off, index deleted
 mailserver account sync    ID pause|resume      # an operator mailbox: index kept
+mailserver apikey hold     SELECTOR             # a key an extension's issuer made, refused here until released
+mailserver apikey release  SELECTOR             # that hold lifted, and nothing else
 ```
 
 - `workspace close` and `reopen` take a local team only; `workspace list` notes a closed one
@@ -1718,6 +1881,10 @@ otherwise), and for no transport:
     resume in the same write: what the disable ends ends.
 11. **What it said** is recorded: its version, generation and status, and the highest of each
     revocation.
+12. **The keys the directory's issuer makes**: the ones the person created before what it revoked
+    are revoked, at microseconds with no margin, and the grants they gave that were waiting for
+    their document are judged ([Keys an issuer makes](#applying-the-issuers-records)). A closed
+    document does both; one whose workspace part is refused, only the first.
 
 Once the write commits, event streams read access again, the sync engine hears of the mailboxes of
 every team it changed and of the person's own, and a suspended person's consent attempts stop.
@@ -1741,7 +1908,9 @@ local source a document is refused (`409`).
   every team's version set back to 0 under the reset it records, what it revoked kept. An extension
   resets when the directory says it forgot where its feed stood, whatever the generation, and on a
   new generation; a directory never followed is created by it. The next document of each person
-  then applies whatever its version, and the next state of each team is taken from it.
+  then applies whatever its version, and the next state of each team is taken from it. The keys
+  the directory's issuer makes start again in the same transaction, never wider than they were
+  ([A reset, its pass, and what is owed](#a-reset-its-pass-and-what-is-owed)).
 - **The feed's cursor** (`service.SetDirectoryCursor`) is a compare and set on the generation and
   the reset it was read under, never created by it, never going back.
 - **Confirming the generation** (`service.ConfirmDirectoryGeneration`), when the directory says it
@@ -2211,7 +2380,7 @@ recovery never brings back), `issued_key_uses` (refusals per day until reported)
 pass listed it, one per key), `issued_key_ends` (what stays of an issued key once its row goes,
 written by the delete trigger on every path, the cascade from its workspace included, and never
 changed; a selector it holds is never stored again) and `directory_keys` (per issuer, its feed's
-place under its directory's reset, going back only with a reset). The workspace marks
+place under its directory's reset and when a page last applied, going back only with a reset). The workspace marks
 (`workspace_changes`) follow `key_access`, an issued key's revocation, expiry and end, and its
 stops, for a workspace from another source. No row of a schema-27 database changes. The tests in
 `internal/store/migrate_twentyeight_test.go` hold every row and object as they were, each rule
@@ -2745,7 +2914,50 @@ Test names state the guarantee. At least:
   `TestNoOwnWorkspaceKeyIsCreatedOrWidenedWhereKeysAreIssuedElsewhere`,
   `TestOwnKeyListingsNeverShowIssuedKeys`, `TestOnlyItsIssuerChangesAnIssuedKey` and
   `TestAKeyIssuerNeedsExternalSignInOnly` (`internal/app`); the log (`internal/obs`),
-  `TestTheLogNeverHoldsAnIssuedCredential`.
+  `TestTheLogNeverHoldsAnIssuedCredential`; applying the issuer's records,
+  `TestAnIssuedKeyIsStoredFromItsRecordAndWorksAtOnce`, `TestAPageAndItsCursorMoveInOneWrite`,
+  `TestAGrantIsJudgedOnce`, `TestAGiverWhoStopsReadingTakesNoReadAway`,
+  `TestReadIsHeldOnlyWhenItsGiverReadsTheMailbox`, `TestActIsRefusedBesideARefusedRead`,
+  `TestAnIssuedKeyNeverHoldsSend`, `TestKeyTermsAreJudgedOnceAndForAll`,
+  `TestAGrantOnARemovedMailboxIsRefusedAndARecoveryGivesNothingBack`,
+  `TestReadLeavingTakesActInTheSameWrite`, `TestAnActWithoutReadRecordTakesBothFlagsAndTheFeedMovesOn`,
+  `TestAPartialRecordOnlyNarrows`, `TestAPartialRecordOfAKeyNeverHeldRefusesItsGrants`,
+  `TestNoRefusalIsOwedAtVersionZero`, `TestAZeroExpiryEndsAnIssuedKeyAtOnce`,
+  `TestARevocationAtAnUnknownTimeStillRevokes`, `TestAForgottenSelectorIsNeverStoredAgain`,
+  `TestAForgottenSelectorsGrantsAreRefusedOutsideAPass` and
+  `TestARecordTheSchemaRefusesNeverFailsItsPage`; waiting grants,
+  `TestAGrantWaitsUntilItsGiversDocumentApplies`, `TestAGrantAfterAResetWaitsUntilItsGiversDocumentApplies`,
+  `TestAWaitingGrantIsJudgedInItsGiversDocumentsWrite`, `TestActBesideAWaitingReadWaitsAndIsJudgedWithIt`
+  and `TestAWaitingGrantTheRecordNoLongerListsIsNeverJudged`; a reset,
+  `TestTheKeysRowIsMadeOnADirectoryThatAlreadyExists` (`internal/store`),
+  `TestTheKeysResetIsInTheDirectoryResetsTransaction`, `TestAResetDropsTheRefusalsOwed`,
+  `TestAResetNeverWidensAnIssuedKey`, `TestWhatIsHeldNarrowerIsOwedToTheIssuer`,
+  `TestASecondResetDuringThePassNeverWidens`, `TestAResetReportsTheRefusedAndRemovedGrantsThePassLists`,
+  `TestAnOldGrantNotHeldAtTheResetIsNeverJudgedLaterInTheGeneration`,
+  `TestAKeyThePassDidNotListIsRevokedWhenThePassEnds` and
+  `TestAnExpiredStubIsReportedAsItsEndNotAsARevocation`; the belt and the stops,
+  `TestTheBeltStopsOnlyIssuedKeysCreatedBeforeTheDirectorysMoment`, `TestTheBeltHoldsWhicheverArrivesFirst`,
+  `TestARecoveryStopsOwnKeysWithItsMarginAndIssuedKeysWithout`,
+  `TestADisableHereHoldsIssuedKeysAndRevokesOwnOnes`, `TestAKeyStoredForACreatorDisabledHereIsHeld`,
+  `TestTheTwoStopsLiftApart`, `TestTheOperatorHoldsAndReleasesAnIssuedKeyBySelector`,
+  `TestAHoldOfASelectorNotHeldIsNotFound`, `TestOnlyAnUnrestrictedInstanceAdminKeyHoldsAKey`,
+  `TestASuspensionOutsideDocumentsStopsIssuedKeysUntilTheResume`,
+  `TestIssuedKeysRefusedRefusesEveryKeyAndReportsItStopped`, `TestTheHoldRoutesAreTheOperatorsAlone`
+  (`internal/api`) and `TestTheHoldCommandsHoldAndReleaseAKeyItsIssuerMadeBySelector`
+  (`cmd/mailserver`); what is kept, `TestAnIssuedKeysRecordGoesThirtyDaysAfterItEnds`,
+  `TestARecordEndedLongAgoIsNeverStoredInFull`, `TestAnIssuedKeyGoesWithItsCreatorsAccount`,
+  `TestAnAccountDeletedWithALiveIssuedKeyLeavesARevokedStub`, `TestTheSweepDeletesKeyByKey`,
+  `TestAKeysRefusalsOwedGoWithItsEnd`, `TestABadRecordsRevocationOfAKeyNeverHeldLeavesItsStub`,
+  `TestWhatIsLeftOfAnIssuedKeyGoesAYearAfterItsCreation`, `TestWhatIsOwedToTheIssuerGoesAfterThirtyDays`,
+  `TestAnIssuedKeysUsesAreKeptAsAbsoluteCountsPerDay` and `TestUseCountsOlderThanYesterdayGoOnceReported`;
+  what is reported, `TestTheSnapshotListsTheLiveIssuedKeysOnEachMailbox`,
+  `TestAnExpiredIssuedKeyMarksItsWorkspaceAtItsExpiry` and
+  `TestAnIssuedKeysChangeMarksItsWorkspaceFromItsRecord`; and what holds a request open
+  (`internal/api`), `TestAStreamEndsWithinASecondOfItsKeysRevocation`,
+  `TestALongPollEndsWithinASecondOfItsKeysRevocation`, `TestADownloadStopsWithinASecondOfItsKeysRevocation`
+  (an original and an attachment; a revocation, a hold and read taken away) and
+  `TestADownloadOfAKeyStillReadingIsSentWhole`. The console (vitest): `keys.page.spec.ts`, an
+  edition without key terms offers no Create key.
 
 ## Conflicts and resolutions
 

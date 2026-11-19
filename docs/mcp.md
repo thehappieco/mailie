@@ -38,7 +38,10 @@ same consent. No authorization rule lives in `internal/mcp`.
   `workspace_id` and what the key may do with it (`access`). Every owner and admin of the workspace
   sees the key and may revoke it; it also stops when the person who created it leaves the
   workspace or is disabled, suspended or deleted, and when they recover their account or complete a
-  reset (in every workspace).
+  reset (in every workspace). A session's watch of new mail for its resource subscriptions stops
+  as soon as the key does: the wait it is in ends at the write that stopped the key
+  (`Service.AccessChanged`). A key an extension's issuer made stops as `docs/workspaces.md`, "Keys
+  an issuer makes", says: revoked by its issuer, held here, or its creator stopped here.
 - **Instance keys** (the operator's, from `mailserver apikey create`) reach only the operator
   workspace's mailboxes, here and over REST alike, never a workspace's. One restricted to some of
   them that loses one it was opened with is refused at every call of a stdio session with

@@ -374,6 +374,10 @@ type directoryApply struct {
 //     disable that suspended them keeps the suspension (SuspensionKept).
 //  11. What the directory said is recorded: the version, the generation,
 //     the status and the highest of each revocation.
+//  12. The keys the directory's issuer made for the person that were created
+//     before what it revoked are revoked (at microseconds, with no margin),
+//     and the grants the person gave that were waiting for their document
+//     are judged (docs/workspaces.md, "Keys an issuer makes").
 func (s *Service) ApplyDirectoryDocument(ctx context.Context, doc DirectoryDocument, opts ApplyOptions) (DirectoryApplied, error) {
 	if err := s.following(); err != nil {
 		return DirectoryApplied{}, err
@@ -470,6 +474,9 @@ func (s *Service) applyDirectoryTx(ctx context.Context, tx *sql.Tx, userID strin
 		if err := store.PutDirectoryPersonTx(ctx, tx, person); err != nil {
 			return directoryApply{}, err
 		}
+		if err := s.issuedKeysAfterDocumentTx(ctx, tx, doc, userID, true, now, &out); err != nil {
+			return directoryApply{}, err
+		}
 		out.applied.Applied = true
 		return out, nil
 	}
@@ -481,6 +488,9 @@ func (s *Service) applyDirectoryTx(ctx context.Context, tx *sql.Tx, userID strin
 			return directoryApply{}, err
 		}
 		if err := store.PutDirectoryPersonTx(ctx, tx, person); err != nil {
+			return directoryApply{}, err
+		}
+		if err := s.issuedKeysAfterDocumentTx(ctx, tx, doc, userID, false, now, &out); err != nil {
 			return directoryApply{}, err
 		}
 		out.invalid = err
@@ -570,8 +580,34 @@ func (s *Service) applyDirectoryTx(ctx context.Context, tx *sql.Tx, userID strin
 	if err := store.PutDirectoryPersonTx(ctx, tx, person); err != nil {
 		return directoryApply{}, err
 	}
+	// 12. The keys an issuer made for them, and the grants they gave.
+	if err := s.issuedKeysAfterDocumentTx(ctx, tx, doc, userID, true, now, &out); err != nil {
+		return directoryApply{}, err
+	}
 	out.applied.Applied = true
 	return out, nil
+}
+
+// issuedKeysAfterDocumentTx is what a person's document does to the keys
+// the directory's issuer made (docs/workspaces.md, "Keys an issuer makes"),
+// in its own write, once what it said of the person is recorded: every key
+// they created before the directory's marks of them (disabled, credentials
+// revoked) is revoked, at microseconds with no margin; and, when the
+// document applied (judge), every grant they gave that was waiting for it
+// is judged now, with the act beside it.
+func (s *Service) issuedKeysAfterDocumentTx(ctx context.Context, tx *sql.Tx, doc DirectoryDocument, userID string,
+	judge bool, now time.Time, out *directoryApply,
+) error {
+	n, err := issuedBeltTx(ctx, tx, doc.Issuer, userID, "", now.Unix())
+	if err != nil {
+		return err
+	}
+	out.applied.KeysStopped += n
+	if !judge {
+		return nil
+	}
+	_, err = judgeWaitingOfTx(ctx, tx, doc.Issuer, doc.Subject, now.Unix())
+	return err
 }
 
 // appendOnce appends id unless list has it.

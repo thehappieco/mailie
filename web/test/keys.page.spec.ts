@@ -20,6 +20,7 @@ import { loadAccounts } from '../src/state/accounts'
 import { apiKeys, myKeys } from '../src/state/apikeys'
 import { adoptSession, signOut } from '../src/state/session'
 import { loadWorkspaces, selectWorkspace } from '../src/state/workspaces'
+import { configureEdition, edition } from '../src/edition'
 import { KEY_TERMS_VERSION } from '../src/open/versions'
 import { account, ana, failure, json, now, reply, serve, stubPage, type Route } from './support'
 
@@ -532,5 +533,39 @@ describe('the keys a person created, in their account', () => {
     await vi.waitFor(() => expect(myKeys.loaded).toBe(true))
     await flush()
     expect(find('.my-keys')).toBeNull()
+  })
+})
+
+describe('an edition without key terms', () => {
+  const open = edition()
+  beforeEach(() => {
+    const { keyTerms: _, ...withoutTerms } = open
+    configureEdition(withoutTerms)
+  })
+  afterEach(() => configureEdition(open))
+
+  it('offers no Create key where the workspace has no key', async () => {
+    await signedIn(() => failure('not_found', 404))
+    expect(find('.empty-card')).not.toBeNull()
+    expect(createButton()).toBeNull()
+    expect(words()).not.toContain('Create key')
+  })
+
+  it('offers no Create key beside the keys it holds, and still lists and revokes them', async () => {
+    keys = [listed('1111aaaa2222bbbb')]
+    const fetch = await signedIn(({ path, method }) => {
+      if (method === 'DELETE' && path === `/v1/workspaces/${PERSONAL}/apikeys/1111aaaa2222bbbb`) {
+        keys = keys.map(key => ({ ...key, live: false, revoked_at: now() }))
+        return new Response(null, { status: 204 })
+      }
+      return failure('not_found', 404)
+    })
+    expect(find('[data-key="1111aaaa2222bbbb"]')).not.toBeNull()
+    expect(createButton()).toBeNull()
+    expect(words()).not.toContain('Create key')
+    await click(find('[data-key="1111aaaa2222bbbb"] button', 'Revoke'))
+    await click(find('dialog button', 'Revoke key'))
+    await vi.waitFor(() => expect(deletes(fetch)).toEqual([`/v1/workspaces/${PERSONAL}/apikeys/1111aaaa2222bbbb`]))
+    expect(posts(fetch)).toEqual([])
   })
 })

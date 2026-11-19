@@ -12,7 +12,15 @@ import (
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/service"
 )
+
+// issuedKeySweeper is what the housekeeping keeps of the keys an issuer
+// made (internal/service).
+type issuedKeySweeper interface {
+	EndExpiredIssuedKeys(context.Context, time.Time) (time.Time, error)
+	SweepIssuedKeys(context.Context, time.Time) (service.SweptIssuedKeys, error)
+}
 
 // sweepSpool removes the sections the IMAP adapter spooled and nobody
 // closed, and the attachments of a send that never ended: what a crash in the
@@ -71,12 +79,15 @@ const housekeepingInterval = time.Hour
 // (sweepMailboxes, service.SweepRemovedMailboxes); and the people deleted here
 // whom an external directory followed, released once their rows are that old
 // too, if an extension has not released them (sweepDirectory,
-// service.SweepDirectory; nil sweeps none). The sweep at start is what deletes
-// at once a removed mailbox a restored backup brought back past its 30 days.
-// scrub then takes the deleted rows out of the write-ahead log too.
+// service.SweepDirectory; nil sweeps none); and what is kept of the keys an
+// issuer made, each key's end recorded at its expiry and then each kind
+// deleted once its period is over (issuedKeys; nil sweeps none). The sweep
+// at start is what deletes at once a removed mailbox a restored backup
+// brought back past its 30 days. scrub then takes the deleted rows out of
+// the write-ahead log too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	sweepMailboxes func(context.Context, time.Duration) (int, int, error),
-	sweepDirectory func(context.Context, time.Time) (int, error),
+	sweepDirectory func(context.Context, time.Time) (int, error), issuedKeys issuedKeySweeper,
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
 	sweep := func() {
@@ -137,6 +148,21 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 				logger.Info("released the people a directory followed, deleted 90 days ago", "count", released)
 				deleted += released
 			}
+		}
+		if issuedKeys != nil {
+			if _, err := issuedKeys.EndExpiredIssuedKeys(ctx, time.Now()); err != nil && ctx.Err() == nil {
+				logger.Warn("recording the end of the issued keys that expired failed", "err", err)
+			}
+			// Told when the next sweep is, as the others are.
+			swept, err := issuedKeys.SweepIssuedKeys(ctx, time.Now().Add(every))
+			switch {
+			case err != nil && ctx.Err() == nil:
+				logger.Warn("sweeping what is kept of the issued keys failed", "err", err)
+			case swept.Total() > 0:
+				logger.Info("deleted what is no longer kept of the issued keys", "records", swept.Keys,
+					"ends", swept.Ends, "owed", swept.Owed, "uses", swept.Uses)
+			}
+			deleted += swept.Total()
 		}
 		if deleted > 0 {
 			if err := scrub(ctx); err != nil && ctx.Err() == nil {

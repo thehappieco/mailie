@@ -244,7 +244,8 @@ type WaitResult struct {
 //
 // since is the next_cursor of the previous call; zero waits from now. The
 // answer comes as soon as there is something to say, with everything that
-// arrived by then.
+// arrived by then; and at once, refused, when the caller's credential stops
+// working meanwhile (AccessChanged).
 func (s *Service) WaitForNewMail(ctx context.Context, p Principal, since int64, timeout time.Duration, filter EventFilter) (WaitResult, error) {
 	switch {
 	case timeout == 0:
@@ -268,15 +269,31 @@ func (s *Service) WaitForNewMail(ctx context.Context, p Principal, since int64, 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	var first *events.Event
-	select {
-	case ev, ok := <-sub.Events():
-		if ok {
-			first = &ev
+wait:
+	for {
+		changed := s.AccessChanged()
+		select {
+		case ev, ok := <-sub.Events():
+			if ok {
+				first = &ev
+			}
+			break wait
+		case <-changed:
+			// A commit that may have changed what anyone reaches: the
+			// caller is checked again at once, so that a credential revoked
+			// or stopped ends its wait within a second, answered as any
+			// request with a dead credential is.
+			if err := s.Recheck(ctx, p); err != nil {
+				sub.Close()
+				return WaitResult{}, err
+			}
+		case <-timer.C:
+			break wait
+		case <-ctx.Done():
+			// The caller left, or its deadline came: answer as a timeout,
+			// which is true, and costs nothing if nobody reads it.
+			break wait
 		}
-	case <-timer.C:
-	case <-ctx.Done():
-		// The caller left, or its deadline came: answer as a timeout, which
-		// is true, and costs nothing if nobody reads it.
 	}
 
 	// Closed before the rest is read, so nothing is queued after the cursor

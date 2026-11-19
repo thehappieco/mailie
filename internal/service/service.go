@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +47,10 @@ type Service struct {
 	// memory sees every one; an event subscription reads again what its
 	// caller may read whenever it moved (access.go).
 	accessEpoch atomic.Int64
+	// accessMu guards accessCh, closed and forgotten at every accessChanged:
+	// what an open stream or download waits on to check again at once.
+	accessMu sync.Mutex
+	accessCh chan struct{}
 	// noticeEpoch counts the commits that may have given somebody a notice
 	// (notices.go): a mailbox removed, a team mailbox's sync turned off. An
 	// event stream reads again whether its person has a new one only when

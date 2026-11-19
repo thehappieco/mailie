@@ -1,9 +1,14 @@
 package main
 
 import (
+	"errors"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/thehappieco/mailie/internal/config"
 )
 
 func TestTheKeyCommandsNameMailAdminAPIWhenTheDaemonHasNoKeyRoutes(t *testing.T) {
@@ -64,5 +69,39 @@ func TestTheKeyListSaysWhyAKeyStopped(t *testing.T) {
 		if !strings.HasSuffix(line, "  "+state) {
 			t.Errorf("key %s is listed %q, want it to end %q", prefix, line, state)
 		}
+	}
+}
+
+func TestTheHoldCommandsHoldAndReleaseAKeyItsIssuerMadeBySelector(t *testing.T) {
+	var asked []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer deadbeef.secret" {
+			t.Errorf("asked without the admin key: %q", r.Header.Get("Authorization"))
+		}
+		asked = append(asked, r.Method+" "+r.URL.EscapedPath())
+		if strings.Contains(r.URL.Path, "ffff") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"code":"not_found","message":"this server holds no live key under that selector"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := config.Config{HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: "deadbeef.secret"}
+	for _, args := range [][]string{{"hold", "0123456789abcdef"}, {"release", "0123456789abcdef"}} {
+		if err := apikeyCommand(t.Context(), cfg, args); err != nil {
+			t.Fatalf("apikey %s: %v", args[0], err)
+		}
+	}
+	if want := []string{"PUT /v1/issued-keys/0123456789abcdef/hold", "DELETE /v1/issued-keys/0123456789abcdef/hold"}; !slices.Equal(asked, want) {
+		t.Errorf("asked %q, want %q", asked, want)
+	}
+	if err := apikeyCommand(t.Context(), cfg, []string{"hold", "ffffffffffffffff"}); err == nil ||
+		!strings.Contains(err.Error(), "no live key") {
+		t.Errorf("a selector not held: %v", err)
+	}
+	if err := apikeyCommand(t.Context(), cfg, []string{"hold"}); !errors.Is(err, errUsage) {
+		t.Errorf("no selector: %v", err)
 	}
 }

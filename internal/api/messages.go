@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -195,18 +196,51 @@ func (q *request) download(dl service.Download) {
 	}
 	extend()
 	q.w.WriteHeader(http.StatusOK)
-	if n, err := copyExtending(q.w, dl.Body, extend); err != nil {
+	// Between two chunks, once a commit may have changed what anyone
+	// reaches (Service.AccessChanged), the caller is checked again: a key
+	// revoked or stopped, or read taken, ends the transfer within a second,
+	// the body cut short.
+	changed := q.h.Service.AccessChanged()
+	still := func() error {
+		select {
+		case <-changed:
+		default:
+			return nil
+		}
+		changed = q.h.Service.AccessChanged()
+		if dl.Still == nil {
+			return q.h.Service.Recheck(q.ctx(), q.principal)
+		}
+		return dl.Still(q.ctx())
+	}
+	n, err := copyExtending(q.w, dl.Body, extend, still)
+	q.h.observe(q.route, q.r.Method, http.StatusOK, time.Since(q.started))
+	switch {
+	case errors.Is(err, errDownloadStopped):
+		// Cut off, never ended: a body sent in chunks that simply stopped
+		// would read as the whole file.
+		q.log().Info("the download stopped: its caller may no longer read it", "sent", n, "err", err)
+		panic(http.ErrAbortHandler)
+	case err != nil:
 		q.log().Debug("the download ended before the whole file was sent", "sent", n, "err", err)
 	}
-	q.h.observe(q.route, q.r.Method, http.StatusOK, time.Since(q.started))
 }
 
+// errDownloadStopped is a download whose caller may no longer read what it
+// sends: its credential stopped, or its read on the mailbox went.
+var errDownloadStopped = errors.New("api: the caller may no longer read the download")
+
 // copyExtending is io.Copy calling progress after every write that went
-// through.
-func copyExtending(w io.Writer, r io.Reader, progress func()) (int64, error) {
+// through, and still before every chunk, whose error ends the copy.
+func copyExtending(w io.Writer, r io.Reader, progress func(), still func() error) (int64, error) {
 	buf := make([]byte, 64<<10)
 	var sent int64
 	for {
+		if still != nil {
+			if err := still(); err != nil {
+				return sent, fmt.Errorf("%w: %w", errDownloadStopped, err)
+			}
+		}
 		n, readErr := r.Read(buf)
 		if n > 0 {
 			written, err := w.Write(buf[:n])

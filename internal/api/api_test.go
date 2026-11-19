@@ -25,6 +25,7 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 type harness struct {
@@ -67,6 +68,11 @@ type serviceOptions struct {
 	// pauseWithheld is an edition that does not offer a person's pause of
 	// one mailbox's sync: every other harness offers it, as serve does.
 	pauseWithheld bool
+	// source is where workspaces come from; nil is the local source.
+	source workspace.Source
+	// keyIssuer is an extension whose keys this server mirrors; nil follows
+	// none.
+	keyIssuer service.KeyIssuer
 }
 
 // newService wires the real service to a temporary database, because testing
@@ -108,6 +114,8 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		ExternalSignInOnly: o.externalSignInOnly,
 		TeamsWithheld:      o.teamsWithheld,
 		SyncPauseOffered:   !o.pauseWithheld,
+		Workspaces:         workspace.NewRepository(db, o.source),
+		KeyIssuer:          o.keyIssuer,
 	})
 }
 

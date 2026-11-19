@@ -116,7 +116,11 @@ func (u *Users) RequireActiveTx(ctx context.Context, tx *sql.Tx, id string) erro
 // Ended is what disabling or suspending a person ended.
 type Ended struct {
 	Sessions int
-	Keys     int
+	// Keys counts this server's own keys they created, revoked;
+	// IssuedKeysHeld the keys an issuer made for them that a disable here
+	// stops (the creator's stop, issued_key_stops), revoked by nothing here.
+	Keys           int
+	IssuedKeysHeld int
 	// Invites counts the invites they made that were still waiting, now
 	// expired.
 	Invites int
@@ -219,6 +223,12 @@ func (u *Users) DisableBy(ctx context.Context, id string, force bool, actor stri
 		if out, err = endWaysInTx(ctx, tx, id, now, workspace.KeyStopCreatorDisabled); err != nil {
 			return err
 		}
+		// A key an issuer made for them is held, never revoked here: its
+		// issuer revokes it, and a disable here stops it for as long as it
+		// lasts.
+		if out.IssuedKeysHeld, err = stopIssuedKeysOfTx(ctx, tx, id, now); err != nil {
+			return err
+		}
 		if out.Stranded, err = workspace.JournalStrandedTx(ctx, tx, strands, id, store.CauseDisabled, actor,
 			time.Unix(now, 0)); err != nil {
 			return err
@@ -249,12 +259,19 @@ type Suspension struct {
 }
 
 // Suspend suspends a person for an extension of the daemon, which follows a
-// decision taken elsewhere: SuspendTx in a transaction of its own.
+// decision taken elsewhere: SuspendTx in a transaction of its own. A
+// suspension outside an external directory's documents also stops every key
+// an issuer made for them (the creator's stop), which their resume lifts;
+// one a directory's document makes leaves them to the directory's own
+// marks, which revoke the keys created before them.
 func (u *Users) Suspend(ctx context.Context, id string) (Suspension, error) {
 	var out Suspension
 	err := u.store.Write(ctx, func(tx *sql.Tx) error {
 		var err error
-		out, err = u.SuspendTx(ctx, tx, id)
+		if out, err = u.SuspendTx(ctx, tx, id); err != nil || !out.Suspended {
+			return err
+		}
+		out.IssuedKeysHeld, err = stopIssuedKeysOfTx(ctx, tx, id, u.now().Unix())
 		return err
 	})
 	if err != nil {
@@ -348,7 +365,32 @@ func (u *Users) ResumeTx(ctx context.Context, tx *sql.Tx, id string) (bool, erro
 	case err != nil:
 		return false, fmt.Errorf("auth: resume user: %w", err)
 	}
-	return status == userActive, nil
+	if status != userActive {
+		return false, nil
+	}
+	// Active again: the stop a suspension gave the keys an issuer made for
+	// them goes. A disable here, which no resume lifts, keeps it.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM issued_key_stops WHERE cause = 'creator'
+		AND prefix IN (SELECT prefix FROM api_keys WHERE created_by = ? AND issuer <> '')`, id); err != nil {
+		return false, fmt.Errorf("auth: lift the stop of the keys an issuer made for the person: %w", err)
+	}
+	return true, nil
+}
+
+// stopIssuedKeysOfTx gives, inside the caller's transaction, every key an
+// issuer made for a person that has not ended the creator's stop
+// (issued_key_stops): refused for as long as it stays, reported to its
+// issuer as stopped here, and lifted on its own, beside the operator's. It
+// reports how many keys it stopped.
+func stopIssuedKeysOfTx(ctx context.Context, tx *sql.Tx, id string, now int64) (int, error) {
+	n, err := execCount(ctx, tx, `INSERT INTO issued_key_stops(prefix, cause, at)
+		SELECT i.prefix, 'creator', ? FROM issued_keys i JOIN api_keys k ON k.prefix = i.prefix
+		 WHERE k.created_by = ? AND k.issuer <> '' AND i.ended_at = 0
+		ON CONFLICT(prefix, cause) DO NOTHING`, now, id)
+	if err != nil {
+		return 0, fmt.Errorf("auth: stop the keys an issuer made for the person: %w", err)
+	}
+	return n, nil
 }
 
 // endWaysInTx ends, inside the caller's transaction, every way a person who
@@ -386,15 +428,17 @@ func endWaysInTx(ctx context.Context, tx *sql.Tx, id string, now int64, reason w
 }
 
 // revokeKeysCreatedByTx revokes, inside the caller's transaction, every live
-// key a person created, in whichever workspace, saying why, and reports how
-// many it revoked. Every key they created exists by then, since the store
+// key of this server's own a person created, in whichever workspace, saying
+// why, and reports how many it revoked. A key an issuer made for them is
+// its issuer's to revoke: a disable here holds it (stopIssuedKeysOfTx), and
+// a directory's marks revoke the ones created before them. Every key they created exists by then, since the store
 // writes one transaction at a time, and none is spared for its creation
 // time, which a clock behind this one's would put later. A key written after
 // it answers to what it ended: creating one needs its person active, and the
 // session asking live, in the transaction that writes it.
 func revokeKeysCreatedByTx(ctx context.Context, tx *sql.Tx, id string, now int64, reason workspace.KeyStopReason) (int, error) {
 	n, err := execCount(ctx, tx,
-		`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0`,
+		`UPDATE api_keys SET revoked_at = ?, stop_reason = ? WHERE created_by = ? AND revoked_at = 0 AND issuer = ''`,
 		now, string(reason), id)
 	if err != nil {
 		return 0, fmt.Errorf("auth: revoke the user's keys: %w", err)

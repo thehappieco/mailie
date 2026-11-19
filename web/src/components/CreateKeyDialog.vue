@@ -205,7 +205,7 @@ onBeforeUnmount(forget)
       <!-- Not once the server asks about another text: this one is no longer what a key would be created under. -->
       <section v-if="!termsChanged" class="key-terms" aria-labelledby="key-terms-title">
         <h3 id="key-terms-title">{{ t('What creating this key allows') }}</h3>
-        <component :is="keyTerms.component" :write="scopeActs(scope)" :send="scope === 'send'" :team="team" />
+        <component :is="keyTerms.component" v-if="keyTerms" :write="scopeActs(scope)" :send="scope === 'send'" :team="team" />
       </section>
       <p v-if="problem" class="alert" role="alert">{{ describe(problem) }}</p>
       <div class="dialog-actions">

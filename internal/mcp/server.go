@@ -360,6 +360,11 @@ func (w *watcher) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
+			// A wait ends at once when the key stops working: the watch
+			// stops then, rather than trying again.
+			if !keyWorks() {
+				return
+			}
 			w.ss.log.Warn("mcp subscriptions: waiting for new mail failed; trying again", "key", p.KeyPrefix,
 				"outcome", service.CodeOf(err), "err", err)
 			select {

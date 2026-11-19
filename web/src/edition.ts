@@ -61,9 +61,11 @@ export interface Edition {
    * What a tool holding a new API key can do: agreed to by creating the key.
    * Takes `write` (the scope acts), `send` (the scope sends) and `team` (the
    * name of the team the key is created in; empty in a personal workspace)
-   * props.
+   * props. Unset: this console creates no key (no "Create key" anywhere),
+   * as for a server whose keys are made elsewhere by their issuer; listing
+   * and revoking the keys it holds stay.
    */
-  keyTerms: AgreementText
+  keyTerms?: AgreementText
   /** What the frame (components/ConsoleShell.vue) calls what it holds. Translated, or a name, which never is. */
   shell: {
     /** The root of the header's breadcrumb, before the section shown, and the lockup's name beside the product's. */

@@ -154,7 +154,29 @@ var (
 // accessChanged records that read access may have changed for somebody. It
 // is called once the change has committed: an event decided before it is one
 // the caller could still read when it was decided.
-func (s *Service) accessChanged() { s.accessEpoch.Add(1) }
+func (s *Service) accessChanged() {
+	s.accessEpoch.Add(1)
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if s.accessCh != nil {
+		close(s.accessCh)
+		s.accessCh = nil
+	}
+}
+
+// AccessChanged is closed at the next commit that may have given or taken
+// access from somebody (accessChanged): a credential revoked or stopped, a
+// flag taken, a person disabled. What holds a request open — an event
+// stream, a long poll, a download — waits on it and checks its caller
+// again at once, then takes the next one.
+func (s *Service) AccessChanged() <-chan struct{} {
+	s.accessMu.Lock()
+	defer s.accessMu.Unlock()
+	if s.accessCh == nil {
+		s.accessCh = make(chan struct{})
+	}
+	return s.accessCh
+}
 
 // inWorkspace checks a ?workspace= a caller narrowed a listing to: a
 // workspace they are an active member of; for a workspace key, its own, or,
