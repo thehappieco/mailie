@@ -8,7 +8,7 @@
 -- dropped but that trigger, and no other value of a schema-26 database changes.
 --
 --   - users.signed_out_everywhere_at: when the person last signed out of every session
---     (auth.Users.EndAllSessions, POST /v1/auth/sign-out with everywhere), in the transaction
+--     (auth.Users.EndAllSessions, POST /v1/auth/logout with everywhere), in the transaction
 --     that does it; 0 when they never did, or did before this migration, which is not known (as
 --     0024 left the withdrawals before it). A password change, a reset, a recovery and an
 --     external directory's revocation end sessions too, and are not recorded as one.
