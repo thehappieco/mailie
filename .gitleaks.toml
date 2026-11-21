@@ -22,3 +22,15 @@ paths = [
  '''internal/keyscheme/testdata/[a-z-]+\.json$''',
  '''docs/key-scheme\.md$'''
 ]
+
+[[allowlists]]
+description = "An issued key's selector in two tests: the public half of a key, which the logs keep as they keep an own key's prefix, made of test digits; it authorizes nothing"
+condition = "AND"
+paths = [
+ '''internal/obs/redact_test\.go$''',
+ '''internal/store/migrate_twentyeight_test\.go$'''
+]
+regexes = [
+ '''^tst_9f3c0a7be41d2c58$''',
+ '''^0123456789abcdef$'''
+]
