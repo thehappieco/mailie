@@ -66,14 +66,22 @@ func (s *Store) ExtensionState(ctx context.Context, ext, key string) ([]byte, bo
 }
 
 // ExtensionStateKeys lists the keys of an extension's state that begin with
-// prefix, every one for "", sorted by their bytes.
+// prefix, every one for "", sorted by their bytes. It reads them by a range
+// of the primary key, from prefix up to its byte successor (prefixEnd), so a
+// listing costs what it lists, never every key of the extension: the keys
+// compare by their bytes (BINARY), so the range holds exactly the keys that
+// begin with prefix.
 func (s *Store) ExtensionStateKeys(ctx context.Context, ext, prefix string) ([]string, error) {
 	if err := checkExtensionName(ext); err != nil {
 		return nil, err
 	}
-	rows, err := s.r.QueryContext(ctx, `SELECT key FROM extension_state
-		WHERE extension = ? AND substr(CAST(key AS BLOB), 1, length(CAST(? AS BLOB))) = CAST(? AS BLOB)`,
-		ext, prefix, prefix)
+	query := `SELECT key FROM extension_state WHERE extension = ? AND key >= ?`
+	args := []any{ext, prefix}
+	if end, bounded := prefixEnd(prefix); bounded {
+		query += ` AND key < ?`
+		args = append(args, end)
+	}
+	rows, err := s.r.QueryContext(ctx, query+` ORDER BY key`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list the extension's state: %w", err)
 	}
@@ -92,6 +100,21 @@ func (s *Store) ExtensionStateKeys(ctx context.Context, ext, prefix string) ([]s
 	}
 	sort.Strings(keys)
 	return keys, nil
+}
+
+// prefixEnd is the least string, by bytes, above every string that begins
+// with prefix: prefix with its last byte below 0xFF raised by one and what
+// follows it dropped. False when there is none (an empty prefix, or one of
+// 0xFF bytes alone): every key from prefix on begins with it.
+func prefixEnd(prefix string) (string, bool) {
+	end := []byte(prefix)
+	for i := len(end) - 1; i >= 0; i-- {
+		if end[i] < 0xFF {
+			end[i]++
+			return string(end[:i+1]), true
+		}
+	}
+	return "", false
 }
 
 // WriteExtensionState writes an extension's state in one transaction: every
