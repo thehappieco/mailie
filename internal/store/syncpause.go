@@ -48,9 +48,16 @@ var (
 // ErrNoSuchMailbox. A recovery pauses too, without this
 // (account.recoverRemoved): no journal entry of its own, no notice.
 func (s *Store) PauseSync(ctx context.Context, accountID, actor string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
+	return s.PauseSyncFor(ctx, nil, accountID, actor, check)
+}
+
+// PauseSyncFor is PauseSync as a request an extension carries for a person
+// decides it (requests.go): one already paused is recorded as done. A nil
+// request is PauseSync.
+func (s *Store) PauseSyncFor(ctx context.Context, req *Request, accountID, actor string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
-	err := s.Write(ctx, func(tx *sql.Tx) error {
+	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
 		var team, removed, held, paused, stands bool
 		err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.kind = 'team'),
 			       a.removed_at <> 0, a.sync_held_at <> 0, a.sync_paused_at <> 0, `+ConsentStandsSQL("a")+`
@@ -88,7 +95,7 @@ func (s *Store) PauseSync(ctx context.Context, accountID, actor string, check fu
 			Kind: MailboxPaused, AccountID: accountID, Actor: actor, At: now,
 		}, true)
 		return err
-	})
+	}, func() RequestOutcome { return RequestOutcome{Changed: out.Changed} })
 	if err != nil {
 		return MailboxSyncSwitch{}, err
 	}
@@ -109,9 +116,19 @@ func (s *Store) PauseSync(ctx context.Context, accountID, actor string, check fu
 // (Changed false), its agreement too. A mailbox nobody knows, or a removed
 // one, is ErrNoSuchMailbox.
 func (s *Store) ResumeSync(ctx context.Context, accountID, actor, version string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
+	return s.ResumeSyncFor(ctx, nil, accountID, actor, version, check)
+}
+
+// ResumeSyncFor is ResumeSync as a request an extension carries for a person
+// decides it (requests.go): a team mailbox's agreement is recorded at the
+// request's first moment (Request.Stamp), and one not paused is recorded as
+// done. A nil request is ResumeSync.
+func (s *Store) ResumeSyncFor(ctx context.Context, req *Request, accountID, actor, version string,
+	check func(*sql.Tx) error,
+) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
-	err := s.Write(ctx, func(tx *sql.Tx) error {
+	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
 		var team, removed, paused bool
 		err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.kind = 'team'),
 			       a.removed_at <> 0, a.sync_paused_at <> 0
@@ -138,7 +155,7 @@ func (s *Store) ResumeSync(ctx context.Context, accountID, actor, version string
 		if team {
 			// On every resume, even of a mailbox whose agreement stood at
 			// this revision: the resumer is the one who agreed, now.
-			if err := agreeSyncTx(ctx, tx, accountID, actor, version, now); err != nil {
+			if err := agreeSyncTx(ctx, tx, accountID, actor, version, req.Stamp(now), now); err != nil {
 				return err
 			}
 		}
@@ -153,7 +170,7 @@ func (s *Store) ResumeSync(ctx context.Context, accountID, actor, version string
 			Kind: MailboxResumed, AccountID: accountID, Actor: actor, At: now,
 		}, false)
 		return err
-	})
+	}, func() RequestOutcome { return RequestOutcome{Changed: out.Changed} })
 	if err != nil {
 		return MailboxSyncSwitch{}, err
 	}
@@ -184,4 +201,21 @@ func EndPauseTx(ctx context.Context, tx *sql.Tx, accountIDs []string, now int64)
 		return fmt.Errorf("store: withdraw the pauses' notices: %w", err)
 	}
 	return nil
+}
+
+// PausedTx reads, inside the caller's transaction, whether a live mailbox's
+// sync is paused: what a request whose pause or resume found nothing to do
+// reads again before it is recorded as done (RecordNoOp). A mailbox nobody
+// knows, or a removed one, is ErrNoSuchMailbox.
+func PausedTx(ctx context.Context, tx *sql.Tx, accountID string) (bool, error) {
+	var paused bool
+	err := tx.QueryRowContext(ctx, `SELECT sync_paused_at <> 0 FROM accounts WHERE id = ? AND removed_at = 0`,
+		accountID).Scan(&paused)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, fmt.Errorf("%w: %s", ErrNoSuchMailbox, accountID)
+	case err != nil:
+		return false, fmt.Errorf("store: read the mailbox's pause: %w", err)
+	}
+	return paused, nil
 }

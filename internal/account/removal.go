@@ -69,10 +69,10 @@ type RemoveCheck func(tx *sql.Tx, neverConnected bool) error
 // knows, or one already removed. A removal ends the mailbox's pause, and
 // withdraws its notices (store.EndPauseTx): a removed mailbox is never
 // paused; its recovery pauses it again.
-func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveCheck) (Removal, error) {
+func (r *Repository) remove(ctx context.Context, req *store.Request, id, actor string, check RemoveCheck) (Removal, error) {
 	at := r.now().UTC().Truncate(time.Second)
 	out := Removal{AccountID: id}
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	err := r.store.WriteRequest(ctx, req, id, func(tx *sql.Tx) error {
 		var neverConnected, followed bool
 		err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id),
 			  EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.source <> 'local')
@@ -141,7 +141,7 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 			}
 		}
 		return nil
-	})
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: true, Purged: out.Purged} })
 	if err != nil {
 		return Removal{}, err
 	}
@@ -159,9 +159,9 @@ func (r *Repository) remove(ctx context.Context, id, actor string, check RemoveC
 // ErrNotRemoved for a live one, ErrRemovalOver once its 30 days are over,
 // workspace.ErrClosed in a closed team, and ErrNoReaderLeft for a team
 // mailbox nobody who could read it is left to read, now or once resumed.
-func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check func(*sql.Tx) error) error {
+func (r *Repository) recoverRemoved(ctx context.Context, req *store.Request, id, actor string, check func(*sql.Tx) error) error {
 	at := r.now().UTC().Truncate(time.Second)
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	err := r.store.WriteRequest(ctx, req, id, func(tx *sql.Tx) error {
 		var (
 			workspaceID, kind     string
 			removedAt, purgeAfter int64
@@ -230,7 +230,7 @@ func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check
 			Kind: store.MailboxRecovered, AccountID: id, Actor: actor, At: at.Unix(),
 		}, readers, false)
 		return err
-	})
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: true} })
 	if err != nil {
 		return err
 	}
@@ -242,10 +242,12 @@ func (r *Repository) recoverRemoved(ctx context.Context, id, actor string, check
 // checks nothing), journaled: what its owner, or the operator, decides before
 // its 30 days are over. ErrNotFound for a mailbox nobody knows, ErrNotRemoved
 // for a live one: removing comes first.
-func (r *Repository) purgeRemoved(ctx context.Context, id, actor string, check func(*sql.Tx) error, revoke bool) ([]grantToRevoke, error) {
+func (r *Repository) purgeRemoved(ctx context.Context, req *store.Request, id, actor string, check func(*sql.Tx) error,
+	revoke bool,
+) ([]grantToRevoke, error) {
 	at := r.now()
 	var grants []grantToRevoke
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	err := r.store.WriteRequest(ctx, req, id, func(tx *sql.Tx) error {
 		var removedAt int64
 		err := tx.QueryRowContext(ctx, `SELECT removed_at FROM accounts WHERE id = ?`, id).Scan(&removedAt)
 		switch {
@@ -268,7 +270,7 @@ func (r *Repository) purgeRemoved(ctx context.Context, id, actor string, check f
 		}
 		_, err = purgeTx(ctx, tx, []string{id}, purge{actor: actor, at: at})
 		return err
-	})
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: true} })
 	if err != nil {
 		forgetGrants(grants)
 		return nil, err
@@ -441,7 +443,14 @@ func (r removedRow) Scan(dest ...any) error { return r.rows.Scan(append(dest, r.
 // take a redirect and say something about it, its token source and its
 // cached mailbox.
 func (r *Registry) Remove(ctx context.Context, accountID, actor string, check RemoveCheck) (Removal, error) {
-	removal, err := r.repo.remove(ctx, accountID, actor, check)
+	return r.RemoveFor(ctx, nil, accountID, actor, check)
+}
+
+// RemoveFor is Remove as a request an extension carries for a person decides
+// it (store.Request): recorded in the removal's transaction. A nil request is
+// Remove.
+func (r *Registry) RemoveFor(ctx context.Context, req *store.Request, accountID, actor string, check RemoveCheck) (Removal, error) {
+	removal, err := r.repo.remove(ctx, req, accountID, actor, check)
 	if err != nil {
 		return Removal{}, err
 	}
@@ -456,17 +465,33 @@ func (r *Registry) Remove(ctx context.Context, accountID, actor string, check Re
 // operator's turn-off holds a personal one). See recoverRemoved for what
 // refuses it.
 func (r *Registry) Recover(ctx context.Context, accountID, actor string, check func(*sql.Tx) error) (Account, error) {
-	if err := r.repo.recoverRemoved(ctx, accountID, actor, check); err != nil {
+	if err := r.RecoverFor(ctx, nil, accountID, actor, check); err != nil {
 		return Account{}, err
 	}
 	return r.repo.Get(ctx, accountID)
+}
+
+// RecoverFor is Recover as a request an extension carries for a person
+// decides it (store.Request): recorded in the recovery's transaction, and
+// returning nothing of the mailbox, which the caller reads if it shows it. A
+// nil request recovers it as Recover does.
+func (r *Registry) RecoverFor(ctx context.Context, req *store.Request, accountID, actor string, check func(*sql.Tx) error) error {
+	return r.repo.recoverRemoved(ctx, req, accountID, actor, check)
 }
 
 // Purge deletes a removed mailbox for good, as actor, after check (nil checks
 // nothing), journaled. A live one is ErrNotRemoved: it is removed first. Its
 // Google grant is revoked once that commits (revoke.go).
 func (r *Registry) Purge(ctx context.Context, accountID, actor string, check func(*sql.Tx) error) error {
-	grants, err := r.repo.purgeRemoved(ctx, accountID, actor, check, r.revokes())
+	return r.PurgeFor(ctx, nil, accountID, actor, check)
+}
+
+// PurgeFor is Purge as a request an extension carries for a person decides
+// it (store.Request): recorded in the deletion's transaction; the Google
+// grant's revocation after the commit is not part of it. A nil request is
+// Purge.
+func (r *Registry) PurgeFor(ctx context.Context, req *store.Request, accountID, actor string, check func(*sql.Tx) error) error {
+	grants, err := r.repo.purgeRemoved(ctx, req, accountID, actor, check, r.revokes())
 	if err != nil {
 		return err
 	}

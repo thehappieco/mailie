@@ -476,7 +476,10 @@ func TestDeletingAPersonLeavesNoRowThatNamesThemOrTheirMailboxes(t *testing.T) {
 		"directories":      "an external directory followed, by its issuer; nothing about anyone",
 		"directory_people": "what an external directory says of the people it follows, nobody here; a followed " +
 			"person's row outlives them, marked gone, until an extension releases them (store's and auth's tests)",
-		"extension_state":   "an extension's own state, which that extension keeps and forgets",
+		"extension_state": "an extension's own state, which that extension keeps and forgets",
+		"extension_requests": "requests an extension carried for a person, nobody's here; a request's record " +
+			"keeps the person's id its days after they are deleted, as the record of changes it belongs to " +
+			"does, and goes at its keep_until (delegated tests)",
 		"directory_keys":    "an issuer's feed's place, by its issuer; nothing about anyone",
 		"workspace_changes": "marks only workspaces from another source, none of hers here",
 	}

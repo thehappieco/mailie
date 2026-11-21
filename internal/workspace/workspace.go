@@ -173,6 +173,9 @@ var (
 	ErrInvalidStatus = errors.New("workspace: a status is active or disabled")
 	// ErrNoGrant is a person with no grant on the mailbox.
 	ErrNoGrant = errors.New("workspace: no grant")
+	// ErrGrantChanged is a change of a grant drawn from flags it no longer
+	// holds (GrantChange.From): a flag was given or taken away since.
+	ErrGrantChanged = errors.New("workspace: the grant changed since the change was drawn")
 	// ErrNoFlags is a grant with every flag off; revoking is how a grant
 	// goes.
 	ErrNoFlags = errors.New("workspace: a grant needs at least one flag")

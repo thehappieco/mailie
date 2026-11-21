@@ -82,6 +82,10 @@ type Grant struct {
 	GrantedBy string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// RaisedAt is when a flag was last added to the grant (migration 0029):
+	// zero for a grant last raised before that migration. Taking flags away
+	// never moves it.
+	RaisedAt time.Time
 	// Sealed is the person holding a grant at the mailbox key's current
 	// epoch (a SealedGrant): on a mailbox that has a key, what reading needs
 	// beside the flag. Always false on a mailbox without one, which is read
@@ -91,22 +95,22 @@ type Grant struct {
 
 // grantColumns are a Grant's, over mailbox_access aliased g.
 var grantColumns = `g.account_id, g.workspace_id, g.user_id, g.read, g.act, g.send, g.manage, g.granted_by,
-	g.created_at, g.updated_at, ` + store.CurrentGrantSQL("g.account_id", "g.user_id")
+	g.created_at, g.updated_at, g.raised_at, ` + store.CurrentGrantSQL("g.account_id", "g.user_id")
 
 func scanGrant(row rowScanner) (Grant, error) {
 	var (
-		g                Grant
-		created, updated int64
+		g                        Grant
+		created, updated, raised int64
 	)
 	err := row.Scan(&g.AccountID, &g.WorkspaceID, &g.UserID, &g.Read, &g.Act, &g.Send, &g.Manage, &g.GrantedBy,
-		&created, &updated, &g.Sealed)
+		&created, &updated, &raised, &g.Sealed)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Grant{}, ErrNoGrant
 		}
 		return Grant{}, fmt.Errorf("workspace: scan grant: %w", err)
 	}
-	g.CreatedAt, g.UpdatedAt = unix(created), unix(updated)
+	g.CreatedAt, g.UpdatedAt, g.RaisedAt = unix(created), unix(updated), unix(raised)
 	return g, nil
 }
 
@@ -299,17 +303,56 @@ func (r *Repository) SetGrant(ctx context.Context, accountID, userID string, fla
 func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID string, flags Flags, sealed *Sealed, grantedBy string,
 	check Check,
 ) (Grant, error) {
+	g, _, err := r.SetGrantFor(ctx, GrantChange{
+		AccountID: accountID, UserID: userID, Flags: flags, Sealed: sealed, GrantedBy: grantedBy, Check: check,
+	})
+	return g, err
+}
+
+// GrantChange is a change of what a person holds on a mailbox
+// (SetGrantFor).
+type GrantChange struct {
+	AccountID, UserID string
+	// Flags are exactly what the person holds after the change.
+	Flags Flags
+	// From, when set, is what the caller saw the person hold: the change is
+	// refused (ErrGrantChanged) unless the grant holds exactly that when it
+	// is written (none held is every flag off), so that a flag taken away
+	// since is never given back by a change drawn before.
+	From *Flags
+	// Sealed is the grant that gives read on a mailbox that has a key
+	// (SetGrantSealed).
+	Sealed    *Sealed
+	GrantedBy string
+	Check     Check
+	// Request is a request an extension carries for a person
+	// (store.Request): it is recorded in the same transaction, and a flag it
+	// adds is stamped with its first moment (raised_at).
+	Request *store.Request
+}
+
+// SetGrantFor is SetGrantSealed for a change that may say what it was drawn
+// from (From) and come with a request (Request); it reports whether the
+// grant changed. A flag added moves the grant's raised_at, which nothing
+// that only takes flags away moves: to now, or for a request to its first
+// moment (store.Request.Stamp).
+func (r *Repository) SetGrantFor(ctx context.Context, c GrantChange) (Grant, bool, error) {
+	accountID, userID, flags, sealed, grantedBy := c.AccountID, c.UserID, c.Flags, c.Sealed, c.GrantedBy
 	if err := flags.check(); err != nil {
-		return Grant{}, err
+		return Grant{}, false, err
 	}
 	if sealed != nil {
 		if _, err := grantEpoch(sealed.Grant); err != nil {
-			return Grant{}, err
+			return Grant{}, false, err
 		}
 	}
 	now := r.now().Unix()
-	var out Grant
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	raisedAt := c.Request.Stamp(now)
+	var (
+		out     Grant
+		changed bool
+	)
+	err := r.store.WriteRequest(ctx, c.Request, accountID, func(tx *sql.Tx) error {
 		mb, err := mailboxTx(ctx, tx, accountID)
 		if err != nil {
 			return err
@@ -317,7 +360,16 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 		if err := mb.grantable(); err != nil {
 			return err
 		}
-		if err := runCheck(tx, check); err != nil {
+		if c.From != nil {
+			drawn, err := GrantTx(ctx, tx, accountID, userID)
+			if err != nil && !errors.Is(err, ErrNoGrant) {
+				return err
+			}
+			if drawn.Flags != *c.From {
+				return ErrGrantChanged
+			}
+		}
+		if err := runCheck(tx, c.Check); err != nil {
 			return err
 		}
 		if err := RequireOpenTx(ctx, tx, mb.workspaceID); err != nil {
@@ -337,6 +389,7 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 		if err != nil && !errors.Is(err, ErrNoGrant) {
 			return err
 		}
+		newRow := errors.Is(err, ErrNoGrant)
 		if before.Read && !flags.Read {
 			if err := requireAnotherReaderTx(ctx, tx, userID, []string{accountID}); err != nil {
 				return err
@@ -346,11 +399,18 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 		if err != nil {
 			return err
 		}
+		// raised_at moves only with a flag the row did not hold: a new row,
+		// or one gaining a flag. A change that only takes flags away, or sets
+		// the same ones again, keeps it.
+		raised := newRow || added(before.Flags, flags)
+		changed = raised || before.Flags != flags || sealed != nil
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
-			  granted_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  granted_by, created_at, updated_at, raised_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
 			ON CONFLICT(account_id, user_id) DO UPDATE SET read = excluded.read, act = excluded.act, send = excluded.send,
-			  manage = excluded.manage, granted_by = excluded.granted_by, updated_at = excluded.updated_at`,
-			accountID, mb.workspaceID, userID, flags.Read, flags.Act, flags.Send, flags.Manage, grantedBy, now, now); err != nil {
+			  manage = excluded.manage, granted_by = excluded.granted_by, updated_at = excluded.updated_at,
+			  raised_at = CASE WHEN ?11 THEN excluded.raised_at ELSE mailbox_access.raised_at END`,
+			accountID, mb.workspaceID, userID, flags.Read, flags.Act, flags.Send, flags.Manage, grantedBy, now,
+			raisedAt, raised); err != nil {
 			return fmt.Errorf("workspace: set grant: %w", err)
 		}
 		if sealed != nil {
@@ -370,11 +430,16 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 		}
 		out, err = GrantTx(ctx, tx, accountID, userID)
 		return err
-	})
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: changed} })
 	if err != nil {
-		return Grant{}, err
+		return Grant{}, false, err
 	}
-	return out, nil
+	return out, changed, nil
+}
+
+// added reports whether to holds a flag from does not.
+func added(from, to Flags) bool {
+	return (to.Read && !from.Read) || (to.Act && !from.Act) || (to.Send && !from.Send) || (to.Manage && !from.Manage)
 }
 
 // Revoke takes flags away from a person's grant on a mailbox; zero drop takes
@@ -387,12 +452,28 @@ func (r *Repository) SetGrantSealed(ctx context.Context, accountID, userID strin
 // consent attempts they started on it. Losing read deletes their grants on
 // the mailbox, every epoch's, even where send or manage stay.
 func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop Flags, check Check) (Grant, error) {
+	g, _, err := r.RevokeFor(ctx, nil, accountID, userID, drop, check)
+	return g, err
+}
+
+// RevokeFor is Revoke as a request an extension carries for a person decides
+// it (store.Request), and reports whether it took anything away. A request
+// takes nothing from a grant a flag was added to at or after the second it
+// was first asked, when it would take a flag the grant holds
+// (store.ErrSetSince); a grant that holds none of what it takes, or none at
+// all, is done with nothing changed. A nil request is Revoke.
+func (r *Repository) RevokeFor(ctx context.Context, req *store.Request, accountID, userID string, drop Flags,
+	check Check,
+) (Grant, bool, error) {
 	if !drop.Any() {
 		drop = AllFlags()
 	}
 	now := r.now().Unix()
-	var out Grant
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	var (
+		out     Grant
+		changed bool
+	)
+	err := r.store.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
 		mb, err := mailboxTx(ctx, tx, accountID)
 		if err != nil {
 			return err
@@ -404,6 +485,10 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 			return err
 		}
 		before, err := GrantTx(ctx, tx, accountID, userID)
+		if req != nil && errors.Is(err, ErrNoGrant) {
+			// Nothing held: what the request takes away is gone already.
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -412,6 +497,10 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 			out = before
 			return nil
 		}
+		if req.Since() > 0 && before.RaisedAt.Unix() >= req.Since() {
+			return store.ErrSetSince
+		}
+		changed = true
 		if before.Read && !left.Read {
 			if err := requireAnotherReaderTx(ctx, tx, userID, []string{accountID}); err != nil {
 				return err
@@ -440,11 +529,11 @@ func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop 
 			out, err = GrantTx(ctx, tx, accountID, userID)
 		}
 		return err
-	})
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: changed} })
 	if err != nil {
-		return Grant{}, err
+		return Grant{}, false, err
 	}
-	return out, nil
+	return out, changed, nil
 }
 
 // GrantLinkTx gives the person who links a mailbox read, act and send on it,
@@ -464,8 +553,8 @@ func GrantLinkTx(ctx context.Context, tx *sql.Tx, accountID, workspaceID, userID
 	}
 	at := now.UTC().Unix()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
-		  granted_by, created_at, updated_at) VALUES (?, ?, ?, 1, 1, 1, 0, ?, ?, ?)`,
-		accountID, workspaceID, userID, userID, at, at); err != nil {
+		  granted_by, created_at, updated_at, raised_at) VALUES (?1, ?2, ?3, 1, 1, 1, 0, ?3, ?4, ?4, ?4)`,
+		accountID, workspaceID, userID, at); err != nil {
 		return fmt.Errorf("workspace: grant the linker: %w", err)
 	}
 	return nil
