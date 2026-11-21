@@ -646,6 +646,9 @@ var (
 // server holds no live key under is not_found, and holding one held already
 // is no error.
 func (s *Service) HoldIssuedKey(ctx context.Context, p Principal, selector string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := s.operatorHold(p); err != nil {
 		return err
 	}
@@ -686,6 +689,9 @@ func (s *Service) HoldIssuedKey(ctx context.Context, p Principal, selector strin
 // refused. A selector this server holds no key under is not_found; releasing
 // one not held is no error.
 func (s *Service) ReleaseIssuedKey(ctx context.Context, p Principal, selector string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := s.operatorHold(p); err != nil {
 		return err
 	}

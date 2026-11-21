@@ -144,6 +144,9 @@ var (
 // SetFlags marks messages read or unread, starred or not, on their mail
 // server, and records what the server says they have now.
 func (s *Service) SetFlags(ctx context.Context, p Principal, req SetFlagsRequest) (ActionResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionResult{}, err
+	}
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return ActionResult{}, err
 	}
@@ -265,6 +268,9 @@ func (s *Service) changeFlags(ctx context.Context, p Principal, a account.Accoun
 // Mail is not synced); a move back to the inbox from there — the undo of an
 // archive — takes the id the archive returned in Removed.
 func (s *Service) MoveMessages(ctx context.Context, p Principal, req MoveRequest) (ActionResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionResult{}, err
+	}
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return ActionResult{}, err
 	}
@@ -304,6 +310,9 @@ func (s *Service) MoveMessages(ctx context.Context, p Principal, req MoveRequest
 // move, not a deletion: the messages stay in the trash for as long as the
 // provider keeps them there, and can be moved back.
 func (s *Service) TrashMessages(ctx context.Context, p Principal, req TrashRequest) (ActionResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionResult{}, err
+	}
 	if err := s.authorize(p, auth.ScopeWrite); err != nil {
 		return ActionResult{}, err
 	}

@@ -158,6 +158,9 @@ const (
 // account.MaxLinksWaiting links waiting (rate_limited until the oldest
 // expires); a new one for the same provider and workspace replaces theirs.
 func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (LinkStarted, error) {
+	if err := refuseDelegated(p); err != nil {
+		return LinkStarted{}, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return LinkStarted{}, err
 	}
@@ -211,6 +214,9 @@ func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (
 // started, at most), is not_found. A console reads it when a return went
 // unanswered, and while it is finishing.
 func (s *Service) GetLink(ctx context.Context, p Principal, id string) (Link, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Link{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return Link{}, err
 	}

@@ -273,6 +273,10 @@ func fromWorkspace(err error, what string) error {
 	switch {
 	case errors.As(err, &se):
 		return err
+	case requestRefusal(err) != nil:
+		return requestRefusal(err)
+	case errors.Is(err, workspace.ErrGrantChanged):
+		return E(CodeConflict, "what that person holds on the mailbox changed since you looked; look again", err)
 	case errors.Is(err, workspace.ErrNotFound):
 		return E(CodeNotFound, "no such workspace", err)
 	case errors.Is(err, workspace.ErrNoMailbox):

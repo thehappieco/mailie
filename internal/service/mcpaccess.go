@@ -24,6 +24,9 @@ type MCPAccess struct {
 // address the server does not answer at, and whether they may send. It is the
 // same for every caller.
 func (s *Service) MCPAccess(_ context.Context, p Principal) (MCPAccess, error) {
+	if err := refuseDelegated(p); err != nil {
+		return MCPAccess{}, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return MCPAccess{}, err
 	}

@@ -73,6 +73,9 @@ const withdrawTimeout = 2 * time.Minute
 // SyncConsent reports whether the person signed in agreed to sync. A key has
 // no person to answer for.
 func (s *Service) SyncConsent(ctx context.Context, p Principal) (SyncConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SyncConsent{}, err
+	}
 	if err := s.requirePerson(p); err != nil {
 		return SyncConsent{}, err
 	}
@@ -90,21 +93,39 @@ func (s *Service) SyncConsent(ctx context.Context, p Principal) (SyncConsent, er
 // something a person does at a keyboard, not something a key does on their
 // behalf.
 func (s *Service) GrantSyncConsent(ctx context.Context, p Principal, version string) (SyncConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SyncConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return SyncConsent{}, err
+	}
+	c, _, err := s.grantSyncConsent(ctx, p, version, nil)
+	if err != nil {
+		return SyncConsent{}, err
+	}
+	return s.presentConsent(c), nil
+}
+
+// grantSyncConsent is GrantSyncConsent's act, for a person signed in or a
+// request an extension carries for one (req: recorded in the agreement's
+// write, stamped with its first moment), and reports whether it changed
+// anything.
+func (s *Service) grantSyncConsent(ctx context.Context, p Principal, version string, req *store.Request) (store.SyncConsent, bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.SyncConsent{}, false, err
 	}
 	if version != s.consent.Sync {
 		// A console showing an older text, or none: the person has not
 		// seen what they would be agreeing to.
-		return SyncConsent{}, errNotCurrentText(s.consent.Sync)
+		return store.SyncConsent{}, false, errNotCurrentText(s.consent.Sync)
 	}
-	c, owned, err := s.store.GrantSyncConsent(ctx, p.UserID, version)
+	c, owned, changed, err := s.store.GrantSyncConsentFor(ctx, req, p.UserID, version)
 	if err != nil {
-		return SyncConsent{}, fromConsent(err, "recording the sync consent failed")
+		return store.SyncConsent{}, false, fromConsent(err, "recording the sync consent failed")
 	}
 	s.log.Info("sync consent given", "user", p.UserID, "version", version, "accounts", len(owned))
 	s.reconcile(owned...)
-	return s.presentConsent(c), nil
+	return c, changed, nil
 }
 
 // WithdrawSyncConsent takes the signed-in person's consent back: the
@@ -119,12 +140,29 @@ func (s *Service) GrantSyncConsent(ctx context.Context, p Principal, version str
 // of storing survives. Withdrawing when there was no consent deletes
 // whatever a previous withdrawal might have missed, and is not an error.
 func (s *Service) WithdrawSyncConsent(ctx context.Context, p Principal) (SyncConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SyncConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return SyncConsent{}, err
 	}
-	owned, err := s.store.WithdrawSyncConsent(ctx, p.UserID)
+	if _, err := s.withdrawSyncConsent(ctx, p, nil); err != nil {
+		return SyncConsent{}, err
+	}
+	return s.presentConsent(store.SyncConsent{}), nil
+}
+
+// withdrawSyncConsent is WithdrawSyncConsent's act, for a person signed in
+// or a request an extension carries for one (req: recorded in the
+// withdrawal's write, and refused for a consent agreed at or after its first
+// second), and reports whether a consent stood.
+func (s *Service) withdrawSyncConsent(ctx context.Context, p Principal, req *store.Request) (bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return false, err
+	}
+	owned, changed, err := s.store.WithdrawSyncConsentFor(ctx, req, p.UserID)
 	if err != nil {
-		return SyncConsent{}, fromConsent(err, "withdrawing the sync consent failed")
+		return false, fromConsent(err, "withdrawing the sync consent failed")
 	}
 	s.log.Info("sync consent withdrawn; index deleted", "user", p.UserID, "accounts", len(owned))
 	s.reconcile(owned...)
@@ -134,7 +172,7 @@ func (s *Service) WithdrawSyncConsent(ctx context.Context, p Principal) (SyncCon
 		s.noticesChanged()
 	}
 	s.compact(ctx)
-	return s.presentConsent(store.SyncConsent{}), nil
+	return changed, nil
 }
 
 // Consent to actions.
@@ -182,6 +220,9 @@ type ActionsConsentRequest struct {
 // ActionsConsent reports whether the person signed in allowed actions. A key
 // has no person to answer for.
 func (s *Service) ActionsConsent(ctx context.Context, p Principal) (ActionsConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionsConsent{}, err
+	}
 	if err := s.requirePerson(p); err != nil {
 		return ActionsConsent{}, err
 	}
@@ -196,18 +237,36 @@ func (s *Service) ActionsConsent(ctx context.Context, p Principal) (ActionsConse
 // change their mailboxes when they ask. A signed-in person and nobody else,
 // as with sync.
 func (s *Service) GrantActionsConsent(ctx context.Context, p Principal, version string) (ActionsConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionsConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return ActionsConsent{}, err
 	}
-	if version != s.consent.Actions {
-		return ActionsConsent{}, errNotCurrentText(s.consent.Actions)
-	}
-	c, err := s.store.GrantActionsConsent(ctx, p.UserID, version)
+	c, _, err := s.grantActionsConsent(ctx, p, version, nil)
 	if err != nil {
-		return ActionsConsent{}, fromConsent(err, "recording the actions consent failed")
+		return ActionsConsent{}, err
+	}
+	return s.presentActionsConsent(c), nil
+}
+
+// grantActionsConsent is GrantActionsConsent's act, for a person signed in or a
+// request an extension carries for one (req: recorded in the agreement's
+// write, stamped with its first moment), and reports whether it changed
+// anything.
+func (s *Service) grantActionsConsent(ctx context.Context, p Principal, version string, req *store.Request) (store.ActionsConsent, bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.ActionsConsent{}, false, err
+	}
+	if version != s.consent.Actions {
+		return store.ActionsConsent{}, false, errNotCurrentText(s.consent.Actions)
+	}
+	c, changed, err := s.store.GrantActionsConsentFor(ctx, req, p.UserID, version)
+	if err != nil {
+		return store.ActionsConsent{}, false, fromConsent(err, "recording the actions consent failed")
 	}
 	s.log.Info("actions consent given", "user", p.UserID, "version", version)
-	return s.presentActionsConsent(c), nil
+	return c, changed, nil
 }
 
 // WithdrawActionsConsent takes the signed-in person's consent to actions
@@ -217,15 +276,33 @@ func (s *Service) GrantActionsConsent(ctx context.Context, p Principal, version 
 // part-way through its folders; a command already on the wire finishes.
 // Nothing is deleted.
 func (s *Service) WithdrawActionsConsent(ctx context.Context, p Principal) (ActionsConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return ActionsConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return ActionsConsent{}, err
 	}
-	c, err := s.store.WithdrawActionsConsent(ctx, p.UserID)
+	c, _, err := s.withdrawActionsConsent(ctx, p, nil)
 	if err != nil {
-		return ActionsConsent{}, fromConsent(err, "withdrawing the actions consent failed")
+		return ActionsConsent{}, err
+	}
+	return s.presentActionsConsent(c), nil
+}
+
+// withdrawActionsConsent is WithdrawActionsConsent's act, for a person signed in
+// or a request an extension carries for one (req: recorded in the
+// withdrawal's write, and refused for a consent agreed at or after its first
+// second), and reports whether a consent stood.
+func (s *Service) withdrawActionsConsent(ctx context.Context, p Principal, req *store.Request) (store.ActionsConsent, bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.ActionsConsent{}, false, err
+	}
+	c, changed, err := s.store.WithdrawActionsConsentFor(ctx, req, p.UserID)
+	if err != nil {
+		return store.ActionsConsent{}, false, fromConsent(err, "withdrawing the actions consent failed")
 	}
 	s.log.Info("actions consent withdrawn", "user", p.UserID)
-	return s.presentActionsConsent(c), nil
+	return c, changed, nil
 }
 
 func (s *Service) presentActionsConsent(c store.ActionsConsent) ActionsConsent {
@@ -283,6 +360,9 @@ type SendConsentRequest struct {
 // SendConsent reports whether the person signed in allowed sending. A key
 // has no person to answer for.
 func (s *Service) SendConsent(ctx context.Context, p Principal) (SendConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SendConsent{}, err
+	}
 	if err := s.requirePerson(p); err != nil {
 		return SendConsent{}, err
 	}
@@ -297,18 +377,36 @@ func (s *Service) SendConsent(ctx context.Context, p Principal) (SendConsent, er
 // mail from their mailboxes when they ask. A signed-in person and nobody
 // else, as with the other consents.
 func (s *Service) GrantSendConsent(ctx context.Context, p Principal, version string) (SendConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SendConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return SendConsent{}, err
 	}
-	if version != s.consent.Send {
-		return SendConsent{}, errNotCurrentText(s.consent.Send)
-	}
-	c, err := s.store.GrantSendConsent(ctx, p.UserID, version)
+	c, _, err := s.grantSendConsent(ctx, p, version, nil)
 	if err != nil {
-		return SendConsent{}, fromConsent(err, "recording the send consent failed")
+		return SendConsent{}, err
+	}
+	return s.presentSendConsent(c), nil
+}
+
+// grantSendConsent is GrantSendConsent's act, for a person signed in or a
+// request an extension carries for one (req: recorded in the agreement's
+// write, stamped with its first moment), and reports whether it changed
+// anything.
+func (s *Service) grantSendConsent(ctx context.Context, p Principal, version string, req *store.Request) (store.SendConsent, bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.SendConsent{}, false, err
+	}
+	if version != s.consent.Send {
+		return store.SendConsent{}, false, errNotCurrentText(s.consent.Send)
+	}
+	c, changed, err := s.store.GrantSendConsentFor(ctx, req, p.UserID, version)
+	if err != nil {
+		return store.SendConsent{}, false, fromConsent(err, "recording the send consent failed")
 	}
 	s.log.Info("send consent given", "user", p.UserID, "version", version)
-	return s.presentSendConsent(c), nil
+	return c, changed, nil
 }
 
 // WithdrawSendConsent takes the signed-in person's consent to sending back.
@@ -317,15 +415,33 @@ func (s *Service) GrantSendConsent(ctx context.Context, p Principal, version str
 // not even one already accepted and waiting; one already talking to the
 // server finishes. Nothing is deleted.
 func (s *Service) WithdrawSendConsent(ctx context.Context, p Principal) (SendConsent, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SendConsent{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return SendConsent{}, err
 	}
-	c, err := s.store.WithdrawSendConsent(ctx, p.UserID)
+	c, _, err := s.withdrawSendConsent(ctx, p, nil)
 	if err != nil {
-		return SendConsent{}, fromConsent(err, "withdrawing the send consent failed")
+		return SendConsent{}, err
+	}
+	return s.presentSendConsent(c), nil
+}
+
+// withdrawSendConsent is WithdrawSendConsent's act, for a person signed in
+// or a request an extension carries for one (req: recorded in the
+// withdrawal's write, and refused for a consent agreed at or after its first
+// second), and reports whether a consent stood.
+func (s *Service) withdrawSendConsent(ctx context.Context, p Principal, req *store.Request) (store.SendConsent, bool, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.SendConsent{}, false, err
+	}
+	c, changed, err := s.store.WithdrawSendConsentFor(ctx, req, p.UserID)
+	if err != nil {
+		return store.SendConsent{}, false, fromConsent(err, "withdrawing the send consent failed")
 	}
 	s.log.Info("send consent withdrawn", "user", p.UserID)
-	return s.presentSendConsent(c), nil
+	return c, changed, nil
 }
 
 func (s *Service) presentSendConsent(c store.SendConsent) SendConsent {
@@ -372,6 +488,9 @@ type MailboxSyncRequest struct {
 //
 // Whoever does not see the mailbox is told it does not exist.
 func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID string, req MailboxSyncRequest) (AccountSync, error) {
+	if err := refuseDelegated(p); err != nil {
+		return AccountSync{}, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AccountSync{}, err
 	}
@@ -401,60 +520,90 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	case a.OwnerUserID != "":
 		return s.liftPersonalHold(ctx, p, a, on, req.Version)
 	default:
-		if err := requireSession(p); err != nil {
+		if _, err := s.teamSync(ctx, p, a, on, req.Version, nil); err != nil {
 			return AccountSync{}, err
 		}
-		if on && req.Version != s.consent.Sync {
-			return AccountSync{}, errNotCurrentText(s.consent.Sync)
-		}
-		if !on {
-			req.Version = ""
-		}
-		check = func(tx *sql.Tx) error {
-			me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
-			switch {
-			case err != nil:
-				return errNoAccount
-			case !adminOf(me):
-				return errTeamSync
-			case !on:
-				return nil
-			}
-			// What it would store nobody could read, and nobody can be
-			// given read on it: it can only be removed, or turned off.
-			// Refused too for a consent migration 0011 bound to its
-			// linker, which stays bound, so that deleting them still
-			// deletes the index they alone read.
-			readable, err := workspace.HasReaderTx(ctx, tx, a.ID)
-			switch {
-			case err != nil:
-				return E(CodeInternal, "switching sync failed", err)
-			case !readable:
-				return errNoReaderSync
-			}
+		return s.currentSync(ctx, a.ID)
+	}
+	if _, err := s.switchSync(ctx, p, a, on, req.Version, check, nil); err != nil {
+		return AccountSync{}, err
+	}
+	return s.currentSync(ctx, a.ID)
+}
+
+// teamSync is SetMailboxSync for a team mailbox: an owner or an admin of the
+// team, a person signed in or a request an extension carries for one
+// (sreq: recorded in the switch's write; an agreement stamped with its first
+// moment, and a turn-off refused for an agreement given at or after its
+// first second), gives or withdraws the team's consent, on, to the current
+// sync text, and only while someone can read it. It reports what changed.
+func (s *Service) teamSync(ctx context.Context, p Principal, a account.Account, on bool, version string,
+	sreq *store.Request,
+) (store.MailboxSyncSwitch, error) {
+	if err := requireAPerson(p); err != nil {
+		return store.MailboxSyncSwitch{}, err
+	}
+	if on && version != s.consent.Sync {
+		return store.MailboxSyncSwitch{}, errNotCurrentText(s.consent.Sync)
+	}
+	if !on {
+		version = ""
+	}
+	check := func(tx *sql.Tx) error {
+		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
+		switch {
+		case err != nil:
+			return errNoAccount
+		case !adminOf(me):
+			return errTeamSync
+		case !on:
 			return nil
 		}
-		// On and off alike; the write runs check again.
-		if err := s.fresh(ctx, p, FreshAct{Kind: FreshTeamSync, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
-			return AccountSync{}, err
+		// What it would store nobody could read, and nobody can be
+		// given read on it: it can only be removed, or turned off.
+		// Refused too for a consent migration 0011 bound to its
+		// linker, which stays bound, so that deleting them still
+		// deletes the index they alone read.
+		readable, err := workspace.HasReaderTx(ctx, tx, a.ID)
+		switch {
+		case err != nil:
+			return E(CodeInternal, "switching sync failed", err)
+		case !readable:
+			return errNoReaderSync
 		}
-		if err := s.precheck(ctx, check); err != nil {
-			return AccountSync{}, err
-		}
+		return nil
 	}
-	switched, err := s.store.SetMailboxSync(ctx, a.ID, on, p.Actor(), req.Version, check)
+	// On and off alike; the write runs check again.
+	if err := s.fresh(ctx, p, FreshAct{Kind: FreshTeamSync, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
+		return store.MailboxSyncSwitch{}, err
+	}
+	if err := s.precheck(ctx, check); err != nil {
+		return store.MailboxSyncSwitch{}, err
+	}
+	return s.switchSync(ctx, p, a, on, version, check, sreq)
+}
+
+// switchSync writes a team's or an operator mailbox's own sync switched on
+// or off, after check (re-run in the write), with a request's record when
+// sreq is one, and tells the engine and the readers what changed.
+func (s *Service) switchSync(ctx context.Context, p Principal, a account.Account, on bool, version string,
+	check func(*sql.Tx) error, sreq *store.Request,
+) (store.MailboxSyncSwitch, error) {
+	switched, err := s.store.SetMailboxSyncFor(ctx, sreq, a.ID, on, p.Actor(), version, check)
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
+	case requestRefusal(err) != nil:
+		return store.MailboxSyncSwitch{}, requestRefusal(err)
 	case errors.Is(err, store.ErrNoMailboxConsent):
-		return AccountSync{}, E(CodeNotFound, "no such account", err)
+		return store.MailboxSyncSwitch{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
-		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
+		return store.MailboxSyncSwitch{}, E(CodeInternal, "switching sync failed", err)
 	}
 	if switched.Changed {
 		s.log.Info("mailbox sync switched", "account", a.ID, "workspace", a.WorkspaceID, "on", on,
-			"by", p.Actor(), "version", req.Version, "readers_told", len(switched.Told))
+			"by", p.Actor(), "version", version, "readers_told", len(switched.Told))
 		s.reconcile(a.ID)
 		if !on {
 			s.compact(ctx)
@@ -463,7 +612,7 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	if len(switched.Told) > 0 {
 		s.noticesChanged()
 	}
-	return s.currentSync(ctx, a.ID)
+	return switched, nil
 }
 
 // liftPersonalHold is SetMailboxSync for a personal mailbox: its person turns
@@ -471,7 +620,7 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 // (StopMailboxSync), and nothing else is theirs to switch here: a pause is
 // ended by a resume.
 func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.Account, on bool, version string) (AccountSync, error) {
-	if !on || !p.IsSession() || p.UserID != a.OwnerUserID {
+	if !on || !p.IsPerson() || p.UserID != a.OwnerUserID {
 		return AccountSync{}, E(CodeBadRequest,
 			"a personal mailbox syncs under its person's own consent, which they turn on or off themselves", nil)
 	}
@@ -479,26 +628,46 @@ func (s *Service) liftPersonalHold(ctx context.Context, p Principal, a account.A
 		return AccountSync{}, E(CodeBadRequest,
 			"a personal mailbox syncs under its person's own consent, with no text to agree to here; leave version out", nil)
 	}
-	lifted, err := s.store.LiftSyncHold(ctx, a.ID, nil)
+	if _, err := s.liftHold(ctx, p, a, nil); err != nil {
+		return AccountSync{}, err
+	}
+	return s.currentSync(ctx, a.ID)
+}
+
+// liftHold lifts the hold the operator's turn-off put on a personal
+// mailbox, for its person: signed in, or a request an extension carries for
+// them (req, recorded in the write, which checks again that they may still
+// act, a mailbox not held included). It reports whether a hold was lifted.
+func (s *Service) liftHold(ctx context.Context, p Principal, a account.Account, req *store.Request) (bool, error) {
+	if !p.IsPerson() || a.OwnerUserID == "" || p.UserID != a.OwnerUserID {
+		return false, errLiftNotYours
+	}
+	lifted, err := s.store.LiftSyncHoldFor(ctx, req, a.ID, nil)
 	switch {
+	case requestRefusal(err) != nil:
+		return false, requestRefusal(err)
 	case errors.Is(err, store.ErrNoSuchMailbox):
-		return AccountSync{}, E(CodeNotFound, "no such account", err)
+		return false, E(CodeNotFound, "no such account", err)
 	case err != nil:
-		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
+		return false, E(CodeInternal, "switching sync failed", err)
 	}
 	if lifted {
 		s.log.Info("a personal mailbox's sync turned on again by its person after the operator's turn-off",
 			"account", a.ID, "by", p.Actor())
 		s.reconcile(a.ID)
 	}
-	return s.currentSync(ctx, a.ID)
+	return lifted, nil
 }
+
+// errLiftNotYours is a hold lifted by anyone but its personal mailbox's
+// person.
+var errLiftNotYours = E(CodeNotAuthorized, "only its person turns a personal mailbox's sync on again", nil)
 
 // removedTeamMailbox reads a removed team mailbox an active owner of its
 // team asks about: the one thing they still do to it is turn its sync off,
 // deleting the index it keeps.
 func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string) (account.Account, bool) {
-	if !p.IsSession() || s.workspaces == nil || s.store == nil {
+	if !p.IsPerson() || s.workspaces == nil || s.store == nil {
 		return account.Account{}, false
 	}
 	a, err := s.accounts.Repo().GetRemoved(ctx, id)
@@ -568,6 +737,9 @@ func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Acc
 // withholds teams it stops a team's mailbox all the same: it uses nothing of
 // the team, and deletes what is the operator's to erase.
 func (s *Service) StopMailboxSync(ctx context.Context, p Principal, accountID string) (AccountSync, error) {
+	if err := refuseDelegated(p); err != nil {
+		return AccountSync{}, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AccountSync{}, err
 	}
@@ -637,13 +809,13 @@ var (
 	errNoReaderSync = E(CodeConflict,
 		"nobody in the team can read this mailbox, and read passes only from someone who reads it, so its sync "+
 			"cannot be turned on; remove the mailbox and link it again, or turn its sync off to delete what is "+
-			"still indexed", nil)
+			"still indexed", ErrNoReader)
 )
 
 // requirePerson guards what answers for a person: a session. A key belongs
 // to a workspace and acts as no person.
 func (s *Service) requirePerson(p Principal) error {
-	if !p.IsSession() || p.UserID == "" {
+	if !p.IsPerson() || p.UserID == "" {
 		return E(CodeNotAuthorized, "this is a person's setting; an API key has no person to answer for", nil)
 	}
 	return nil
@@ -713,10 +885,13 @@ func (s *Service) presentConsent(c store.SyncConsent) SyncConsent {
 // errNotCurrentText refuses a consent to another revision than current: the
 // console showed another text, or none.
 func errNotCurrentText(current string) error {
-	return Ef(CodeBadRequest, nil, "consent must name the current text version, %s; reload and review it", current)
+	return Ef(CodeBadRequest, ErrNotCurrentText, "consent must name the current text version, %s; reload and review it", current)
 }
 
 func fromConsent(err error, what string) error {
+	if rerr := requestRefusal(err); rerr != nil {
+		return rerr
+	}
 	if errors.Is(err, store.ErrNoSuchUser) {
 		// The session authenticated a moment ago; a person gone since is
 		// answered as a revoked session is.

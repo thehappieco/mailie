@@ -34,6 +34,9 @@ var providerOrder = []string{
 // Providers says which providers this caller can connect and how, so a client
 // never offers an option the server would then refuse.
 func (s *Service) Providers(_ context.Context, p Principal) ([]Provider, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
 	}
@@ -79,6 +82,10 @@ func (s *Service) describeProvider(p Principal, id string) Provider {
 func (s *Service) flowsFor(p Principal, kind provider.Kind) []account.FlowKind {
 	avail := s.accounts.Availability(kind)
 	var out []account.FlowKind
+	if p.IsDelegated() {
+		// A person acting through an extension starts no consent.
+		return nil
+	}
 	if p.IsSession() {
 		if avail.Web {
 			out = append(out, account.FlowWeb)

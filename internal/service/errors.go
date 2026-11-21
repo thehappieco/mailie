@@ -73,12 +73,13 @@ func (e *Error) Unwrap() error { return e.Err }
 // The common errors below are returned with the failure that led to them
 // attached, so a log can say why an account needs re-authorisation rather
 // than only that it does. Attaching a cause makes a new value, and without
-// this errors.Is(err, ErrNeedsReauth) would stop recognising it. Only a
-// target with no cause of its own matches, which is what the common errors
-// are.
+// this errors.Is(err, ErrNeedsReauth) would stop recognising it. A target
+// with no cause of its own matches whatever e's cause; one with a cause, a
+// refusal's sentinel (refusals.go), matches an e whose cause holds it.
 func (e *Error) Is(target error) bool {
 	t, ok := target.(*Error)
-	return ok && t.Err == nil && t.Code == e.Code && t.Message == e.Message && t.Retry == e.Retry
+	return ok && t.Code == e.Code && t.Message == e.Message && t.Retry == e.Retry &&
+		(t.Err == nil || errors.Is(e.Err, t.Err))
 }
 
 // E builds an error.

@@ -98,6 +98,9 @@ type DeletedUser struct {
 // bound to their consent included, and stays disabled whatever the extension
 // does next: a disable here stands over a suspension.
 func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserRequest) (DisabledUser, error) {
+	if err := refuseDelegated(p); err != nil {
+		return DisabledUser{}, err
+	}
 	user, err := s.closing(ctx, p, req.Email)
 	if err != nil {
 		return DisabledUser{}, err
@@ -159,6 +162,9 @@ func (s *Service) DisableUser(ctx context.Context, p Principal, req CloseUserReq
 // An address with no account but with invites — somebody invited who never
 // signed up — has those invites deleted.
 func (s *Service) DeleteUser(ctx context.Context, p Principal, req CloseUserRequest) (DeletedUser, error) {
+	if err := refuseDelegated(p); err != nil {
+		return DeletedUser{}, err
+	}
 	user, err := s.closing(ctx, p, req.Email)
 	var missing *Error
 	if errors.As(err, &missing) && missing.Code == CodeNotFound {

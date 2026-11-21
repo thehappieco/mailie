@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/thehappieco/mailie/internal/account"
@@ -82,7 +83,12 @@ type FreshAct struct {
 // go on. A *service.Error is the caller's answer as it is; a context's end
 // is passed on; any other error says the directory could not be asked, and
 // the caller is told to try again shortly (internal, "upstream: …",
-// Retry-After). It is called outside every write, and may write.
+// Retry-After), with ErrFreshUnconfirmed as its cause. A hook's own *Error
+// carries ErrActorInactive when the actor may no longer act where it asked,
+// and ErrFreshUnconfirmed when it could not confirm the act now, so that
+// RefusalOf names either for an extension. It is called outside every write,
+// and may write. A person acting through an extension (ActFor) is asked
+// about as one signed in is.
 type Freshness interface {
 	Fresh(ctx context.Context, act FreshAct) error
 }
@@ -99,7 +105,7 @@ const errFreshUpstream = "upstream: this server could not confirm with the direc
 // fresh asks the freshness hook about an act by p, when there is one and p
 // is a person signed in; nil otherwise. Never inside a write.
 func (s *Service) fresh(ctx context.Context, p Principal, act FreshAct) error {
-	if s.freshness == nil || !p.IsSession() {
+	if s.freshness == nil || !p.IsPerson() {
 		return nil
 	}
 	act.ActorID = p.UserID
@@ -113,13 +119,16 @@ func (s *Service) fresh(ctx context.Context, p Principal, act FreshAct) error {
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return err
 	default:
-		return &Error{Code: CodeInternal, Message: errFreshUpstream, Retry: freshRetry, Err: err}
+		// Typed for an extension (RefusalOf): fresh_unconfirmed, the hook's
+		// own error kept beside it for the log.
+		return &Error{Code: CodeInternal, Message: errFreshUpstream, Retry: freshRetry,
+			Err: fmt.Errorf("%w: %w", ErrFreshUnconfirmed, err)}
 	}
 }
 
 // asksFresh reports whether an act by p asks the freshness hook: a person
 // signed in, with a hook.
-func (s *Service) asksFresh(p Principal) bool { return s.freshness != nil && p.IsSession() }
+func (s *Service) asksFresh(p Principal) bool { return s.freshness != nil && p.IsPerson() }
 
 // teamMailbox reports whether a mailbox is a team's: neither a person's nor
 // the operator's.

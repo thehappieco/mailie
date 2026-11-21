@@ -368,6 +368,9 @@ func (s *Service) Login(ctx context.Context, req LoginRequest, userAgent string)
 // changing the password needs. A session alone gets nothing: the wrap is
 // answered only to the auth key verified in this request.
 func (s *Service) BeginPasswordChange(ctx context.Context, p Principal, req PasswordBeginRequest) (PasswordBegin, error) {
+	if err := refuseDelegated(p); err != nil {
+		return PasswordBegin{}, err
+	}
 	if err := s.personalSecrets(p); err != nil {
 		return PasswordBegin{}, err
 	}
@@ -389,6 +392,9 @@ func (s *Service) BeginPasswordChange(ctx context.Context, p Principal, req Pass
 // included, and answers the session this browser goes on with; a sign-in's
 // re-derivation ends nothing, and answers none (rotated false).
 func (s *Service) FinishPasswordChange(ctx context.Context, p Principal, req PasswordFinishRequest, userAgent string) (Session, bool, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Session{}, false, err
+	}
 	if err := s.personalSecrets(p); err != nil {
 		return Session{}, false, err
 	}
@@ -458,6 +464,9 @@ func (s *Service) FinishRecovery(ctx context.Context, req RecoverFinishRequest) 
 // auth key verified in the same request: a session alone, even right after
 // its sign-in, sets no secret of its person's.
 func (s *Service) ReplaceRecovery(ctx context.Context, p Principal, req RecoveryRequest) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := s.personalSecrets(p); err != nil {
 		return err
 	}
@@ -476,6 +485,9 @@ func (s *Service) ReplaceRecovery(ctx context.Context, p Principal, req Recovery
 // StepUp proves the caller's session's own person again, with their auth
 // key, and refreshes that session's step-up time, and no other's.
 func (s *Service) StepUp(ctx context.Context, p Principal, req StepUpRequest) (StepUp, error) {
+	if err := refuseDelegated(p); err != nil {
+		return StepUp{}, err
+	}
 	if err := s.personalSecrets(p); err != nil {
 		return StepUp{}, err
 	}
@@ -493,6 +505,9 @@ func (s *Service) StepUp(ctx context.Context, p Principal, req StepUpRequest) (S
 // same budget as a sign-in that types the address. Empty for a key, which has
 // no person and reaches none of them.
 func (s *Service) SessionAddress(ctx context.Context, p Principal) (string, error) {
+	if err := refuseDelegated(p); err != nil {
+		return "", err
+	}
 	if !p.IsSession() {
 		return "", nil
 	}
@@ -556,6 +571,9 @@ func (s *Service) personalSecrets(p Principal) error {
 
 // Me describes the signed-in caller and the session they are using.
 func (s *Service) Me(ctx context.Context, p Principal) (Me, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Me{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return Me{}, err
 	}
@@ -579,6 +597,9 @@ func (s *Service) Me(ctx context.Context, p Principal) (Me, error) {
 // SignOut ends the caller's session, or with everywhere every session the
 // caller has on any device.
 func (s *Service) SignOut(ctx context.Context, p Principal, req SignOutRequest) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := requireSession(p); err != nil {
 		return err
 	}
@@ -600,6 +621,9 @@ func (s *Service) SignOut(ctx context.Context, p Principal, req SignOutRequest) 
 // theirs: it is changed where they sign in, and reaches this server at their
 // next sign-in.
 func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileRequest) (User, error) {
+	if err := refuseDelegated(p); err != nil {
+		return User{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return User{}, err
 	}
@@ -625,6 +649,9 @@ func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileReq
 // it (auth.SignUp); anyone else's adds an existing account to the team.
 // Where people sign in only through an extension, nobody invites anyone.
 func (s *Service) CreateInvite(ctx context.Context, p Principal, req InviteRequest) (Invite, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Invite{}, err
+	}
 	if err := s.passwordsInUse(); err != nil {
 		return Invite{}, err
 	}

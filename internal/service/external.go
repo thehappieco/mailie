@@ -337,6 +337,9 @@ func (s *Service) PinIdentityKey(ctx context.Context, issuer, subject, keyID str
 //
 // What an extension of internal/app uses; no transport calls it.
 func (s *Service) MarkExternalStepUp(ctx context.Context, p Principal) (time.Time, error) {
+	if err := refuseDelegated(p); err != nil {
+		return time.Time{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return time.Time{}, err
 	}
@@ -381,6 +384,9 @@ type ExternalStepUpProof struct {
 //
 // What an extension of internal/app uses; no transport calls it.
 func (s *Service) ExternalStepUp(ctx context.Context, p Principal, proof ExternalStepUpProof) (time.Time, error) {
+	if err := refuseDelegated(p); err != nil {
+		return time.Time{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return time.Time{}, err
 	}

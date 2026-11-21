@@ -78,6 +78,9 @@ const maxKeyName = 120
 // included: they are part of the answer to "what could have reached this
 // mailbox".
 func (s *Service) ListAPIKeys(ctx context.Context, p Principal) ([]APIKey, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.authorizeKeyAdmin(p); err != nil {
 		return nil, err
 	}
@@ -100,6 +103,9 @@ func (s *Service) ListAPIKeys(ctx context.Context, p Principal) ([]APIKey, error
 // accounts can only issue keys restricted to some of those two; an empty list
 // means every account, so it cannot issue one of those at all.
 func (s *Service) CreateAPIKey(ctx context.Context, p Principal, req CreateAPIKeyRequest) (CreatedAPIKey, error) {
+	if err := refuseDelegated(p); err != nil {
+		return CreatedAPIKey{}, err
+	}
 	if err := s.authorizeKeyAdmin(p); err != nil {
 		return CreatedAPIKey{}, err
 	}
@@ -161,6 +167,9 @@ func (s *Service) CreateAPIKey(ctx context.Context, p Principal, req CreateAPIKe
 // RevokeAPIKey revokes a key, an instance key or a workspace's. Revoking one
 // already revoked is not an error.
 func (s *Service) RevokeAPIKey(ctx context.Context, p Principal, prefix string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := s.authorizeKeyAdmin(p); err != nil {
 		return err
 	}

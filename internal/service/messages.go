@@ -232,6 +232,9 @@ var (
 
 // SearchMessages lists indexed messages matching req, newest first.
 func (s *Service) SearchMessages(ctx context.Context, p Principal, req SearchRequest) (MessagePage, error) {
+	if err := refuseDelegated(p); err != nil {
+		return MessagePage{}, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return MessagePage{}, err
 	}
@@ -412,6 +415,9 @@ func decodeCursor(s string) (store.Cursor, bool) {
 // GetMessage returns a message with its body, fetched from the mail server
 // now and not kept. It never marks the message as read.
 func (s *Service) GetMessage(ctx context.Context, p Principal, req GetMessageRequest) (Message, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Message{}, err
+	}
 	format, maxBytes, err := parseBodyRequest(req)
 	if err != nil {
 		return Message{}, err
@@ -533,6 +539,9 @@ func parseBodyRequest(req GetMessageRequest) (format string, maxBytes int64, err
 
 // GetRaw returns a message exactly as the mail server holds it.
 func (s *Service) GetRaw(ctx context.Context, p Principal, id int64) (Download, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Download{}, err
+	}
 	a, row, err := s.readableMessage(ctx, p, id)
 	if err != nil {
 		return Download{}, err
@@ -616,6 +625,9 @@ func (s *Service) readsStill(ctx context.Context, p Principal, accountID string)
 // GetAttachment returns one part of a message, named by its IMAP section,
 // with its transfer encoding undone.
 func (s *Service) GetAttachment(ctx context.Context, p Principal, id int64, path string) (Download, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Download{}, err
+	}
 	a, row, info, err := s.attachmentPart(ctx, p, id, path)
 	if err != nil {
 		return Download{}, err
@@ -649,6 +661,9 @@ type InlineAttachment struct {
 // mailbox's download quota nothing. Nothing is kept: the spooled section
 // goes before this returns, and the bytes are the caller's.
 func (s *Service) GetAttachmentInline(ctx context.Context, p Principal, id int64, path string, maxBytes int64) (InlineAttachment, error) {
+	if err := refuseDelegated(p); err != nil {
+		return InlineAttachment{}, err
+	}
 	switch {
 	case maxBytes == 0:
 		maxBytes = MaxInlineAttachment

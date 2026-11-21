@@ -36,7 +36,7 @@ import (
 // that offers teams again finds them as they were.
 
 // errTeamsWithheld is a team asked to be used where teams are withheld.
-var errTeamsWithheld = E(CodeNotAuthorized, "this server does not offer team workspaces yet", nil)
+var errTeamsWithheld = E(CodeNotAuthorized, "this server does not offer team workspaces yet", ErrTeamWithheld)
 
 // teamWithheld refuses a team where teams are withheld.
 func (s *Service) teamWithheld(w workspace.Workspace) error {

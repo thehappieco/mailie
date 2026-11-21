@@ -76,6 +76,9 @@ type StorageTotal struct {
 // which are theirs to count. workspaceID narrows to one workspace the caller
 // reaches; empty is every one.
 func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) (Storage, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Storage{}, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return Storage{}, err
 	}

@@ -28,12 +28,18 @@ import (
 // used until ReopenWorkspace. Closing a closed team is not an error. It
 // answers the team as the operator lists it, without its counts.
 func (s *Service) CloseWorkspace(ctx context.Context, p Principal, id string) (Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Workspace{}, err
+	}
 	return s.closeLocal(ctx, p, id, true)
 }
 
 // ReopenWorkspace reopens a local team the operator closed, as it was.
 // Reopening an open team is not an error.
 func (s *Service) ReopenWorkspace(ctx context.Context, p Principal, id string) (Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Workspace{}, err
+	}
 	return s.closeLocal(ctx, p, id, false)
 }
 

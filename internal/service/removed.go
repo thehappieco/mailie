@@ -81,7 +81,7 @@ var (
 	errOperatorNeverRecovers = E(CodeNotAuthorized,
 		"the operator deletes a person's or a team's removed mailbox for good, and never recovers it; "+
 			"its owners do", nil)
-	errNotRemoved = E(CodeConflict, "this mailbox is not removed; remove it first", nil)
+	errNotRemoved = E(CodeConflict, "this mailbox is not removed; remove it first", ErrNotRemoved)
 )
 
 // errRemovedDuplicate is an address linked again where it is kept removed.
@@ -99,6 +99,9 @@ func errRemovedDuplicate(err error) error {
 // removal first: for its owners — a personal workspace's person, a team's
 // active owners — and for the operator, any workspace's.
 func (s *Service) ListRemovedMailboxes(ctx context.Context, p Principal, workspaceID string) ([]RemovedMailbox, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return nil, err
 	}
@@ -155,24 +158,44 @@ func (s *Service) removedScope(ctx context.Context, p Principal, workspaceID str
 // conflict, in a closed team, once its 30 days are over, and for a team
 // mailbox nobody who could read it is left to read.
 func (s *Service) RecoverAccount(ctx context.Context, p Principal, id string) (Account, error) {
-	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+	if err := refuseDelegated(p); err != nil {
 		return Account{}, err
+	}
+	if err := s.recoverAccount(ctx, p, id, nil); err != nil {
+		return Account{}, err
+	}
+	recovered, err := s.accounts.Repo().Get(ctx, id)
+	switch {
+	case errors.Is(err, account.ErrNotFound):
+		// Removed again, or deleted for good, since it was recovered.
+		return Account{}, errNoAccount
+	case err != nil:
+		return Account{}, E(CodeInternal, "reading the recovered mailbox failed", err)
+	}
+	return s.present(ctx, p, recovered)[0], nil
+}
+
+// recoverAccount is RecoverAccount's act, for a request an extension carries
+// for a person too (req: recorded in the recovery's write). It shows nothing
+// of the mailbox: whoever shows it reads it again.
+func (s *Service) recoverAccount(ctx context.Context, p Principal, id string, req *store.Request) error {
+	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+		return err
 	}
 	a, err := s.removedFor(ctx, p, id, false)
 	if err != nil {
-		return Account{}, err
+		return err
 	}
-	recovered, err := s.accounts.Recover(ctx, id, p.Actor(), func(tx *sql.Tx) error {
+	err = s.accounts.RecoverFor(ctx, req, id, p.Actor(), func(tx *sql.Tx) error {
 		return s.ownsRemovedTx(ctx, tx, p, a)
 	})
 	if err != nil {
-		return Account{}, fromRemoved(err, "recovering the mailbox failed")
+		return fromRemoved(err, "recovering the mailbox failed")
 	}
 	s.accessChanged()
-	s.log.Info("removed mailbox recovered", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor(),
-		"paused", !recovered.SyncPausedAt.IsZero(), "held", !recovered.SyncHeldAt.IsZero())
+	s.log.Info("removed mailbox recovered", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
 	s.reconcile(a.ID)
-	return s.present(ctx, p, recovered)[0], nil
+	return nil
 }
 
 // PurgeAccount deletes a removed mailbox for good, before its 30 days are
@@ -181,9 +204,19 @@ func (s *Service) RecoverAccount(ctx context.Context, p Principal, id string) (A
 // mailbox is removed first (conflict). A team's owner is asked about first
 // (FreshPurge), never the operator.
 func (s *Service) PurgeAccount(ctx context.Context, p Principal, id string, req PurgeAccountRequest) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if req.Confirm != id {
 		return E(CodeBadRequest, "deleting a mailbox for good needs its id repeated in confirm; nothing was deleted", nil)
 	}
+	return s.purgeAccount(ctx, p, id, nil)
+}
+
+// purgeAccount is PurgeAccount's act, its id confirmed, for a request an
+// extension carries for a person too (req: recorded in the deletion's
+// write; the Google grant's revocation after its commit is not part of it).
+func (s *Service) purgeAccount(ctx context.Context, p Principal, id string, req *store.Request) error {
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return err
 	}
@@ -209,7 +242,7 @@ func (s *Service) PurgeAccount(ctx context.Context, p Principal, id string, req 
 			return err
 		}
 	}
-	err = s.accounts.Purge(ctx, id, p.Actor(), func(tx *sql.Tx) error { return s.ownsRemovedTx(ctx, tx, p, a) })
+	err = s.accounts.PurgeFor(ctx, req, id, p.Actor(), func(tx *sql.Tx) error { return s.ownsRemovedTx(ctx, tx, p, a) })
 	if err != nil {
 		return fromRemoved(err, "deleting the mailbox failed")
 	}
@@ -246,7 +279,7 @@ func (s *Service) removedFor(ctx context.Context, p Principal, id string, purge 
 			return a, nil
 		}
 		return account.Account{}, errOperatorNeverRecovers
-	case !p.IsSession():
+	case !p.IsPerson():
 	case a.OwnerUserID != "":
 		if a.OwnerUserID == p.UserID {
 			return a, nil
@@ -322,6 +355,8 @@ func fromRemoved(err error, what string) error {
 	switch {
 	case errors.As(err, &se):
 		return err
+	case requestRefusal(err) != nil:
+		return requestRefusal(err)
 	case errors.Is(err, account.ErrNotFound):
 		return E(CodeNotFound, "no such account", err)
 	case errors.Is(err, account.ErrNotRemoved):

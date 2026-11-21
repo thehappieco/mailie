@@ -418,6 +418,9 @@ var (
 // response is written: a key revoked or a session ended while the request ran
 // must not see its answer.
 func (s *Service) Recheck(ctx context.Context, p Principal) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	var err error
 	switch {
 	case p.IsSession():
@@ -539,7 +542,7 @@ func (s *Service) visibility(p Principal) account.Visibility {
 	switch {
 	case p.IsInstance():
 		return account.Visibility{Unowned: true}
-	case p.IsSession():
+	case p.IsPerson():
 		return account.Visibility{UserID: p.UserID, NoTeams: s.teamsWithheld}
 	}
 	return account.Visibility{Key: p.KeyPrefix, NoTeams: s.teamsWithheld || s.keysPersonal(p)}
@@ -563,9 +566,26 @@ func (s *Service) readable(p Principal) account.Visibility {
 
 // requireSession guards what only a signed-in person may do: their own
 // profile, password and sessions, and every key: a key never mints, lists or
-// changes a key, so a leaked one cannot keep access after it is revoked.
+// changes a key, so a leaked one cannot keep access after it is revoked. A
+// person acting through an extension is refused it too
+// (ErrNeedsOwnSession): a step-up, a key's ceremony and a sealed grant are a
+// session's alone.
 func requireSession(p Principal) error {
+	if p.IsDelegated() {
+		return errNeedsOwnSession
+	}
 	if !p.IsSession() {
+		return E(CodeNotAuthorized, "this needs a signed-in user; an API key cannot use it", nil)
+	}
+	return nil
+}
+
+// requireAPerson guards what a person does, signed in or through an
+// extension that carries their request (ActFor), and never a key: a person's
+// own consents, and a team's sync, paused, resumed or switched on its
+// behalf.
+func requireAPerson(p Principal) error {
+	if !p.IsPerson() {
 		return E(CodeNotAuthorized, "this needs a signed-in user; an API key cannot use it", nil)
 	}
 	return nil

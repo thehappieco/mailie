@@ -61,6 +61,9 @@ const (
 
 // Notices lists the signed-in person's notices, the newest first.
 func (s *Service) Notices(ctx context.Context, p Principal) ([]PersonNotice, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.requirePerson(p); err != nil {
 		return nil, err
 	}
@@ -107,6 +110,9 @@ func presentNotice(n store.Notice) PersonNotice {
 // DismissNotice deletes one of the signed-in person's notices; one they do
 // not have is not_found.
 func (s *Service) DismissNotice(ctx context.Context, p Principal, id string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := s.requirePerson(p); err != nil {
 		return err
 	}

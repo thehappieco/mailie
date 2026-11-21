@@ -243,6 +243,9 @@ func readsNowTx(ctx context.Context, tx *sql.Tx, p Principal, accountID string) 
 // what each holds there. A key carried over from a person's that holds a
 // mailbox of the workspace is listed with that workspace's mailboxes.
 func (s *Service) ListWorkspaceKeys(ctx context.Context, p Principal, workspaceID string) ([]WorkspaceKey, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if _, err := s.keyAdminOf(ctx, p, workspaceID); err != nil {
 		return nil, err
 	}
@@ -263,6 +266,9 @@ func (s *Service) ListWorkspaceKeys(ctx context.Context, p Principal, workspaceI
 // team's is refused (errTeamKeys); where an issuer makes the keys, every one
 // is (errKeysIssuedElsewhere).
 func (s *Service) CreateWorkspaceKey(ctx context.Context, p Principal, workspaceID string, req WorkspaceKeyRequest) (CreatedWorkspaceKey, error) {
+	if err := refuseDelegated(p); err != nil {
+		return CreatedWorkspaceKey{}, err
+	}
 	w, err := s.keyAdminOf(ctx, p, workspaceID)
 	if err != nil {
 		return CreatedWorkspaceKey{}, err
@@ -398,6 +404,9 @@ func checkKeyRequest(scope auth.Scope, f workspace.Flags, keysMayNotSend bool) e
 // loses this workspace's mailboxes instead, and is revoked with its last.
 // Revoking a key already revoked is not an error.
 func (s *Service) RevokeWorkspaceKey(ctx context.Context, p Principal, workspaceID, prefix string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if _, err := s.keyAdminOf(ctx, p, workspaceID); err != nil {
 		return err
 	}
@@ -426,6 +435,9 @@ func (s *Service) RevokeWorkspaceKey(ctx context.Context, p Principal, workspace
 // the keys, a flag raised anywhere (errKeysIssuedElsewhere). A key an issuer
 // made is not found here: only its issuer changes what it holds.
 func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, prefix, accountID string, req KeyAccessRequest) (KeyMailbox, error) {
+	if err := refuseDelegated(p); err != nil {
+		return KeyMailbox{}, err
+	}
 	w, err := s.keyAdminOf(ctx, p, workspaceID)
 	if err != nil {
 		return KeyMailbox{}, err
@@ -502,6 +514,9 @@ func (s *Service) SetKeyAccess(ctx context.Context, p Principal, workspaceID, pr
 // held there. An owner or an admin of it, signed in, whoever gave it. A key
 // carried over from a person's left with none is revoked.
 func (s *Service) RevokeKeyAccess(ctx context.Context, p Principal, workspaceID, prefix, accountID string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if _, err := s.keyAdminOf(ctx, p, workspaceID); err != nil {
 		return err
 	}
@@ -543,6 +558,9 @@ func (s *Service) keyTargetTx(ctx context.Context, tx *sql.Tx, p Principal, work
 // first: the record of each, never a subject or an address. For the
 // workspace's owners and admins, signed in.
 func (s *Service) ListKeySends(ctx context.Context, p Principal, workspaceID, prefix string) ([]SendStatus, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if _, err := s.keyAdminOf(ctx, p, workspaceID); err != nil {
 		return nil, err
 	}
@@ -578,6 +596,9 @@ func (s *Service) ListKeySends(ctx context.Context, p Principal, workspaceID, pr
 // mailboxes a carried-over key holds: nothing of a team is listed there, its
 // keys included.
 func (s *Service) ListMyAPIKeys(ctx context.Context, p Principal) ([]WorkspaceKey, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := requireSession(p); err != nil {
 		return nil, err
 	}
@@ -641,6 +662,9 @@ func (s *Service) withoutTeams(ctx context.Context, keys []auth.Key) ([]auth.Key
 // that issuer (errKeysIssuedElsewhere). Kept so that a console of before
 // says why.
 func (s *Service) CreateMyAPIKey(_ context.Context, p Principal) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := requireSession(p); err != nil {
 		return err
 	}
@@ -655,6 +679,9 @@ func (s *Service) CreateMyAPIKey(_ context.Context, p Principal) error {
 // an error. Where teams are withheld, a team's key is refused
 // (errTeamsWithheld), as through the team's own routes, and stays as it is.
 func (s *Service) RevokeMyAPIKey(ctx context.Context, p Principal, prefix string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := requireSession(p); err != nil {
 		return err
 	}

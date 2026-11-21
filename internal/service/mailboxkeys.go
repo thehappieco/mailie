@@ -304,6 +304,9 @@ func grantAtEpoch(grant []byte, epoch int) error {
 // to. A person who sees the mailbox without holding read is not_authorized;
 // one who does not see it, not_found. A key reads none of it.
 func (s *Service) MailboxKey(ctx context.Context, p Principal, accountID string) (MailboxKeyState, error) {
+	if err := refuseDelegated(p); err != nil {
+		return MailboxKeyState{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return MailboxKeyState{}, err
 	}
@@ -346,6 +349,9 @@ func (s *Service) MailboxKey(ctx context.Context, p Principal, accountID string)
 // recipient's now, are a conflict: someone enrolled, was given read or was
 // reset meanwhile, and the console reads the mailbox key again.
 func (s *Service) WriteFirstKey(ctx context.Context, p Principal, accountID string, req FirstKeyRequest) (MailboxKeyPair, error) {
+	if err := refuseDelegated(p); err != nil {
+		return MailboxKeyPair{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return MailboxKeyPair{}, err
 	}
@@ -407,6 +413,9 @@ func (s *Service) WriteFirstKey(ctx context.Context, p Principal, accountID stri
 // person does: a team mailbox is never given a new key (not_authorized), and
 // anyone else's mailbox does not exist for the caller.
 func (s *Service) WriteNewKey(ctx context.Context, p Principal, accountID string, req NewKeyRequest) (MailboxKeyPair, error) {
+	if err := refuseDelegated(p); err != nil {
+		return MailboxKeyPair{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return MailboxKeyPair{}, err
 	}
@@ -462,6 +471,9 @@ func (s *Service) WriteNewKey(ctx context.Context, p Principal, accountID string
 // must be the recipient's now (a conflict otherwise: they were reset since
 // the console read them).
 func (s *Service) SupplyKey(ctx context.Context, p Principal, accountID, userID string, req SupplyKeyRequest) (SealedGrant, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SealedGrant{}, err
+	}
 	if err := requireSession(p); err != nil {
 		return SealedGrant{}, err
 	}

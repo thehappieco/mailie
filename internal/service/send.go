@@ -292,6 +292,9 @@ var (
 
 // SendMessage sends one message from an account, when the caller may.
 func (s *Service) SendMessage(ctx context.Context, p Principal, req SendRequest) (SendResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SendResult{}, err
+	}
 	c := req.Compose
 	if err := s.authorize(p, auth.ScopeSend); err != nil {
 		return SendResult{}, err
@@ -712,6 +715,9 @@ func (s *Service) markAnswered(ctx context.Context, p Principal, a account.Accou
 // each reads only their own records — a key its own, an instance key the
 // operator's.
 func (s *Service) SendStatus(ctx context.Context, p Principal, accountID, key string) (SendStatus, error) {
+	if err := refuseDelegated(p); err != nil {
+		return SendStatus{}, err
+	}
 	if err := s.authorize(p, auth.ScopeSend); err != nil {
 		return SendStatus{}, err
 	}
@@ -753,6 +759,9 @@ func presentSendStatus(row store.Send) SendStatus {
 // mailboxes it sees.
 func ownsSend(p Principal, userID, createdBy string) bool {
 	switch {
+	case p.IsDelegated():
+		// A person acting through an extension sends nothing.
+		return false
 	case p.IsSession():
 		return userID != "" && userID == p.UserID
 	case p.IsInstance():
@@ -766,7 +775,7 @@ func ownsSend(p Principal, userID, createdBy string) bool {
 // key's own; none for an instance key, the operator's.
 func dailySendLimit(p Principal) (int, string) {
 	switch {
-	case p.IsSession():
+	case p.IsPerson():
 		return DailySendLimit, fmt.Sprintf("a person may send at most %d messages a day; try again later", DailySendLimit)
 	case p.IsInstance():
 		return 0, ""

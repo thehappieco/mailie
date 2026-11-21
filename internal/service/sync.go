@@ -87,7 +87,7 @@ type SyncStatus struct {
 // ErrSyncNotRunning is what a controller answers for an account it is not
 // syncing: not eligible, not consented to, or in backoff before its first
 // connection.
-var ErrSyncNotRunning = E(CodeConflict, "sync is not running for this account", nil)
+var ErrSyncNotRunning = E(CodeConflict, "sync is not running for this account", ErrEngineNotRunning)
 
 // AccountSync is an account's sync as a caller sees it: in every account's
 // JSON, and on its own from GET /v1/accounts/{id}/sync.
@@ -192,6 +192,9 @@ func withHold(st AccountSync, a account.Account) AccountSync {
 
 // SyncStatus reports where an account's sync stands.
 func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string) (AccountSync, error) {
+	if err := refuseDelegated(p); err != nil {
+		return AccountSync{}, err
+	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, accountID, needCard)
 	if err != nil {
 		return AccountSync{}, err
@@ -207,6 +210,16 @@ func (s *Service) SyncStatus(ctx context.Context, p Principal, accountID string)
 // and returns without waiting for it: anybody who may read it, with the
 // write scope. A paused mailbox is resumed first (errSyncPaused).
 func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
+	return s.triggerSync(ctx, p, accountID)
+}
+
+// triggerSync is TriggerSync's act, for a person acting through an extension
+// too: it writes nothing, so nothing of the request is recorded, and asking
+// twice is harmless.
+func (s *Service) triggerSync(ctx context.Context, p Principal, accountID string) error {
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeWrite, accountID, needRead)
 	if err != nil {
 		return err
@@ -215,7 +228,7 @@ func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string
 	case account.StateNeedsReauth:
 		return needsReauth(fmt.Errorf("%w: %s", provider.ErrNeedsReauth, a.StateReason))
 	case account.StatePendingAuth:
-		return E(CodeConflict, "this account has not been authorised yet", nil)
+		return E(CodeConflict, "this account has not been authorised yet", ErrPendingAuth)
 	}
 	enabled, err := s.syncEnabled(ctx, a)
 	if err != nil {
@@ -241,7 +254,7 @@ func (s *Service) TriggerSync(ctx context.Context, p Principal, accountID string
 }
 
 // ErrSyncUnavailable is a daemon running without the sync engine.
-var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server", nil)
+var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server", ErrEngineNotRunning)
 
 // errSyncOff is an account that may not sync: for a personal mailbox, one
 // whose person has not consented; for a team mailbox, one its owners and
@@ -251,11 +264,11 @@ var ErrSyncUnavailable = E(CodeConflict, "sync is not available on this server",
 func errSyncOff(a account.Account) error {
 	switch {
 	case !a.SyncHeldAt.IsZero():
-		return E(CodeConflict, "sync of this mailbox is held until its person turns it on again", nil)
+		return E(CodeConflict, "sync of this mailbox is held until its person turns it on again", ErrHeld)
 	case a.WorkspaceID == workspace.OperatorID:
-		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", nil)
+		return E(CodeConflict, "sync is off for this account; an instance administrator has to switch it on", ErrSyncOff)
 	case a.OwnerUserID == "":
-		return E(CodeConflict, "sync is off for this team mailbox; an owner or an admin of the team has to turn it on", nil)
+		return E(CodeConflict, "sync is off for this team mailbox; an owner or an admin of the team has to turn it on", ErrSyncOff)
 	}
-	return E(CodeConflict, "sync is off: its person has not turned it on in the console", nil)
+	return E(CodeConflict, "sync is off: its person has not turned it on in the console", ErrSyncOff)
 }

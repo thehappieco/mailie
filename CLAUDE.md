@@ -145,6 +145,20 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   what it trusted never lowered, every key and grant at version 0, every refusal owed dropped,
   nothing else), and `SetDirectoryKeysCursorTx` is the feed's compare and set. `IsConstraint`
   tells any schema refusal from another failure; `IssuedKey*Retention` are the periods kept.
+  Migration 0029 (`docs/workspaces.md`, "Acts an extension runs for a person") adds
+  `extension_requests` (`requests.go`: a request an extension carries for a person, by extension
+  and id, its person with no foreign key, its act, what it did and its `keep_until`; written by
+  the write that decides it, in its transaction: `BeginRequestTx` first — a request that ran is
+  `*RequestDone` with its first outcome, a person who may no longer act `ErrActorInactive`
+  (`RequirePersonActsTx`), a mailbox outside its workspace `ErrNotInWorkspace` — and
+  `RecordRequestTx` last; `WriteRequest` wraps both, `RecordNoOp` records a request whose effect
+  held already, `SweepRequests` deletes the records past their end) and `mailbox_access.raised_at`
+  (moved only by a change that adds a flag; a request's widening is stamped with its first moment,
+  `Request.Stamp`, and a narrowing refused, `ErrSetSince`, for what was given at or after its first
+  second). Each decisive write takes the request in an `…For` form (`PauseSyncFor`,
+  `SetMailboxSyncFor`, the consents' `Grant…For`/`Withdraw…For`; `workspace.SetGrantFor`,
+  `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`), the old name a nil
+  request.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -220,7 +234,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `RevokeSessionsStartedBeforeTx` (at microseconds; a session started in the moment's second ends
   too), `Keys.RevokeCreatedBeforeTx`; and `ExternalSignIn.PersonCreatedTx`, run in the transaction
   that creates a new person, right after their identity is linked, which rolls it all back on an
-  error. `authtest` creates cheap users and keys for tests.
+  error. A person acting through an extension (`KindPerson`, built only by `service.ActFor`, never
+  by a transport) is a person with no session and no key: `IsKey`, `IsInstance` and
+  `IsWorkspaceKey` are false for it, `IsPerson` and `Actor` name them. `authtest` creates cheap
+  users and keys for tests.
 - `internal/ratelimit` — token buckets per address (IPv6 per /64) and per key prefix (an issued
   key's selector: `Service.CredentialSubject`). An
   authentication failure is reserved on the prefix and given back if the credential proves good; it
@@ -402,6 +419,21 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
   operator's acts, or a key's own acts, nor for renaming a mailbox (`RenameAccount`, `PATCH
   /v1/accounts/{id}`: a name widens no access; the platform's `item.rename` has no freshness gate).
+  A person acting through an extension is asked about as one signed in is. `delegated.go`:
+  `ActFor(Delegation)` is the one way for an extension to run a person's request with no session
+  (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, remove, recover, purge,
+  raise and drop flags, remove access, agree to and withdraw a consent), each the use case a
+  session runs through the unexported act its method calls, with the request recorded in its
+  write (`store.Request`): once only, a no-op recorded, its item in the request's workspace, a
+  closed team `team_closed`, a narrowing refused only for a widening at or after its first second,
+  a widening stamped with it, an error after the commit answered from the record. Every exported
+  method that takes a principal refuses `KindPerson` first (`refuseDelegated`,
+  `ErrNeedsOwnSession`), held by a test that calls each by reflection, and so do the key and
+  session sides inside the acts (`requireSession`). `refusals.go`: `RefusalOf`, one word of a
+  closed list for an act's refusal, read from the sentinel its `*Error` carries
+  (`ErrActorInactive` and `ErrFreshUnconfirmed` are also what the freshness hook carries).
+  `GrantRequest.From`: a grant change drawn from what someone held, refused (`conflict`) unless the
+  grant holds exactly that in the write.
 - `internal/api` — REST `/v1/...`, SSE and the long poll, each checking its caller again at
   `Service.AccessChanged`, and downloads checking before the first byte and between chunks, refused
   or cut off (never ended whole) once the caller may no longer read; the operator's hold of an
@@ -655,7 +687,10 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   part is refused still applies what it revoked. A disable here stands over a directory: its
   documents never resume a person disabled here, nor one whose disable they do not know of. The
   freshness hook gates and never authorizes: every act it is asked about keeps its own checks, run
-  again in the write.
+  again in the write. A person acting through an extension (`ActFor`, `auth.KindPerson`) reaches
+  what they reach signed in, through those acts alone, each run once, never past a step-up and
+  never writing a key or a grant; a narrowing they asked never takes away what was given at or
+  after the second they asked it.
 - **An OAuth flow belongs to whoever started it.** Its owner is checked in the same statement that
   takes the row, `oauth_pending`'s `DELETE` or `oauth_links`' `UPDATE` (`taken_at`), **before** the
   code is exchanged; another owner's is `not_found` and the row stays. The web flow's redirect is `MAIL_PUBLIC_URL + /oauth/return` (a
@@ -729,7 +764,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   `ErrDirectoryGeneration`, `ErrKindChanged`…); a new person under a directory's source without
   their document is `internal`, "upstream: …", with a `Retry` of 10 s; so is an act the freshness
   hook could not confirm (a `Retry` of 30 s, no reason on the wire), while a `*service.Error` the
-  hook returns passes through as it is and a context's end is passed on.
+  hook returns passes through as it is and a context's end is passed on. An act an extension runs
+  for a person (`ActFor`) refuses with an `*Error` whose cause is one of `refusals.go`'s sentinels
+  or a repository's own, read by `service.RefusalOf`; its code and message are a session's.
 - **Backup: the host only encrypts and uploads.** It generates data keys with the context exactly
   `{service: mailie, env: MAIL_ENV, purpose: db-backup, ref: <object key>}`
   (`backup.EncryptionContext`) and creates new objects under `db/` (`If-None-Match: *`, SSE-S3,

@@ -196,6 +196,9 @@ func newStream(sub *events.Subscription, gate *eventGate, notices *noticeWatch) 
 // without reconnecting, and one who loses a mailbox stops seeing them the
 // moment the revocation commits.
 func (s *Service) Subscribe(ctx context.Context, p Principal, since int64, filter EventFilter) (*Stream, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	f, gate, err := s.eventFilter(ctx, p, since, filter)
 	if err != nil {
 		return nil, err
@@ -247,6 +250,9 @@ type WaitResult struct {
 // arrived by then; and at once, refused, when the caller's credential stops
 // working meanwhile (AccessChanged).
 func (s *Service) WaitForNewMail(ctx context.Context, p Principal, since int64, timeout time.Duration, filter EventFilter) (WaitResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return WaitResult{}, err
+	}
 	switch {
 	case timeout == 0:
 		timeout = DefaultWait
@@ -339,6 +345,9 @@ wait:
 // starts and again before each notification, so one whose caller lost read
 // is dropped rather than announced.
 func (s *Service) MayFollow(ctx context.Context, p Principal, accountID string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	_, err := s.authorizeAccount(ctx, p, auth.ScopeRead, accountID, needRead)
 	return err
 }

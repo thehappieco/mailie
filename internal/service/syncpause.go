@@ -32,8 +32,8 @@ type SyncResumeRequest struct {
 var (
 	errPauseNotOffered = E(CodeNotAuthorized, "pausing one mailbox's sync is not offered on this server", nil)
 	errPauseHeld       = E(CodeConflict,
-		"this mailbox's sync was turned off and is held until its person turns it on; there is nothing to pause", nil)
-	errPauseSyncOff = E(CodeConflict, "sync is off for this mailbox; there is nothing to pause", nil)
+		"this mailbox's sync was turned off and is held until its person turns it on; there is nothing to pause", ErrHeld)
+	errPauseSyncOff = E(CodeConflict, "sync is off for this mailbox; there is nothing to pause", ErrSyncOff)
 	errTeamPause    = E(CodeNotAuthorized,
 		"only an owner or an admin of the team pauses or resumes its mailboxes' sync, on the team's behalf", nil)
 	errPersonalPause = E(CodeNotAuthorized, "only its person pauses or resumes a personal mailbox's sync", nil)
@@ -47,8 +47,8 @@ var (
 	errNoReaderResume = E(CodeConflict,
 		"nobody in the team reads this mailbox now, so its sync cannot be resumed until someone does; one that "+
 			"only a suspended member would read waits for them, and one nobody can be given read on again is "+
-			"removed and linked again, or its sync turned off to delete what is still indexed", nil)
-	errSyncPaused = E(CodeConflict, "sync of this mailbox is paused; resume it to catch up", nil)
+			"removed and linked again, or its sync turned off to delete what is still indexed", ErrNoReader)
+	errSyncPaused = E(CodeConflict, "sync of this mailbox is paused; resume it to catch up", ErrPaused)
 	// errPausedBehind replaces errMessageBusy on a paused mailbox, whose
 	// engine does not run to catch up: a stale row, a folder renumbered or
 	// gone on the server.
@@ -67,54 +67,77 @@ var (
 // does not offer the pause (Deps.SyncPauseOffered unset) refuses it to
 // everyone, not_authorized.
 func (s *Service) PauseMailboxSync(ctx context.Context, p Principal, accountID string) (AccountSync, error) {
-	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+	if err := refuseDelegated(p); err != nil {
 		return AccountSync{}, err
 	}
+	if _, err := s.pauseSync(ctx, p, accountID, nil); err != nil {
+		return AccountSync{}, err
+	}
+	return s.currentSync(ctx, accountID)
+}
+
+// pauseSync is PauseMailboxSync's act, for a request an extension carries
+// for a person too (req, recorded in the pause's write, a mailbox paused
+// already included), and returns what it changed.
+func (s *Service) pauseSync(ctx context.Context, p Principal, accountID string, req *store.Request) (store.MailboxSyncSwitch, error) {
+	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+		return store.MailboxSyncSwitch{}, err
+	}
 	if !s.syncPauseOffered {
-		return AccountSync{}, errPauseNotOffered
+		return store.MailboxSyncSwitch{}, errPauseNotOffered
 	}
 	a, check, err := s.pauseAuthority(ctx, p, accountID)
 	if err != nil {
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
 	}
 	switch {
 	case !a.SyncPausedAt.IsZero():
-		// For whoever may, nothing to do: no hook, no write.
-		return s.currentSync(ctx, a.ID)
+		// For whoever may, nothing to do: no hook, no write but a
+		// request's record, while it is still paused.
+		done, err := s.noOp(ctx, req, a.ID, check, func(tx *sql.Tx) (bool, error) {
+			paused, err := store.PausedTx(ctx, tx, a.ID)
+			return paused, ignoreGone(err)
+		})
+		if err != nil || done || req == nil {
+			return store.MailboxSyncSwitch{}, err
+		}
+		// Resumed since it was read: the act goes on, once.
 	case !a.SyncHeldAt.IsZero():
-		return AccountSync{}, errPauseHeld
+		return store.MailboxSyncSwitch{}, errPauseHeld
 	}
 	if a.OwnerUserID != "" {
 		c, err := s.store.SyncConsentOf(ctx, a.OwnerUserID)
 		switch {
 		case errors.Is(err, store.ErrNoSuchUser), err == nil && c.At == 0:
-			return AccountSync{}, errPauseSyncOff
+			return store.MailboxSyncSwitch{}, errPauseSyncOff
 		case err != nil:
-			return AccountSync{}, E(CodeInternal, "reading the person's consent to sync failed", err)
+			return store.MailboxSyncSwitch{}, E(CodeInternal, "reading the person's consent to sync failed", err)
 		}
 	} else if a.SyncConsent.At == 0 {
-		return AccountSync{}, errPauseSyncOff
+		return store.MailboxSyncSwitch{}, errPauseSyncOff
 	}
 	if teamMailbox(a) {
 		// The role was checked read-only (pauseAuthority); the write runs
 		// the check again first, which stops an act the answer ended.
 		if err := s.fresh(ctx, p, FreshAct{Kind: FreshTeamSync, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
-			return AccountSync{}, err
+			return store.MailboxSyncSwitch{}, err
 		}
 	}
-	switched, err := s.store.PauseSync(ctx, a.ID, p.Actor(), check)
+	switched, err := s.store.PauseSyncFor(ctx, req, a.ID, p.Actor(), check)
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
+	case requestRefusal(err) != nil:
+		return store.MailboxSyncSwitch{}, requestRefusal(err)
 	case errors.Is(err, store.ErrNoSuchMailbox):
-		return AccountSync{}, errNoAccount
+		return store.MailboxSyncSwitch{}, errNoAccount
 	case errors.Is(err, store.ErrPauseHeld):
-		return AccountSync{}, errPauseHeld
+		return store.MailboxSyncSwitch{}, errPauseHeld
 	case errors.Is(err, store.ErrPauseSyncOff):
-		return AccountSync{}, errPauseSyncOff
+		return store.MailboxSyncSwitch{}, errPauseSyncOff
 	case err != nil:
-		return AccountSync{}, E(CodeInternal, "pausing the mailbox's sync failed", err)
+		return store.MailboxSyncSwitch{}, E(CodeInternal, "pausing the mailbox's sync failed", err)
 	}
 	if switched.Changed {
 		s.log.Info("mailbox sync paused", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor(),
@@ -124,7 +147,7 @@ func (s *Service) PauseMailboxSync(ctx context.Context, p Principal, accountID s
 	if len(switched.Told) > 0 {
 		s.noticesChanged()
 	}
-	return s.currentSync(ctx, a.ID)
+	return switched, nil
 }
 
 // ResumeMailboxSync ends a mailbox's pause, a person's or a recovery's, by the
@@ -136,25 +159,48 @@ func (s *Service) PauseMailboxSync(ctx context.Context, p Principal, accountID s
 // otherwise). Resuming one that is not paused changes nothing. Offered in
 // every edition, so that a pause never outlives the edition that offered it.
 func (s *Service) ResumeMailboxSync(ctx context.Context, p Principal, accountID string, req SyncResumeRequest) (AccountSync, error) {
-	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+	if err := refuseDelegated(p); err != nil {
 		return AccountSync{}, err
+	}
+	if _, err := s.resumeSync(ctx, p, accountID, req, nil); err != nil {
+		return AccountSync{}, err
+	}
+	return s.currentSync(ctx, accountID)
+}
+
+// resumeSync is ResumeMailboxSync's act, for a request an extension carries
+// for a person too (sreq, recorded in the resume's write, a mailbox not
+// paused included; a team's agreement stamped with its first moment), and
+// returns what it changed.
+func (s *Service) resumeSync(ctx context.Context, p Principal, accountID string, req SyncResumeRequest,
+	sreq *store.Request,
+) (store.MailboxSyncSwitch, error) {
+	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
+		return store.MailboxSyncSwitch{}, err
 	}
 	a, check, err := s.pauseAuthority(ctx, p, accountID)
 	if err != nil {
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
 	}
 	team := teamMailbox(a)
 	version := ""
 	switch {
 	case team && req.Version != s.consent.Sync:
-		return AccountSync{}, errNotCurrentText(s.consent.Sync)
+		return store.MailboxSyncSwitch{}, errNotCurrentText(s.consent.Sync)
 	case team:
 		version = req.Version
 	case req.Version != "":
-		return AccountSync{}, errResumeNoVersion
+		return store.MailboxSyncSwitch{}, errResumeNoVersion
 	}
 	if a.SyncPausedAt.IsZero() {
-		return s.currentSync(ctx, a.ID)
+		done, err := s.noOp(ctx, sreq, a.ID, check, func(tx *sql.Tx) (bool, error) {
+			paused, err := store.PausedTx(ctx, tx, a.ID)
+			return !paused && err == nil, ignoreGone(err)
+		})
+		if err != nil || done || sreq == nil {
+			return store.MailboxSyncSwitch{}, err
+		}
+		// Paused since it was read: the act goes on, once.
 	}
 	full := check
 	if team {
@@ -170,10 +216,10 @@ func (s *Service) ResumeMailboxSync(ctx context.Context, p Principal, accountID 
 			return nil
 		}
 		if err := s.precheck(ctx, readable); err != nil {
-			return AccountSync{}, err
+			return store.MailboxSyncSwitch{}, err
 		}
 		if err := s.fresh(ctx, p, FreshAct{Kind: FreshTeamSync, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
-			return AccountSync{}, err
+			return store.MailboxSyncSwitch{}, err
 		}
 		full = func(tx *sql.Tx) error {
 			if err := check(tx); err != nil {
@@ -182,22 +228,24 @@ func (s *Service) ResumeMailboxSync(ctx context.Context, p Principal, accountID 
 			return readable(tx)
 		}
 	}
-	switched, err := s.store.ResumeSync(ctx, a.ID, p.Actor(), version, full)
+	switched, err := s.store.ResumeSyncFor(ctx, sreq, a.ID, p.Actor(), version, full)
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
+	case requestRefusal(err) != nil:
+		return store.MailboxSyncSwitch{}, requestRefusal(err)
 	case errors.Is(err, store.ErrNoSuchMailbox):
-		return AccountSync{}, errNoAccount
+		return store.MailboxSyncSwitch{}, errNoAccount
 	case err != nil:
-		return AccountSync{}, E(CodeInternal, "resuming the mailbox's sync failed", err)
+		return store.MailboxSyncSwitch{}, E(CodeInternal, "resuming the mailbox's sync failed", err)
 	}
 	if switched.Changed {
 		s.log.Info("mailbox sync resumed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor(),
 			"version", version)
 		s.reconcile(a.ID)
 	}
-	return s.currentSync(ctx, a.ID)
+	return switched, nil
 }
 
 // pauseAuthority reads the mailbox a pause or a resume is asked of, and
@@ -224,12 +272,12 @@ func (s *Service) pauseAuthority(ctx context.Context, p Principal, accountID str
 		}
 		return a, nil, nil
 	case a.OwnerUserID != "":
-		if !p.IsSession() || p.UserID != a.OwnerUserID {
+		if !p.IsPerson() || p.UserID != a.OwnerUserID {
 			return account.Account{}, nil, errPersonalPause
 		}
 		return a, nil, nil
 	}
-	if err := requireSession(p); err != nil {
+	if err := requireAPerson(p); err != nil {
 		return account.Account{}, nil, err
 	}
 	check := func(tx *sql.Tx) error {

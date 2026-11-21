@@ -837,7 +837,11 @@ included: these routes take a session or the operator's key.
    owner or an admin it is `400` ("owners and admins manage every team mailbox by their role").
    Losing `manage` ends, in the same transaction, the consent attempts the person started on that
    mailbox (`oauth_pending`); a demotion, leaving the team, a held membership and its closing end
-   the links at the provider the person started into it (`oauth_links`). Storing what a consent produced checks again, in its own transaction,
+   the links at the provider the person started into it (`oauth_links`). A change that adds a flag
+   records when (`raised_at`, migration 0029), which a request an extension carries to take flags
+   away compares with ([Acts an extension runs for a person](#acts-an-extension-runs-for-a-person));
+   one that says what it was drawn from (`from`) is refused, `409`, unless the grant holds exactly
+   that when it is written. Storing what a consent produced checks again, in its own transaction,
    that its starter still manages the mailbox, or for an attempt an instance key started that the
    mailbox is the operator's (`workspace.ManagesTx`, installed by the service with
    `account.Registry.CheckFlowsWith`).
@@ -2054,7 +2058,84 @@ nothing, and one question it asks. No transport calls any of them, and none take
   passed on; any other error is `internal`, "upstream: …", with `Retry-After: 30`, and no reason on
   the wire. Never asked: reading, removing, recovering, taking access away, deleting a personal
   mailbox for good or turning a removed one's sync off, the hourly sweep, a key's own acts and the
-  operator's (its deletion for good and its turn-off of any mailbox included).
+  operator's (its deletion for good and its turn-off of any mailbox included). A person acting
+  through an extension (below) is asked about as one signed in is. The hook's own `*service.Error`
+  carries `service.ErrActorInactive` when the actor may no longer act where it asked, or
+  `service.ErrFreshUnconfirmed` when it could not confirm the act now; the core's own "upstream"
+  answer carries the second, so `service.RefusalOf` names both for an extension.
+
+### Acts an extension runs for a person
+
+A person may ask for a change elsewhere, where an extension of the daemon takes the request, and
+the extension carries it here with no session. `service.ActFor(ctx, Delegation)` is the one way
+in: it returns the acts an extension may run for that person (`PersonActs`), each the use case a
+person signed in runs, through the same unexported act the session's method calls, under the same
+authorization, the same checks in its write and the same freshness hook. No transport reaches it
+(`TestTheTransportsNeverNameActForNorKindPerson`).
+
+- **The principal** is a person acting through an extension (`auth.KindPerson`): a person, with no
+  session and **no key**. `IsKey`, `IsInstance` and `IsWorkspaceKey` are false for it; `IsPerson`
+  and `Actor` name the person, so every column and journal entry names them, and a notice never
+  goes to them for their own act. No transport builds one. Every exported `Service` method that
+  takes a principal refuses it first (`not_authorized`, `service.ErrNeedsOwnSession`), held by a
+  test that calls each of them; inside the acts, every branch whose other side is a key's or a
+  session's own — a sealed grant, a link's key, a step-up, a send's owner, a consent's flows —
+  refuses it too. Such a person never passes a step-up and never writes a mailbox key or a grant:
+  a raise never adds read, which comes with a grant only a session's browser seals.
+- **The request** (`Delegation`): the extension's name and the request's id (its idempotency key,
+  1 to 64 of `[A-Za-z0-9_.-]`), the person, the workspace an act on a mailbox is for (none for the
+  person's own consents), the intent's first moment, and when its record goes (at most 31 days
+  ahead). An act on a mailbox reads it, live or removed, before anything is authorized: one of
+  another workspace is `not_found`, checked again in the write; a closed team is `team_closed`, and
+  a `not_found` its write meets in a team closed meanwhile is said as closed too, so an extension
+  tries it again once the team reopens.
+- **The person** must exist and not be disabled here. One an extension suspended acts only for
+  their own narrowings (withdrawing a consent); a disable here stops even those. The write checks
+  it again in its transaction (`store.RequirePersonActsTx`), so a person suspended or disabled
+  between the request and the write changes nothing — on a personal mailbox's paths too, which
+  re-read nothing of the actor before.
+- **Exactly once** (`extension_requests`, migration 0029). The write that decides an act — the act's
+  own transaction — first reads the request's record: a request that ran is answered its first
+  outcome, and nothing runs again (`store.ErrRequestDone`, `ActOutcome.Ran`); `ActFor` reads it
+  first too, so a request that ran answers from every act, before any check. A request whose
+  effect held already is recorded too, as having changed nothing: an act that found nothing to do
+  before its write (a pause of a paused mailbox, a resume of one not paused) makes a short write
+  that reads that again and records it while it still holds, and goes on as usual, once, when it no
+  longer does. A refusal rolls the record back with the rest: the extension keeps its own note of
+  it. Asking a sync now writes nothing and records nothing. What committed is what the act did: an
+  act never presents what it changed, and an error after its write committed is answered from the
+  record.
+- **A narrowing never undoes a newer widening, and never blocks another narrowing.** Inside its
+  write, a request that takes something away is refused (`409`, `service.ErrSetSince`) only when
+  what it would take was **given** at or after the second it was first asked: a consent's
+  `users.*_consent_at`, a team's agreement's `accounts.sync_enabled_at`, and a grant's
+  `mailbox_access.raised_at`, which only a change that adds a flag moves (never one that only takes
+  flags away, nor a key supplied). What it would take and nobody holds is done, with nothing
+  changed. A widening that comes through an extension is stamped with its intent's first moment
+  (never later than now), so the order in which people asked decides, not the order in which
+  requests ran: a resume asked before a turn-off and run after it never refuses that turn-off. A
+  grant's time is its row's: a drop of one flag is refused when another was raised on the same row
+  since, the one needless refusal left.
+- **A change of a grant drawn from what someone held** (`GrantRequest.From`, `from` over REST, all
+  four flags) is refused, `409`, unless the grant holds exactly that when it is written, so a flag
+  taken away since the caller looked is never given back. A raise through an extension always
+  sends it; a session's change may, and one that does not is as before.
+- **Typed refusals.** The `*service.Error` an act refuses with carries, as its cause, one of a
+  closed list of sentinels (`refusals.go`) or a repository's own, its code and message unchanged;
+  `service.RefusalOf` reads it back as one word (`not_found`, `not_authorized`, `owner_only`,
+  `owner_access`, `actor_inactive`, `target_inactive`, `team_closed`, `team_withheld`,
+  `not_current_text`, `no_reader`, `last_reader`, `recovery_over`, `not_removed`,
+  `already_removed`, `paused`, `sync_off`, `held`, `needs_reauth`, `pending_auth`,
+  `engine_not_running`, `grant_needed`, `state_changed`, `set_since`, `manage_by_role`,
+  `personal_grant`, `needs_own_session`, `fresh_unconfirmed`, `request_done`; `none` for anything
+  else). Removing a mailbox removed already is `already_removed` to whoever may recover it, and
+  `not_found` to anyone else.
+- **The acts** (`PersonActs`): `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current
+  sync text and records the team's agreement), `LiftHold` (the person's own personal mailbox),
+  `TeamSync` on or off, `Remove`, `Recover`, `Purge`, `RaiseFlags` (from, to: act, send or manage
+  added, never read), `DropFlags`, `RemoveAccess`, `AgreeConsent` and `WithdrawConsent` (sync,
+  actions, send). `RequestOutcome` reads a request's record; `SweepRequests` deletes the records
+  whose time is over.
 
 ## Migration 0008
 
@@ -2405,6 +2486,19 @@ stops, for a workspace from another source. No row of a schema-27 database chang
 `internal/store/migrate_twentyeight_test.go` hold every row and object as they were, each rule
 above, and that a workspace deleted takes its issued keys and leaves only their selector, how and
 when they ended, the stops read in that cascade.
+
+## Migration 0029
+
+`0029_extension_requests.sql`, an ordinary migration: `extension_requests` (a request an extension
+carried for a person, by the extension's name and the request's id, its person — no foreign key,
+so the record outlives their deletion by its days, as the record of changes it belongs to does —,
+its act, what it did as a JSON object of counts and flags, when, in microseconds, and when the
+record goes; an index on that), and `mailbox_access.raised_at` (when a flag was last added to the
+row, in unix seconds; 0 for every row before it, read as raised before any request was asked). No
+trigger is added or written again: the workspace and person marks already follow every write that
+carries a new `raised_at` or a widening's stamp. No row of a schema-28 database changes. The tests
+in `internal/store/migrate_twentynine_test.go` hold every row and object as they were, and the
+record's shape.
 
 ## Going back
 

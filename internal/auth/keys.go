@@ -42,6 +42,11 @@ const (
 	KindKey Kind = "key"
 	// KindSession is a person signed in to the console.
 	KindSession Kind = "session"
+	// KindPerson is a person acting with no session: a request they made
+	// elsewhere, which an extension carries to this server
+	// (service.ActFor). Never presented over a transport, never built by
+	// Authenticate, and no key: IsKey is false for it.
+	KindPerson Kind = "person"
 )
 
 // Principal is an authenticated caller.
@@ -92,22 +97,35 @@ type Principal struct {
 // IsSession reports whether the caller is a person signed in to the console.
 func (p Principal) IsSession() bool { return p.Kind == KindSession }
 
+// IsDelegated reports whether the caller is a person acting through an
+// extension, with no session (KindPerson).
+func (p Principal) IsDelegated() bool { return p.Kind == KindPerson }
+
+// IsPerson reports whether a person acts: signed in, or through an
+// extension that carries a request they made elsewhere.
+func (p Principal) IsPerson() bool { return p.Kind == KindSession || p.Kind == KindPerson }
+
+// IsKey reports whether the caller presented an API key. The zero Kind is
+// one, as it was before sessions existed; a person acting through an
+// extension never is.
+func (p Principal) IsKey() bool { return p.Kind == KindKey || p.Kind == "" }
+
 // IsInstance reports whether the caller is an instance key: a key of the
 // operator workspace, which is what the CLI holds.
-func (p Principal) IsInstance() bool { return !p.IsSession() && p.WorkspaceID == workspace.OperatorID }
+func (p Principal) IsInstance() bool { return p.IsKey() && p.WorkspaceID == workspace.OperatorID }
 
 // IsWorkspaceKey reports whether the caller is a key of a workspace other
 // than the operator's, or one carried over from a person's: a key that
 // reaches exactly what it holds on mailboxes.
-func (p Principal) IsWorkspaceKey() bool { return !p.IsSession() && !p.IsInstance() }
+func (p Principal) IsWorkspaceKey() bool { return p.IsKey() && !p.IsInstance() }
 
-// Actor names the caller for audit columns: "usr_…" for a person, "key:<prefix>"
-// for a key, and "cli" for the command line acting on the database itself
-// (`--bootstrap`), the one caller with no prefix: every key presented has
-// one.
+// Actor names the caller for audit columns: "usr_…" for a person, signed in
+// or acting through an extension, "key:<prefix>" for a key, and "cli" for
+// the command line acting on the database itself (`--bootstrap`), the one
+// caller with no prefix: every key presented has one.
 func (p Principal) Actor() string {
 	switch {
-	case p.IsSession():
+	case p.IsPerson():
 		return p.UserID
 	case p.KeyPrefix == "":
 		return "cli"

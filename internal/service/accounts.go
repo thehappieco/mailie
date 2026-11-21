@@ -168,6 +168,9 @@ type AddAccountResult struct {
 // key, the operator workspace's. workspaceID narrows to one workspace; empty
 // is every one.
 func (s *Service) ListAccounts(ctx context.Context, p Principal, workspaceID string) ([]Account, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
 	}
@@ -191,6 +194,9 @@ func (s *Service) ListAccounts(ctx context.Context, p Principal, workspaceID str
 
 // GetAccount returns one account: its card, which any grant shows.
 func (s *Service) GetAccount(ctx context.Context, p Principal, id string) (Account, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Account{}, err
+	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id, needCard)
 	if err != nil {
 		return Account{}, err
@@ -296,6 +302,9 @@ func (s *Service) keysOf(ctx context.Context, p Principal, ids []string) (map[st
 // mail server is dialled and again in that transaction. An instance key links
 // an operator mailbox, which has no key.
 func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountRequest) (AddAccountResult, error) {
+	if err := refuseDelegated(p); err != nil {
+		return AddAccountResult{}, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return AddAccountResult{}, err
 	}
@@ -319,6 +328,11 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 		if err := s.fresh(ctx, p, FreshAct{Kind: FreshLink, WorkspaceID: link.workspaceID}); err != nil {
 			return AddAccountResult{}, err
 		}
+	}
+	if p.IsDelegated() {
+		// A person acting through an extension links nothing: a link writes
+		// a mailbox key and a grant, which only a session's browser makes.
+		return AddAccountResult{}, errNeedsOwnSession
 	}
 	if p.IsSession() {
 		// The person's account key, and their step-up before the login a
@@ -458,6 +472,8 @@ func (s *Service) checkAddRequest(p Principal, req AddAccountRequest) (account.A
 		add.Flow = flow
 	}
 	switch {
+	case p.IsDelegated():
+		return account.AddRequest{}, errNeedsOwnSession
 	case p.IsSession():
 		key, err := linkKeyOf(req.PublicKey, req.Namespace, req.Grant)
 		if err != nil {
@@ -555,6 +571,9 @@ type RenameAccountRequest struct {
 // most 200 characters, no control character, "" (the command's null)
 // clearing it, a removed mailbox not found.
 func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req RenameAccountRequest) (Account, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Account{}, err
+	}
 	if p.IsWorkspaceKey() {
 		return Account{}, errRenameKey
 	}
@@ -611,6 +630,9 @@ func (s *Service) managesTx(ctx context.Context, tx *sql.Tx, p Principal, a acco
 // StartOAuth begins consent again, for an account that needs it: whoever
 // manages it may re-authorise it, and the attempt is theirs alone.
 func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind string) (*AuthFlow, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage)
 	if err != nil {
 		return nil, err
@@ -656,6 +678,9 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 // key comes with the request then. A consent for a mailbox that exists
 // carries none.
 func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOAuthRequest) (Account, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Account{}, err
+	}
 	if err := s.authorize(p, auth.ScopeAdmin); err != nil {
 		return Account{}, err
 	}
@@ -781,40 +806,58 @@ type Removal struct {
 // for a personal one; an instance key with the admin scope, for an operator
 // mailbox.
 func (s *Service) RemoveAccount(ctx context.Context, p Principal, id string, req RemoveAccountRequest) (Removal, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Removal{}, err
+	}
 	if req.Confirm != id {
 		return Removal{}, E(CodeBadRequest, "removing a mailbox needs its id repeated in confirm; nothing was removed", nil)
 	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needCard)
+	removal, err := s.removeAccount(ctx, p, id, nil)
 	if err != nil {
 		return Removal{}, err
 	}
-	removal, err := s.accounts.Remove(ctx, id, p.Actor(), func(tx *sql.Tx, neverConnected bool) error {
+	out := Removal{AccountID: removal.AccountID, Purged: removal.Purged}
+	if !removal.Purged {
+		out.PurgeAfter = removal.PurgeAfter.Unix()
+	}
+	return out, nil
+}
+
+// removeAccount is RemoveAccount's act, its id confirmed, for a request an
+// extension carries for a person too (req: recorded in the removal's
+// write).
+func (s *Service) removeAccount(ctx context.Context, p Principal, id string, req *store.Request) (account.Removal, error) {
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needCard)
+	if err != nil {
+		return account.Removal{}, err
+	}
+	removal, err := s.accounts.RemoveFor(ctx, req, id, p.Actor(), func(tx *sql.Tx, neverConnected bool) error {
 		return s.mayRemoveTx(ctx, tx, p, a, neverConnected)
 	})
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return Removal{}, err
+		return account.Removal{}, err
+	case requestRefusal(err) != nil:
+		return account.Removal{}, requestRefusal(err)
 	case errors.Is(err, account.ErrNotFound):
-		return Removal{}, E(CodeNotFound, "no such account", err)
+		return account.Removal{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
-		return Removal{}, E(CodeInternal, "removing the account failed", err)
+		return account.Removal{}, E(CodeInternal, "removing the account failed", err)
 	}
 	s.accessChanged()
-	out := Removal{AccountID: a.ID, Purged: removal.Purged}
 	if removal.Purged {
 		s.log.Info("mailbox that never connected deleted", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
 		s.forgetMoves([]string{a.ID})
 		s.compact(ctx)
-		return out, nil
+		return removal, nil
 	}
-	out.PurgeAfter = removal.PurgeAfter.Unix()
 	if len(removal.Told) > 0 {
 		s.noticesChanged()
 	}
 	s.log.Info("mailbox removed; kept until it is recovered or deleted for good", "account", a.ID,
-		"workspace", a.WorkspaceID, "by", p.Actor(), "purge_after", out.PurgeAfter, "readers_told", len(removal.Told))
-	return out, nil
+		"workspace", a.WorkspaceID, "by", p.Actor(), "purge_after", removal.PurgeAfter.Unix(), "readers_told", len(removal.Told))
+	return removal, nil
 }
 
 // mayRemoveTx re-reads, inside the transaction that removes a mailbox, that
@@ -855,7 +898,7 @@ func (s *Service) mayRemoveTx(ctx context.Context, tx *sql.Tx, p Principal, a ac
 	return errRemoveTeamMailbox
 }
 
-var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner of the team removes its mailboxes", nil)
+var errRemoveTeamMailbox = E(CodeNotAuthorized, "only an owner of the team removes its mailboxes", ErrOwnerOnly)
 
 // link is where a new mailbox goes, the check its transaction runs (under
 // the context that transaction's write gives it), and the workspace's consent
@@ -959,6 +1002,9 @@ var errLinkTeam = E(CodeNotAuthorized,
 // through its first listing — it asks the server, which is also how a person
 // confirms an account works right after authorising it.
 func (s *Service) ListFolders(ctx context.Context, p Principal, id string) ([]Folder, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeRead, id, needRead)
 	if err != nil {
 		return nil, err

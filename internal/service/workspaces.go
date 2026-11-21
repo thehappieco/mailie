@@ -8,6 +8,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
+	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
@@ -280,6 +281,25 @@ type GrantRequest struct {
 	// one. A grant whose key is not the person's now is a conflict: the
 	// console read them before their reset.
 	PublicKey string `json:"public_key,omitempty"`
+	// From, when set, is what the caller saw the person hold, all four
+	// flags (none held is all four false): the grant is set only while it
+	// holds exactly that when it is written, and is a conflict otherwise,
+	// so that a flag taken away since the caller looked is never given back
+	// by a change it drew before. Left out, the grant is set whatever it
+	// holds.
+	From *GrantFlags `json:"from,omitempty"`
+}
+
+// GrantFlags are a grant's four flags, each said.
+type GrantFlags struct {
+	Read   bool `json:"read"`
+	Act    bool `json:"act"`
+	Send   bool `json:"send"`
+	Manage bool `json:"manage"`
+}
+
+func (g GrantFlags) flags() workspace.Flags {
+	return workspace.Flags{Read: g.Read, Act: g.Act, Send: g.Send, Manage: g.Manage}
 }
 
 // Errors of administering a workspace.
@@ -302,11 +322,11 @@ var (
 	// errOwnerAccess is an admin changing an owner's access to a mailbox
 	// (platform decision 0060).
 	errOwnerAccess = E(CodeNotAuthorized,
-		"only an owner changes an owner's access to a mailbox; ask another owner of the team", nil)
+		"only an owner changes an owner's access to a mailbox; ask another owner of the team", ErrOwnerAccess)
 	// errTeamClosed is a closed team asked to be used or changed. Its
 	// mailboxes are not found instead: they reach nobody.
 	errTeamClosed = E(CodeConflict,
-		"this team is closed: nothing in it is used or changed until it reopens", nil)
+		"this team is closed: nothing in it is used or changed until it reopens", ErrTeamClosed)
 	errCloseOperator = E(CodeNotAuthorized,
 		"closing and reopening a team needs an unrestricted instance admin key", nil)
 	errOnlyTeamCloses = E(CodeBadRequest,
@@ -316,7 +336,7 @@ var (
 // administers admits who may administer workspaces: a person signed in, or
 // the operator.
 func administers(p Principal) error {
-	if p.IsSession() || isOperator(p) {
+	if p.IsPerson() || isOperator(p) {
 		return nil
 	}
 	return errAdministers
@@ -416,6 +436,9 @@ func (s *Service) openTx(ctx context.Context, tx *sql.Tx, workspaceID string) er
 // listed with when it closed (closed_at), and nothing in it is used; so is a
 // team where teams are withheld, which is listed marked so (withheld).
 func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := s.authorize(p, auth.ScopeRead); err != nil {
 		return nil, err
 	}
@@ -474,6 +497,9 @@ func (s *Service) ListWorkspaces(ctx context.Context, p Principal) ([]Workspace,
 // source decides whether teams are created here at all, and an edition that
 // withholds teams creates none.
 func (s *Service) CreateWorkspace(ctx context.Context, p Principal, req CreateWorkspaceRequest) (Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Workspace{}, err
+	}
 	if err := administers(p); err != nil {
 		return Workspace{}, err
 	}
@@ -521,6 +547,9 @@ func (s *Service) CreateWorkspace(ctx context.Context, p Principal, req CreateWo
 
 // RenameWorkspace renames a team: its owners and admins, or the operator.
 func (s *Service) RenameWorkspace(ctx context.Context, p Principal, id string, req RenameWorkspaceRequest) (Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Workspace{}, err
+	}
 	if err := administers(p); err != nil {
 		return Workspace{}, err
 	}
@@ -553,6 +582,9 @@ func (s *Service) RenameWorkspace(ctx context.Context, p Principal, id string, r
 // protections are marked in advance (last_owner, last_reader_of), so a client
 // can explain before anyone tries.
 func (s *Service) ListMembers(ctx context.Context, p Principal, id string) ([]Member, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := administers(p); err != nil {
 		return nil, err
 	}
@@ -581,6 +613,9 @@ func (s *Service) ListMembers(ctx context.Context, p Principal, id string) ([]Me
 // in the team with it, and enabling it again restores none; the last reader
 // of one of its mailboxes is not disabled.
 func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string, req MemberRequest) (Member, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Member{}, err
+	}
 	if err := administers(p); err != nil {
 		return Member{}, err
 	}
@@ -640,6 +675,9 @@ func (s *Service) SetMember(ctx context.Context, p Principal, id, userID string,
 // API keys they created there are revoked. The last reader of one of the
 // team's mailboxes is not removed.
 func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := administers(p); err != nil {
 		return err
 	}
@@ -678,6 +716,9 @@ func (s *Service) RemoveMember(ctx context.Context, p Principal, id, userID stri
 // ListTeamInvites lists a team's pending invites, newest first: every one for
 // an owner and the operator, the member invites for an admin.
 func (s *Service) ListTeamInvites(ctx context.Context, p Principal, id string) ([]TeamInvite, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := administers(p); err != nil {
 		return nil, err
 	}
@@ -711,6 +752,9 @@ func (s *Service) ListTeamInvites(ctx context.Context, p Principal, id string) (
 // (auth.SignUp). Joining gives no access to any mailbox. Where people sign in
 // only through an extension, nobody invites anyone.
 func (s *Service) CreateTeamInvite(ctx context.Context, p Principal, id string, req TeamInviteRequest) (TeamInvite, error) {
+	if err := refuseDelegated(p); err != nil {
+		return TeamInvite{}, err
+	}
 	if err := s.passwordsInUse(); err != nil {
 		return TeamInvite{}, err
 	}
@@ -759,6 +803,9 @@ func (s *Service) CreateTeamInvite(ctx context.Context, p Principal, id string, 
 // works: an owner's or the operator's to do for any, an admin's for a member
 // invite. One an admin may not see is not found for them.
 func (s *Service) RevokeTeamInvite(ctx context.Context, p Principal, id, inviteID string) error {
+	if err := refuseDelegated(p); err != nil {
+		return err
+	}
 	if err := administers(p); err != nil {
 		return err
 	}
@@ -792,6 +839,9 @@ func (s *Service) RevokeTeamInvite(ctx context.Context, p Principal, id, inviteI
 // Refused where people sign in only through an extension, and where teams
 // are withheld, whose invites nobody creates and an older one is not spent.
 func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInviteRequest) (Workspace, error) {
+	if err := refuseDelegated(p); err != nil {
+		return Workspace{}, err
+	}
 	if err := s.passwordsInUse(); err != nil {
 		return Workspace{}, err
 	}
@@ -814,6 +864,9 @@ func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInvit
 // operator; a member is not_authorized. Addresses and grants, never what a
 // mailbox holds: seeing the directory reads no mail.
 func (s *Service) AccessDirectory(ctx context.Context, p Principal, id string) ([]MailboxAccess, error) {
+	if err := refuseDelegated(p); err != nil {
+		return nil, err
+	}
 	if err := administers(p); err != nil {
 		return nil, err
 	}
@@ -905,32 +958,56 @@ func (s *Service) presentMailboxConsent(c workspace.Consent) *MailboxConsent {
 // read deletes the person's grants on the mailbox. The last reader of a team
 // mailbox keeps read (the repository's rule).
 func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID string, req GrantRequest) (Grant, error) {
-	if err := administers(p); err != nil {
+	if err := refuseDelegated(p); err != nil {
 		return Grant{}, err
 	}
+	g, _, err := s.setAccess(ctx, p, accountID, userID, req, nil)
+	if err != nil {
+		return Grant{}, err
+	}
+	return presentGrant(g), nil
+}
+
+// setAccess is SetAccess's act, for a request an extension carries for a
+// person too (sreq: recorded in the grant's write, the flags it adds
+// stamped with its first moment), and reports whether the grant changed. A
+// person acting through an extension never gives a sealed grant: that is a
+// session's browser's.
+func (s *Service) setAccess(ctx context.Context, p Principal, accountID, userID string, req GrantRequest,
+	sreq *store.Request,
+) (workspace.Grant, bool, error) {
+	if err := administers(p); err != nil {
+		return workspace.Grant{}, false, err
+	}
 	if req.Read == nil || req.Act == nil || req.Send == nil || req.Manage == nil {
-		return Grant{}, E(CodeBadRequest,
+		return workspace.Grant{}, false, E(CodeBadRequest,
 			"read, act, send and manage are all required: the grant is set to exactly them", nil)
 	}
 	flags := workspace.Flags{Read: *req.Read, Act: *req.Act, Send: *req.Send, Manage: *req.Manage}
 	var sealed *workspace.Sealed
 	switch {
 	case req.Grant != "":
-		// Sealed by a person's browser, from their own grant: never a key's.
+		// Sealed by a person's browser, from their own grant: never a key's,
+		// nor a request carried for a person from elsewhere.
 		if err := requireSession(p); err != nil {
-			return Grant{}, err
+			return workspace.Grant{}, false, err
 		}
 		got, err := sealedOf(req.Grant, req.PublicKey)
 		if err != nil {
-			return Grant{}, err
+			return workspace.Grant{}, false, err
 		}
 		sealed = &got
 	case req.PublicKey != "":
-		return Grant{}, errSealedToAlone
+		return workspace.Grant{}, false, errSealedToAlone
+	}
+	var from *workspace.Flags
+	if req.From != nil {
+		f := req.From.flags()
+		from = &f
 	}
 	a, err := s.accessTarget(ctx, p, accountID)
 	if err != nil {
-		return Grant{}, err
+		return workspace.Grant{}, false, err
 	}
 	// An admin's change of an owner's access is refused before the
 	// freshness hook is asked about it; the write asks again.
@@ -941,26 +1018,30 @@ func (s *Service) SetAccess(ctx context.Context, p Principal, accountID, userID 
 		}
 		return ownerAccessTx(ctx, tx, me, a.WorkspaceID, userID)
 	}); err != nil {
-		return Grant{}, err
+		return workspace.Grant{}, false, err
 	}
 	if err := s.freshGrant(ctx, p, a, userID, flags, sealed != nil); err != nil {
-		return Grant{}, err
+		return workspace.Grant{}, false, err
 	}
-	g, err := s.workspaces.SetGrantSealed(ctx, a.ID, userID, flags, sealed, p.Actor(), func(tx *sql.Tx) error {
-		if err := s.mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
-			return err
-		}
-		if sealed != nil && userID != p.UserID {
-			return s.stepUpTx(ctx, tx, p)
-		}
-		return nil
+	g, changed, err := s.workspaces.SetGrantFor(ctx, workspace.GrantChange{
+		AccountID: a.ID, UserID: userID, Flags: flags, From: from, Sealed: sealed, GrantedBy: p.Actor(),
+		Request: sreq,
+		Check: func(tx *sql.Tx) error {
+			if err := s.mayGrantTx(ctx, tx, p, a, userID, flags); err != nil {
+				return err
+			}
+			if sealed != nil && userID != p.UserID {
+				return s.stepUpTx(ctx, tx, p)
+			}
+			return nil
+		},
 	})
 	if err != nil {
-		return Grant{}, fromKeys(err, "setting the access failed")
+		return workspace.Grant{}, false, fromKeys(err, "setting the access failed")
 	}
 	s.accessChanged()
 	s.reconcile(a.ID)
-	return presentGrant(g), nil
+	return g, changed, nil
 }
 
 // freshGrant asks the freshness hook before a grant is set (freshness.go): a
@@ -992,14 +1073,29 @@ func (s *Service) freshGrant(ctx context.Context, p Principal, a account.Account
 // admin never an owner's (platform decision 0060). The last reader of a team
 // mailbox keeps read.
 func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags) error {
-	if err := administers(p); err != nil {
+	if err := refuseDelegated(p); err != nil {
 		return err
+	}
+	_, err := s.revokeAccess(ctx, p, accountID, userID, drop, nil)
+	return err
+}
+
+// revokeAccess is RevokeAccess's act, for a request an extension carries
+// for a person too (req: recorded in the revocation's write, refused for a
+// grant raised at or after its first second, and done with nothing changed
+// when nothing it takes is held), and reports whether it took anything
+// away. It never asks the freshness hook: taking away widens nothing.
+func (s *Service) revokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags,
+	req *store.Request,
+) (bool, error) {
+	if err := administers(p); err != nil {
+		return false, err
 	}
 	a, err := s.accessTarget(ctx, p, accountID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.workspaces.Revoke(ctx, a.ID, userID, drop, func(tx *sql.Tx) error {
+	_, changed, err := s.workspaces.RevokeFor(ctx, req, a.ID, userID, drop, func(tx *sql.Tx) error {
 		me, err := s.administratorTx(ctx, tx, p, a)
 		if err != nil {
 			return err
@@ -1007,11 +1103,11 @@ func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, user
 		return ownerAccessTx(ctx, tx, me, a.WorkspaceID, userID)
 	})
 	if err != nil {
-		return fromWorkspace(err, "revoking the access failed")
+		return false, fromWorkspace(err, "revoking the access failed")
 	}
 	s.accessChanged()
 	s.reconcile(a.ID)
-	return nil
+	return changed, nil
 }
 
 // ParseFlags reads a comma-separated list of flags — read, act, send,
