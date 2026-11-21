@@ -833,8 +833,10 @@ func TestARemovedMailboxStillReachesNobody(t *testing.T) {
 	wantCode(t, "Bea reading the removed mailbox's card", err, service.CodeNotFound)
 	_, err = f.svc.SetAccess(ctx, tm.ana, tm.shared, tm.carol.UserID, grantRequest(true, false, false, false))
 	wantCode(t, "Ana giving Carol read on it", err, service.CodeNotFound)
+	// Its team's owner takes access away, and never its last kept reader's.
 	err = f.svc.RevokeAccess(ctx, tm.ana, tm.shared, tm.bea.UserID, workspace.Flags{})
-	wantCode(t, "Ana taking Bea's read", err, service.CodeNotFound)
+	wantCode(t, "Ana taking Bea's read", err, service.CodeConflict)
+	wantRefusal(t, "Ana taking Bea's read", err, service.RefusalLastReader)
 	directory, err := f.svc.AccessDirectory(ctx, tm.ana, tm.id)
 	if err != nil {
 		t.Fatal(err)

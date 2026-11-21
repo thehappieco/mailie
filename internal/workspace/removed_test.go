@@ -112,8 +112,10 @@ func TestARemovedMailboxStillReachesNobody(t *testing.T) {
 	if directory, err := f.ws.Directory(ctx, support.ID); err != nil || len(directory) != 0 {
 		t.Errorf("the directory lists %+v (%v)", directory, err)
 	}
+	// Taking flags away is the one change its grants take, and its last kept
+	// reader keeps read.
 	_, err = f.ws.Revoke(ctx, shared, bea.ID, workspace.Flags{}, nil)
-	want(t, "Bea's read revoked", err, workspace.ErrNoMailbox)
+	want(t, "Bea's read revoked", err, workspace.ErrLastReader)
 	_, err = f.ws.SetGrant(ctx, shared, ana.ID, readOnly(), ana.ID, nil)
 	want(t, "Ana given read again", err, workspace.ErrNoMailbox)
 }
@@ -186,8 +188,6 @@ func TestNothingIsGrantedKeyedOrManagedOnARemovedMailbox(t *testing.T) {
 
 	_, err := f.ws.SetGrant(ctx, shared.ID, bea.ID, readAct(), ana.ID, nil)
 	want(t, "a grant changed", err, workspace.ErrNoMailbox)
-	_, err = f.ws.Revoke(ctx, shared.ID, bea.ID, workspace.Flags{}, nil)
-	want(t, "a grant revoked", err, workspace.ErrNoMailbox)
 	_, err = f.ws.SetKeyAccess(ctx, prefix, shared.ID, readAct(), ana.ID, nil)
 	want(t, "a key given more", err, workspace.ErrNoMailbox)
 	err = f.db.Write(ctx, func(tx *sql.Tx) error { return workspace.ManagesTx(ctx, tx, shared.ID, ana.ID) })
@@ -201,6 +201,14 @@ func TestNothingIsGrantedKeyedOrManagedOnARemovedMailbox(t *testing.T) {
 	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ? AND read = 1 AND act = 0`,
 		shared.ID, bea.ID); n != 1 {
 		t.Error("Bea's grant on the removed mailbox changed")
+	}
+	// Taking flags away is the one change its grants take: Ana, who linked
+	// it, would still read it once recovered.
+	if _, err := f.ws.Revoke(ctx, shared.ID, bea.ID, workspace.Flags{}, nil); err != nil {
+		t.Errorf("Bea's grant taken away: %v", err)
+	}
+	if n := f.count(`SELECT count(*) FROM mailbox_access WHERE account_id = ? AND user_id = ?`, shared.ID, bea.ID); n != 0 {
+		t.Error("Bea still holds a grant on the removed mailbox")
 	}
 }
 

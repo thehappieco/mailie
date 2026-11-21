@@ -452,7 +452,13 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   refreshed (`Registry.Mailbox` builds a mailbox only through `Repository.Get`, which leaves it out,
   and builds again, never caching, one it was building while the removal let go of it), syncs
   nothing, and has no reader (`store.LiveSQL` in the one rule). Nothing is granted, keyed or given
-  on it (the schema's triggers). Its address stays taken in its workspace, a Gmail account's under
+  on it (the schema's triggers). Its grants take one change: an active owner of its team takes
+  flags or access away (`RevokeAccess`, `DELETE /v1/accounts/{id}/access/{user}`, the member in
+  any standing), while the last person who would read it once recovered keeps read (`409`,
+  `last_reader`: recover it and share it, or delete it for good), and taking read deletes the
+  person's grants on it as on a live one; a recovery then brings back only who still holds read.
+  The team's admins, its members and the operator are told it does not exist, as for every other
+  use. Its address stays taken in its workspace, a Gmail account's under
   every spelling ([Mailboxes](#mailboxes)): linking it again is `409`, which says until when it is
   kept; an owner recovers it, or deletes it for good to link it again.
 - **It keeps protecting until it is deleted for good.** Whoever would read it once recovered — an
@@ -521,7 +527,11 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   what it deletes is the team's. The operator's deletion, and the sweep's, are not.
 - **Its sync, removed:** a removed team mailbox's owners turn its sync off, which deletes the index
   it kept (asked about first where workspaces come from a directory, `removed_sync_off`), and so
-  does the operator, any workspace's ([Consents](#consents)); nobody turns it on. Withdrawing a person's own sync consent deletes the index of their
+  does the operator, any workspace's ([Consents](#consents)); nobody turns it on. A removed
+  personal mailbox's person deletes the index it keeps the same way (`PUT /v1/accounts/{id}/sync`
+  with `enabled: false`): their consent, its hold and its removal stay, nothing is journaled and
+  nobody told (nobody else reads it), and a recovery brings it back paused with nothing kept,
+  which a resume indexes from its last 90 days. Withdrawing a person's own sync consent deletes the index of their
   removed mailboxes too, and so does a team consent migration 0011 bound to its linker when it
   stops with them (closing them is refused without `force` while someone else would read the
   removed mailbox once recovered, as for a live one).
@@ -602,7 +612,14 @@ person.
   which a resume ends.
 - A person's withdrawal of their own sync consent deletes the index of **their personal
   mailboxes only**, and ends their pauses; it never reaches a team's (but for a migrated consent
-  still bound to them, below).
+  still bound to them, below). A person also deletes the index one of their removed personal
+  mailboxes keeps, alone (`PUT /v1/accounts/{id}/sync` `{"enabled": false}`), their consent kept
+  ([Removed mailboxes](#removed-mailboxes)).
+- **An agreement given through an extension** — a person's own, or a team's by its owner or
+  admin, as a team mailbox's sync turned on or resumed — is recorded as on the screens: its
+  revision, its person, and its time, which is when they asked (the request's first moment). The
+  request's id lives in its record alone, never on the agreement
+  ([Acts an extension runs for a person](#acts-an-extension-runs-for-a-person)).
 - Disabling, removing or closing a person does not stop a team mailbox of a team others are in,
   nor remove it: it is the team's — but for a migrated consent still bound to them, below, and a
   mailbox only they read, which no reader is left for. Disabling a person stops their personal
@@ -849,7 +866,10 @@ included: these routes take a session or the operator's key.
    or the operator workspace.
 4. **Revoking** any flag is an owner's, an admin's or the operator's, under the
    [last-reader rule](#protections); an owner or an admin drops their own flags, a member does not;
-   an admin never takes an owner's (1).
+   an admin never takes an owner's (1). It reaches a member in any standing (suspended, held,
+   disabled), and asks the freshness hook nothing, a drop of read included. On a removed team
+   mailbox it is its team's active owners' alone, its last kept reader keeping read
+   ([Removed mailboxes](#removed-mailboxes)).
 5. The grant records `granted_by`: `usr_…` for a person signed in (the linker's own grant
    included), `key:<prefix>` for the operator, whose command line goes through the daemon with an
    instance admin key, or `migration` for a grant migration 0008 made; empty once the person who
@@ -1465,7 +1485,7 @@ New routes. A session is a person signed in; "operator" is an unrestricted insta
 | `POST /v1/auth/invites/accept` | session | `{invite}` → `Workspace`: joins with the invite's role |
 | `GET /v1/workspaces/{id}/access` | owner or admin; operator (a member: `403`) | `[MailboxAccess]`, every mailbox of the workspace |
 | `PUT /v1/accounts/{id}/access/{user_id}` | see [the grant rules](#who-may-change-a-grant), an owner's only by an owner (platform decision 0060); session; operator for `manage` | `{read, act, send, manage, grant?, public_key?}`, all four flags required, not all false → `Grant`; `grant` with `read` given on a mailbox that has a key to a person with an account key, beside the `public_key` it was sealed to, which must be theirs now |
-| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included, an owner's only by an owner (0060); operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it; taking `read` deletes the person's grants on the mailbox |
+| `DELETE /v1/accounts/{id}/access/{user_id}?flags=` | owner or admin, their own flags included, an owner's only by an owner (0060); operator | `204`; `flags` (comma-separated `read`, `act`, `send`, `manage`) names what goes, every flag without it; taking `read` deletes the person's grants on the mailbox; on a removed team mailbox, its team's active owners alone, its last kept reader keeping read (`409`) |
 | `GET /v1/accounts/{id}/mailbox-key` | session holding `read` on it (a person who sees only its card: `403`) | `MailboxKeyState`: the key pair, the caller's own grant, and whom they may seal to or who may seal to them |
 | `POST /v1/accounts/{id}/mailbox-key` | session reading it by the flag, with an account key; fresh step-up | `{public_key, namespace, grants: [{user_id, grant, public_key}]}` → `MailboxKeyPair` (201), the first key of a mailbox without one; each grant names the account key it was sealed to, which must be its person's now |
 | `PUT /v1/accounts/{id}/mailbox-key` | session, the personal mailbox's person; fresh step-up | `{epoch, public_key, grant}` → `MailboxKeyPair`, the next key; older grants deleted |
@@ -1504,7 +1524,7 @@ Changed routes:
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's); the callback is also a link at the provider's return, with the mailbox's first key, `public_key`, `namespace` and `grant` |
 | `POST /v1/accounts/oauth/links`, `GET /v1/accounts/oauth/links/{id}` | new: a link at the provider, who may link where as [above](#mailboxes), read only by its starter |
 | `PATCH /v1/accounts/{id}` | new: `{display_name}` → `Account`, renaming a live mailbox, by whoever manages it, under the one name rule ([above](#mailboxes)) |
-| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
+| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off, and a removed personal mailbox's person, `{"enabled": false}`, deleting the index it kept and keeping their consent; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
 | `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)); a key's are that key's |
@@ -2090,7 +2110,8 @@ authorization, the same checks in its write and the same freshness hook. No tran
   a `not_found` its write meets in a team closed meanwhile is said as closed too, so an extension
   tries it again once the team reopens.
 - **The person** must exist and not be disabled here. One an extension suspended acts only for
-  their own narrowings (withdrawing a consent); a disable here stops even those. The write checks
+  their own narrowings (withdrawing a consent, signing out everywhere); a disable here, or their
+  deletion, stops even those. The write checks
   it again in its transaction (`store.RequirePersonActsTx`), so a person suspended or disabled
   between the request and the write changes nothing — on a personal mailbox's paths too, which
   re-read nothing of the actor before.
@@ -2130,12 +2151,44 @@ authorization, the same checks in its write and the same freshness hook. No tran
   `personal_grant`, `needs_own_session`, `fresh_unconfirmed`, `request_done`; `none` for anything
   else). Removing a mailbox removed already is `already_removed` to whoever may recover it, and
   `not_found` to anyone else.
-- **The acts** (`PersonActs`): `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current
-  sync text and records the team's agreement), `LiftHold` (the person's own personal mailbox),
-  `TeamSync` on or off, `Remove`, `Recover`, `Purge`, `RaiseFlags` (from, to: act, send or manage
-  added, never read), `DropFlags`, `RemoveAccess`, `AgreeConsent` and `WithdrawConsent` (sync,
-  actions, send). `RequestOutcome` reads a request's record; `SweepRequests` deletes the records
-  whose time is over.
+- **The acts** (`PersonActs`), each held to the use case a session runs by a test that runs both
+  on the same fixture and compares the database, the journal, the notices and the freshness asked
+  (`TestEachKindThroughAnExtensionDoesWhatItsSessionDoes`):
+  - `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current sync text and records the
+    team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`, `Purge`;
+  - `TeamSync` on or off; off, on a mailbox removed since it was asked, deletes the index it keeps
+    for an owner of the team, as a session's turn-off of a removed team mailbox does (its
+    agreement's moment still compared), and is `not_found` to an admin;
+  - `Recover`; to whoever may recover it, a mailbox live again in the request's workspace
+    (recovered since it was asked) is done, with nothing changed, and one the workspace's journal
+    shows deleted for good is `recovery_over`, as one past its 30 days is; anything else
+    `not_found`;
+  - `RemovedIndexOff`: a removed mailbox's kept index deleted, by its person for a personal one,
+    by an active owner of its team for a team's (the team's agreement withdrawn, after the
+    freshness hook, `FreshRemovedSyncOff`; a personal one asks it nothing); never a live mailbox's:
+    one recovered since is done, with nothing changed, and nothing of its consent, index, pause,
+    agreement or journal moves. No widening gives a removed mailbox's index back, so it compares
+    with no moment;
+  - `RaiseFlags` (from, to: act, send or manage added, never read), `DropFlags`, `RemoveAccess`;
+    taking away reaches a member in any standing, a former one holding nothing is done, a removed
+    team mailbox's flags too for an active owner of its team, and neither asks the freshness
+    hook, a drop of read included: the last reader's refusal is this server's own;
+  - `AgreeConsent` and `WithdrawConsent` (sync, actions, send);
+  - `SignOutEverywhere(before)`: every live session of the person that started by `before`'s
+    second ended and counted (`SessionsEnded`), their tickets and the links they started by then
+    gone, and `before` recorded as their last sign-out everywhere (`users.signed_out_everywhere_at`),
+    never moved back, a moment ahead of now taken as now; sessions started after it and every key
+    stay, and one that ends nothing is still recorded;
+  - `DismissNotices(ids)`: the person's notices of 1 to 300 journal entries (`mbe_…`), in one
+    write (`Dismissed`); one they hold no notice of, dismissed already or gone, is done.
+
+  `RequestOutcome` reads a request's record; `SweepRequests` deletes the records whose time is
+  over, which the daemon's hourly housekeeping runs, at start too.
+- **An agreement given through an extension** is recorded on the agreement as one given on the
+  screens is — its version, its person and its time, the time being when they asked (the
+  request's first moment) — and nothing else: no reference to the request is kept on it. The
+  request's id and its extension live only in its record, for as long as the extension said
+  (`KeepUntil`, at most 31 days), as the record of changes it belongs to.
 
 ## Migration 0008
 
@@ -2498,7 +2551,10 @@ row, in unix seconds; 0 for every row before it, read as raised before any reque
 trigger is added or written again: the workspace and person marks already follow every write that
 carries a new `raised_at` or a widening's stamp. No row of a schema-28 database changes. The tests
 in `internal/store/migrate_twentynine_test.go` hold every row and object as they were, and the
-record's shape.
+record's shape. The daemon's hourly housekeeping deletes a record once its `keep_until` passed.
+An extension's state is listed by prefix as a range of its primary key from this release on
+(`ExtensionStateKeys`, no migration), which lists the same keys, in the same order, as the
+substring compare before it, reading only those.
 
 ## Going back
 

@@ -105,6 +105,9 @@ const (
 	actRemoveAccess    = "remove_access"
 	actAgreeConsent    = "agree_consent"
 	actWithdrawConsent = "withdraw_consent"
+	actRemovedIndexOff = "removed_index_off"
+	actSignOutEvery    = "sign_out_everywhere"
+	actDismissNotices  = "dismiss_notices"
 )
 
 // PersonActs are what an extension may run for one person's request
@@ -136,13 +139,20 @@ var (
 	errBadRaise = E(CodeBadRequest, "a raise adds flags to what the person holds, and never read", nil)
 	errBadDrop  = E(CodeBadRequest, "a drop takes flags away, and adds none", nil)
 	errConsent  = E(CodeBadRequest, "a person's consent is sync, actions or send", nil)
+	errSignOut  = E(CodeBadRequest, "a sign-out everywhere names the moment it was asked", nil)
+	errNotices  = E(CodeBadRequest,
+		"a dismissal names 1 to 300 notices, each by its journal id of 1 to 64 bytes", nil)
+	// errRecoveryClosed is a removed mailbox deleted for good since: nothing
+	// recovers it.
+	errRecoveryClosed = E(CodeConflict, "this mailbox was deleted for good, and is no longer recovered", ErrRecoveryOver)
 )
 
 // ActFor returns what an extension may run for d's person. The request's
 // record is read first: one that ran answers its first outcome from every
 // act, before any check. The person must exist and not be disabled here:
 // not_authorized (ErrActorInactive) otherwise; a person an extension
-// suspended acts only for their own narrowings (withdrawing a consent).
+// suspended acts only for their own narrowings (withdrawing a consent,
+// signing out everywhere).
 func (s *Service) ActFor(ctx context.Context, d Delegation) (*PersonActs, error) {
 	if s.store == nil || s.users == nil {
 		return nil, E(CodeInternal, "this service has no database to run a request in", nil)
@@ -354,6 +364,15 @@ func (a *PersonActs) TeamSync(ctx context.Context, accountID string, on bool, ve
 		}
 		acc, err := a.s.authorizeAccount(ctx, a.p, auth.ScopeAdmin, accountID, needCard)
 		if err != nil {
+			// Removed since it was asked: turning it off is what a turn-off
+			// asks of a removed team mailbox, its kept index deleted, by an
+			// owner of the team; not found to anyone else.
+			if !on && CodeOf(err) == CodeNotFound {
+				if removed, ok := a.s.removedOwnMailbox(ctx, a.p, accountID); ok && teamMailbox(removed) {
+					sw, err := a.s.syncOffRemoved(ctx, a.p, removed, req, false)
+					return store.RequestOutcome{Changed: sw.Changed}, err
+				}
+			}
 			return store.RequestOutcome{}, err
 		}
 		if !teamMailbox(acc) {
@@ -380,11 +399,35 @@ func (a *PersonActs) Remove(ctx context.Context, accountID string) (ActOutcome, 
 }
 
 // Recover recovers the removed mailbox (RecoverAccount): live again, its
-// sync paused where its consent stands.
+// sync paused where its consent stands. To whoever may recover it, a
+// mailbox live again in the request's workspace (recovered since it was
+// asked) is done, with nothing changed; one the workspace's journal shows
+// deleted for good is recovery_over (ErrRecoveryOver), as one past its 30
+// days is; anything else is not found.
 func (a *PersonActs) Recover(ctx context.Context, accountID string) (ActOutcome, error) {
+	if a.ran == nil && !a.suspended && CodeOf(a.item(ctx, accountID)) == CodeNotFound && a.ownerHere(ctx) {
+		purged, err := a.s.store.PurgedIn(ctx, a.d.WorkspaceID, accountID)
+		switch {
+		case err != nil:
+			return ActOutcome{}, E(CodeInternal, "reading the mailbox's journal failed", err)
+		case purged:
+			return ActOutcome{}, errRecoveryClosed
+		}
+	}
 	return a.run(ctx, actRecover, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
-		err := a.s.recoverAccount(ctx, a.p, accountID, req)
-		return store.RequestOutcome{Changed: err == nil}, err
+		for range 2 {
+			err := a.s.recoverAccount(ctx, a.p, accountID, req)
+			if CodeOf(err) != CodeNotFound || !a.ownerHere(ctx) {
+				return store.RequestOutcome{Changed: err == nil}, err
+			}
+			// Live again: recovered since it was asked.
+			done, nerr := a.s.noOp(ctx, req, accountID, nil, liveTx(ctx, accountID))
+			if nerr != nil || done {
+				return store.RequestOutcome{}, nerr
+			}
+			// Removed again meanwhile: recovered as asked, once more.
+		}
+		return store.RequestOutcome{}, errNoAccount
 	})
 }
 
@@ -394,6 +437,76 @@ func (a *PersonActs) Purge(ctx context.Context, accountID string) (ActOutcome, e
 		err := a.s.purgeAccount(ctx, a.p, accountID, req)
 		return store.RequestOutcome{Changed: err == nil}, err
 	})
+}
+
+// RemovedIndexOff deletes the index a removed mailbox keeps, at the word of
+// whoever may: a personal mailbox's person (forgetRemovedIndex: their
+// consent, its hold and its removal stay; nothing journaled), an active
+// owner of a team's (syncOffRemoved: the team's agreement withdrawn and
+// journaled, nobody told, a removed mailbox having no reader; after the
+// freshness hook, FreshRemovedSyncOff). It never reaches a live mailbox:
+// one recovered since it was asked is done, with nothing changed, to
+// whoever may; and no widening gives a removed mailbox's index again, so it
+// compares with no moment. Anyone else is told it does not exist.
+func (a *PersonActs) RemovedIndexOff(ctx context.Context, accountID string) (ActOutcome, error) {
+	return a.run(ctx, actRemovedIndexOff, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
+		if err := a.s.authorize(a.p, auth.ScopeAdmin); err != nil {
+			return store.RequestOutcome{}, err
+		}
+		for range 2 {
+			if removed, ok := a.s.removedOwnMailbox(ctx, a.p, accountID); ok {
+				if removed.OwnerUserID != "" {
+					forgot, err := a.s.forgetRemovedIndex(ctx, a.p, removed, req)
+					return store.RequestOutcome{Changed: forgot}, err
+				}
+				sw, err := a.s.syncOffRemoved(ctx, a.p, removed, req.Unbounded(), true)
+				return store.RequestOutcome{Changed: sw.Changed}, err
+			}
+			if !a.ownerHere(ctx) {
+				break
+			}
+			// Live again: what it kept is the live mailbox's, never this
+			// act's to delete.
+			done, err := a.s.noOp(ctx, req, accountID, nil, liveTx(ctx, accountID))
+			if err != nil || done {
+				return store.RequestOutcome{}, err
+			}
+		}
+		return store.RequestOutcome{}, errNoAccount
+	})
+}
+
+// liveTx reads, inside a request's write, whether a mailbox is live.
+func liveTx(ctx context.Context, accountID string) func(*sql.Tx) (bool, error) {
+	return func(tx *sql.Tx) (bool, error) {
+		var live bool
+		err := tx.QueryRowContext(ctx, `SELECT removed_at = 0 FROM accounts WHERE id = ?`, accountID).Scan(&live)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return live, err
+	}
+}
+
+// ownerHere reports whether the person owns the mailboxes of the request's
+// workspace: its person, for a personal one; an active owner, for a team.
+// Who may recover, delete for good or turn off a removed one there.
+func (a *PersonActs) ownerHere(ctx context.Context) bool {
+	if a.s.workspaces == nil || a.d.WorkspaceID == "" {
+		return false
+	}
+	w, err := a.s.workspaces.Get(ctx, a.d.WorkspaceID)
+	if err != nil {
+		return false
+	}
+	switch w.Kind {
+	case workspace.KindPersonal:
+		return w.PersonID == a.p.UserID
+	case workspace.KindTeam:
+		m, err := a.s.workspaces.Member(ctx, w.ID, a.p.UserID)
+		return err == nil && m.Active() && m.Role == workspace.RoleOwner
+	}
+	return false
 }
 
 // RaiseFlags gives userID the flags to holds beyond from, what the request
@@ -484,6 +597,53 @@ func (a *PersonActs) WithdrawConsent(ctx context.Context, which Consent) (ActOut
 			err = errConsent
 		}
 		return store.RequestOutcome{Changed: changed}, err
+	})
+}
+
+// SignOutEverywhere ends the person's live sessions that started at or
+// before the moment they asked, before, counting them (SessionsEnded), and
+// the tickets and links at the provider they started by then; and records
+// that moment as their last sign-out everywhere, never moving it back.
+// Sessions started after it stay, and keys too. A person an extension
+// suspended still signs themselves out.
+func (a *PersonActs) SignOutEverywhere(ctx context.Context, before time.Time) (ActOutcome, error) {
+	if before.Unix() <= 0 {
+		return ActOutcome{}, errSignOut
+	}
+	return a.run(ctx, actSignOutEvery, "", true, func(req *store.Request) (store.RequestOutcome, error) {
+		ended, changed, err := a.s.users.SignOutEverywhereFor(ctx, req, a.p.UserID, before)
+		switch {
+		case requestRefusal(err) != nil:
+			return store.RequestOutcome{}, requestRefusal(err)
+		case err != nil:
+			return store.RequestOutcome{}, E(CodeInternal, "signing out everywhere failed", err)
+		}
+		a.s.log.Info("a person signed out everywhere through an extension", "user", a.p.UserID, "sessions", ended)
+		return store.RequestOutcome{Changed: changed, SessionsEnded: ended}, nil
+	})
+}
+
+// DismissNotices deletes the person's notices of the journal entries ids
+// names ("mbe_…"), 1 to 300 of them, in one write (Dismissed counts them):
+// one they hold no notice of, dismissed already or gone, is done.
+func (a *PersonActs) DismissNotices(ctx context.Context, ids []string) (ActOutcome, error) {
+	if len(ids) == 0 || len(ids) > store.MaxNoticesDismissed {
+		return ActOutcome{}, errNotices
+	}
+	for _, id := range ids {
+		if id == "" || len(id) > 64 {
+			return ActOutcome{}, errNotices
+		}
+	}
+	return a.run(ctx, actDismissNotices, "", false, func(req *store.Request) (store.RequestOutcome, error) {
+		n, err := a.s.store.DismissNoticesFor(ctx, req, a.p.UserID, ids)
+		switch {
+		case requestRefusal(err) != nil:
+			return store.RequestOutcome{}, requestRefusal(err)
+		case err != nil:
+			return store.RequestOutcome{}, E(CodeInternal, "dismissing the notices failed", err)
+		}
+		return store.RequestOutcome{Changed: n > 0, Dismissed: n}, nil
 	})
 }
 

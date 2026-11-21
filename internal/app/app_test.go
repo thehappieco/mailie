@@ -201,7 +201,7 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			housekeep(ctx, users, db.SweepSends, noMailboxes, nil, nil, db.Scrub, slog.New(slog.DiscardHandler), every)
+			housekeep(ctx, users, db.SweepSends, noMailboxes, nil, nil, nil, db.Scrub, slog.New(slog.DiscardHandler), every)
 		}()
 		return func() {
 			t.Helper()
@@ -320,7 +320,7 @@ func TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, nil, nil, db.Scrub, logger, time.Hour)
+		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, nil, nil, svc, db.Scrub, logger, time.Hour)
 	}()
 	select {
 	case <-swept:
@@ -356,4 +356,57 @@ func TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays(t *testing.T) {
 			t.Errorf("%s still holds the address of the mailbox deleted for good", filepath.Base(file))
 		}
 	}
+}
+
+func TestHousekeepingDeletesTheRecordOfARequestOnceItsTimeIsOver(t *testing.T) {
+	now := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	clock := func() time.Time { return now }
+	db := storetest.NewAt(t, filepath.Join(t.TempDir(), "mail.db"), clock)
+	svc := service.New(service.Deps{Store: db, Now: clock, Log: slog.New(slog.DiscardHandler)})
+	users := auth.NewUsersWithClock(db, clock)
+	ctx := t.Context()
+	for id, keepUntil := range map[string]time.Time{"over": now.Add(-time.Second), "kept": now.Add(time.Hour)} {
+		if _, err := db.Writer().ExecContext(ctx, `INSERT INTO extension_requests(extension, id, user_id, act, outcome,
+			done_at, keep_until) VALUES ('ext', ?, 'usr_0000000000000001', 'pause_sync', '{"changed":true}', 1, ?)`,
+			id, keepUntil.Unix()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sweepCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	swept := make(chan struct{}, 1)
+	go func() {
+		defer close(done)
+		housekeep(sweepCtx, users, db.SweepSends, func(context.Context, time.Duration) (int, int, error) {
+			return 0, 0, nil
+		}, nil, nil, sweptRequests{svc, swept}, db.Scrub, slog.New(slog.DiscardHandler), time.Hour)
+	}()
+	select {
+	case <-swept:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the sweep at start")
+	}
+	cancel()
+	<-done
+	for id, want := range map[string]bool{"over": false, "kept": true} {
+		_, ran, err := svc.RequestOutcome(ctx, "ext", id)
+		if err != nil || ran != want {
+			t.Errorf("the record of %q is kept: %v (%v), want %v", id, ran, err, want)
+		}
+	}
+}
+
+// sweptRequests says when the requests were swept.
+type sweptRequests struct {
+	svc   *service.Service
+	swept chan struct{}
+}
+
+func (s sweptRequests) SweepRequests(ctx context.Context) (int, error) {
+	n, err := s.svc.SweepRequests(ctx)
+	select {
+	case s.swept <- struct{}{}:
+	default:
+	}
+	return n, err
 }

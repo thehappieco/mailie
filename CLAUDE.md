@@ -107,7 +107,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   rising, a version falling only to 0 with a recorded reset, the row kept `gone_at` after the
   person's deletion until `ReleaseDirectoryPersonTx`), `workspaces.source_version`/`source_reset`,
   `workspace_members.held_at` (`HeldReaderSQL` says whom a hold keeps a mailbox for; it decides no
-  access), `extension_state` (`extstate.go`, values of a mebibyte at most) and `workspace_changes`
+  access), `extension_state` (`extstate.go`, values of a mebibyte at most, listed by prefix as a
+  range of the primary key, `ExtensionStateKeys`, never a scan of the extension's keys) and
+  `workspace_changes`
   (`changes.go`: a mark per workspace from another source, written by triggers in the transaction
   of every change its snapshot or its settings show, only rising; since migration 0027 a mailbox's
   reason, attribution, agreement and its text, who paused it, sent copy, host, first connection
@@ -117,7 +119,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   sign-out everywhere, a notice given or gone or changed by its mailbox, label, hint or actor's
   membership — one per person however many notices one write touched, the triggers selecting
   each holder once; gone with the person's identity; empty on a self-hosted server),
-  `users.signed_out_everywhere_at` (written by a sign-out everywhere alone), `accounts.connected_at`
+  `users.signed_out_everywhere_at` (written by a sign-out everywhere alone, a person's signed in or
+  one asked through an extension, never moved back), `accounts.connected_at`
   (the first credential's moment, by trigger; known for password mailboxes and every mailbox
   connected since, 0 for an OAuth one connected before) and `accounts.server_kind` (`gmail`,
   `other`, or empty until a login records it). What an extension reads of them: the journal
@@ -158,7 +161,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   second). Each decisive write takes the request in an `…For` form (`PauseSyncFor`,
   `SetMailboxSyncFor`, the consents' `Grant…For`/`Withdraw…For`; `workspace.SetGrantFor`,
   `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`), the old name a nil
-  request.
+  request; and the writes only a request had before: `SyncOffRemovedFor` (a removed mailbox's own
+  sync off, which leaves one live again as it is), `ForgetRemovedIndexFor` (a removed personal
+  mailbox's kept index, at its person's word: its consent, hold and removal kept, nothing
+  journaled) and `DismissNoticesFor` (a person's notices by journal id, at most
+  `MaxNoticesDismissed`, an id they hold none of done); `PurgedIn` reads a deletion for good from a
+  workspace's journal, and `Request.Unbounded` is a narrowing no widening gives back (a removed
+  mailbox's kept index), compared with no moment.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -232,7 +241,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   whoever did it). For applying a directory's document in one write, Tx forms that open no write
   of their own: `SuspendTx`, `ResumeTx` (`Resume` is a write around it),
   `RevokeSessionsStartedBeforeTx` (at microseconds; a session started in the moment's second ends
-  too), `Keys.RevokeCreatedBeforeTx`; and `ExternalSignIn.PersonCreatedTx`, run in the transaction
+  too), `Keys.RevokeCreatedBeforeTx`; `SignOutEverywhereFor` is a person's sign-out everywhere asked
+  at a moment (a request an extension carries, recorded in its write): their live sessions started
+  by its second ended and counted, their tickets and the links they started by then gone, the
+  moment recorded as their last sign-out everywhere, never moved back (one ahead of now is now);
+  and `ExternalSignIn.PersonCreatedTx`, run in the transaction
   that creates a new person, right after their identity is linked, which rolls it all back on an
   error. A person acting through an extension (`KindPerson`, built only by `service.ActFor`, never
   by a transport) is a person with no session and no key: `IsKey`, `IsInstance` and
@@ -313,7 +326,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   workspaces or memberships changes here, a person created gets no workspace from it, and the
   directory's documents send every one through `mirror.go`). A workspace's kind, source and
   person never change (migration 0016's trigger); a team closes and reopens (`SetClosed`,
-  `closed_at`, migration 0019), and nothing in it is used meanwhile. Only a local team goes with its only member
+  `closed_at`, migration 0019), and nothing in it is used meanwhile. A removed mailbox's grants
+  take one change, flags taken away (`Revoke`, `keptMailboxTx`; the schema refuses giving anything
+  on it), its last kept reader keeping read; the membership's status is never asked of a revoke.
+  Only a local team goes with its only member
   (`GoesWithPersonSQL`, the one rule for deleting it, its mailboxes and the last-reader test); a
   team whose source is not local outlives its people, its last one here included, and has no last
   owner here. `mirror.go` writes what a directory's document says: a team by the directory's id
@@ -422,11 +438,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   A person acting through an extension is asked about as one signed in is. `delegated.go`:
   `ActFor(Delegation)` is the one way for an extension to run a person's request with no session
   (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, remove, recover, purge,
-  raise and drop flags, remove access, agree to and withdraw a consent), each the use case a
+  a removed mailbox's kept index off, raise and drop flags, remove access, agree to and withdraw a
+  consent, sign out everywhere before a moment, dismiss notices in a batch), each the use case a
   session runs through the unexported act its method calls, with the request recorded in its
   write (`store.Request`): once only, a no-op recorded, its item in the request's workspace, a
   closed team `team_closed`, a narrowing refused only for a widening at or after its first second,
-  a widening stamped with it, an error after the commit answered from the record. Every exported
+  a widening stamped with it, an error after the commit answered from the record. To whoever may:
+  a recovery of a mailbox live again is done, of one the workspace's journal shows deleted for
+  good `recovery_over`; a team's turn-off of a mailbox removed since deletes its kept index, an
+  owner's; a removed mailbox's kept index off never reaches one recovered since (done) and asks
+  the freshness hook for a team only; taking flags away or a drop of read asks it nothing.
+  `SweepRequests` is the hourly housekeeping's (`internal/app`). Every exported
   method that takes a principal refuses `KindPerson` first (`refuseDelegated`,
   `ErrNeedsOwnSession`), held by a test that calls each by reflection, and so do the key and
   session sides inside the acts (`requireSession`). `refusals.go`: `RefusalOf`, one word of a
@@ -674,9 +696,12 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   protection is said before it refuses: nothing else of it reaches them. Only its owners remove it — a personal mailbox's person, a team's active
   owners (an admin, only a link of their own that never connected), the operator for an operator
   mailbox — and they alone list, recover and delete it for good; the operator also lists and
-  deletes any workspace's for good, and recovers no person's or team's. A recovery brings back the
-  readers who still qualify and nothing a key held; none in a closed team, nor of a team mailbox
-  nobody who could read it is left to read. **The directory exceptions**, under a source that
+  deletes any workspace's for good, and recovers no person's or team's. A team's active owners
+  alone also take flags or access away on it (`RevokeAccess`, as on a live one, the member in any
+  standing), its last kept reader keeping read (`last_reader`), and nobody gives anything on it.
+  A recovery brings back the readers who still qualify and nothing a key held; none in a closed
+  team, nor of a team mailbox nobody who could read it is left to read. **The directory
+  exceptions**, under a source that
   mirrors an external directory (`docs/workspaces.md`, "Following an external directory"): what
   the directory says applies in a closed team too (memberships change while it is closed); its
   end of a membership, or of a person (`ForgetExternalPerson`), takes no refusal for the last
@@ -712,8 +737,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   in the same transaction: a person's withdrawal only their personal mailboxes', a team's for every
   reader, telling each of them but whoever turned it off with a notice. A removed mailbox keeps its
   index for its 30 days, syncing nothing, and loses it when deleted for good, or at once when its
-  person withdraws, a removed team mailbox's owners turn it off or the consent still bound to its
-  linker stops. The operator turns any mailbox's sync off (`StopMailboxSync`,
+  person withdraws or turns it off (a removed personal mailbox's kept index alone, by the route a
+  team's owner uses, `PUT /v1/accounts/{id}/sync` with `enabled: false`: their consent, its hold
+  and its removal kept, nothing journaled, and a recovery then brings it back paused with nothing
+  kept), a removed team mailbox's owners turn it off or the consent still bound to its linker
+  stops. An agreement given through an extension (`ActFor`) is recorded as on the screens, its
+  version, its person and when they asked (the request's first moment); the request's id lives
+  only in its record (`extension_requests`), never on the agreement. The operator turns any
+  mailbox's sync off (`StopMailboxSync`,
   `POST /v1/accounts/{id}/sync/stop`, `account sync ID off`), in any workspace, live or removed,
   a closed or withheld team's included: its index deleted in that transaction, a team's consent
   withdrawn (its owners and admins give it again), a personal one held (`sync_held_at`), live or removed, until

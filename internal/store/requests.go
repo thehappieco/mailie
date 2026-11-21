@@ -143,6 +143,19 @@ func (r *Request) Stamp(now int64) int64 {
 	return now
 }
 
+// Unbounded is the request with no first moment to compare with: a
+// narrowing that takes away what no widening gives again (a removed
+// mailbox's kept index, which nothing indexes again while it is removed)
+// always runs. Nil for nil.
+func (r *Request) Unbounded() *Request {
+	if r == nil {
+		return nil
+	}
+	u := *r
+	u.FirstIssued = time.Time{}
+	return &u
+}
+
 // widenedSince reports whether a value a narrowing would take away was given
 // at, a time in unix seconds, at or after the request's first second.
 func (r *Request) widenedSince(at int64) bool {

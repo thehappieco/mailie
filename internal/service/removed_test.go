@@ -102,13 +102,16 @@ func TestARemovedMailboxIsGoneForEveryUse(t *testing.T) {
 		}
 	}
 	// Who holds what on it, its key and its sync are nobody's to change, nor
-	// to see.
+	// to see; taking someone's access away is its team's owners' alone
+	// (TestAnOwnerTakesAccessAwayOnARemovedMailboxButNeverFromItsLastKeptReader).
 	on, off := true, false
 	_, err = f.svc.SetAccess(ctx, tm.ana, tm.shared, tm.bea.UserID,
 		service.GrantRequest{Read: &on, Act: &off, Send: &off, Manage: &off})
 	wantCode(t, "Ana changing Bea's grant", err, service.CodeNotFound)
-	err = f.svc.RevokeAccess(ctx, tm.ana, tm.shared, tm.bea.UserID, workspace.Flags{})
-	wantCode(t, "Ana revoking Bea's grant", err, service.CodeNotFound)
+	for name, p := range map[string]service.Principal{"Carol, an admin": tm.carol, "Bea": tm.bea, "the operator": admin()} {
+		err = f.svc.RevokeAccess(ctx, p, tm.shared, tm.bea.UserID, workspace.Flags{})
+		wantCode(t, name+" revoking Bea's grant", err, service.CodeNotFound)
+	}
 	_, err = f.svc.SetKeyAccess(ctx, tm.ana, tm.id, created.Prefix, tm.shared, keyAccess(true, false, false))
 	wantCode(t, "Ana changing what the key holds", err, service.CodeNotFound)
 	_, err = f.svc.MailboxKey(ctx, tm.ana, tm.shared)

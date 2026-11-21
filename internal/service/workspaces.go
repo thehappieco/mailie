@@ -1005,7 +1005,7 @@ func (s *Service) setAccess(ctx context.Context, p Principal, accountID, userID 
 		f := req.From.flags()
 		from = &f
 	}
-	a, err := s.accessTarget(ctx, p, accountID)
+	a, err := s.accessTarget(ctx, p, accountID, false)
 	if err != nil {
 		return workspace.Grant{}, false, err
 	}
@@ -1071,7 +1071,14 @@ func (s *Service) freshGrant(ctx context.Context, p Principal, a account.Account
 // named takes every one. An owner or an admin of the workspace, their own
 // flags included, or the operator; a member never, not even their own; an
 // admin never an owner's (platform decision 0060). The last reader of a team
-// mailbox keeps read.
+// mailbox keeps read. The person may be a member in any standing: active,
+// suspended, held or disabled.
+//
+// A team mailbox removed and kept is changed this way too, by an active
+// owner of its team alone (whoever may recover it): its last kept reader,
+// who would read it once it is recovered, keeps read, and taking read
+// deletes the person's grants on it as on a live one. Anyone else, the
+// team's admins and the operator included, is told it does not exist.
 func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags) error {
 	if err := refuseDelegated(p); err != nil {
 		return err
@@ -1091,11 +1098,15 @@ func (s *Service) revokeAccess(ctx context.Context, p Principal, accountID, user
 	if err := administers(p); err != nil {
 		return false, err
 	}
-	a, err := s.accessTarget(ctx, p, accountID)
+	a, err := s.accessTarget(ctx, p, accountID, true)
 	if err != nil {
 		return false, err
 	}
 	_, changed, err := s.workspaces.RevokeFor(ctx, req, a.ID, userID, drop, func(tx *sql.Tx) error {
+		if !a.RemovedAt.IsZero() {
+			// Removed: an active owner of its open team, as for a recovery.
+			return s.ownsRemovedTx(ctx, tx, p, a)
+		}
 		me, err := s.administratorTx(ctx, tx, p, a)
 		if err != nil {
 			return err
@@ -1136,10 +1147,21 @@ func ParseFlags(list string) (workspace.Flags, error) {
 // operator reaches any, and is refused a closed team's in the write. A
 // person must be an owner or an admin of its workspace; a member who holds a
 // grant on it sees it and is not_authorized; anyone else, and anyone at all
-// for a closed team's mailbox, is told it does not exist.
-func (s *Service) accessTarget(ctx context.Context, p Principal, accountID string) (account.Account, error) {
+// for a closed team's mailbox, is told it does not exist. With kept, to take
+// flags away, a team mailbox removed and kept is read too, for an active
+// owner of its team alone (removedFor), and is not found to anyone else.
+func (s *Service) accessTarget(ctx context.Context, p Principal, accountID string, kept bool) (account.Account, error) {
 	a, err := s.accounts.Repo().Get(ctx, accountID)
 	switch {
+	case errors.Is(err, account.ErrNotFound) && kept && !isOperator(p):
+		removed, rerr := s.removedFor(ctx, p, accountID, false)
+		switch {
+		case rerr != nil && CodeOf(rerr) != CodeNotFound:
+			return account.Account{}, rerr
+		case rerr != nil, !teamMailbox(removed):
+			return account.Account{}, errNoAccount
+		}
+		return removed, nil
 	case errors.Is(err, account.ErrNotFound):
 		return account.Account{}, errNoAccount
 	case err != nil:

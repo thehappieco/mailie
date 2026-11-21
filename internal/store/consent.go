@@ -574,6 +574,23 @@ func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, b
 func (s *Store) SetMailboxSyncFor(ctx context.Context, req *Request, accountID string, on bool, by, version string,
 	check func(*sql.Tx) error,
 ) (MailboxSyncSwitch, error) {
+	return s.setMailboxSync(ctx, req, accountID, on, by, version, check, false)
+}
+
+// SyncOffRemovedFor turns a removed mailbox's own sync off (SetMailboxSyncFor
+// off), deleting the index it keeps, and touches nothing of a mailbox that
+// is live again: a recovery since it was asked brought it back with its
+// consent and its index, which this never turns into a turn-off of a live
+// mailbox. A request is then recorded as having changed nothing.
+func (s *Store) SyncOffRemovedFor(ctx context.Context, req *Request, accountID, by string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
+	return s.setMailboxSync(ctx, req, accountID, false, by, "", check, true)
+}
+
+// setMailboxSync is SetMailboxSyncFor; with removedOnly, a turn-off of a
+// mailbox that is not removed changes nothing.
+func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID string, on bool, by, version string,
+	check func(*sql.Tx) error, removedOnly bool,
+) (MailboxSyncSwitch, error) {
 	now := s.now().Unix()
 	var out MailboxSyncSwitch
 	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
@@ -609,6 +626,9 @@ func (s *Store) SetMailboxSyncFor(ctx context.Context, req *Request, accountID s
 			}
 			out.Changed = true
 			return agreeSyncTx(ctx, tx, accountID, by, version, req.Stamp(now), now)
+		}
+		if removedOnly && !removed {
+			return nil
 		}
 		// A paused team or operator mailbox was on, the schema says
 		// (accounts_pause_consent), so no pause ends unseen.
@@ -760,6 +780,54 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 		s.moves.forget([]string{accountID})
 	}
 	return out, err
+}
+
+// ForgetRemovedIndexFor deletes the index a removed personal mailbox keeps,
+// at its person's word (a person signed in, or a request an extension
+// carries for them: requests.go, nil records nothing), after check (nil
+// checks nothing), in one write: its folders, messages and events go, as a
+// withdrawal deletes them (ForgetIndexTx), and its person's consent, its
+// hold and its removal stay as they are. Its person acted, and nobody else
+// reads it, so nothing is journaled and nobody is told. A recovery then
+// brings it back paused with nothing kept, and a resume indexes it from
+// scratch. It reports whether there was an index to delete. A mailbox that
+// is live again (recovered since its person asked) is left as it is: what
+// a removed mailbox keeps is gone with its removal, and a request is
+// recorded as having changed nothing. A mailbox nobody knows, or that names
+// no person, is ErrNoSuchMailbox.
+func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, accountID string, check func(*sql.Tx) error) (bool, error) {
+	forgot := false
+	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
+		forgot = false
+		var removed, indexed bool
+		err := tx.QueryRowContext(ctx, `SELECT a.removed_at <> 0,
+			  EXISTS (SELECT 1 FROM folders WHERE account_id = a.id) OR EXISTS (SELECT 1 FROM messages WHERE account_id = a.id)
+			FROM accounts a WHERE a.id = ? AND a.owner_user_id IS NOT NULL`, accountID).Scan(&removed, &indexed)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return fmt.Errorf("%w: %s", ErrNoSuchMailbox, accountID)
+		case err != nil:
+			return fmt.Errorf("store: read the removed mailbox's index: %w", err)
+		}
+		if check != nil {
+			if err := check(tx); err != nil {
+				return err
+			}
+		}
+		if !removed {
+			return nil
+		}
+		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {
+			return err
+		}
+		forgot = indexed
+		return nil
+	}, func() RequestOutcome { return RequestOutcome{Changed: forgot} })
+	if err != nil {
+		return false, err
+	}
+	s.moves.forget([]string{accountID})
+	return forgot, nil
 }
 
 // journalSyncPausedTx journals, inside the caller's transaction, a mailbox's

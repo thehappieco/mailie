@@ -22,6 +22,12 @@ type issuedKeySweeper interface {
 	SweepIssuedKeys(context.Context, time.Time) (service.SweptIssuedKeys, error)
 }
 
+// requestSweeper is what the housekeeping keeps of the requests an extension
+// carried for a person (internal/service).
+type requestSweeper interface {
+	SweepRequests(context.Context) (int, error)
+}
+
 // sweepSpool removes the sections the IMAP adapter spooled and nobody
 // closed, and the attachments of a send that never ended: what a crash in the
 // middle of a download or a send leaves. It returns how many it removed.
@@ -81,13 +87,15 @@ const housekeepingInterval = time.Hour
 // too, if an extension has not released them (sweepDirectory,
 // service.SweepDirectory; nil sweeps none); and what is kept of the keys an
 // issuer made, each key's end recorded at its expiry and then each kind
-// deleted once its period is over (issuedKeys; nil sweeps none). The sweep
-// at start is what deletes at once a removed mailbox a restored backup
-// brought back past its 30 days. scrub then takes the deleted rows out of
-// the write-ahead log too.
+// deleted once its period is over (issuedKeys; nil sweeps none); and the
+// records of the requests an extension carried for a person, deleted once
+// the moment their extension said they go passed (requests,
+// service.SweepRequests; nil sweeps none). The sweep at start is what
+// deletes at once a removed mailbox a restored backup brought back past its
+// 30 days. scrub then takes the deleted rows out of the write-ahead log too.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	sweepMailboxes func(context.Context, time.Duration) (int, int, error),
-	sweepDirectory func(context.Context, time.Time) (int, error), issuedKeys issuedKeySweeper,
+	sweepDirectory func(context.Context, time.Time) (int, error), issuedKeys issuedKeySweeper, requests requestSweeper,
 	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
 	sweep := func() {
@@ -163,6 +171,16 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 					"ends", swept.Ends, "owed", swept.Owed, "uses", swept.Uses)
 			}
 			deleted += swept.Total()
+		}
+		if requests != nil {
+			n, err := requests.SweepRequests(ctx)
+			switch {
+			case err != nil && ctx.Err() == nil:
+				logger.Warn("sweeping the records of the requests an extension carried failed", "err", err)
+			case n > 0:
+				logger.Info("deleted the records of the requests an extension carried, past their time", "count", n)
+				deleted += n
+			}
 		}
 		if deleted > 0 {
 			if err := scrub(ctx); err != nil && ctx.Err() == nil {

@@ -208,6 +208,56 @@ func (u *Users) EndAllSessions(ctx context.Context, userID string) error {
 	})
 }
 
+// SignOutEverywhereFor is a person's sign-out everywhere asked at a moment,
+// before (a request an extension carries for them, recorded in the same
+// write: store.Request; nil records nothing): every live session of theirs
+// that started at or before before's second is ended and counted, the
+// tickets of their ceremonies under way are deleted, and so are the links
+// at the provider they started by then; and the moment is recorded as
+// their last sign-out everywhere (users.signed_out_everywhere_at), never
+// moved back. A session that started after it stays: the person asked
+// before it began. A moment ahead of now is now. Keys stay as they are. It
+// reports how many sessions it ended, and whether anything changed: a
+// session ended, or the recorded moment moved.
+func (u *Users) SignOutEverywhereFor(ctx context.Context, req *store.Request, userID string, before time.Time) (int, bool, error) {
+	now := u.now()
+	if before.After(now) {
+		before = now
+	}
+	at := before.Unix()
+	var (
+		ended int
+		moved bool
+	)
+	err := u.store.WriteRequest(ctx, req, "", func(tx *sql.Tx) error {
+		var err error
+		ended, err = execCount(ctx, tx, `UPDATE sessions SET revoked_at = ?
+			WHERE user_id = ? AND revoked_at = 0 AND expires_at > ? AND created_at <= ?`, now.Unix(), userID, now.Unix(), at)
+		if err != nil {
+			return fmt.Errorf("auth: end the sessions started before a moment: %w", err)
+		}
+		if err := dropTicketsTx(ctx, tx, userID); err != nil {
+			return err
+		}
+		if err := store.EndLinksTx(ctx, tx, store.LinksOf{StartedBy: userID, StartedAtOrBefore: at}); err != nil {
+			return err
+		}
+		n, err := execCount(ctx, tx, `UPDATE users SET signed_out_everywhere_at = ?
+			WHERE id = ? AND signed_out_everywhere_at < ?`, at, userID, at)
+		if err != nil {
+			return fmt.Errorf("auth: record the sign-out everywhere: %w", err)
+		}
+		moved = n > 0
+		return nil
+	}, func() store.RequestOutcome {
+		return store.RequestOutcome{Changed: ended > 0 || moved, SessionsEnded: ended}
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return ended, ended > 0 || moved, nil
+}
+
 // RevokeSessionsStartedBeforeTx ends, inside the caller's transaction, every
 // live session of a person that started at or before a moment, given in unix
 // microseconds, as an external directory states when it revoked their

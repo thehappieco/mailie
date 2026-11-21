@@ -230,16 +230,29 @@ type mailbox struct {
 	kind            Kind
 	// personID is the person of a personal workspace's mailbox.
 	personID string
+	// removed is a mailbox removed and kept (keptMailboxTx).
+	removed bool
 }
 
 // mailboxTx reads a live mailbox: a removed one (migration 0020) is
-// ErrNoMailbox, so nothing is granted, revoked, keyed, given to a key or
-// managed on it while it is kept, whoever asks.
+// ErrNoMailbox, so nothing is granted, keyed, given to a key or managed on
+// it while it is kept, whoever asks. Taking flags away is the one change a
+// removed mailbox's grants take (keptMailboxTx).
 func mailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, error) {
+	mb, err := keptMailboxTx(ctx, tx, accountID)
+	if err == nil && mb.removed {
+		return mailbox{}, ErrNoMailbox
+	}
+	return mb, err
+}
+
+// keptMailboxTx reads a mailbox, live or removed and kept: what Revoke takes
+// flags away on. The schema refuses giving anything on a removed one.
+func keptMailboxTx(ctx context.Context, tx *sql.Tx, accountID string) (mailbox, error) {
 	var mb mailbox
-	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind, coalesce(w.person_id, '')
-		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ? AND a.removed_at = 0`, accountID).
-		Scan(&mb.id, &mb.workspaceID, &mb.kind, &mb.personID)
+	err := tx.QueryRowContext(ctx, `SELECT a.id, a.workspace_id, w.kind, coalesce(w.person_id, ''), a.removed_at <> 0
+		FROM accounts a JOIN workspaces w ON w.id = a.workspace_id WHERE a.id = ?`, accountID).
+		Scan(&mb.id, &mb.workspaceID, &mb.kind, &mb.personID, &mb.removed)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return mailbox{}, ErrNoMailbox
@@ -451,6 +464,13 @@ func added(from, to Flags) bool {
 // (ErrLastReader). Losing manage, which only a member stores, ends the
 // consent attempts they started on it. Losing read deletes their grants on
 // the mailbox, every epoch's, even where send or manage stay.
+//
+// A team mailbox removed and kept takes flags away too, which is the one
+// change of its grants: who would read it once recovered counts as its
+// reader (protectedSQL), so its last such reader keeps read, and a recovery
+// brings back only who still holds it. Who may is the Check's: an owner of
+// its team, whom the service asks. The membership's status is not asked: a
+// suspended, held or disabled member's flags are taken away as anyone's.
 func (r *Repository) Revoke(ctx context.Context, accountID, userID string, drop Flags, check Check) (Grant, error) {
 	g, _, err := r.RevokeFor(ctx, nil, accountID, userID, drop, check)
 	return g, err
@@ -474,7 +494,7 @@ func (r *Repository) RevokeFor(ctx context.Context, req *store.Request, accountI
 		changed bool
 	)
 	err := r.store.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
-		mb, err := mailboxTx(ctx, tx, accountID)
+		mb, err := keptMailboxTx(ctx, tx, accountID)
 		if err != nil {
 			return err
 		}

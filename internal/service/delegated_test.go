@@ -248,30 +248,6 @@ func TestADisabledSuspendedOrDeletedPersonActsOnNothingThroughAnExtension(t *tes
 	}
 }
 
-func TestASuspendedPersonsOwnWithdrawalStillRuns(t *testing.T) {
-	f := newFixture(t)
-	ctx := t.Context()
-	ana := f.person(t, "ana@example.com", auth.RoleMember)
-	if _, err := f.svc.GrantActionsConsent(ctx, ana, f.consent().Actions); err != nil {
-		t.Fatal(err)
-	}
-	f.exec(t, `UPDATE users SET actions_consent_at = actions_consent_at - 100 WHERE id = ?`, ana.UserID)
-	f.suspend(t, ana.UserID)
-	out, err := f.actsFor(t, delegated(ana, "r1", "", ago(time.Minute))).WithdrawConsent(ctx, service.ConsentActions)
-	if err != nil || !out.Changed {
-		t.Fatalf("a suspended person withdrawing their consent: %+v, %v", out, err)
-	}
-	if f.count(t, `SELECT actions_consent_at FROM users WHERE id = ?`, ana.UserID) != 0 {
-		t.Error("the withdrawal left the consent standing")
-	}
-	// Disabled here: not even their own.
-	if _, err := f.svc.DisableUser(ctx, admin(), service.CloseUserRequest{Email: "ana@example.com"}); err != nil {
-		t.Fatal(err)
-	}
-	_, err = f.svc.ActFor(ctx, delegated(ana, "r2", "", time.Now()))
-	wantRefusal(t, "a person disabled here withdrawing", err, service.RefusalActorInactive)
-}
-
 func TestAnItemOfAnotherWorkspaceIsNotFoundToAPersonActingThroughAnExtension(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
@@ -330,6 +306,21 @@ func TestTheFreshnessHookIsAskedOfAPersonActingThroughAnExtensionAsOfASession(t 
 	}
 	if asked := hook.take(); len(asked) != 0 {
 		t.Errorf("a drop through an extension asked %+v", asked)
+	}
+	// Nor a drop of read, nor an access removal: the last reader's refusal
+	// is this server's own.
+	if _, err := f.actsFor(t, delegated(tm.carol, "r4", tm.id, time.Now())).DropFlags(ctx, tm.shared, tm.bea.UserID,
+		service.GrantFlags{Read: true}); err != nil {
+		t.Fatal(err)
+	}
+	tm.grant(t, tm.shared, workspace.Flags{Read: true})
+	f.exec(t, `UPDATE mailbox_access SET raised_at = raised_at - 60 WHERE account_id = ?`, tm.shared)
+	if out, err := f.actsFor(t, delegated(tm.carol, "r5", tm.id, time.Now())).RemoveAccess(ctx, tm.shared, tm.bea.UserID); err != nil ||
+		!out.Changed {
+		t.Fatalf("an access removal: %+v, %v", out, err)
+	}
+	if asked := hook.take(); len(asked) != 0 {
+		t.Errorf("a drop of read and an access removal through an extension asked %+v", asked)
 	}
 }
 

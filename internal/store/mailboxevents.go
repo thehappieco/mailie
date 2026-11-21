@@ -454,6 +454,75 @@ func (s *Store) DismissNotice(ctx context.Context, userID, eventID string) error
 	})
 }
 
+// MaxNoticesDismissed is how many notices one dismissal names at most.
+const MaxNoticesDismissed = 300
+
+// DismissNoticesFor deletes, in one write, a person's notices of the events
+// eventIDs name ("mbe_…"), as a request an extension carries for them
+// decides it (requests.go; nil records nothing), and reports how many it
+// deleted: an id the person holds no notice of — dismissed already, given
+// to someone else, or gone with its journal entry — is done, and counts
+// for nothing. The last notice of a mailbox deleted for good takes the
+// masked hint the journal kept for it, as DismissNotice does.
+func (s *Store) DismissNoticesFor(ctx context.Context, req *Request, userID string, eventIDs []string) (int, error) {
+	list, err := json.Marshal(eventIDs)
+	if err != nil {
+		return 0, fmt.Errorf("store: encode ids: %w", err)
+	}
+	var seqs []int64
+	err = s.WriteRequest(ctx, req, "", func(tx *sql.Tx) error {
+		var err error
+		if seqs, err = deleteNoticesTx(ctx, tx, userID, string(list)); err != nil || len(seqs) == 0 {
+			return err
+		}
+		return forgetUnneededHintsTx(ctx, tx, seqs)
+	}, func() RequestOutcome { return RequestOutcome{Changed: len(seqs) > 0, Dismissed: len(seqs)} })
+	if err != nil {
+		return 0, err
+	}
+	return len(seqs), nil
+}
+
+// deleteNoticesTx deletes, inside the caller's transaction, a person's
+// notices of the events a JSON list of ids names, and returns the seqs of
+// the events they were of.
+func deleteNoticesTx(ctx context.Context, tx *sql.Tx, userID, list string) ([]int64, error) {
+	rows, err := tx.QueryContext(ctx, `DELETE FROM notices
+		WHERE user_id = ? AND event_seq IN (SELECT seq FROM mailbox_events WHERE id IN (SELECT value FROM json_each(?)))
+		RETURNING event_seq`, userID, list)
+	if err != nil {
+		return nil, fmt.Errorf("store: dismiss the notices: %w", err)
+	}
+	//nolint:errcheck // read to the end below; a close failure changes nothing
+	defer func() { _ = rows.Close() }()
+	var seqs []int64
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			return nil, fmt.Errorf("store: dismiss the notices: %w", err)
+		}
+		seqs = append(seqs, seq)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: dismiss the notices: %w", err)
+	}
+	return seqs, nil
+}
+
+// PurgedIn reports whether the journal holds a mailbox's deletion for good
+// in a workspace: a mailbox whose id it names, deleted for good there, which
+// nothing recovers any longer. False once the entry is past its retention,
+// or for a mailbox whose journal went with it.
+func (s *Store) PurgedIn(ctx context.Context, workspaceID, accountID string) (bool, error) {
+	var purged bool
+	if err := s.r.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM mailbox_events
+		WHERE account_id = ? AND workspace_id = ? AND kind = ?)`, accountID, workspaceID, string(MailboxPurged)).
+		Scan(&purged); err != nil {
+		return false, fmt.Errorf("store: read the mailbox's journal: %w", err)
+	}
+	return purged, nil
+}
+
 // SweepMailboxEvents deletes the events written before before (unix
 // seconds), with who read the mailboxes then and the notices they gave, and
 // reports how many it deleted: the journal's retention. It also forgets the

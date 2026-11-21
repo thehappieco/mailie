@@ -258,3 +258,101 @@ func TestAWideningIsStampedWithItsRequestsFirstMomentAndANarrowingComparesWithIt
 		t.Error("a narrowing asked at 400.9 is refused for a widening at or after second 400, and only those")
 	}
 }
+
+func TestTurningOffARemovedMailboxsIndexNeverReachesOneLiveAgain(t *testing.T) {
+	// The seed: acc_t1 is a mailbox of the team wsp_t1, under its consent;
+	// a personal mailbox is its person's.
+	f := newSchemaLatest(t)
+	ctx := context.Background()
+	const owner = "usr_0000000000000001"
+	personal := queryStrings(t, f.s, `SELECT id FROM accounts WHERE owner_user_id IS NOT NULL ORDER BY id LIMIT 1`)[0]
+	indexed := func(id string) int64 {
+		t.Helper()
+		return queryInt(t, f.s, `SELECT count(*) FROM folders WHERE account_id = ?`, id)
+	}
+	for _, id := range []string{"acc_t1", personal} {
+		f.accepted(id+"'s folder", f.exec(`INSERT INTO folders(account_id, name, display_name, role, role_source, uidvalidity)
+			VALUES (?, 'Kept', 'Kept', '', '', 7)`, id))
+	}
+	keptTeam, keptOwn := indexed("acc_t1"), indexed(personal)
+	consent := queryInt(t, f.s, `SELECT sync_enabled_at FROM accounts WHERE id = 'acc_t1'`)
+	if consent == 0 {
+		t.Fatal("the seed's team mailbox is not under its team's consent")
+	}
+
+	// Live, recovered since a request asked: nothing of it is touched, and
+	// the request is done.
+	switched, err := f.s.SyncOffRemovedFor(ctx, requestFor("t1", "removed_index_off", ""), "acc_t1", owner, nil)
+	if err != nil || switched.Changed || len(switched.Told) != 0 {
+		t.Fatalf("turning off a live team mailbox's kept index: %+v, %v", switched, err)
+	}
+	forgot, err := f.s.ForgetRemovedIndexFor(ctx, requestFor("p1", "removed_index_off", ""), personal, nil)
+	if err != nil || forgot {
+		t.Fatalf("deleting a live personal mailbox's kept index: %v, %v", forgot, err)
+	}
+	if queryInt(t, f.s, `SELECT sync_enabled_at FROM accounts WHERE id = 'acc_t1'`) != consent ||
+		indexed("acc_t1") != keptTeam || indexed(personal) != keptOwn {
+		t.Error("a live mailbox's consent or index was touched")
+	}
+	for _, id := range []string{"t1", "p1"} {
+		if out, ran, _ := f.s.RequestOutcomeOf(ctx, "ext", id); !ran || out.Changed {
+			t.Errorf("the request %s: %+v, ran %v; want done, nothing changed", id, out, ran)
+		}
+	}
+
+	// Removed: its index goes, and a personal one's consent and removal
+	// stay, with nothing journaled.
+	f.remove("acc_t1", owner, 1000)
+	f.remove(personal, owner, 1000)
+	journal := queryInt(t, f.s, `SELECT count(*) FROM mailbox_events`)
+	if switched, err := f.s.SyncOffRemovedFor(ctx, nil, "acc_t1", owner, nil); err != nil || !switched.Changed {
+		t.Errorf("turning off a removed team mailbox's kept index: %+v, %v", switched, err)
+	}
+	if forgot, err := f.s.ForgetRemovedIndexFor(ctx, nil, personal, nil); err != nil || !forgot {
+		t.Errorf("deleting a removed personal mailbox's kept index: %v, %v", forgot, err)
+	}
+	if indexed("acc_t1") != 0 || indexed(personal) != 0 {
+		t.Error("a removed mailbox keeps its index")
+	}
+	if n := queryInt(t, f.s, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, personal); n != 1 {
+		t.Error("the personal mailbox is no longer removed")
+	}
+	if n := queryInt(t, f.s, `SELECT count(*) FROM mailbox_events`); n != journal+1 {
+		t.Errorf("the journal grew by %d, want the team's turn-off alone", n-journal)
+	}
+	if _, err := f.s.ForgetRemovedIndexFor(ctx, nil, "acc_t1", nil); !errors.Is(err, ErrNoSuchMailbox) {
+		t.Errorf("the personal write on a team mailbox: %v, want ErrNoSuchMailbox", err)
+	}
+}
+
+func TestDismissingNoticesTakesOnlyThePersonsOwn(t *testing.T) {
+	f := newSchemaLatest(t)
+	ctx := context.Background()
+	const ana, bea = "usr_0000000000000001", "usr_0000000000000002"
+	var ids []string
+	for range 2 {
+		var id string
+		if err := f.s.Write(ctx, func(tx *sql.Tx) error {
+			var err error
+			_, id, err = JournalMailboxTx(ctx, tx, MailboxEvent{Kind: MailboxSyncPaused, AccountID: "acc_t1", Actor: "cli", At: 900},
+				[]string{ana, bea}, true)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	n, err := f.s.DismissNoticesFor(ctx, requestFor("d1", "dismiss_notices", ""), ana, append(ids, "mbe_gone", ids[0]))
+	if err != nil || n != 2 {
+		t.Fatalf("Ana dismissing her two notices: %d, %v", n, err)
+	}
+	if got := queryInt(t, f.s, `SELECT count(*) FROM notices WHERE user_id = ?`, bea); got != 2 {
+		t.Errorf("Bea holds %d notices, want her two", got)
+	}
+	if out, ran, _ := f.s.RequestOutcomeOf(ctx, "ext", "d1"); !ran || out != (RequestOutcome{Changed: true, Dismissed: 2}) {
+		t.Errorf("the dismissal's record: %+v, ran %v", out, ran)
+	}
+	if n, err := f.s.DismissNoticesFor(ctx, nil, ana, ids); err != nil || n != 0 {
+		t.Errorf("dismissing them again: %d, %v", n, err)
+	}
+}

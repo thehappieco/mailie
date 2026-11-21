@@ -485,6 +485,9 @@ type MailboxSyncRequest struct {
 //     console, and nobody may decide for them. Its person turns it on only
 //     to lift the hold the operator's turn-off put on it (StopMailboxSync),
 //     after which it syncs under their consent as it stands, from no index.
+//     Removed, its person turns it off to delete the index it keeps
+//     (forgetRemovedIndex): their consent and its removal stay, and a
+//     recovery brings it back paused with nothing kept.
 //
 // Whoever does not see the mailbox is told it does not exist.
 func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID string, req MailboxSyncRequest) (AccountSync, error) {
@@ -501,8 +504,16 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, accountID, needCard)
 	if err != nil {
 		if !on && CodeOf(err) == CodeNotFound {
-			if removed, ok := s.removedTeamMailbox(ctx, p, accountID); ok {
-				return s.syncOffRemoved(ctx, p, removed)
+			if removed, ok := s.removedOwnMailbox(ctx, p, accountID); ok {
+				if removed.OwnerUserID != "" {
+					_, err = s.forgetRemovedIndex(ctx, p, removed, nil)
+				} else {
+					_, err = s.syncOffRemoved(ctx, p, removed, nil, false)
+				}
+				if err != nil {
+					return AccountSync{}, err
+				}
+				return AccountSync{State: syncOff}, nil
 			}
 		}
 		return AccountSync{}, err
@@ -663,15 +674,21 @@ func (s *Service) liftHold(ctx context.Context, p Principal, a account.Account, 
 // person.
 var errLiftNotYours = E(CodeNotAuthorized, "only its person turns a personal mailbox's sync on again", nil)
 
-// removedTeamMailbox reads a removed team mailbox an active owner of its
-// team asks about: the one thing they still do to it is turn its sync off,
-// deleting the index it keeps.
-func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string) (account.Account, bool) {
-	if !p.IsPerson() || s.workspaces == nil || s.store == nil {
+// removedOwnMailbox reads a removed mailbox a person asks about that is
+// theirs to turn off: one of their personal workspace, or a team's they are
+// an active owner of. The one thing they still do to its sync is turn it
+// off, deleting the index it keeps. Anyone else is told it does not exist.
+func (s *Service) removedOwnMailbox(ctx context.Context, p Principal, id string) (account.Account, bool) {
+	if !p.IsPerson() || s.store == nil {
 		return account.Account{}, false
 	}
 	a, err := s.accounts.Repo().GetRemoved(ctx, id)
-	if err != nil || a.OwnerUserID != "" || a.WorkspaceID == workspace.OperatorID {
+	switch {
+	case err != nil, a.WorkspaceID == workspace.OperatorID:
+		return account.Account{}, false
+	case a.OwnerUserID != "":
+		return a, a.OwnerUserID == p.UserID
+	case s.workspaces == nil:
 		return account.Account{}, false
 	}
 	m, err := s.workspaces.Member(ctx, a.WorkspaceID, p.UserID)
@@ -682,16 +699,21 @@ func (s *Service) removedTeamMailbox(ctx context.Context, p Principal, id string
 }
 
 // syncOffRemoved turns a removed team mailbox's sync off for an owner of its
-// team: what it kept indexed is deleted, and a recovery finds none. A team
-// withheld or closed is refused first, read only, as the write would; then
-// the owner is asked about (FreshRemovedSyncOff), outside the write, which
-// checks again that they own it, in a team that is open.
-func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Account) (AccountSync, error) {
+// team, signed in or through a request an extension carries for them (req:
+// recorded in the write): what it kept indexed is deleted, and a recovery
+// finds none. A team withheld or closed is refused first, read only, as the
+// write would; then the owner is asked about (FreshRemovedSyncOff), outside
+// the write, which checks again that they own it, in a team that is open.
+// With removedOnly, a mailbox recovered since is left as it is: nothing of
+// a live mailbox is turned off this way.
+func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Account, req *store.Request,
+	removedOnly bool,
+) (store.MailboxSyncSwitch, error) {
 	if err := s.removedTeamOpen(ctx, a); err != nil {
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
 	}
 	if err := s.fresh(ctx, p, FreshAct{Kind: FreshRemovedSyncOff, WorkspaceID: a.WorkspaceID, AccountID: a.ID}); err != nil {
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
 	}
 	check := func(tx *sql.Tx) error {
 		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
@@ -704,20 +726,69 @@ func (s *Service) syncOffRemoved(ctx context.Context, p Principal, a account.Acc
 		}
 		return nil
 	}
-	switched, err := s.store.SetMailboxSync(ctx, a.ID, false, p.Actor(), "", check)
+	var (
+		switched store.MailboxSyncSwitch
+		err      error
+	)
+	if removedOnly {
+		switched, err = s.store.SyncOffRemovedFor(ctx, req, a.ID, p.Actor(), check)
+	} else {
+		switched, err = s.store.SetMailboxSyncFor(ctx, req, a.ID, false, p.Actor(), "", check)
+	}
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return AccountSync{}, err
+		return store.MailboxSyncSwitch{}, err
+	case requestRefusal(err) != nil:
+		return store.MailboxSyncSwitch{}, requestRefusal(err)
 	case errors.Is(err, store.ErrNoMailboxConsent):
-		return AccountSync{}, E(CodeNotFound, "no such account", err)
+		return store.MailboxSyncSwitch{}, E(CodeNotFound, "no such account", err)
 	case err != nil:
-		return AccountSync{}, E(CodeInternal, "switching sync failed", err)
+		return store.MailboxSyncSwitch{}, E(CodeInternal, "switching sync failed", err)
 	}
 	s.log.Info("a removed team mailbox's sync turned off; its kept index deleted", "account", a.ID,
 		"workspace", a.WorkspaceID, "by", p.Actor(), "changed", switched.Changed)
-	s.compact(ctx)
-	return AccountSync{State: syncOff}, nil
+	if switched.Changed {
+		s.compact(ctx)
+	}
+	if len(switched.Told) > 0 {
+		s.noticesChanged()
+	}
+	return switched, nil
+}
+
+// forgetRemovedIndex deletes the index a removed personal mailbox keeps, for
+// its person, signed in or through a request an extension carries for them
+// (req: recorded in the write), which checks again that they are active.
+// Their consent, its hold and its removal stay: a recovery brings it back
+// paused with nothing kept, and a resume indexes it from scratch. Nothing is
+// journaled, and nobody is told: its person acted, and nobody else reads
+// it. A mailbox recovered since is left as it is. It reports whether there
+// was an index to delete.
+func (s *Service) forgetRemovedIndex(ctx context.Context, p Principal, a account.Account, req *store.Request) (bool, error) {
+	if !p.IsPerson() || a.OwnerUserID == "" || a.OwnerUserID != p.UserID {
+		return false, errNoAccount
+	}
+	forgot, err := s.store.ForgetRemovedIndexFor(ctx, req, a.ID, func(tx *sql.Tx) error {
+		return s.ownsRemovedTx(ctx, tx, p, a)
+	})
+	var se *Error
+	switch {
+	case errors.As(err, &se):
+		return false, err
+	case requestRefusal(err) != nil:
+		return false, requestRefusal(err)
+	case errors.Is(err, store.ErrNoSuchMailbox):
+		return false, E(CodeNotFound, "no such account", err)
+	case err != nil:
+		return false, E(CodeInternal, "deleting the removed mailbox's index failed", err)
+	}
+	s.log.Info("a removed personal mailbox's kept index deleted by its person", "account", a.ID, "by", p.Actor(),
+		"changed", forgot)
+	if forgot {
+		s.compact(ctx)
+	}
+	return forgot, nil
 }
 
 // StopMailboxSync turns a mailbox's sync off and deletes its index, in any
