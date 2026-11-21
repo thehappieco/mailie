@@ -267,6 +267,16 @@ built on the same pieces, so it behaves as it always did:
   API keys to personal workspaces (`app.Options.KeysInPersonalWorkspaceOnly`), leaves a team
   mailbox's Access section without its keys, and a team's member is told that its people and who
   uses each mailbox are managed by its owners and admins, naming no keys. Unset, a team has keys.
+- **Acting on one mailbox, on a page of the edition's own.** A page that acts on one person's
+  access to one mailbox, drawn by an edition from the core's state (`state/team.ts`,
+  `state/mailboxKeys.ts`) rather than from its panels, gives Read with `giveRead(accountID,
+  userID, drawn, flags)`: Read, with whichever of Act, Send and Manage `flags` names beside it, in
+  one request, from what the page drew the person holding (`drawn`, sent as `from`): the server
+  makes the change only while they hold exactly that, so a flag taken away since the page drew it
+  is never given back. A grant goes with it, sealed from the giver's own under a step-up, exactly
+  where `saveGrant` would send one. A refusal is said, the directory and the members are read
+  again, and nothing is sent again: the page draws what they hold now and asks again. The open
+  console's Access section keeps `saveGrant`.
 - **The person's sessions.** `SessionsRow`, the row of `AccountPanel` that says how long this
   session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
   shows the person's own settings, with words of its own (`title`, `description`,

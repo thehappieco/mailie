@@ -821,9 +821,11 @@ export interface GrantFlags { read: boolean; act: boolean; send: boolean; manage
  * The body of PUT /v1/accounts/{id}/access/{user}: the flags, and with read
  * given on a mailbox that has a key to a person with an account key, their
  * grant at its current epoch and the account public key it was sealed to,
- * which the server holds to theirs now.
+ * which the server holds to theirs now. from, when sent, is what the page
+ * drew the person holding: the server sets the flags only while they hold
+ * exactly that, and is a conflict otherwise.
  */
-export interface GrantChange extends GrantFlags { grant?: string; public_key?: string }
+export interface GrantChange extends GrantFlags { grant?: string; public_key?: string; from?: GrantFlags }
 /** A change to a membership: a field left out stays as it is. */
 export interface MemberChange { role?: WorkspaceRole; status?: MemberStatus }
 

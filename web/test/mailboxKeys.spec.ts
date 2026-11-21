@@ -444,6 +444,56 @@ describe('giving Read on a mailbox that has a key', () => {
   })
 })
 
+describe('giving Read from what a page drew', () => {
+  it('giveRead sends the flags it drew as From, and never sends again on a conflict', async () => {
+    const page = await load()
+    await signIn(page, ana2)
+    let answer: 'saved' | 'conflict' = 'saved'
+    const { key, shared } = await teamMailbox(page, [memberOf(carol)], ({ path, method, body }) => {
+      if (path !== `/v1/accounts/acc_shared/access/${carol.user.id}` || method !== 'PUT') return failure('not_found', 404)
+      if (answer === 'conflict') return failure('conflict', 409)
+      return json({ account_id: 'acc_shared', user_id: carol.user.id, ...(body as object), grant: undefined, public_key: undefined, from: undefined, updated_at: 2, sealed: true })
+    })
+    // Read with Act and Manage beside it, in one request, from what the page drew.
+    const wanted = { read: true, act: true, send: false, manage: true }
+    expect(await page.team.giveRead(shared.id, carol.user.id, none, wanted)).toBeNull()
+    const [put] = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)
+    const body = put!.body as GrantChange
+    expect(Object.keys(body).sort()).toEqual(['act', 'from', 'grant', 'manage', 'public_key', 'read', 'send'])
+    expect(body.from).toEqual(none)
+    expect({ read: body.read, act: body.act, send: body.send, manage: body.manage }).toEqual(wanted)
+    expect(same(await opensFor(carol, key, body.grant!), key.privateKey)).toBe(true)
+
+    // Changed since the page drew it: refused, read again, and sent no more.
+    answer = 'conflict'
+    seen = []
+    const drawnSend = { ...none, send: true }
+    expect(await page.team.giveRead(shared.id, carol.user.id, drawnSend, { ...drawnSend, read: true })).toEqual({ op: 'give-read', code: 'conflict' })
+    const puts = sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)
+    expect(puts).toHaveLength(1)
+    expect((puts[0]!.body as GrantChange).from).toEqual(drawnSend)
+    expect(sent('GET', `/v1/workspaces/${TEAM}/access`)).toHaveLength(1)
+    // The members: once to seal to Carol as listed now, once again after the refusal.
+    expect(sent('GET', `/v1/workspaces/${TEAM}/members`)).toHaveLength(2)
+
+    // Read is what it gives: nothing is sent without it, or to someone drawn holding it.
+    seen = []
+    expect(await page.team.giveRead(shared.id, carol.user.id, none, { ...none, send: true })).toEqual({ op: 'give-read', code: 'bad_request' })
+    expect(await page.team.giveRead(shared.id, carol.user.id, reader, reader)).toEqual({ op: 'give-read', code: 'bad_request' })
+    expect(sent('PUT', `/v1/accounts/${shared.id}/access/${carol.user.id}`)).toEqual([])
+  })
+
+  it('gives Read by the flag alone, with From, to a member without an account key', async () => {
+    const page = await load()
+    await signIn(page, ana2, { authenticatedAt: now() - 3600 })
+    const dan: Member = { ...memberOf(carol), user_id: 'usr_00000000000000d4', email: 'dan@example.test', public_key: undefined }
+    const { shared } = await teamMailbox(page, [dan], ({ method, body }) => method === 'PUT' ? json({ account_id: 'acc_shared', user_id: dan.user_id, ...(body as object), from: undefined, updated_at: 2, sealed: false }) : failure('not_found', 404))
+    expect(await page.team.giveRead(shared.id, dan.user_id, none, reader)).toBeNull()
+    expect(sent('PUT', `/v1/accounts/${shared.id}/access/${dan.user_id}`).map(request => request.body)).toEqual([{ ...reader, from: none }])
+    expect(page.stepUp.stepUpPrompt.open).toBe(false)
+  })
+})
+
 describe('handing the key to a member who waits for it', () => {
   it('seals it from the person’s own grant to the member’s key at the current epoch, which opens for them, and reads the key again', async () => {
     const page = await load()

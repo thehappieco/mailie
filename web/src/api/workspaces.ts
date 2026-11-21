@@ -81,14 +81,18 @@ export async function accessDirectory(token: string, id: string, signal?: AbortS
  * leaving one out never takes it away. sealed, with Read given on a mailbox
  * that has a key to a person with an account key, is their grant at its
  * current epoch and the account public key it was sealed to, which the
- * server holds to theirs now (docs/key-scheme.md section 12.13).
+ * server holds to theirs now (docs/key-scheme.md section 12.13). from, when
+ * given, is what the caller drew the person holding: the change is made
+ * only while they hold exactly that, and is a conflict otherwise, so a flag
+ * taken away since is never given back.
  */
-export async function setAccess(token: string, accountID: string, userID: string, flags: GrantFlags, sealed?: { grant: string; public_key: string }): Promise<Grant> {
+export async function setAccess(token: string, accountID: string, userID: string, flags: GrantFlags, sealed?: { grant: string; public_key: string }, from?: GrantFlags): Promise<Grant> {
   const body: GrantChange = { read: flags.read, act: flags.act, send: flags.send, manage: flags.manage }
   if (sealed) {
     body.grant = sealed.grant
     body.public_key = sealed.public_key
   }
+  if (from) body.from = { read: from.read, act: from.act, send: from.send, manage: from.manage }
   return checked(await request(`/v1/accounts/${segment(accountID)}/access/${segment(userID)}`, { token, method: 'PUT', body }), isGrant)
 }
 

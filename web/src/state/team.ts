@@ -213,10 +213,10 @@ interface Sent { to: string | null }
  * otherwise. A browser that does not hold the caller's account key is told
  * so before the step-up is asked: no password typed here mends that.
  */
-async function setFlags(accountID: string, userID: string, flags: GrantFlags, sealing: boolean, sent: Sent): Promise<void> {
+async function setFlags(accountID: string, userID: string, flags: GrantFlags, sealing: boolean, sent: Sent, from?: GrantFlags): Promise<void> {
   sent.to = null
   if (!sealing) {
-    await authorized(token => api.setAccess(token, accountID, userID, flags))
+    await authorized(token => api.setAccess(token, accountID, userID, flags, undefined, from))
     return
   }
   requireAccountKeyHere()
@@ -224,7 +224,7 @@ async function setFlags(accountID: string, userID: string, flags: GrantFlags, se
     const member = await memberNow(userID)
     const sealed = await sealFromOwn(accountID, () => member)
     sent.to = sealed.public_key
-    return authorized(token => api.setAccess(token, accountID, userID, flags, sealed))
+    return authorized(token => api.setAccess(token, accountID, userID, flags, sealed, from))
   })
 }
 
@@ -285,6 +285,42 @@ export async function saveGrant(accountID: string, userID: string, before: Grant
   }
   if (!ok()) return null
   // What the row shows next is what the server now holds.
+  void loadMembers()
+  await Promise.all([loadDirectory(), userID === session.user?.id ? followOwnAccess(accountID) : undefined])
+  return null
+}
+
+/**
+ * Gives a person Read on a mailbox of the team shown, with whichever of Act,
+ * Send and Manage flags names beside it, in one request, from what the page
+ * drew them holding (drawn, without Read): the server makes the change only
+ * while they hold exactly that, so a flag taken away since the page drew
+ * them is never given back, and Act, Send and Manage go by its rules (Act
+ * with Read, Manage to members only, an admin never on an owner). On a
+ * mailbox that has a key, to a person with an account key, Read goes with
+ * their grant, sealed here from the giver's own after a fresh step-up
+ * (setFlags); otherwise the flag alone, the key following.
+ *
+ * A refusal is said, and nothing is sent again: after a conflict (what they
+ * hold, their account key or the mailbox's changed since the page drew
+ * them), the directory and the members are read again, so the page shows
+ * what they hold now and the person is asked again. Unlike saveGrant, it
+ * never makes the change once more on its own.
+ */
+export async function giveRead(accountID: string, userID: string, drawn: GrantFlags, flags: GrantFlags): Promise<GrantSaved> {
+  const ok = current()
+  if (!flags.read || drawn.read) return failure('give-read', new ApiError('bad_request'))
+  try {
+    await setFlags(accountID, userID, flags, readRecipient(accountID, userID, drawn, flags) !== null, { to: null }, drawn)
+  } catch (error) {
+    if (error instanceof StepUpCancelled) return 'cancelled'
+    const found = refused('give-read', error, ok)
+    if (ok() && (found.code === 'conflict' || found.code === 'not_found' || found.code === 'bad_request')) {
+      await Promise.all([loadDirectory(), loadMembers()])
+    }
+    return found
+  }
+  if (!ok()) return null
   void loadMembers()
   await Promise.all([loadDirectory(), userID === session.user?.id ? followOwnAccess(accountID) : undefined])
   return null
