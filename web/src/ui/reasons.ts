@@ -70,8 +70,15 @@ export function linkReasonText(link: LinkFacts): string | undefined {
       return google
         ? t('You did not allow access, so nothing was connected.')
         : t('Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.')
+    // A grant without the mailbox: the box left unticked on the provider's
+    // consent screen (Google's granular consent shows one per scope), said
+    // as the card of a mailbox with the same reason says it.
     case REASON_NOT_GRANTED:
-      return t('The provider did not grant access, so nothing was connected. Start again.')
+      switch (link.provider) {
+        case 'gmail': return t('Google did not give Mailie access to Gmail, so nothing was connected. Start again and, on Google’s screen, allow access to Gmail (tick the box if one is shown).')
+        case 'microsoft': return t('Microsoft did not give Mailie access to the mailbox, so nothing was connected. Start again and accept every permission on Microsoft’s screen. For a work or school account, an administrator may have to allow Mailie first.')
+        default: return t('The provider did not grant access, so nothing was connected. Start again.')
+      }
     case REASON_MAILBOX_REFUSED:
       return google
         ? t('Gmail’s server did not accept this account, so nothing was connected. A Google account without Gmail cannot be connected.')

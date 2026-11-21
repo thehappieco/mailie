@@ -1438,7 +1438,7 @@ const linkText = language => Object.fromEntries(Object.entries({
   continueGmail: 'Continue to Google', continueMicrosoft: 'Continue to Microsoft', openingGoogle: 'Opening Google…',
   declined: 'You did not allow access, so nothing was connected.',
   declinedMicrosoft: 'Access was not allowed, so nothing was connected. If Microsoft said your organization’s administrator must approve Mailie, ask them, or enter the mailbox’s address instead.',
-  notGranted: 'The provider did not grant access, so nothing was connected. Start again.',
+  notGranted: 'Google did not give Mailie access to Gmail, so nothing was connected. Start again and, on Google’s screen, allow access to Gmail (tick the box if one is shown).',
 }).map(([name, key]) => [name, say(language, key)]).concat([
   ['arrived', email => say(language, '{email} is connected.', { email })],
   ['connected', email => say(language, '{email} is connected. You can list its folders now. Sync is off until you turn it on.', { email })],

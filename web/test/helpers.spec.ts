@@ -8,7 +8,7 @@ import { locale, type Locale } from '../src/ui/i18n'
 import { needsAuthorization, providerChoice, providerIcon, providerName, stateDetail, stateTone, syncTierLabel } from '../src/ui/labels'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, REASON_UNPROVED, reasonText } from '../src/ui/reasons'
+import { REASON_MAILBOX_REFUSED, REASON_NOT_GRANTED, REASON_TOKEN_REJECTED, REASON_UNPROVED, linkReasonText, reasonText } from '../src/ui/reasons'
 import { resetLink, signupLink, takeInvitation, takeReset } from '../src/ui/signupLink'
 import { account, ORIGIN, syncing } from './support'
 
@@ -202,6 +202,26 @@ describe('the reasons the console explains itself', () => {
       }
       // Translated, not the English falling through.
       expect(seen.size, `${item.provider} ${item.state_reason}`).toBe(locales.length)
+    }
+  })
+
+  it('tell a link the provider granted without the mailbox to allow it on the provider’s screen, in each language', () => {
+    const expected = {
+      gmail: 'Google did not give Mailie access to Gmail, so nothing was connected. Start again and, on Google’s screen, allow access to Gmail (tick the box if one is shown).',
+      microsoft: 'Microsoft did not give Mailie access to the mailbox, so nothing was connected. Start again and accept every permission on Microsoft’s screen. For a work or school account, an administrator may have to allow Mailie first.',
+    } as const
+    for (const provider of ['gmail', 'microsoft'] as const) {
+      const seen = new Set<string>()
+      for (const language of locales) {
+        locale.value = language
+        const text = linkReasonText({ provider, reason: REASON_NOT_GRANTED })!
+        expect(text, `${language} ${provider}`).toBeTruthy()
+        if (language === 'en') expect(text).toBe(expected[provider])
+        expect(text, language).toContain(provider === 'gmail' ? 'Gmail' : 'Microsoft')
+        seen.add(text)
+      }
+      // Translated, not the English falling through.
+      expect(seen.size, provider).toBe(locales.length)
     }
   })
 
