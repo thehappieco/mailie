@@ -445,9 +445,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   closed team `team_closed`, a narrowing refused only for a widening at or after its first second,
   a widening stamped with it, an error after the commit answered from the record. To whoever may:
   a recovery of a mailbox live again is done, of one the workspace's journal shows deleted for
-  good `recovery_over`; a team's turn-off of a mailbox removed since deletes its kept index, an
-  owner's; a removed mailbox's kept index off never reaches one recovered since (done) and asks
-  the freshness hook for a team only; taking flags away or a drop of read asks it nothing.
+  good `recovery_over`; a team's turn-off of a mailbox removed since (as its write reads it)
+  deletes its kept index, an owner's; a removed mailbox's kept index off never reaches one
+  recovered since (done) and asks the freshness hook for a team only; taking flags away or a drop of read asks it nothing.
   `SweepRequests` is the hourly housekeeping's (`internal/app`). Every exported
   method that takes a principal refuses `KindPerson` first (`refuseDelegated`,
   `ErrNeedsOwnSession`), held by a test that calls each by reflection, and so do the key and

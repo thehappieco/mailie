@@ -723,3 +723,113 @@ func TestTurningSyncOffOnAMailboxRemovedSinceDeletesItsKeptIndexForAnOwner(t *te
 		t.Errorf("the turn-off asked the freshness hook %+v", asked)
 	}
 }
+
+func TestOnlyAnOwnerTurnsSyncOffOnAMailboxRemovedBetweenTheReadAndTheWrite(t *testing.T) {
+	// What a turn-off answers: the switch's sync over REST, and whether the
+	// act changed anything through an extension.
+	type answer struct {
+		state   string
+		changed bool
+	}
+	type turnOff struct {
+		who     string
+		allowed bool
+		act     func(f *fixture, tm keysTeam) (answer, error)
+	}
+	rest := func(p func(keysTeam) service.Principal) func(*fixture, keysTeam) (answer, error) {
+		return func(f *fixture, tm keysTeam) (answer, error) {
+			st, err := f.svc.SetMailboxSync(t.Context(), p(tm), tm.shared, switchSync(false))
+			return answer{state: st.State}, err
+		}
+	}
+	extension := func(p func(keysTeam) service.Principal) func(*fixture, keysTeam) (answer, error) {
+		return func(f *fixture, tm keysTeam) (answer, error) {
+			out, err := f.actsFor(t, delegated(p(tm), "off", tm.id, ago(time.Minute))).TeamSync(t.Context(), tm.shared, false, "")
+			return answer{changed: out.Changed}, err
+		}
+	}
+	carol := func(tm keysTeam) service.Principal { return tm.carol }
+	ana := func(tm keysTeam) service.Principal { return tm.ana }
+	for _, c := range []turnOff{
+		{"Carol, an admin", false, rest(carol)},
+		{"Carol, an admin, through an extension", false, extension(carol)},
+		{"Ana, its owner", true, rest(ana)},
+		{"Ana, its owner, through an extension", true, extension(ana)},
+	} {
+		t.Run(c.who, func(t *testing.T) {
+			f := newFixture(t)
+			tm := syncedTeam(t, f)
+			f.seedIndex(t, tm.shared, "Zebra")
+			// Agreed before the extension's request was first asked.
+			f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 300 WHERE id = ?`, tm.shared)
+			kept := f.indexed(t, tm.shared)
+
+			// Read live; removed by Ana before the write.
+			var got answer
+			err := f.raceTheWrite(t, func() (err error) {
+				got, err = c.act(f, tm)
+				return err
+			}, func(tx *sql.Tx) {
+				removeIn(t, tx, tm.shared, tm.ana.UserID)
+			})
+			if f.count(t, `SELECT removed_at <> 0 FROM accounts WHERE id = ?`, tm.shared) != 1 {
+				t.Fatal("the mailbox is no longer removed")
+			}
+			turnedOff := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'sync_paused'`, tm.shared)
+			if !c.allowed {
+				wantCode(t, c.who+" turning off the mailbox removed meanwhile", err, service.CodeNotFound)
+				if n := f.indexed(t, tm.shared); n != kept {
+					t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", kept, n)
+				}
+				if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared) == 0 {
+					t.Error("the team's agreement was withdrawn")
+				}
+				if turnedOff != 0 {
+					t.Errorf("%d turn-offs journaled", turnedOff)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("%s turning off the mailbox removed meanwhile: %v", c.who, err)
+			}
+			if got.state != "" && got.state != "off" || got.state == "" && !got.changed {
+				t.Errorf("%s turning off the mailbox removed meanwhile is answered %+v", c.who, got)
+			}
+			if n := f.indexed(t, tm.shared); n != 0 {
+				t.Errorf("the removed mailbox keeps %d rows of its index", n)
+			}
+			if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared) != 0 {
+				t.Error("the team's agreement stands")
+			}
+			if turnedOff != 1 {
+				t.Errorf("%d turn-offs journaled, want one", turnedOff)
+			}
+		})
+	}
+}
+
+func TestTheOperatorsTurnOffOfAnOperatorMailboxRemovedMeanwhileChangesNothing(t *testing.T) {
+	f := newFixture(t)
+	ops := f.opsSynced(t, "ops@mail.example")
+	f.seedIndex(t, ops, "Zebra")
+	kept := f.indexed(t, ops)
+
+	// Read live; removed by the operator before the write. Removed, it is
+	// not found on this path, as it is when asked after the removal: its
+	// kept index is the operator's to delete with StopMailboxSync.
+	err := f.raceTheWrite(t, func() error {
+		_, err := f.svc.SetMailboxSync(t.Context(), admin(), ops, switchSync(false))
+		return err
+	}, func(tx *sql.Tx) {
+		removeIn(t, tx, ops, "cli")
+	})
+	wantCode(t, "the operator turning off the mailbox removed meanwhile", err, service.CodeNotFound)
+	_, err = f.svc.SetMailboxSync(t.Context(), admin(), ops, switchSync(false))
+	wantCode(t, "the operator turning off the removed mailbox", err, service.CodeNotFound)
+	if n := f.indexed(t, ops); n != kept {
+		t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", kept, n)
+	}
+	if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, ops) == 0 {
+		t.Error("the operator's switch was turned off")
+	}
+}

@@ -482,9 +482,13 @@ type MailboxSyncRequest struct {
 //     while someone can read it. Turning on a mailbox whose consent the
 //     upgrade copied from its linker confirms it, which detaches it from that
 //     person. A removed team mailbox is turned off by an owner of the team,
-//     which deletes the index it keeps, and never on.
+//     which deletes the index it keeps, and never on: removed as the write
+//     reads it, so that one removed since the caller read it live is its
+//     owners' alone too (answered off), and not found to anyone else.
 //   - An operator mailbox: an unrestricted instance admin key, the
-//     operator's decision, like closing someone's account.
+//     operator's decision, like closing someone's account. One removed
+//     since it was read is not found, nothing turned off, as a removed one
+//     is here: StopMailboxSync deletes a removed mailbox's kept index.
 //   - A personal mailbox has none: its person decides, by consenting in the
 //     console, and nobody may decide for them. Its person turns it on only
 //     to lift the hold the operator's turn-off put on it (StopMailboxSync),
@@ -550,18 +554,52 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 		if req.Version != "" {
 			return AccountSync{}, E(CodeBadRequest, "an operator mailbox is switched on by the operator, with no text to agree to; leave version out", nil)
 		}
+		if !on {
+			check = stillLiveTx(ctx, a.ID)
+		}
 	case a.OwnerUserID != "":
 		return s.liftPersonalHold(ctx, p, a, on, req.Version)
 	default:
-		if _, err := s.teamSync(ctx, p, a, on, req.Version, nil); err != nil {
+		switched, err := s.teamSync(ctx, p, a, on, req.Version, nil)
+		if err != nil {
 			return AccountSync{}, err
 		}
-		return s.currentSync(ctx, a.ID)
+		return s.syncSwitched(ctx, a.ID, switched)
 	}
-	if _, err := s.switchSync(ctx, p, a, on, req.Version, check, nil); err != nil {
+	switched, err := s.switchSync(ctx, p, a, on, req.Version, check, nil)
+	if err != nil {
 		return AccountSync{}, err
 	}
-	return s.currentSync(ctx, a.ID)
+	return s.syncSwitched(ctx, a.ID, switched)
+}
+
+// stillLiveTx is a turn-off's check in its write that a mailbox read live
+// still is: one removed since is not found, as it would have been had it
+// been asked after the removal, and nothing of it changes. An operator
+// mailbox's (SetMailboxSync): the operator deletes a removed mailbox's kept
+// index with StopMailboxSync.
+func stillLiveTx(ctx context.Context, accountID string) func(*sql.Tx) error {
+	return func(tx *sql.Tx) error {
+		live, err := liveTx(ctx, accountID)(tx)
+		switch {
+		case err != nil:
+			return E(CodeInternal, "switching sync failed", err)
+		case !live:
+			return errNoAccount
+		}
+		return nil
+	}
+}
+
+// syncSwitched answers a mailbox's own sync switched (SetMailboxSync): its
+// sync as it stands, or off for a team mailbox its owner's turn-off found
+// removed (removed since they read it live), which is found only on the
+// removed mailboxes' paths now. Never not found for an act that committed.
+func (s *Service) syncSwitched(ctx context.Context, id string, switched store.MailboxSyncSwitch) (AccountSync, error) {
+	if switched.Removed {
+		return AccountSync{State: syncOff}, nil
+	}
+	return s.currentSync(ctx, id)
 }
 
 // errLiveAgain is a removed mailbox's kept index asked to go once the
@@ -619,6 +657,19 @@ func (s *Service) teamSync(ctx context.Context, p Principal, a account.Account, 
 		version = ""
 	}
 	check := func(tx *sql.Tx) error {
+		if !on {
+			// Removed or live as the write reads it, never as
+			// authorizeAccount did: a mailbox removed since is turned off
+			// by an active owner of its open team alone, its kept index
+			// deleted (syncOffRemoved's act), and not found to anyone else.
+			live, err := liveTx(ctx, a.ID)(tx)
+			switch {
+			case err != nil:
+				return E(CodeInternal, "switching sync failed", err)
+			case !live:
+				return s.ownsRemovedTx(ctx, tx, p, a)
+			}
+		}
 		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 		switch {
 		case err != nil:

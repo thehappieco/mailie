@@ -352,7 +352,9 @@ func (a *PersonActs) LiftHold(ctx context.Context, accountID string) (ActOutcome
 // version, or off, on the team's behalf (SetMailboxSync): on records the
 // team's agreement at the request's first moment; off deletes its index for
 // every reader, and takes nothing away from an agreement given at or after
-// that moment.
+// that moment. Off, a mailbox removed since it was asked, before the write
+// or in it, is an owner's to turn off, its kept index deleted, and not found
+// to anyone else.
 func (a *PersonActs) TeamSync(ctx context.Context, accountID string, on bool, version string) (ActOutcome, error) {
 	act := actTeamSyncOff
 	if on {

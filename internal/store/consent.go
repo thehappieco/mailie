@@ -549,6 +549,10 @@ type MailboxSyncSwitch struct {
 	// (SyncOffRemovedFor, ForgetRemovedIndexFor) found live: recovered since
 	// it was asked, so nothing of it changed.
 	Live bool
+	// Removed is a turn-off (SetMailboxSyncFor off) that found the mailbox
+	// removed: its kept index went, and the mailbox is found only on the
+	// removed mailboxes' paths, so its sync is off and read nowhere else.
+	Removed bool
 }
 
 // SetMailboxSync switches sync on or off for a mailbox that names no person —
@@ -565,7 +569,10 @@ type MailboxSyncSwitch struct {
 // consent does for a person's mailboxes, a migrated consent's kept index
 // included, and ends its pause (EndPauseTx); a team mailbox's that was on,
 // or bound to a person, is journaled, and every reader but whoever turned it
-// off is told (JournalMailboxTx). It reports what changed.
+// off is told (JournalMailboxTx). A removed one is switched off too, its
+// kept index deleted, reported as Removed: whether the caller may is check's
+// to decide, from the removal as the transaction reads it. It reports what
+// changed.
 func (s *Store) SetMailboxSync(ctx context.Context, accountID string, on bool, by, version string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
 	return s.SetMailboxSyncFor(ctx, nil, accountID, on, by, version, check)
 }
@@ -635,6 +642,7 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 			out.Live = true
 			return nil
 		}
+		out.Removed = removed
 		// A paused team or operator mailbox was on, the schema says
 		// (accounts_pause_consent), so no pause ends unseen.
 		wasOn := c.At != 0 || c.Migrated

@@ -536,10 +536,14 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   adds `removed_only: true`: the route then reaches only a removed mailbox's kept index, and one
   recovered since, before the write or in it, is `409` (`ErrNotRemoved`) with nothing of the live
   mailbox turned off, where a plain turn-off would end its team's agreement and every reader's
-  index. Withdrawing a person's own sync consent deletes the index of their
-  removed mailboxes too, and so does a team consent migration 0011 bound to its linker when it
-  stops with them (closing them is refused without `force` while someone else would read the
-  removed mailbox once recovered, as for a live one).
+  index. A turn-off is removed or live as its write reads it: a team mailbox removed since the
+  caller saw it live is turned off by an active owner of its team alone, its kept index deleted
+  and the answer `off`, and is `404` to its admins, nothing turned off; an operator mailbox
+  removed since is `404` to the operator's switch, nothing turned off, its kept index the
+  operator's to delete as any removed mailbox's. Withdrawing a person's own sync consent deletes
+  the index of their removed mailboxes too, and so does a team consent migration 0011 bound to
+  its linker when it stops with them (closing them is refused without `force` while someone else
+  would read the removed mailbox once recovered, as for a live one).
 - **Closing a person** deletes at once, for good, the removed mailboxes that go with them — of
   their personal workspace and of the local teams they were alone in — with their journal.
 - **Its grant at the provider, revoked.** A Google mailbox deleted for good — by the sweep, by its
@@ -2162,9 +2166,9 @@ authorization, the same checks in its write and the same freshness hook. No tran
   (`TestEachKindThroughAnExtensionDoesWhatItsSessionDoes`):
   - `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current sync text and records the
     team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`, `Purge`;
-  - `TeamSync` on or off; off, on a mailbox removed since it was asked, deletes the index it keeps
-    for an owner of the team, as a session's turn-off of a removed team mailbox does (its
-    agreement's moment still compared), and is `not_found` to an admin;
+  - `TeamSync` on or off; off, on a mailbox removed since it was asked (before its write or in
+    it), deletes the index it keeps for an owner of the team, as a session's turn-off of a removed
+    team mailbox does (its agreement's moment still compared), and is `not_found` to an admin;
   - `Recover`; to whoever may recover it, a mailbox live again in the request's workspace
     (recovered since it was asked) is done, with nothing changed, and one the workspace's journal
     shows deleted for good is `recovery_over`, as one past its 30 days is; anything else
