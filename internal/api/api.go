@@ -245,6 +245,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// mailbox's switch. Switching off deletes its index, as withdrawing
 	// consent does. Switching on lifts the operator's hold of a personal
 	// mailbox, by its person, and never ends a pause: …/sync/resume does.
+	// With removed_only, only a removed mailbox's kept index goes: one
+	// recovered since is a conflict, nothing of it turned off.
 	mux.Handle("PUT /v1/accounts/{id}/sync",
 		h.authenticated(auth.ScopeAdmin, opts().withTimeout(150*time.Second), h.setMailboxSync))
 	// The operator's turn-off of any mailbox's sync, in any workspace, live

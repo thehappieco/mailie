@@ -736,9 +736,11 @@ export interface MailboxAccess {
  * The body of PUT /v1/accounts/{id}/sync: a team's agreement on or off, on
  * to the sync text revision shown; and, from a personal mailbox's person,
  * {enabled: true} alone, which lifts the hold of the operator's turn-off and
- * nothing more (a pause is ended by POST …/sync/resume).
+ * nothing more (a pause is ended by POST …/sync/resume). removed_only, with
+ * enabled false, turns off only a removed mailbox's kept index: one
+ * recovered since is a 409, nothing of it turned off.
  */
-export interface MailboxSyncRequest { enabled: boolean; version?: string }
+export interface MailboxSyncRequest { enabled: boolean; version?: string; removed_only?: boolean }
 /**
  * What removing a mailbox did (DELETE /v1/accounts/{id}): kept 30 days,
  * recoverable by its workspace's owners until purge_after (unix seconds),

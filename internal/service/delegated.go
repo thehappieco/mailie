@@ -457,7 +457,7 @@ func (a *PersonActs) RemovedIndexOff(ctx context.Context, accountID string) (Act
 			if removed, ok := a.s.removedOwnMailbox(ctx, a.p, accountID); ok {
 				if removed.OwnerUserID != "" {
 					forgot, err := a.s.forgetRemovedIndex(ctx, a.p, removed, req)
-					return store.RequestOutcome{Changed: forgot}, err
+					return store.RequestOutcome{Changed: forgot.Changed}, err
 				}
 				sw, err := a.s.syncOffRemoved(ctx, a.p, removed, req.Unbounded(), true)
 				return store.RequestOutcome{Changed: sw.Changed}, err

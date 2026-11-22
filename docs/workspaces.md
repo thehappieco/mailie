@@ -531,7 +531,11 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   personal mailbox's person deletes the index it keeps the same way (`PUT /v1/accounts/{id}/sync`
   with `enabled: false`): their consent, its hold and its removal stay, nothing is journaled and
   nobody told (nobody else reads it), and a recovery brings it back paused with nothing kept,
-  which a resume indexes from its last 90 days. Withdrawing a person's own sync consent deletes the index of their
+  which a resume indexes from its last 90 days. A page that drew the mailbox removed adds
+  `removed_only: true`: the route then reaches only a removed mailbox's kept index, and one
+  recovered since, before the write or in it, is `409` (`ErrNotRemoved`) with nothing of the live
+  mailbox turned off, where a plain turn-off would end its team's agreement and every reader's
+  index. Withdrawing a person's own sync consent deletes the index of their
   removed mailboxes too, and so does a team consent migration 0011 bound to its linker when it
   stops with them (closing them is refused without `force` while someone else would read the
   removed mailbox once recovered, as for a live one).
@@ -1524,7 +1528,7 @@ Changed routes:
 | `POST /v1/accounts/{id}/oauth/start`, `POST /v1/accounts/oauth/callback` | manage (callback: the flow is still only its starter's); the callback is also a link at the provider's return, with the mailbox's first key, `public_key`, `namespace` and `grant` |
 | `POST /v1/accounts/oauth/links`, `GET /v1/accounts/oauth/links/{id}` | new: a link at the provider, who may link where as [above](#mailboxes), read only by its starter |
 | `PATCH /v1/accounts/{id}` | new: `{display_name}` → `Account`, renaming a live mailbox, by whoever manages it, under the one name rule ([above](#mailboxes)) |
-| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off, and a removed personal mailbox's person, `{"enabled": false}`, deleting the index it kept and keeping their consent; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
+| `PUT /v1/accounts/{id}/sync` | `{enabled, version}`: a team mailbox's consent, from its owners and admins signed in (on: `version` the current sync text; off: deletes its index for everyone); an operator mailbox's switch, from the operator, with no `version`; on never ends a pause; for a personal mailbox, `{"enabled": true}` from its person, which only lifts the operator's hold, and `400` otherwise; a removed team mailbox's owners turn it off, and a removed personal mailbox's person, `{"enabled": false}`, deleting the index it kept and keeping their consent; `{"enabled": false, "removed_only": true}` reaches only a removed mailbox's kept index, `409` for one recovered since, nothing turned off; `409` to turn on a team mailbox nobody can read. Answers `AccountSync`, with `held` and `held_since` while the operator's turn-off holds it, and `paused` and `paused_since` while it is paused |
 | `POST /v1/auth/signup` | redeems an instance invite, or a team invite the operator or an instance owner made; the first sign-up is no owner unless its invite says so |
 | `POST /v1/users/disable`, `POST /v1/users/delete` | also an instance owner's session; the team protections (last owner, last reader of a team that outlives them, a consent still bound to them that someone else reads); `team_syncs_stopped` lists the team mailboxes a closure stopped |
 | `GET /v1/sends/{key}?account=` | only the caller's own sends ([conflict 10](#conflicts-and-resolutions)); a key's are that key's |

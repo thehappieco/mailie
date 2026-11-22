@@ -2,6 +2,7 @@ package service_test
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -429,6 +430,63 @@ func TestRemovedIndexOffOnAMailboxRecoveredSinceTouchesNothing(t *testing.T) {
 	// Carol, an admin, may never: not found.
 	_, err := f.actsFor(t, delegated(tm.carol, "c1", tm.id, time.Now())).RemovedIndexOff(ctx, tm.shared)
 	wantRefusal(t, "Carol, an admin, on the team's mailbox recovered since", err, service.RefusalNotFound)
+}
+
+func TestTurningOffOnlyARemovedMailboxsKeptIndexNeverTurnsOffOneRecoveredSince(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	own := f.ownSynced(t, tm.ana, "ana@mail.example")
+	removedOnly := func(on bool) service.MailboxSyncRequest {
+		req := switchSync(on)
+		req.RemovedOnly = true
+		return req
+	}
+	for _, id := range []string{tm.shared, own} {
+		f.connect(t, id)
+		f.seedIndex(t, id, "Zebra")
+		f.removed(t, tm.ana, id)
+		if _, err := f.svc.RecoverAccount(ctx, tm.ana, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := func(id string) string {
+		t.Helper()
+		return fmt.Sprint(f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, id),
+			f.count(t, `SELECT sync_paused_at FROM accounts WHERE id = ?`, id),
+			f.count(t, `SELECT sync_held_at FROM accounts WHERE id = ?`, id), f.indexed(t, id),
+			f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ?`, id),
+			f.count(t, `SELECT count(*) FROM notices`), f.count(t, `SELECT sync_consent_at FROM users WHERE id = ?`, tm.ana.UserID) != 0)
+	}
+	// Recovered since the page drew it: refused, and nothing of the live
+	// mailbox is turned off.
+	for _, id := range []string{tm.shared, own} {
+		before := state(id)
+		_, err := f.svc.SetMailboxSync(ctx, tm.ana, id, removedOnly(false))
+		if !errors.Is(err, service.ErrNotRemoved) || service.CodeOf(err) != service.CodeConflict {
+			t.Errorf("the kept index of %s, recovered since: %v, want conflict (ErrNotRemoved)", id, err)
+		}
+		if after := state(id); after != before {
+			t.Errorf("%s was %s and is %s", id, before, after)
+		}
+	}
+	_, err := f.svc.SetMailboxSync(ctx, tm.ana, tm.shared, removedOnly(true))
+	wantCode(t, "switching a removed mailbox on", err, service.CodeBadRequest)
+	// Removed: its kept index goes, by its owners alone.
+	for _, id := range []string{tm.shared, own} {
+		f.removed(t, tm.ana, id)
+	}
+	_, err = f.svc.SetMailboxSync(ctx, tm.bea, tm.shared, removedOnly(false))
+	wantCode(t, "Bea, a member, on the removed team mailbox", err, service.CodeNotFound)
+	for _, id := range []string{tm.shared, own} {
+		st, err := f.svc.SetMailboxSync(ctx, tm.ana, id, removedOnly(false))
+		if err != nil || st.State != "off" {
+			t.Errorf("the kept index of %s, removed: %+v, %v", id, st, err)
+		}
+		if n := f.indexed(t, id); n != 0 {
+			t.Errorf("%s keeps %d rows of its index", id, n)
+		}
+	}
 }
 
 func TestRecoveringAMailboxRecoveredSinceIsDone(t *testing.T) {

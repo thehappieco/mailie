@@ -283,12 +283,12 @@ func TestTurningOffARemovedMailboxsIndexNeverReachesOneLiveAgain(t *testing.T) {
 	// Live, recovered since a request asked: nothing of it is touched, and
 	// the request is done.
 	switched, err := f.s.SyncOffRemovedFor(ctx, requestFor("t1", "removed_index_off", ""), "acc_t1", owner, nil)
-	if err != nil || switched.Changed || len(switched.Told) != 0 {
+	if err != nil || switched.Changed || !switched.Live || len(switched.Told) != 0 {
 		t.Fatalf("turning off a live team mailbox's kept index: %+v, %v", switched, err)
 	}
 	forgot, err := f.s.ForgetRemovedIndexFor(ctx, requestFor("p1", "removed_index_off", ""), personal, nil)
-	if err != nil || forgot {
-		t.Fatalf("deleting a live personal mailbox's kept index: %v, %v", forgot, err)
+	if err != nil || forgot.Changed || !forgot.Live {
+		t.Fatalf("deleting a live personal mailbox's kept index: %+v, %v", forgot, err)
 	}
 	if queryInt(t, f.s, `SELECT sync_enabled_at FROM accounts WHERE id = 'acc_t1'`) != consent ||
 		indexed("acc_t1") != keptTeam || indexed(personal) != keptOwn {
@@ -305,11 +305,11 @@ func TestTurningOffARemovedMailboxsIndexNeverReachesOneLiveAgain(t *testing.T) {
 	f.remove("acc_t1", owner, 1000)
 	f.remove(personal, owner, 1000)
 	journal := queryInt(t, f.s, `SELECT count(*) FROM mailbox_events`)
-	if switched, err := f.s.SyncOffRemovedFor(ctx, nil, "acc_t1", owner, nil); err != nil || !switched.Changed {
+	if switched, err := f.s.SyncOffRemovedFor(ctx, nil, "acc_t1", owner, nil); err != nil || !switched.Changed || switched.Live {
 		t.Errorf("turning off a removed team mailbox's kept index: %+v, %v", switched, err)
 	}
-	if forgot, err := f.s.ForgetRemovedIndexFor(ctx, nil, personal, nil); err != nil || !forgot {
-		t.Errorf("deleting a removed personal mailbox's kept index: %v, %v", forgot, err)
+	if forgot, err := f.s.ForgetRemovedIndexFor(ctx, nil, personal, nil); err != nil || !forgot.Changed || forgot.Live {
+		t.Errorf("deleting a removed personal mailbox's kept index: %+v, %v", forgot, err)
 	}
 	if indexed("acc_t1") != 0 || indexed(personal) != 0 {
 		t.Error("a removed mailbox keeps its index")

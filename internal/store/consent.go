@@ -545,6 +545,10 @@ type MailboxSyncSwitch struct {
 	// Told are the readers a team mailbox's sync turned off or paused told,
 	// with a notice: everyone who read it then but whoever acted.
 	Told []string
+	// Live is a removed mailbox's kept index asked to go
+	// (SyncOffRemovedFor, ForgetRemovedIndexFor) found live: recovered since
+	// it was asked, so nothing of it changed.
+	Live bool
 }
 
 // SetMailboxSync switches sync on or off for a mailbox that names no person —
@@ -628,6 +632,7 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 			return agreeSyncTx(ctx, tx, accountID, by, version, req.Stamp(now), now)
 		}
 		if removedOnly && !removed {
+			out.Live = true
 			return nil
 		}
 		// A paused team or operator mailbox was on, the schema says
@@ -800,15 +805,15 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 // hold and its removal stay as they are. Its person acted, and nobody else
 // reads it, so nothing is journaled and nobody is told. A recovery then
 // brings it back paused with nothing kept, and a resume indexes it from
-// scratch. It reports whether there was an index to delete. A mailbox that
-// is live again (recovered since its person asked) is left as it is: what
-// a removed mailbox keeps is gone with its removal, and a request is
-// recorded as having changed nothing. A mailbox nobody knows, or that names
-// no person, is ErrNoSuchMailbox.
-func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, accountID string, check func(*sql.Tx) error) (bool, error) {
-	forgot := false
+// scratch. It reports whether there was an index to delete (Changed). A
+// mailbox that is live again (recovered since its person asked) is left as
+// it is (Live): what a removed mailbox keeps is gone with its removal, and a
+// request is recorded as having changed nothing. A mailbox nobody knows, or
+// that names no person, is ErrNoSuchMailbox.
+func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, accountID string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
+	var out MailboxSyncSwitch
 	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
-		forgot = false
+		out = MailboxSyncSwitch{}
 		var removed, indexed bool
 		err := tx.QueryRowContext(ctx, `SELECT a.removed_at <> 0,
 			  EXISTS (SELECT 1 FROM folders WHERE account_id = a.id) OR EXISTS (SELECT 1 FROM messages WHERE account_id = a.id)
@@ -825,19 +830,20 @@ func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, account
 			}
 		}
 		if !removed {
+			out.Live = true
 			return nil
 		}
 		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {
 			return err
 		}
-		forgot = indexed
+		out.Changed = indexed
 		return nil
-	}, func() RequestOutcome { return RequestOutcome{Changed: forgot} })
+	}, func() RequestOutcome { return RequestOutcome{Changed: out.Changed} })
 	if err != nil {
-		return false, err
+		return MailboxSyncSwitch{}, err
 	}
 	s.moves.forget([]string{accountID})
-	return forgot, nil
+	return out, nil
 }
 
 // journalSyncPausedTx journals, inside the caller's transaction, a mailbox's
