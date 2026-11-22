@@ -595,6 +595,48 @@ func TestTurningOffOnlyARemovedMailboxsKeptIndexNeverTurnsOffOneRecoveredSince(t
 	}
 }
 
+func TestTurningOffARemovedPersonalMailboxRecoveredBeforeTheWriteIsAConflictThatKeepsItsIndex(t *testing.T) {
+	for name, removedOnly := range map[string]bool{"plain": false, "removed_only": true} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			ana := f.person(t, "ana@example.com", auth.RoleMember)
+			own := f.ownSynced(t, ana, "ana@mail.example")
+			f.connect(t, own)
+			f.seedIndex(t, own, "Okapi")
+			f.removed(t, ana, own)
+			indexed := f.indexed(t, own)
+			if indexed == 0 {
+				t.Fatal("the removed mailbox keeps no index")
+			}
+			req := switchSync(false)
+			req.RemovedOnly = removedOnly
+
+			// Read removed; recovered by Ana, in another tab, before the
+			// write: back paused, as a recovery brings it.
+			err := f.raceTheWrite(t, func() error {
+				_, err := f.svc.SetMailboxSync(ctx, ana, own, req)
+				return err
+			}, func(tx *sql.Tx) {
+				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
+					sync_paused_at = unixepoch(), sync_paused_by = ? WHERE id = ? AND removed_at <> 0`, ana.UserID, own); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if !errors.Is(err, service.ErrNotRemoved) || service.CodeOf(err) != service.CodeConflict {
+				t.Errorf("turning off the mailbox recovered meanwhile: %v, want conflict (ErrNotRemoved)", err)
+			}
+			if n := f.indexed(t, own); n != indexed {
+				t.Errorf("the recovered mailbox keeps %d rows of its index, and kept %d", n, indexed)
+			}
+			if !f.paused(t, own) || f.count(t, `SELECT sync_consent_at FROM users WHERE id = ?`, ana.UserID) == 0 {
+				t.Errorf("recovered: paused %v, her consent %d; want paused under her consent", f.paused(t, own),
+					f.count(t, `SELECT sync_consent_at FROM users WHERE id = ?`, ana.UserID))
+			}
+		})
+	}
+}
+
 func TestRecoveringAMailboxRecoveredSinceIsDone(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

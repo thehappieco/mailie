@@ -491,7 +491,9 @@ type MailboxSyncRequest struct {
 //     after which it syncs under their consent as it stands, from no index.
 //     Removed, its person turns it off to delete the index it keeps
 //     (forgetRemovedIndex): their consent and its removal stay, and a
-//     recovery brings it back paused with nothing kept.
+//     recovery brings it back paused with nothing kept. One recovered since
+//     they asked, before the write or in it, is errLiveAgain, as with
+//     RemovedOnly: nothing of it is turned off.
 //
 // With RemovedOnly, only a removed mailbox's kept index is turned off
 // (removedIndexOff), never a live mailbox's sync. Whoever does not see the
@@ -517,13 +519,21 @@ func (s *Service) SetMailboxSync(ctx context.Context, p Principal, accountID str
 	if err != nil {
 		if !on && CodeOf(err) == CodeNotFound {
 			if removed, ok := s.removedOwnMailbox(ctx, p, accountID); ok {
+				var switched store.MailboxSyncSwitch
 				if removed.OwnerUserID != "" {
-					_, err = s.forgetRemovedIndex(ctx, p, removed, nil)
+					switched, err = s.forgetRemovedIndex(ctx, p, removed, nil)
 				} else {
-					_, err = s.syncOffRemoved(ctx, p, removed, nil, false)
+					switched, err = s.syncOffRemoved(ctx, p, removed, nil, false)
 				}
-				if err != nil {
+				switch {
+				case err != nil:
 					return AccountSync{}, err
+				case switched.Live:
+					// A personal one recovered since: what it kept is
+					// the live mailbox's index now, which this never
+					// turns off. A team one is turned off as a live one
+					// is, and never reports Live here.
+					return AccountSync{}, errLiveAgain
 				}
 				return AccountSync{State: syncOff}, nil
 			}

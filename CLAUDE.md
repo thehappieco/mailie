@@ -741,7 +741,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   person withdraws or turns it off (a removed personal mailbox's kept index alone, by the route a
   team's owner uses, `PUT /v1/accounts/{id}/sync` with `enabled: false`: their consent, its hold
   and its removal kept, nothing journaled, and a recovery then brings it back paused with nothing
-  kept), a removed team mailbox's owners turn it off or the consent still bound to its linker
+  kept; one recovered since they asked is `conflict`, `ErrNotRemoved`, its index kept), a removed
+  team mailbox's owners turn it off or the consent still bound to its linker
   stops; with `removed_only: true` that route turns off only a removed mailbox's kept index, and
   one recovered since is `conflict` (`ErrNotRemoved`), nothing of it turned off. An agreement given through an extension (`ActFor`) is recorded as on the screens, its
   version, its person and when they asked (the request's first moment); the request's id lives
