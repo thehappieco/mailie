@@ -43,8 +43,8 @@ func newKindWorld(t *testing.T) kindWorld {
 	return kindWorld{f: f, hook: hook, tm: tm, own: own, personal: authtest.Personal(t, f.db, tm.ana.UserID)}
 }
 
-// settled moves every widening the fixture made a while back, so that no
-// narrowing asked now meets one given in its own second.
+// settled moves every widening the fixture made, and every removal, a while
+// back, so that no narrowing asked now meets one made in its own second.
 func (w kindWorld) settled(t *testing.T) {
 	t.Helper()
 	w.f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE sync_enabled_at > 600`)
@@ -52,6 +52,7 @@ func (w kindWorld) settled(t *testing.T) {
 	w.f.exec(t, `UPDATE users SET actions_consent_at = actions_consent_at - 600 WHERE actions_consent_at > 600`)
 	w.f.exec(t, `UPDATE users SET send_consent_at = send_consent_at - 600 WHERE send_consent_at > 600`)
 	w.f.exec(t, `UPDATE mailbox_access SET raised_at = raised_at - 600 WHERE raised_at > 600`)
+	w.f.removalsMovedBack(t, 10*time.Minute)
 	w.hook.take()
 }
 

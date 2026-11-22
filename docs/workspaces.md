@@ -2143,10 +2143,11 @@ authorization, the same checks in its write and the same freshness hook. No tran
 - **A narrowing never undoes a newer widening, and never blocks another narrowing.** Inside its
   write, a request that takes something away is refused (`409`, `service.ErrSetSince`) only when
   what it would take was **given** at or after the second it was first asked: a consent's
-  `users.*_consent_at`, a team's agreement's `accounts.sync_enabled_at`, and a grant's
+  `users.*_consent_at`, a team's agreement's `accounts.sync_enabled_at`, a grant's
   `mailbox_access.raised_at`, which only a change that adds a flag moves (never one that only takes
-  flags away, nor a key supplied). What it would take and nobody holds is done, with nothing
-  changed. A widening that comes through an extension is stamped with its intent's first moment
+  flags away, nor a key supplied), and, for a removed mailbox's kept index, its removal's
+  `accounts.removed_at`. What it would take and nobody holds is done, with nothing changed. A
+  widening that comes through an extension is stamped with its intent's first moment
   (never later than now), so the order in which people asked decides, not the order in which
   requests ran: a resume asked before a turn-off and run after it never refuses that turn-off. A
   stamp never moves a moment back: a widening that runs late keeps the later moment it finds (a
@@ -2184,9 +2185,10 @@ authorization, the same checks in its write and the same freshness hook. No tran
     by an active owner of its team for a team's (the team's agreement withdrawn, after the
     freshness hook, `FreshRemovedSyncOff`; a personal one asks it nothing); never a live mailbox's:
     one recovered since is done, with nothing changed, and nothing of its consent, index, pause,
-    agreement or journal moves. A team's agreement is compared with the request's first moment, as
-    a team's turn-off compares it: a mailbox recovered, agreed to again and removed again since it
-    was asked keeps that agreement and what it indexed under it (`set_since`);
+    agreement or journal moves. What it deletes is its removal's: one removed at or after the
+    second it was first asked (`accounts.removed_at`) was recovered and removed again since, and
+    keeps what it keeps, its index and, for a team's, an agreement given since, which is compared
+    too, as a team's turn-off compares it (`set_since`);
   - `RaiseFlags` (from, to: act, send or manage added, never read), `DropFlags`, `RemoveAccess`;
     taking away reaches a member in any standing, a former one holding nothing is done, a removed
     team mailbox's flags too for an active owner of its team, and neither asks the freshness

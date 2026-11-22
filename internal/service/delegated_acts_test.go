@@ -305,6 +305,51 @@ func (f *fixture) raceTheWrite(t *testing.T, act func() error, meanwhile func(tx
 	return <-done
 }
 
+// removalsMovedBack moves every removal back by d, as if each mailbox had
+// been removed that much earlier: a removal never moves in place
+// (accounts_removal_fixed), so each is lifted and recorded again, earlier,
+// in one write.
+func (f *fixture) removalsMovedBack(t *testing.T, d time.Duration) {
+	t.Helper()
+	ctx := t.Context()
+	if err := f.db.Write(ctx, func(tx *sql.Tx) error {
+		type removal struct {
+			id, by    string
+			at, purge int64
+		}
+		var removals []removal
+		rows, err := tx.QueryContext(ctx, `SELECT id, removed_by, removed_at, purge_after FROM accounts WHERE removed_at <> 0`)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var r removal
+			if err := rows.Scan(&r.id, &r.by, &r.at, &r.purge); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			removals = append(removals, r)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		back := int64(d / time.Second)
+		for _, r := range removals {
+			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0 WHERE id = ?`,
+				r.id); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = ?, removed_by = ?, purge_after = ? WHERE id = ?`,
+				r.at-back, r.by, r.purge-back, r.id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // removeIn removes a team mailbox inside tx, by who, as the repository
 // does (removeBySQL).
 func removeIn(t *testing.T, tx *sql.Tx, accountID, who string) {
@@ -473,6 +518,8 @@ func TestAPersonTurnsOffTheKeptIndexOfTheirOwnRemovedMailbox(t *testing.T) {
 		f.seedIndex(t, id, "Okapi")
 		f.removed(t, ana, id)
 	}
+	// Removed before anyone asks to delete what they keep.
+	f.removalsMovedBack(t, 10*time.Minute)
 	journal := f.count(t, `SELECT count(*) FROM mailbox_events`)
 	hook.take()
 
@@ -523,6 +570,7 @@ func TestARecoveryAfterThatComesBackPausedWithNothingKept(t *testing.T) {
 	f.connect(t, own)
 	f.seedIndex(t, own, "Okapi")
 	f.removed(t, ana, own)
+	f.removalsMovedBack(t, 10*time.Minute)
 	if _, err := f.actsFor(t, delegated(ana, "r1", authtest.Personal(t, f.db, ana.UserID), time.Now())).RemovedIndexOff(ctx, own); err != nil {
 		t.Fatal(err)
 	}
@@ -621,8 +669,9 @@ func TestALateRemovedIndexOffNeverWithdrawsATeamsAgreementGivenSinceItWasAsked(t
 		t.Error("the refused request was recorded")
 	}
 
-	// Agreed before the request was asked: it runs.
+	// Agreed and removed before the request was asked: it runs.
 	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+	f.removalsMovedBack(t, 10*time.Minute)
 	out, err := f.actsFor(t, delegated(tm.ana, "r2", tm.id, asked)).RemovedIndexOff(ctx, tm.shared)
 	if err != nil || !out.Changed {
 		t.Fatalf("the kept index turned off by a request asked after the team agreed: %+v, %v", out, err)
@@ -662,6 +711,148 @@ func TestARemovedIndexOffMeetsATeamsAgreementGivenBetweenTheReadAndTheWrite(t *t
 	}
 	if n := f.indexed(t, tm.shared); n != indexed {
 		t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", indexed, n)
+	}
+}
+
+// removedAgainOfAna is a mailbox of Ana's removed before she asks the
+// console to delete what it keeps, and then recovered, used and removed
+// again in Mailie's own screens: the team's, recovered and removed with no
+// agreement given since, or her personal one, resumed in between.
+type removedAgainOfAna struct {
+	what string
+	// mailbox removes it, its agreement and removal well before now, and
+	// names it and its workspace.
+	mailbox func(t *testing.T, f *fixture, tm keysTeam) (accountID, workspaceID string)
+	// used is what Ana does with it once recovered, before she removes it
+	// again.
+	used func(t *testing.T, f *fixture, tm keysTeam, accountID string)
+	// kept reads what a removed mailbox keeps of its person's or its team's
+	// beside its index: the consent or the agreement.
+	kept func(t *testing.T, f *fixture, tm keysTeam, accountID string) int
+}
+
+var removedAgainOfAnas = []removedAgainOfAna{
+	{
+		what: "the team's",
+		mailbox: func(t *testing.T, f *fixture, tm keysTeam) (string, string) {
+			f.seedIndex(t, tm.shared, "Zebra")
+			f.removed(t, tm.ana, tm.shared)
+			f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+			f.removalsMovedBack(t, 10*time.Minute)
+			return tm.shared, tm.id
+		},
+		used: func(t *testing.T, f *fixture, _ keysTeam, id string) {
+			// Paused, as a recovery brings it, under the team's agreement as
+			// it was.
+			f.seedIndex(t, id, "Okapi")
+		},
+		kept: func(t *testing.T, f *fixture, _ keysTeam, id string) int {
+			return f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, id)
+		},
+	},
+	{
+		what: "her personal one",
+		mailbox: func(t *testing.T, f *fixture, tm keysTeam) (string, string) {
+			own := f.ownSynced(t, tm.ana, "ana@mail.example")
+			f.connect(t, own)
+			f.seedIndex(t, own, "Zebra")
+			f.removed(t, tm.ana, own)
+			f.exec(t, `UPDATE users SET sync_consent_at = sync_consent_at - 600 WHERE id = ?`, tm.ana.UserID)
+			f.removalsMovedBack(t, 10*time.Minute)
+			return own, authtest.Personal(t, f.db, tm.ana.UserID)
+		},
+		used: func(t *testing.T, f *fixture, tm keysTeam, id string) {
+			if _, err := f.svc.ResumeMailboxSync(t.Context(), tm.ana, id, service.SyncResumeRequest{}); err != nil {
+				t.Fatal(err)
+			}
+			f.seedIndex(t, id, "Okapi")
+		},
+		kept: func(t *testing.T, f *fixture, tm keysTeam, _ string) int {
+			return f.count(t, `SELECT sync_consent_at FROM users WHERE id = ?`, tm.ana.UserID)
+		},
+	},
+}
+
+func TestALateRemovedIndexOffNeverDeletesWhatAMailboxRemovedAgainSinceItWasAskedKeeps(t *testing.T) {
+	for _, c := range removedAgainOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+			asked := ago(time.Minute)
+
+			// Since Ana asked, in Mailie's own screens: recovered, used and
+			// removed again.
+			if _, err := f.svc.RecoverAccount(ctx, tm.ana, id); err != nil {
+				t.Fatal(err)
+			}
+			c.used(t, f, tm, id)
+			f.removed(t, tm.ana, id)
+			kept, indexed := c.kept(t, f, tm, id), f.indexed(t, id)
+			if kept == 0 || int64(kept) >= asked.Unix() || indexed == 0 {
+				t.Fatalf("kept %d (asked at %d), %d rows indexed; want an older consent or agreement, and an index",
+					kept, asked.Unix(), indexed)
+			}
+
+			_, err := f.actsFor(t, delegated(tm.ana, "r1", ws, asked)).RemovedIndexOff(ctx, id)
+			wantRefusal(t, "the kept index of a mailbox removed again since the request was asked", err,
+				service.RefusalSetSince)
+			if n := f.indexed(t, id); n != indexed {
+				t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", indexed, n)
+			}
+			if n := c.kept(t, f, tm, id); n != kept {
+				t.Errorf("what it kept beside its index was %d and is %d", kept, n)
+			}
+			if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'sync_paused'`, id); n != 0 {
+				t.Errorf("%d turn-offs journaled", n)
+			}
+			if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); ran {
+				t.Error("the refused request was recorded")
+			}
+
+			// Removed again before the request was asked: it runs.
+			f.removalsMovedBack(t, 10*time.Minute)
+			out, err := f.actsFor(t, delegated(tm.ana, "r2", ws, asked)).RemovedIndexOff(ctx, id)
+			if err != nil || !out.Changed {
+				t.Fatalf("the kept index of a mailbox removed before the request was asked: %+v, %v", out, err)
+			}
+			if n := f.indexed(t, id); n != 0 {
+				t.Errorf("the removed mailbox keeps %d rows of its index", n)
+			}
+		})
+	}
+}
+
+func TestARemovedIndexOffMeetsARemovalMadeAgainBetweenTheReadAndTheWrite(t *testing.T) {
+	for _, c := range removedAgainOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+			kept, indexed := c.kept(t, f, tm, id), f.indexed(t, id)
+
+			// Read under its first removal; recovered and removed again, in
+			// Mailie's own screens, before the write.
+			err := f.raceTheWrite(t, func() error {
+				_, err := f.actsFor(t, delegated(tm.ana, "r1", ws, ago(time.Minute))).RemovedIndexOff(t.Context(), id)
+				return err
+			}, func(tx *sql.Tx) {
+				recoverIn(t, tx, id, tm.ana.UserID)
+				if _, err := tx.ExecContext(t.Context(), `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = ?`,
+					id); err != nil {
+					t.Fatal(err)
+				}
+				removeIn(t, tx, id, tm.ana.UserID)
+			})
+			wantRefusal(t, "the kept index of a mailbox removed again meanwhile", err, service.RefusalSetSince)
+			if n := f.indexed(t, id); n != indexed {
+				t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", indexed, n)
+			}
+			if n := c.kept(t, f, tm, id); n != kept {
+				t.Errorf("what it kept beside its index was %d and is %d", kept, n)
+			}
+		})
 	}
 }
 

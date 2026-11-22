@@ -594,9 +594,13 @@ func (s *Store) SetMailboxSyncFor(ctx context.Context, req *Request, accountID s
 
 // SyncOffRemovedFor turns a removed mailbox's own sync off (SetMailboxSyncFor
 // off, its agreement compared with the request's first moment), deleting the
-// index it keeps, and touches nothing of a mailbox that is live again: a recovery since it was asked brought it back with its
-// consent and its index, which this never turns into a turn-off of a live
-// mailbox. A request is then recorded as having changed nothing.
+// index it keeps, and touches nothing of a mailbox that is live again: a
+// recovery since it was asked brought it back with its consent and its
+// index, which this never turns into a turn-off of a live mailbox. A request
+// is then recorded as having changed nothing. What a removed mailbox keeps
+// is its removal's: one removed at or after the second the request was
+// first asked was recovered and removed again since, and keeps what it
+// keeps (ErrSetSince).
 func (s *Store) SyncOffRemovedFor(ctx context.Context, req *Request, accountID, by string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
 	return s.setMailboxSync(ctx, req, accountID, false, by, "", check, true)
 }
@@ -613,20 +617,22 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 		// (accounts_held_personal): only the operator's turn-off of a
 		// personal mailbox holds.
 		var (
-			c             MailboxConsent
-			removed, team bool
+			c         MailboxConsent
+			removedAt int64
+			team      bool
 		)
 		err := tx.QueryRowContext(ctx,
 			`SELECT a.sync_enabled_at, a.sync_consent_version, a.sync_enabled_via = 'migration',
-			        a.removed_at <> 0, EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.kind = 'team')
+			        a.removed_at, EXISTS (SELECT 1 FROM workspaces w WHERE w.id = a.workspace_id AND w.kind = 'team')
 			   FROM accounts a WHERE a.id = ? AND a.owner_user_id IS NULL`, accountID,
-		).Scan(&c.At, &c.Version, &c.Migrated, &removed, &team)
+		).Scan(&c.At, &c.Version, &c.Migrated, &removedAt, &team)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return ErrNoMailboxConsent
 		case err != nil:
 			return fmt.Errorf("store: read the mailbox's sync: %w", err)
 		}
+		removed := removedAt != 0
 		if check != nil {
 			if err := check(tx); err != nil {
 				return err
@@ -645,6 +651,9 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 		if removedOnly && !removed {
 			out.Live = true
 			return nil
+		}
+		if removedOnly && req.widenedSince(removedAt) {
+			return ErrSetSince
 		}
 		out.Removed = removed
 		// A paused team or operator mailbox was on, the schema says
@@ -820,16 +829,21 @@ func (s *Store) StopSync(ctx context.Context, accountID, actor string) (MailboxS
 // scratch. It reports whether there was an index to delete (Changed). A
 // mailbox that is live again (recovered since its person asked) is left as
 // it is (Live): what a removed mailbox keeps is gone with its removal, and a
-// request is recorded as having changed nothing. A mailbox nobody knows, or
-// that names no person, is ErrNoSuchMailbox.
+// request is recorded as having changed nothing; one removed at or after the
+// second a request was first asked was recovered and removed again since,
+// and keeps what it keeps (ErrSetSince). A mailbox nobody knows, or that
+// names no person, is ErrNoSuchMailbox.
 func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, accountID string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {
 	var out MailboxSyncSwitch
 	err := s.WriteRequest(ctx, req, accountID, func(tx *sql.Tx) error {
 		out = MailboxSyncSwitch{}
-		var removed, indexed bool
-		err := tx.QueryRowContext(ctx, `SELECT a.removed_at <> 0,
+		var (
+			removedAt int64
+			indexed   bool
+		)
+		err := tx.QueryRowContext(ctx, `SELECT a.removed_at,
 			  EXISTS (SELECT 1 FROM folders WHERE account_id = a.id) OR EXISTS (SELECT 1 FROM messages WHERE account_id = a.id)
-			FROM accounts a WHERE a.id = ? AND a.owner_user_id IS NOT NULL`, accountID).Scan(&removed, &indexed)
+			FROM accounts a WHERE a.id = ? AND a.owner_user_id IS NOT NULL`, accountID).Scan(&removedAt, &indexed)
 		switch {
 		case errors.Is(err, sql.ErrNoRows):
 			return fmt.Errorf("%w: %s", ErrNoSuchMailbox, accountID)
@@ -841,9 +855,12 @@ func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, account
 				return err
 			}
 		}
-		if !removed {
+		switch {
+		case removedAt == 0:
 			out.Live = true
 			return nil
+		case req.widenedSince(removedAt):
+			return ErrSetSince
 		}
 		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {
 			return err

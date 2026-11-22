@@ -474,10 +474,11 @@ func (a *PersonActs) Purge(ctx context.Context, accountID string) (ActOutcome, e
 // journaled, nobody told, a removed mailbox having no reader; after the
 // freshness hook, FreshRemovedSyncOff). It never reaches a live mailbox:
 // one recovered since it was asked is done, with nothing changed, to
-// whoever may. A team's agreement is compared with the request's first
-// moment, as a team's turn-off compares it: one recovered, agreed to again
-// and removed again since it was asked keeps that agreement and what it
-// indexed under it (ErrSetSince). Anyone else is told it does not exist.
+// whoever may. What it deletes is its removal's, so the removal is compared
+// with the request's first moment, and a team's agreement too, as a team's
+// turn-off compares it: one recovered and removed again since it was asked
+// keeps its index, and a team's its agreement (ErrSetSince). Anyone else is
+// told it does not exist.
 func (a *PersonActs) RemovedIndexOff(ctx context.Context, accountID string) (ActOutcome, error) {
 	return a.run(ctx, actRemovedIndexOff, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
 		if err := a.s.authorize(a.p, auth.ScopeAdmin); err != nil {

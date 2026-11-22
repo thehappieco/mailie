@@ -325,6 +325,65 @@ func TestTurningOffARemovedMailboxsIndexNeverReachesOneLiveAgain(t *testing.T) {
 	}
 }
 
+func TestARemovedMailboxsKeptIndexIsNeverDeletedByARequestAskedBeforeItsRemoval(t *testing.T) {
+	// The seed: acc_t1 is a mailbox of the team wsp_t1, under its consent,
+	// given long before; a personal mailbox is its person's. Both are
+	// removed at 1000, the second a request asked at 1000 (requestFor) was
+	// first asked in.
+	f := newSchemaLatest(t)
+	ctx := context.Background()
+	const owner = "usr_0000000000000001"
+	personal := queryStrings(t, f.s, `SELECT id FROM accounts WHERE owner_user_id IS NOT NULL ORDER BY id LIMIT 1`)[0]
+	indexed := func(id string) int64 {
+		t.Helper()
+		return queryInt(t, f.s, `SELECT count(*) FROM folders WHERE account_id = ?`, id)
+	}
+	for _, id := range []string{"acc_t1", personal} {
+		f.accepted(id+"'s folder", f.exec(`INSERT INTO folders(account_id, name, display_name, role, role_source, uidvalidity)
+			VALUES (?, 'Kept', 'Kept', '', '', 7)`, id))
+		f.remove(id, owner, 1000)
+	}
+	f.accepted("the team's agreement, long before", f.exec(`UPDATE accounts SET sync_enabled_at = 10 WHERE id = 'acc_t1'`))
+	journal := queryInt(t, f.s, `SELECT count(*) FROM mailbox_events`)
+
+	_, err := f.s.SyncOffRemovedFor(ctx, requestFor("t1", "removed_index_off", ""), "acc_t1", owner, nil)
+	if !errors.Is(err, ErrSetSince) {
+		t.Errorf("a team mailbox's kept index, removed in the request's second: %v, want ErrSetSince", err)
+	}
+	_, err = f.s.ForgetRemovedIndexFor(ctx, requestFor("p1", "removed_index_off", ""), personal, nil)
+	if !errors.Is(err, ErrSetSince) {
+		t.Errorf("a personal mailbox's kept index, removed in the request's second: %v, want ErrSetSince", err)
+	}
+	if indexed("acc_t1") == 0 || indexed(personal) == 0 ||
+		queryInt(t, f.s, `SELECT sync_enabled_at FROM accounts WHERE id = 'acc_t1'`) != 10 {
+		t.Error("a refused request deleted a kept index or withdrew the team's agreement")
+	}
+	if n := queryInt(t, f.s, `SELECT count(*) FROM mailbox_events`); n != journal {
+		t.Errorf("the journal grew by %d", n-journal)
+	}
+	for _, id := range []string{"t1", "p1"} {
+		if _, ran, _ := f.s.RequestOutcomeOf(ctx, "ext", id); ran {
+			t.Errorf("the refused request %s was recorded", id)
+		}
+	}
+
+	// Asked the second after: what they keep goes.
+	later := func(id string) *Request {
+		req := requestFor(id, "removed_index_off", "")
+		req.FirstIssued = time.Unix(1_001, 0)
+		return req
+	}
+	if switched, err := f.s.SyncOffRemovedFor(ctx, later("t2"), "acc_t1", owner, nil); err != nil || !switched.Changed {
+		t.Errorf("a team mailbox's kept index, removed before the request: %+v, %v", switched, err)
+	}
+	if forgot, err := f.s.ForgetRemovedIndexFor(ctx, later("p2"), personal, nil); err != nil || !forgot.Changed {
+		t.Errorf("a personal mailbox's kept index, removed before the request: %+v, %v", forgot, err)
+	}
+	if indexed("acc_t1") != 0 || indexed(personal) != 0 {
+		t.Error("a removed mailbox keeps its index")
+	}
+}
+
 func TestDismissingNoticesTakesOnlyThePersonsOwn(t *testing.T) {
 	f := newSchemaLatest(t)
 	ctx := context.Background()
