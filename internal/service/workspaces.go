@@ -1079,6 +1079,8 @@ func (s *Service) freshGrant(ctx context.Context, p Principal, a account.Account
 // who would read it once it is recovered, keeps read, and taking read
 // deletes the person's grants on it as on a live one. Anyone else, the
 // team's admins and the operator included, is told it does not exist.
+// Removed is as the write reads it: one removed since the caller saw it
+// live is its owners' alone too.
 func (s *Service) RevokeAccess(ctx context.Context, p Principal, accountID, userID string, drop workspace.Flags) error {
 	if err := refuseDelegated(p); err != nil {
 		return err
@@ -1103,7 +1105,16 @@ func (s *Service) revokeAccess(ctx context.Context, p Principal, accountID, user
 		return false, err
 	}
 	_, changed, err := s.workspaces.RevokeFor(ctx, req, a.ID, userID, drop, func(tx *sql.Tx) error {
-		if !a.RemovedAt.IsZero() {
+		// Removed or live as the write reads it, never as accessTarget
+		// did: a mailbox removed since is its owners' alone too.
+		live, err := liveTx(ctx, a.ID)(tx)
+		switch {
+		case err != nil:
+			return err
+		case !live && isOperator(p):
+			// The operator never reaches a team's removed mailbox here.
+			return errNoAccount
+		case !live:
 			// Removed: an active owner of its open team, as for a recovery.
 			return s.ownsRemovedTx(ctx, tx, p, a)
 		}

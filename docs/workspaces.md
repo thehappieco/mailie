@@ -873,7 +873,8 @@ included: these routes take a session or the operator's key.
    an admin never takes an owner's (1). It reaches a member in any standing (suspended, held,
    disabled), and asks the freshness hook nothing, a drop of read included. On a removed team
    mailbox it is its team's active owners' alone, its last kept reader keeping read
-   ([Removed mailboxes](#removed-mailboxes)).
+   ([Removed mailboxes](#removed-mailboxes)), removed as the write reads it: one removed since
+   the caller saw it live is not found to its admins and the operator too.
 5. The grant records `granted_by`: `usr_…` for a person signed in (the linker's own grant
    included), `key:<prefix>` for the operator, whose command line goes through the daemon with an
    instance admin key, or `migration` for a grant migration 0008 made; empty once the person who

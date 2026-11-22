@@ -698,7 +698,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   mailbox — and they alone list, recover and delete it for good; the operator also lists and
   deletes any workspace's for good, and recovers no person's or team's. A team's active owners
   alone also take flags or access away on it (`RevokeAccess`, as on a live one, the member in any
-  standing), its last kept reader keeping read (`last_reader`), and nobody gives anything on it.
+  standing; removed as its write reads it, one removed since it was read included), its last kept
+  reader keeping read (`last_reader`), and nobody gives anything on it.
   A recovery brings back the readers who still qualify and nothing a key held; none in a closed
   team, nor of a team mailbox nobody who could read it is left to read. **The directory
   exceptions**, under a source that

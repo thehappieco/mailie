@@ -273,6 +273,112 @@ func TestAnOwnerTakesAccessAwayOnARemovedMailboxButNeverFromItsLastKeptReader(t 
 	}
 }
 
+// raceTheWrite runs act while the writer's one connection is held and, once
+// act waits for it, runs meanwhile in the held transaction and commits it:
+// what act read before its write saw the database before meanwhile, and its
+// write sees it after. It returns what act returned.
+func (f *fixture) raceTheWrite(t *testing.T, act func() error, meanwhile func(tx *sql.Tx)) error {
+	t.Helper()
+	writer := f.db.Writer()
+	tx, err := writer.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	waited := writer.Stats().WaitCount
+	done := make(chan error, 1)
+	go func() { done <- act() }()
+	for deadline := time.Now().Add(10 * time.Second); writer.Stats().WaitCount == waited; time.Sleep(time.Millisecond) {
+		select {
+		case err := <-done:
+			t.Fatalf("the act ended before it waited for the writer: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the act never waited for the writer")
+		}
+	}
+	meanwhile(tx)
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return <-done
+}
+
+// removeIn removes a team mailbox inside tx, by who, as the repository
+// does (removeBySQL).
+func removeIn(t *testing.T, tx *sql.Tx, accountID, who string) {
+	t.Helper()
+	if _, err := tx.ExecContext(t.Context(), `UPDATE accounts SET removed_at = unixepoch(), removed_by = ?,
+		purge_after = unixepoch() + 2592000 WHERE id = ? AND removed_at = 0`, who, accountID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOnlyAnOwnerTakesAccessAwayOnAMailboxRemovedBetweenTheReadAndTheWrite(t *testing.T) {
+	type taker struct {
+		who     string
+		allowed bool
+		take    func(f *fixture, tm keysTeam) error
+	}
+	takers := []taker{
+		{"Carol, an admin", false, func(f *fixture, tm keysTeam) error {
+			return f.svc.RevokeAccess(t.Context(), tm.carol, tm.shared, tm.bea.UserID, workspace.Flags{Read: true})
+		}},
+		{"the operator", false, func(f *fixture, tm keysTeam) error {
+			return f.svc.RevokeAccess(t.Context(), admin(), tm.shared, tm.bea.UserID, workspace.Flags{Read: true})
+		}},
+		{"Carol, through an extension, dropping read", false, func(f *fixture, tm keysTeam) error {
+			_, err := f.actsFor(t, delegated(tm.carol, "c1", tm.id, time.Now())).DropFlags(t.Context(), tm.shared,
+				tm.bea.UserID, service.GrantFlags{Read: true})
+			return err
+		}},
+		{"Carol, through an extension, removing the access", false, func(f *fixture, tm keysTeam) error {
+			_, err := f.actsFor(t, delegated(tm.carol, "c2", tm.id, time.Now())).RemoveAccess(t.Context(), tm.shared,
+				tm.bea.UserID)
+			return err
+		}},
+		{"Ana, its owner", true, func(f *fixture, tm keysTeam) error {
+			return f.svc.RevokeAccess(t.Context(), tm.ana, tm.shared, tm.bea.UserID, workspace.Flags{Read: true})
+		}},
+	}
+	for _, c := range takers {
+		t.Run(c.who, func(t *testing.T) {
+			f := newFixture(t)
+			tm := syncedTeam(t, f)
+			tm.grant(t, tm.shared, workspace.Flags{Read: true, Send: true, Manage: true})
+			f.exec(t, `UPDATE mailbox_access SET raised_at = raised_at - 600 WHERE account_id = ?`, tm.shared)
+			held := func() string {
+				t.Helper()
+				return fmt.Sprint(f.count(t, `SELECT coalesce(max(read * 1000 + act * 100 + send * 10 + manage), -1)
+					FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.bea.UserID))
+			}
+			before := held()
+			if before != "1011" {
+				t.Fatalf("Bea holds %s, want read, send and manage", before)
+			}
+
+			// Read live; removed by Ana before the write.
+			err := f.raceTheWrite(t, func() error { return c.take(f, tm) }, func(tx *sql.Tx) {
+				removeIn(t, tx, tm.shared, tm.ana.UserID)
+			})
+			if c.allowed {
+				if err != nil {
+					t.Fatalf("taking Bea's read on the mailbox removed meanwhile: %v", err)
+				}
+				if after := held(); after != "11" {
+					t.Errorf("Bea held %s, and holds %s: want her read gone", before, after)
+				}
+				return
+			}
+			wantCode(t, "taking Bea's read on the mailbox removed meanwhile", err, service.CodeNotFound)
+			if after := held(); after != before {
+				t.Errorf("Bea held %s, and holds %s", before, after)
+			}
+		})
+	}
+}
+
 func TestTakingAwayReachesAMemberInAnyStanding(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

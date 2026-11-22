@@ -476,7 +476,8 @@ func (a *PersonActs) RemovedIndexOff(ctx context.Context, accountID string) (Act
 	})
 }
 
-// liveTx reads, inside a request's write, whether a mailbox is live.
+// liveTx reads, inside a write, whether a mailbox is live: not removed, and
+// known.
 func liveTx(ctx context.Context, accountID string) func(*sql.Tx) (bool, error) {
 	return func(tx *sql.Tx) (bool, error) {
 		var live bool
