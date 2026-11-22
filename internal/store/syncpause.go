@@ -121,8 +121,9 @@ func (s *Store) ResumeSync(ctx context.Context, accountID, actor, version string
 
 // ResumeSyncFor is ResumeSync as a request an extension carries for a person
 // decides it (requests.go): a team mailbox's agreement is recorded at the
-// request's first moment (Request.Stamp), and one not paused is recorded as
-// done. A nil request is ResumeSync.
+// request's first moment (Request.Stamp), never before one that stands
+// already (agreeSyncTx), and one not paused is recorded as done. A nil
+// request is ResumeSync.
 func (s *Store) ResumeSyncFor(ctx context.Context, req *Request, accountID, actor, version string,
 	check func(*sql.Tx) error,
 ) (MailboxSyncSwitch, error) {

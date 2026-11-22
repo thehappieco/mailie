@@ -666,10 +666,20 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 // on writes (SetMailboxSync) and what a team mailbox's resume writes
 // (ResumeSync). A consent migration 0011 bound to its linker is confirmed by
 // it, which detaches it from them.
+//
+// An agreement never moves back: a request's agreement stamped before the
+// one that stands keeps the later moment, and, to the same text, the one
+// that stands whole (who gave it too), since a narrowing asked between the
+// two must still meet the later one (Request.widenedSince).
 func agreeSyncTx(ctx context.Context, tx *sql.Tx, accountID, by, version string, at, now int64) error {
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE accounts SET sync_enabled_at = ?, sync_enabled_by = ?, sync_consent_version = ?,
-		   sync_enabled_via = '', updated_at = ? WHERE id = ?`,
+		`UPDATE accounts
+		    SET sync_enabled_at = MAX(sync_enabled_at, ?1),
+		        sync_enabled_by = CASE WHEN sync_enabled_at > ?1 AND sync_consent_version = ?3
+		                                AND sync_enabled_via <> 'migration'
+		                               THEN sync_enabled_by ELSE ?2 END,
+		        sync_consent_version = ?3, sync_enabled_via = '', updated_at = ?4
+		  WHERE id = ?5`,
 		at, by, version, now, accountID); err != nil {
 		return fmt.Errorf("store: record the mailbox's consent to sync: %w", err)
 	}

@@ -563,6 +563,8 @@ func TestAWideningThroughAnExtensionIsStampedWithItsIntentsFirstMoment(t *testin
 	ctx := t.Context()
 	tm := syncedTeam(t, f)
 	f.pause(t, tm.ana, tm.shared)
+	// The team agreed an hour ago.
+	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 3600 WHERE id = ?`, tm.shared)
 	// Ana's resume is asked first; Carol's turn-off after it; the resume
 	// runs last. The order they were asked in decides: the turn-off runs.
 	resumeAsked, offAsked := ago(10*time.Minute), ago(5*time.Minute)
@@ -585,6 +587,34 @@ func TestAWideningThroughAnExtensionIsStampedWithItsIntentsFirstMoment(t *testin
 	}
 	_, err := f.actsFor(t, delegated(tm.bea, "agree-old", "", asked)).AgreeConsent(ctx, service.ConsentSend, "an-older-text")
 	wantRefusal(t, "an agreement to another text", err, service.RefusalNotCurrentText)
+}
+
+func TestALateResumeThroughAnExtensionNeverMovesANewerAgreementBack(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	f.pause(t, tm.ana, tm.shared)
+	// Ana's resume is asked first and Carol's turn-off after it; both wait.
+	// Meanwhile Ana resumes and pauses again on her own screen: an agreement
+	// newer than Carol's turn-off, which it must refuse.
+	resumeAsked, offAsked := ago(10*time.Minute), ago(5*time.Minute)
+	if _, err := f.svc.ResumeMailboxSync(ctx, tm.ana, tm.shared, service.SyncResumeRequest{Version: f.consent().Sync}); err != nil {
+		t.Fatal(err)
+	}
+	agreed := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared)
+	f.pause(t, tm.ana, tm.shared)
+	if out, err := f.actsFor(t, delegated(tm.ana, "resume", tm.id, resumeAsked)).ResumeSync(ctx, tm.shared, f.consent().Sync); err != nil ||
+		!out.Changed {
+		t.Fatalf("the late resume: %+v, %v", out, err)
+	}
+	if got := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared); got != agreed {
+		t.Errorf("the late resume moved the agreement from %d to %d", agreed, got)
+	}
+	_, err := f.actsFor(t, delegated(tm.carol, "off", tm.id, offAsked)).TeamSync(ctx, tm.shared, false, "")
+	wantRefusal(t, "a turn-off asked before the newer agreement", err, service.RefusalSetSince)
+	if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared) == 0 {
+		t.Error("the turn-off withdrew the newer agreement")
+	}
 }
 
 func TestANarrowingNeverBlocksAnotherNarrowing(t *testing.T) {
