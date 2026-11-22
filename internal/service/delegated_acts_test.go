@@ -315,6 +315,48 @@ func removeIn(t *testing.T, tx *sql.Tx, accountID, who string) {
 	}
 }
 
+// recoverIn recovers a removed mailbox inside tx, by who, as the repository
+// does (recoverRemoved): live again, paused under its consent, journaled
+// with who reads it then.
+func recoverIn(t *testing.T, tx *sql.Tx, accountID, who string) {
+	t.Helper()
+	ctx := t.Context()
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET removed_at = 0, removed_by = '', purge_after = 0,
+		sync_paused_at = unixepoch(), sync_paused_by = ? WHERE id = ? AND removed_at <> 0`, who, accountID); err != nil {
+		t.Fatal(err)
+	}
+	readers, err := store.MailboxReadersTx(ctx, tx, accountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.JournalMailboxTx(ctx, tx, store.MailboxEvent{
+		Kind: store.MailboxRecovered, AccountID: accountID, Actor: who, At: time.Now().Unix(),
+	}, readers, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// purgeIn deletes a removed mailbox for good inside tx, by who, journaled
+// as the repository does (purgeRemoved): its journal's names forgotten, its
+// deletion journaled, the mailbox gone.
+func purgeIn(t *testing.T, tx *sql.Tx, accountID, who string) {
+	t.Helper()
+	ctx := t.Context()
+	if err := store.ForgetMailboxNamesTx(ctx, tx, []string{accountID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.JournalMailboxTx(ctx, tx, store.MailboxEvent{
+		Kind: store.MailboxPurged, AccountID: accountID, Actor: who, At: time.Now().Unix(),
+	}, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, query := range []string{`DELETE FROM events WHERE account_id = ?`, `DELETE FROM accounts WHERE id = ?`} {
+		if _, err := tx.ExecContext(ctx, query, accountID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestOnlyAnOwnerTakesAccessAwayOnAMailboxRemovedBetweenTheReadAndTheWrite(t *testing.T) {
 	type taker struct {
 		who     string
@@ -682,6 +724,148 @@ func TestRecoveringAPurgedMailboxIsRecoveryClosed(t *testing.T) {
 	wantRefusal(t, "Ana, naming her personal workspace", err, service.RefusalNotFound)
 	_, err = f.actsFor(t, delegated(tm.ana, "r3", tm.id, time.Now())).Recover(ctx, "acc_00000000000000ff")
 	wantRefusal(t, "Ana, a mailbox nobody knows", err, service.RefusalNotFound)
+}
+
+// removedOfAna is a removed mailbox Ana recovers: the team's she owns, or
+// her personal one.
+type removedOfAna struct {
+	what string
+	// mailbox removes it and names it and its workspace.
+	mailbox func(t *testing.T, f *fixture, tm keysTeam) (accountID, workspaceID string)
+}
+
+var removedOfAnas = []removedOfAna{
+	{"the team's", func(t *testing.T, f *fixture, tm keysTeam) (string, string) {
+		f.removed(t, tm.ana, tm.shared)
+		return tm.shared, tm.id
+	}},
+	{"her personal one", func(t *testing.T, f *fixture, tm keysTeam) (string, string) {
+		own := f.ownSynced(t, tm.ana, "ana@mail.example")
+		f.connect(t, own)
+		f.removed(t, tm.ana, own)
+		return own, authtest.Personal(t, f.db, tm.ana.UserID)
+	}},
+}
+
+func TestRecoveringAMailboxRecoveredBetweenTheReadAndTheWriteIsDone(t *testing.T) {
+	for _, c := range removedOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+
+			// Read removed; recovered by Ana, in Mailie's own screen, before
+			// the write.
+			var out service.ActOutcome
+			err := f.raceTheWrite(t, func() (err error) {
+				out, err = f.actsFor(t, delegated(tm.ana, "r1", ws, time.Now())).Recover(t.Context(), id)
+				return err
+			}, func(tx *sql.Tx) {
+				recoverIn(t, tx, id, tm.ana.UserID)
+			})
+			if err != nil || out.Changed || out.Ran {
+				t.Fatalf("recovering the mailbox recovered meanwhile: %+v, %v; want done, nothing changed", out, err)
+			}
+			if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); !ran {
+				t.Error("the request was not recorded")
+			}
+			if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'recovered'`, id); n != 1 {
+				t.Errorf("%d recoveries journaled, want the one that ran meanwhile", n)
+			}
+			if f.count(t, `SELECT removed_at FROM accounts WHERE id = ?`, id) != 0 {
+				t.Error("the mailbox is removed")
+			}
+		})
+	}
+}
+
+func TestRecoveringAMailboxRecoveredMeanwhileIsNotFoundToWhoNoLongerOwnsIt(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	f.removed(t, tm.ana, tm.shared)
+
+	// Read removed by Ana, its owner; recovered, and Ana made an admin,
+	// before the write.
+	err := f.raceTheWrite(t, func() error {
+		_, err := f.actsFor(t, delegated(tm.ana, "r1", tm.id, time.Now())).Recover(t.Context(), tm.shared)
+		return err
+	}, func(tx *sql.Tx) {
+		recoverIn(t, tx, tm.shared, tm.ana.UserID)
+		if _, err := tx.ExecContext(t.Context(), `UPDATE workspace_members SET role = 'admin' WHERE workspace_id = ? AND user_id = ?`,
+			tm.id, tm.ana.UserID); err != nil {
+			t.Fatal(err)
+		}
+	})
+	wantRefusal(t, "Ana, an admin now, recovering the mailbox recovered meanwhile", err, service.RefusalNotFound)
+	if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); ran {
+		t.Error("the refused request was recorded")
+	}
+}
+
+func TestRecoveringAMailboxDeletedForGoodBetweenTheReadAndTheWriteIsRecoveryClosed(t *testing.T) {
+	for _, c := range removedOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+
+			// Read removed; deleted for good by Ana, in Mailie's own screen,
+			// before the write.
+			err := f.raceTheWrite(t, func() error {
+				_, err := f.actsFor(t, delegated(tm.ana, "r1", ws, time.Now())).Recover(t.Context(), id)
+				return err
+			}, func(tx *sql.Tx) {
+				purgeIn(t, tx, id, tm.ana.UserID)
+			})
+			wantRefusal(t, "recovering the mailbox deleted for good meanwhile", err, service.RefusalRecoveryOver)
+			wantCode(t, "recovering the mailbox deleted for good meanwhile", err, service.CodeConflict)
+			if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); ran {
+				t.Error("the refused request was recorded")
+			}
+		})
+	}
+}
+
+func TestRemovedIndexOffOnAMailboxRecoveredBetweenTheReadAndTheWriteIsDoneAndTouchesNothing(t *testing.T) {
+	for _, c := range removedOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+			f.seedIndex(t, id, "Zebra")
+			indexed := f.indexed(t, id)
+			agreed := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, id)
+
+			// Read removed; recovered by Ana before the write.
+			var out service.ActOutcome
+			err := f.raceTheWrite(t, func() (err error) {
+				out, err = f.actsFor(t, delegated(tm.ana, "r1", ws, time.Now())).RemovedIndexOff(t.Context(), id)
+				return err
+			}, func(tx *sql.Tx) {
+				recoverIn(t, tx, id, tm.ana.UserID)
+			})
+			if err != nil || out.Changed || out.Ran {
+				t.Fatalf("turning off the kept index of the mailbox recovered meanwhile: %+v, %v; want done, nothing changed",
+					out, err)
+			}
+			if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); !ran {
+				t.Error("the request was not recorded")
+			}
+			if n := f.indexed(t, id); n != indexed {
+				t.Errorf("the recovered mailbox keeps %d rows of its index, and kept %d", n, indexed)
+			}
+			if n := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, id); n != agreed {
+				t.Errorf("its own agreement was %d and is %d", agreed, n)
+			}
+			if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'sync_paused'`, id); n != 0 {
+				t.Errorf("%d turn-offs journaled", n)
+			}
+		})
+	}
 }
 
 func TestTurningSyncOffOnAMailboxRemovedSinceDeletesItsKeptIndexForAnOwner(t *testing.T) {

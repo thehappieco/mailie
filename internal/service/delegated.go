@@ -405,22 +405,29 @@ func (a *PersonActs) Remove(ctx context.Context, accountID string) (ActOutcome, 
 // mailbox live again in the request's workspace (recovered since it was
 // asked) is done, with nothing changed; one the workspace's journal shows
 // deleted for good is recovery_over (ErrRecoveryOver), as one past its 30
-// days is; anything else is not found.
+// days is; anything else is not found. Live or gone is as the recovery's
+// write reads it too: one recovered or deleted for good between the read
+// that found it removed and that write is answered so, never not_removed
+// nor not found.
 func (a *PersonActs) Recover(ctx context.Context, accountID string) (ActOutcome, error) {
 	if a.ran == nil && !a.suspended && CodeOf(a.item(ctx, accountID)) == CodeNotFound && a.ownerHere(ctx) {
-		purged, err := a.s.store.PurgedIn(ctx, a.d.WorkspaceID, accountID)
-		switch {
-		case err != nil:
-			return ActOutcome{}, E(CodeInternal, "reading the mailbox's journal failed", err)
-		case purged:
-			return ActOutcome{}, errRecoveryClosed
+		if err := a.purgedHere(ctx, accountID); err != nil {
+			return ActOutcome{}, err
 		}
 	}
 	return a.run(ctx, actRecover, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
 		for range 2 {
 			err := a.s.recoverAccount(ctx, a.p, accountID, req)
-			if CodeOf(err) != CodeNotFound || !a.ownerHere(ctx) {
+			// Not found, or live as the write read it (ErrNotRemoved):
+			// recovered, or deleted for good, since it was read.
+			if err == nil || CodeOf(err) != CodeNotFound && !errors.Is(err, ErrNotRemoved) {
 				return store.RequestOutcome{Changed: err == nil}, err
+			}
+			if !a.ownerHere(ctx) {
+				if CodeOf(err) == CodeNotFound {
+					return store.RequestOutcome{}, err
+				}
+				return store.RequestOutcome{}, errNoAccount
 			}
 			// Live again: recovered since it was asked.
 			done, nerr := a.s.noOp(ctx, req, accountID, nil, liveTx(ctx, accountID))
@@ -429,8 +436,27 @@ func (a *PersonActs) Recover(ctx context.Context, accountID string) (ActOutcome,
 			}
 			// Removed again meanwhile: recovered as asked, once more.
 		}
+		// Neither live nor removed as it was read again: deleted for good
+		// since, if the journal says so.
+		if err := a.purgedHere(ctx, accountID); err != nil {
+			return store.RequestOutcome{}, err
+		}
 		return store.RequestOutcome{}, errNoAccount
 	})
+}
+
+// purgedHere is recovery_over (errRecoveryClosed) for a mailbox the request
+// workspace's journal shows deleted for good, and nil otherwise: what a
+// recovery answers its owners once nothing recovers it.
+func (a *PersonActs) purgedHere(ctx context.Context, accountID string) error {
+	purged, err := a.s.store.PurgedIn(ctx, a.d.WorkspaceID, accountID)
+	switch {
+	case err != nil:
+		return E(CodeInternal, "reading the mailbox's journal failed", err)
+	case purged:
+		return errRecoveryClosed
+	}
+	return nil
 }
 
 // Purge deletes the removed mailbox for good (PurgeAccount).

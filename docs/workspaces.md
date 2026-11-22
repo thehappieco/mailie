@@ -2172,9 +2172,10 @@ authorization, the same checks in its write and the same freshness hook. No tran
     it), deletes the index it keeps for an owner of the team, as a session's turn-off of a removed
     team mailbox does (its agreement's moment still compared), and is `not_found` to an admin;
   - `Recover`; to whoever may recover it, a mailbox live again in the request's workspace
-    (recovered since it was asked) is done, with nothing changed, and one the workspace's journal
-    shows deleted for good is `recovery_over`, as one past its 30 days is; anything else
-    `not_found`;
+    (recovered since it was asked, before its write or in it) is done, with nothing changed, and
+    one the workspace's journal shows deleted for good (before its write or in it too) is
+    `recovery_over`, as one past its 30 days is, never `not_removed` nor `not_found`; anything
+    else `not_found`;
   - `RemovedIndexOff`: a removed mailbox's kept index deleted, by its person for a personal one,
     by an active owner of its team for a team's (the team's agreement withdrawn, after the
     freshness hook, `FreshRemovedSyncOff`; a personal one asks it nothing); never a live mailbox's:
