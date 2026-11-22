@@ -459,7 +459,13 @@ func (a *PersonActs) purgedHere(ctx context.Context, accountID string) error {
 	return nil
 }
 
-// Purge deletes the removed mailbox for good (PurgeAccount).
+// Purge deletes the removed mailbox for good (PurgeAccount). What it deletes
+// is its removal's, and with it everything given on the mailbox before:
+// one removed at or after the second the request was first asked was
+// recovered and removed again since, and is not deleted (ErrSetSince), with
+// whatever was given on it while live again — its team's agreement, a
+// grant's raise, its index — since nothing is given on a removed mailbox.
+// One live again is not_removed, as to a session.
 func (a *PersonActs) Purge(ctx context.Context, accountID string) (ActOutcome, error) {
 	return a.run(ctx, actPurge, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
 		err := a.s.purgeAccount(ctx, a.p, accountID, req)

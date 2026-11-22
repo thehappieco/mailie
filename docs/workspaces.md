@@ -2145,9 +2145,12 @@ authorization, the same checks in its write and the same freshness hook. No tran
   what it would take was **given** at or after the second it was first asked: a consent's
   `users.*_consent_at`, a team's agreement's `accounts.sync_enabled_at`, a grant's
   `mailbox_access.raised_at`, which only a change that adds a flag moves (never one that only takes
-  flags away, nor a key supplied), and, for a removed mailbox's kept index, its removal's
-  `accounts.removed_at`. What it would take and nobody holds is done, with nothing changed. A
-  widening that comes through an extension is stamped with its intent's first moment
+  flags away, nor a key supplied), and, for a removed mailbox's kept index and for its deletion for
+  good, its removal's `accounts.removed_at`: nothing is given on a removed mailbox, so a removal
+  made since was a recovery and a removal again, and whatever was given while it was live again (a
+  team's agreement, a grant's raise, an index) is newer than it. What it would take and nobody
+  holds is done, with nothing changed. A widening that comes through an extension is stamped with
+  its intent's first moment
   (never later than now), so the order in which people asked decides, not the order in which
   requests ran: a resume asked before a turn-off and run after it never refuses that turn-off. A
   stamp never moves a moment back: a widening that runs late keeps the later moment it finds (a
@@ -2172,7 +2175,12 @@ authorization, the same checks in its write and the same freshness hook. No tran
   on the same fixture and compares the database, the journal, the notices and the freshness asked
   (`TestEachKindThroughAnExtensionDoesWhatItsSessionDoes`):
   - `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current sync text and records the
-    team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`, `Purge`;
+    team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`;
+  - `Purge`: a removed mailbox deleted for good, by whoever may, as a session's deletion is; one
+    live again is `not_removed`. What it deletes is its removal's: one removed at or after the
+    second it was first asked (`accounts.removed_at`, compared in its write) was recovered and
+    removed again since, and keeps everything it keeps, an agreement, a raise and an index given
+    while it was live again included (`set_since`);
   - `TeamSync` on or off; off, on a mailbox removed since it was asked (before its write or in
     it), deletes the index it keeps for an owner of the team, as a session's turn-off of a removed
     team mailbox does (its agreement's moment still compared), and is `not_found` to an admin;

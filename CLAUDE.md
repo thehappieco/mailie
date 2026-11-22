@@ -161,8 +161,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `ErrSetSince`, for what was given at or after its first second). Each decisive write takes the
   request in an `…For` form (`PauseSyncFor`,
   `SetMailboxSyncFor`, the consents' `Grant…For`/`Withdraw…For`; `workspace.SetGrantFor`,
-  `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`), the old name a nil
-  request; and the writes only a request had before: `SyncOffRemovedFor` (a removed mailbox's own
+  `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`, which refuses
+  `ErrSetSince` for a mailbox removed at or after the request's first second, recovered and
+  removed again since), the old name a nil request; and the writes only a request had before:
+  `SyncOffRemovedFor` (a removed mailbox's own
   sync off, its agreement compared as a turn-off's, which leaves one live again as it is),
   `ForgetRemovedIndexFor` (a removed personal mailbox's kept index, at its person's word: its
   consent, hold and removal kept, nothing journaled), both refusing `ErrSetSince` for a mailbox
@@ -449,7 +451,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   good `recovery_over` (both as its write reads it too); a team's turn-off of a mailbox removed
   since (as its write reads it) deletes its kept index, an owner's; a removed mailbox's kept index
   off never reaches one recovered since (done), nor one removed again since (`set_since`), and asks
-  the freshness hook for a team only; taking flags away or a drop of read asks it nothing.
+  the freshness hook for a team only; a deletion for good of one removed again since is
+  `set_since` too; taking flags away or a drop of read asks it nothing.
   `SweepRequests` is the hourly housekeeping's (`internal/app`). Every exported
   method that takes a principal refuses `KindPerson` first (`refuseDelegated`,
   `ErrNeedsOwnSession`), held by a test that calls each by reflection, and so do the key and

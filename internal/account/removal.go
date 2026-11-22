@@ -241,7 +241,13 @@ func (r *Repository) recoverRemoved(ctx context.Context, req *store.Request, id,
 // purgeRemoved deletes a removed mailbox for good, as actor, after check (nil
 // checks nothing), journaled: what its owner, or the operator, decides before
 // its 30 days are over. ErrNotFound for a mailbox nobody knows, ErrNotRemoved
-// for a live one: removing comes first.
+// for a live one: removing comes first. A request (nil records nothing)
+// deletes only the removal it could have been asked of: one made at or after
+// the second it was first asked is a mailbox recovered and removed again
+// since, which keeps everything it kept, and whatever was given on it while
+// it was live again — its team's agreement, a grant's raise, its index
+// (store.ErrSetSince). Nothing is given on a removed mailbox, so its removal
+// is the one moment to compare.
 func (r *Repository) purgeRemoved(ctx context.Context, req *store.Request, id, actor string, check func(*sql.Tx) error,
 	revoke bool,
 ) ([]grantToRevoke, error) {
@@ -262,6 +268,9 @@ func (r *Repository) purgeRemoved(ctx context.Context, req *store.Request, id, a
 			if err := check(tx); err != nil {
 				return err
 			}
+		}
+		if req.WidenedSince(removedAt) {
+			return store.ErrSetSince
 		}
 		if revoke {
 			if grants, err = r.grantsToRevokeTx(ctx, tx, []string{id}); err != nil {
@@ -488,8 +497,10 @@ func (r *Registry) Purge(ctx context.Context, accountID, actor string, check fun
 
 // PurgeFor is Purge as a request an extension carries for a person decides
 // it (store.Request): recorded in the deletion's transaction; the Google
-// grant's revocation after the commit is not part of it. A nil request is
-// Purge.
+// grant's revocation after the commit is not part of it. A mailbox removed
+// at or after the second the request was first asked was recovered and
+// removed again since, and is not deleted (store.ErrSetSince). A nil request
+// is Purge.
 func (r *Registry) PurgeFor(ctx context.Context, req *store.Request, accountID, actor string, check func(*sql.Tx) error) error {
 	grants, err := r.repo.purgeRemoved(ctx, req, accountID, actor, check, r.revokes())
 	if err != nil {

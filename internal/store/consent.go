@@ -156,7 +156,7 @@ func (s *Store) WithdrawSyncConsentFor(ctx context.Context, req *Request, userID
 			return ErrNoSuchUser
 		case err != nil:
 			return fmt.Errorf("store: withdraw sync consent: %w", err)
-		case at != 0 && req.widenedSince(at):
+		case at != 0 && req.WidenedSince(at):
 			return ErrSetSince
 		}
 		changed = at != 0
@@ -358,7 +358,7 @@ func (s *Store) WithdrawActionsConsentFor(ctx context.Context, req *Request, use
 			return ErrNoSuchUser
 		case err != nil:
 			return fmt.Errorf("store: withdraw actions consent: %w", err)
-		case at != 0 && req.widenedSince(at):
+		case at != 0 && req.WidenedSince(at):
 			return ErrSetSince
 		}
 		changed = at != 0
@@ -500,7 +500,7 @@ func (s *Store) WithdrawSendConsentFor(ctx context.Context, req *Request, userID
 			return ErrNoSuchUser
 		case err != nil:
 			return fmt.Errorf("store: withdraw send consent: %w", err)
-		case at != 0 && req.widenedSince(at):
+		case at != 0 && req.WidenedSince(at):
 			return ErrSetSince
 		}
 		changed = at != 0
@@ -652,14 +652,14 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 			out.Live = true
 			return nil
 		}
-		if removedOnly && req.widenedSince(removedAt) {
+		if removedOnly && req.WidenedSince(removedAt) {
 			return ErrSetSince
 		}
 		out.Removed = removed
 		// A paused team or operator mailbox was on, the schema says
 		// (accounts_pause_consent), so no pause ends unseen.
 		wasOn := c.At != 0 || c.Migrated
-		if wasOn && req.widenedSince(c.At) {
+		if wasOn && req.WidenedSince(c.At) {
 			return ErrSetSince
 		}
 		out.Changed = wasOn
@@ -696,7 +696,7 @@ func (s *Store) setMailboxSync(ctx context.Context, req *Request, accountID stri
 // An agreement never moves back: a request's agreement stamped before the
 // one that stands keeps the later moment, and, to the same text, the one
 // that stands whole (who gave it too), since a narrowing asked between the
-// two must still meet the later one (Request.widenedSince).
+// two must still meet the later one (Request.WidenedSince).
 func agreeSyncTx(ctx context.Context, tx *sql.Tx, accountID, by, version string, at, now int64) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE accounts
@@ -859,7 +859,7 @@ func (s *Store) ForgetRemovedIndexFor(ctx context.Context, req *Request, account
 		case removedAt == 0:
 			out.Live = true
 			return nil
-		case req.widenedSince(removedAt):
+		case req.WidenedSince(removedAt):
 			return ErrSetSince
 		}
 		if err := ForgetIndexTx(ctx, tx, []string{accountID}); err != nil {

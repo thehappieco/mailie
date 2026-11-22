@@ -244,7 +244,7 @@ func TestARequestOutOfShapeIsRefused(t *testing.T) {
 
 func TestAWideningIsStampedWithItsRequestsFirstMomentAndANarrowingComparesWithItsSecond(t *testing.T) {
 	var none *Request
-	if none.Stamp(500) != 500 || none.Since() != 0 || none.widenedSince(500) {
+	if none.Stamp(500) != 500 || none.Since() != 0 || none.WidenedSince(500) {
 		t.Error("no request stamps now and compares with nothing")
 	}
 	r := &Request{FirstIssued: time.Unix(400, 900_000_000)}
@@ -254,7 +254,7 @@ func TestAWideningIsStampedWithItsRequestsFirstMomentAndANarrowingComparesWithIt
 	if got := r.Stamp(300); got != 300 {
 		t.Errorf("a stamp is never after now: %d", got)
 	}
-	if !r.widenedSince(400) || !r.widenedSince(401) || r.widenedSince(399) {
+	if !r.WidenedSince(400) || !r.WidenedSince(401) || r.WidenedSince(399) {
 		t.Error("a narrowing asked at 400.9 is refused for a widening at or after second 400, and only those")
 	}
 }

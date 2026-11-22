@@ -146,11 +146,13 @@ func (r *Request) Stamp(now int64) int64 {
 	return now
 }
 
-// widenedSince reports whether a value a narrowing would take away was given
+// WidenedSince reports whether a value a narrowing would take away was given
 // at, a time in unix seconds, at or after the request's first second: a
 // consent, a team's agreement, a grant's raise, or a removal whose kept
-// index the narrowing would delete.
-func (r *Request) widenedSince(at int64) bool {
+// index the narrowing would delete, or which a deletion for good would end
+// with everything the mailbox keeps. False for no request, or one given no
+// first moment.
+func (r *Request) WidenedSince(at int64) bool {
 	s := r.Since()
 	return s > 0 && at >= s
 }

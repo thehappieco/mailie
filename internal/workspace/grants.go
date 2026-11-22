@@ -521,7 +521,7 @@ func (r *Repository) RevokeFor(ctx context.Context, req *store.Request, accountI
 			out = before
 			return nil
 		}
-		if req.Since() > 0 && before.RaisedAt.Unix() >= req.Since() {
+		if req.WidenedSince(before.RaisedAt.Unix()) {
 			return store.ErrSetSince
 		}
 		changed = true

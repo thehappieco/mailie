@@ -855,6 +855,140 @@ func TestARemovedIndexOffMeetsARemovalMadeAgainBetweenTheReadAndTheWrite(t *test
 	}
 }
 
+// keptOfRemoved reads what deleting a removed mailbox for good would take:
+// whether it is still there, removed, the rows of its index, its team's
+// agreement and what Bea holds on it.
+func (f *fixture) keptOfRemoved(t *testing.T, tm keysTeam, accountID string) string {
+	t.Helper()
+	return fmt.Sprintf("removed %d, index %d, agreed at %d, Bea holds %d",
+		f.count(t, `SELECT count(*) FROM accounts WHERE id = ? AND removed_at <> 0`, accountID),
+		f.indexed(t, accountID),
+		f.count(t, `SELECT coalesce(max(sync_enabled_at), -1) FROM accounts WHERE id = ?`, accountID),
+		f.count(t, `SELECT coalesce(max(read * 1000 + act * 100 + send * 10 + manage), -1)
+			FROM mailbox_access WHERE account_id = ? AND user_id = ?`, accountID, tm.bea.UserID))
+}
+
+func TestALatePurgeNeverDeletesATeamsAgreementOrAGrantGivenSinceItWasAsked(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	f.seedIndex(t, tm.shared, "Zebra")
+	f.removed(t, tm.ana, tm.shared)
+	// Agreed, given and removed well before Ana asks the console to delete
+	// it for good.
+	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+	f.exec(t, `UPDATE mailbox_access SET raised_at = raised_at - 600 WHERE account_id = ?`, tm.shared)
+	f.removalsMovedBack(t, 10*time.Minute)
+	asked := ago(time.Minute)
+
+	// Since she asked, in Mailie's own screens: recovered, resumed (the team
+	// agreeing again), Bea given act, indexed again and removed again, to be
+	// kept 30 days more.
+	if _, err := f.svc.RecoverAccount(ctx, tm.ana, tm.shared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.ResumeMailboxSync(ctx, tm.ana, tm.shared, service.SyncResumeRequest{Version: f.consent().Sync}); err != nil {
+		t.Fatal(err)
+	}
+	tm.grant(t, tm.shared, workspace.Flags{Read: true, Act: true})
+	f.seedIndex(t, tm.shared, "Okapi")
+	f.removed(t, tm.ana, tm.shared)
+	agreed := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared)
+	raised := f.count(t, `SELECT raised_at FROM mailbox_access WHERE account_id = ? AND user_id = ?`, tm.shared, tm.bea.UserID)
+	if int64(agreed) < asked.Unix() || int64(raised) < asked.Unix() {
+		t.Fatalf("the team agreed at %d and Bea was given act at %d; want both since %d", agreed, raised, asked.Unix())
+	}
+	kept := f.keptOfRemoved(t, tm, tm.shared)
+
+	_, err := f.actsFor(t, delegated(tm.ana, "p1", tm.id, asked)).Purge(ctx, tm.shared)
+	wantRefusal(t, "a deletion for good asked before the team agreed again", err, service.RefusalSetSince)
+	if now := f.keptOfRemoved(t, tm, tm.shared); now != kept {
+		t.Errorf("the removed mailbox kept %s, and keeps %s", kept, now)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'purged'`, tm.shared); n != 0 {
+		t.Errorf("%d deletions for good journaled", n)
+	}
+	if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "p1"); ran {
+		t.Error("the refused request was recorded")
+	}
+}
+
+func TestALatePurgeNeverDeletesAMailboxRemovedAgainSinceItWasAsked(t *testing.T) {
+	for _, c := range removedAgainOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+			asked := ago(time.Minute)
+
+			// Since Ana asked to delete it for good, in Mailie's own
+			// screens: recovered, used and removed again.
+			if _, err := f.svc.RecoverAccount(ctx, tm.ana, id); err != nil {
+				t.Fatal(err)
+			}
+			c.used(t, f, tm, id)
+			f.removed(t, tm.ana, id)
+			kept, held := c.kept(t, f, tm, id), f.keptOfRemoved(t, tm, id)
+
+			_, err := f.actsFor(t, delegated(tm.ana, "p1", ws, asked)).Purge(ctx, id)
+			wantRefusal(t, "a deletion for good of a mailbox removed again since it was asked", err, service.RefusalSetSince)
+			if now := f.keptOfRemoved(t, tm, id); now != held {
+				t.Errorf("the removed mailbox kept %s, and keeps %s", held, now)
+			}
+			if n := c.kept(t, f, tm, id); n != kept {
+				t.Errorf("what it kept beside its index was %d and is %d", kept, n)
+			}
+			if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "p1"); ran {
+				t.Error("the refused request was recorded")
+			}
+
+			// Removed again before the request was asked: it runs.
+			f.removalsMovedBack(t, 10*time.Minute)
+			out, err := f.actsFor(t, delegated(tm.ana, "p2", ws, asked)).Purge(ctx, id)
+			if err != nil || !out.Changed {
+				t.Fatalf("deleting for good a mailbox removed before the request was asked: %+v, %v", out, err)
+			}
+			if n := f.count(t, `SELECT count(*) FROM accounts WHERE id = ?`, id); n != 0 {
+				t.Error("the mailbox is still there")
+			}
+		})
+	}
+}
+
+func TestAPurgeMeetsARemovalMadeAgainBetweenTheReadAndTheWrite(t *testing.T) {
+	for _, c := range removedAgainOfAnas {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			id, ws := c.mailbox(t, f, tm)
+			kept, held := c.kept(t, f, tm, id), f.keptOfRemoved(t, tm, id)
+
+			// Read under its first removal; recovered and removed again, in
+			// Mailie's own screens, before the write.
+			err := f.raceTheWrite(t, func() error {
+				_, err := f.actsFor(t, delegated(tm.ana, "p1", ws, ago(time.Minute))).Purge(t.Context(), id)
+				return err
+			}, func(tx *sql.Tx) {
+				recoverIn(ctx, t, tx, id, tm.ana.UserID)
+				if _, err := tx.ExecContext(ctx, `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '' WHERE id = ?`,
+					id); err != nil {
+					t.Fatal(err)
+				}
+				removeIn(ctx, t, tx, id, tm.ana.UserID)
+			})
+			wantRefusal(t, "a deletion for good of a mailbox removed again meanwhile", err, service.RefusalSetSince)
+			if now := f.keptOfRemoved(t, tm, id); now != held {
+				t.Errorf("the removed mailbox kept %s, and keeps %s", held, now)
+			}
+			if n := c.kept(t, f, tm, id); n != kept {
+				t.Errorf("what it kept beside its index was %d and is %d", kept, n)
+			}
+		})
+	}
+}
+
 func TestTurningOffOnlyARemovedMailboxsKeptIndexNeverTurnsOffOneRecoveredSince(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
