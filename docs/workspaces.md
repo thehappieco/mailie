@@ -2147,8 +2147,10 @@ authorization, the same checks in its write and the same freshness hook. No tran
   changed. A widening that comes through an extension is stamped with its intent's first moment
   (never later than now), so the order in which people asked decides, not the order in which
   requests ran: a resume asked before a turn-off and run after it never refuses that turn-off. A
-  grant's time is its row's: a drop of one flag is refused when another was raised on the same row
-  since, the one needless refusal left.
+  stamp never moves a moment back: a widening that runs late keeps the later moment it finds (a
+  grant's `raised_at`, a team's agreement), so a narrowing asked between the two still meets the
+  newer widening. A grant's time is its row's: a drop of one flag is refused when another was
+  raised on the same row since, the one needless refusal left.
 - **A change of a grant drawn from what someone held** (`GrantRequest.From`, `from` over REST, all
   four flags) is refused, `409`, unless the grant holds exactly that when it is written, so a flag
   taken away since the caller looked is never given back. A raise through an extension always

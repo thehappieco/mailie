@@ -156,9 +156,10 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`RequirePersonActsTx`), a mailbox outside its workspace `ErrNotInWorkspace` — and
   `RecordRequestTx` last; `WriteRequest` wraps both, `RecordNoOp` records a request whose effect
   held already, `SweepRequests` deletes the records past their end) and `mailbox_access.raised_at`
-  (moved only by a change that adds a flag; a request's widening is stamped with its first moment,
-  `Request.Stamp`, and a narrowing refused, `ErrSetSince`, for what was given at or after its first
-  second). Each decisive write takes the request in an `…For` form (`PauseSyncFor`,
+  (moved only by a change that adds a flag, never back; a request's widening is stamped with its
+  first moment, `Request.Stamp`, never before a later moment it finds, and a narrowing refused,
+  `ErrSetSince`, for what was given at or after its first second). Each decisive write takes the
+  request in an `…For` form (`PauseSyncFor`,
   `SetMailboxSyncFor`, the consents' `Grant…For`/`Withdraw…For`; `workspace.SetGrantFor`,
   `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`), the old name a nil
   request; and the writes only a request had before: `SyncOffRemovedFor` (a removed mailbox's own

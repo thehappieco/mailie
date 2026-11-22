@@ -617,6 +617,51 @@ func TestALateResumeThroughAnExtensionNeverMovesANewerAgreementBack(t *testing.T
 	}
 }
 
+func TestALateRaiseThroughAnExtensionNeverMovesANewerRaiseBack(t *testing.T) {
+	for _, giveBack := range []string{"on a screen", "through a request asked after the removal"} {
+		t.Run(giveBack, func(t *testing.T) {
+			f := newFixture(t)
+			ctx := t.Context()
+			tm := syncedTeam(t, f)
+			tm.grant(t, tm.shared, workspace.Flags{Read: true, Send: true})
+			raisedAt := `SELECT raised_at FROM mailbox_access WHERE account_id = ? AND user_id = ?`
+			f.exec(t, `UPDATE mailbox_access SET raised_at = raised_at - 3600 WHERE account_id = ? AND user_id = ?`,
+				tm.shared, tm.bea.UserID)
+			// Ana's raise of act, drawn from read and send, is asked first,
+			// and Carol's removal of Bea's access after it; both wait.
+			// Meanwhile send is taken away and given back: a flag given
+			// after Carol asked, which her removal must not take.
+			raiseAsked, removalAsked := ago(10*time.Minute), ago(5*time.Minute)
+			if err := f.svc.RevokeAccess(ctx, tm.ana, tm.shared, tm.bea.UserID, workspace.Flags{Send: true}); err != nil {
+				t.Fatal(err)
+			}
+			if giveBack == "on a screen" {
+				if _, err := f.svc.SetAccess(ctx, tm.ana, tm.shared, tm.bea.UserID, grantRequest(true, false, true, false)); err != nil {
+					t.Fatal(err)
+				}
+			} else if out, err := f.actsFor(t, delegated(tm.ana, "give-back", tm.id, ago(2*time.Minute))).RaiseFlags(ctx,
+				tm.shared, tm.bea.UserID, service.GrantFlags{Read: true}, service.GrantFlags{Read: true, Send: true}); err != nil ||
+				!out.Changed {
+				t.Fatalf("the give-back: %+v, %v", out, err)
+			}
+			raised := f.count(t, raisedAt, tm.shared, tm.bea.UserID)
+			if out, err := f.actsFor(t, delegated(tm.ana, "raise", tm.id, raiseAsked)).RaiseFlags(ctx, tm.shared, tm.bea.UserID,
+				service.GrantFlags{Read: true, Send: true}, service.GrantFlags{Read: true, Act: true, Send: true}); err != nil ||
+				!out.Changed {
+				t.Fatalf("the late raise: %+v, %v", out, err)
+			}
+			if got := f.count(t, raisedAt, tm.shared, tm.bea.UserID); got != raised {
+				t.Errorf("the late raise moved the grant's raise from %d back to %d", raised, got)
+			}
+			_, err := f.actsFor(t, delegated(tm.carol, "remove", tm.id, removalAsked)).RemoveAccess(ctx, tm.shared, tm.bea.UserID)
+			wantRefusal(t, "a removal asked before send was given back", err, service.RefusalSetSince)
+			if g := held(t, f, tm.ana, tm.id, tm.shared, tm.bea.UserID); !g.Read || !g.Act || !g.Send {
+				t.Errorf("the removal asked before send was given back left Bea %+v", g)
+			}
+		})
+	}
+}
+
 func TestANarrowingNeverBlocksAnotherNarrowing(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

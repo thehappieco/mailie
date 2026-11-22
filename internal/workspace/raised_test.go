@@ -83,6 +83,29 @@ func TestRaisedAtMovesOnlyWhenAFlagIsAdded(t *testing.T) {
 		}
 	})
 	raised("a drop by a request", 6_500)
+
+	// A request's raise stamped before the row's last raise never moves it
+	// back: a narrowing asked between the two still meets the later one.
+	at(9_000, func() { f.grant(box.ID, dan.ID, workspace.Flags{Read: true, Send: true}) })
+	raised("send given back", 9_000)
+	late := &store.Request{Extension: "ext", ID: "r3", UserID: ana.ID, Act: "raise_flags",
+		FirstIssued: time.Unix(7_500, 0), KeepUntil: time.Now().Add(time.Hour)}
+	at(9_500, func() {
+		from := workspace.Flags{Read: true, Send: true}
+		if _, changed, err := f.ws.SetGrantFor(ctx, workspace.GrantChange{AccountID: box.ID, UserID: dan.ID,
+			Flags: workspace.Flags{Read: true, Act: true, Send: true}, From: &from, GrantedBy: ana.ID, Request: late}); err != nil ||
+			!changed {
+			t.Fatalf("a late raise by a request: %v, changed %v", err, changed)
+		}
+	})
+	raised("a late raise by a request asked before send was given back", 9_000)
+	between := &store.Request{Extension: "ext", ID: "r4", UserID: ana.ID, Act: "remove_access",
+		FirstIssued: time.Unix(8_000, 0), KeepUntil: time.Now().Add(time.Hour)}
+	at(10_000, func() {
+		_, _, err := f.ws.RevokeFor(ctx, between, box.ID, dan.ID, workspace.Flags{}, nil)
+		want(t, "a removal asked before send was given back", err, store.ErrSetSince)
+	})
+	raised("a refused removal", 9_000)
 }
 
 func TestAGrantChangeDrawnFromFlagsNoLongerHeldIsRefused(t *testing.T) {

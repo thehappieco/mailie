@@ -348,7 +348,7 @@ type GrantChange struct {
 // from (From) and come with a request (Request); it reports whether the
 // grant changed. A flag added moves the grant's raised_at, which nothing
 // that only takes flags away moves: to now, or for a request to its first
-// moment (store.Request.Stamp).
+// moment (store.Request.Stamp), never back before the row's last raise.
 func (r *Repository) SetGrantFor(ctx context.Context, c GrantChange) (Grant, bool, error) {
 	accountID, userID, flags, sealed, grantedBy := c.AccountID, c.UserID, c.Flags, c.Sealed, c.GrantedBy
 	if err := flags.check(); err != nil {
@@ -414,14 +414,18 @@ func (r *Repository) SetGrantFor(ctx context.Context, c GrantChange) (Grant, boo
 		}
 		// raised_at moves only with a flag the row did not hold: a new row,
 		// or one gaining a flag. A change that only takes flags away, or sets
-		// the same ones again, keeps it.
+		// the same ones again, keeps it. It never moves back: a request's
+		// raise stamped before the row's last one keeps the later moment,
+		// since a narrowing asked between the two must still meet it
+		// (RevokeFor).
 		raised := newRow || added(before.Flags, flags)
 		changed = raised || before.Flags != flags || sealed != nil
 		if _, err := tx.ExecContext(ctx, `INSERT INTO mailbox_access(account_id, workspace_id, user_id, read, act, send, manage,
 			  granted_by, created_at, updated_at, raised_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10)
 			ON CONFLICT(account_id, user_id) DO UPDATE SET read = excluded.read, act = excluded.act, send = excluded.send,
 			  manage = excluded.manage, granted_by = excluded.granted_by, updated_at = excluded.updated_at,
-			  raised_at = CASE WHEN ?11 THEN excluded.raised_at ELSE mailbox_access.raised_at END`,
+			  raised_at = CASE WHEN ?11 THEN MAX(mailbox_access.raised_at, excluded.raised_at)
+			                   ELSE mailbox_access.raised_at END`,
 			accountID, mb.workspaceID, userID, flags.Read, flags.Act, flags.Send, flags.Manage, grantedBy, now,
 			raisedAt, raised); err != nil {
 			return fmt.Errorf("workspace: set grant: %w", err)
