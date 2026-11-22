@@ -593,8 +593,8 @@ func (s *Store) SetMailboxSyncFor(ctx context.Context, req *Request, accountID s
 }
 
 // SyncOffRemovedFor turns a removed mailbox's own sync off (SetMailboxSyncFor
-// off), deleting the index it keeps, and touches nothing of a mailbox that
-// is live again: a recovery since it was asked brought it back with its
+// off, its agreement compared with the request's first moment), deleting the
+// index it keeps, and touches nothing of a mailbox that is live again: a recovery since it was asked brought it back with its
 // consent and its index, which this never turns into a turn-off of a live
 // mailbox. A request is then recorded as having changed nothing.
 func (s *Store) SyncOffRemovedFor(ctx context.Context, req *Request, accountID, by string, check func(*sql.Tx) error) (MailboxSyncSwitch, error) {

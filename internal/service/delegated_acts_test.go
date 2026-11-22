@@ -580,6 +580,91 @@ func TestRemovedIndexOffOnAMailboxRecoveredSinceTouchesNothing(t *testing.T) {
 	wantRefusal(t, "Carol, an admin, on the team's mailbox recovered since", err, service.RefusalNotFound)
 }
 
+func TestALateRemovedIndexOffNeverWithdrawsATeamsAgreementGivenSinceItWasAsked(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	f.seedIndex(t, tm.shared, "Zebra")
+	f.removed(t, tm.ana, tm.shared)
+	// Agreed well before Ana asks the console to delete what it keeps.
+	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+	asked := ago(time.Minute)
+
+	// Since she asked, in Mailie's own screens: recovered, resumed (the
+	// team agreeing again), indexed again and removed again.
+	if _, err := f.svc.RecoverAccount(ctx, tm.ana, tm.shared); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.svc.ResumeMailboxSync(ctx, tm.ana, tm.shared, service.SyncResumeRequest{Version: f.consent().Sync}); err != nil {
+		t.Fatal(err)
+	}
+	f.seedIndex(t, tm.shared, "Okapi")
+	f.removed(t, tm.ana, tm.shared)
+	agreed := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared)
+	indexed := f.indexed(t, tm.shared)
+	if int64(agreed) < asked.Unix() || indexed == 0 {
+		t.Fatalf("the team agreed at %d, %d rows kept; want an agreement since %d and an index", agreed, indexed, asked.Unix())
+	}
+
+	_, err := f.actsFor(t, delegated(tm.ana, "r1", tm.id, asked)).RemovedIndexOff(ctx, tm.shared)
+	wantRefusal(t, "the kept index turned off by a request asked before the team agreed again", err, service.RefusalSetSince)
+	if n := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared); n != agreed {
+		t.Errorf("the team's agreement was %d and is %d", agreed, n)
+	}
+	if n := f.indexed(t, tm.shared); n != indexed {
+		t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", indexed, n)
+	}
+	if n := f.count(t, `SELECT count(*) FROM mailbox_events WHERE account_id = ? AND kind = 'sync_paused'`, tm.shared); n != 0 {
+		t.Errorf("%d turn-offs journaled", n)
+	}
+	if _, ran, _ := f.svc.RequestOutcome(ctx, "ext", "r1"); ran {
+		t.Error("the refused request was recorded")
+	}
+
+	// Agreed before the request was asked: it runs.
+	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+	out, err := f.actsFor(t, delegated(tm.ana, "r2", tm.id, asked)).RemovedIndexOff(ctx, tm.shared)
+	if err != nil || !out.Changed {
+		t.Fatalf("the kept index turned off by a request asked after the team agreed: %+v, %v", out, err)
+	}
+	if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared) != 0 || f.indexed(t, tm.shared) != 0 {
+		t.Error("the team's agreement or the kept index stands")
+	}
+}
+
+func TestARemovedIndexOffMeetsATeamsAgreementGivenBetweenTheReadAndTheWrite(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	f.seedIndex(t, tm.shared, "Zebra")
+	f.removed(t, tm.ana, tm.shared)
+	f.exec(t, `UPDATE accounts SET sync_enabled_at = sync_enabled_at - 600 WHERE id = ?`, tm.shared)
+	indexed := f.indexed(t, tm.shared)
+
+	// Read removed under the old agreement; before the write, recovered,
+	// agreed to again and removed again, in Mailie's own screens.
+	var agreed int64
+	err := f.raceTheWrite(t, func() error {
+		_, err := f.actsFor(t, delegated(tm.ana, "r1", tm.id, ago(time.Minute))).RemovedIndexOff(t.Context(), tm.shared)
+		return err
+	}, func(tx *sql.Tx) {
+		recoverIn(t, tx, tm.shared, tm.ana.UserID)
+		if err := tx.QueryRowContext(ctx, `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = '',
+			sync_enabled_at = unixepoch(), sync_enabled_by = ? WHERE id = ? RETURNING sync_enabled_at`,
+			tm.ana.UserID, tm.shared).Scan(&agreed); err != nil {
+			t.Fatal(err)
+		}
+		removeIn(t, tx, tm.shared, tm.ana.UserID)
+	})
+	wantRefusal(t, "the kept index turned off as the team agreed again", err, service.RefusalSetSince)
+	if n := int64(f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared)); n != agreed {
+		t.Errorf("the team's agreement was %d and is %d", agreed, n)
+	}
+	if n := f.indexed(t, tm.shared); n != indexed {
+		t.Errorf("the removed mailbox kept %d rows of its index, and keeps %d", indexed, n)
+	}
+}
+
 func TestTurningOffOnlyARemovedMailboxsKeptIndexNeverTurnsOffOneRecoveredSince(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()

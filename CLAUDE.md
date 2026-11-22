@@ -163,12 +163,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `SetMailboxSyncFor`, the consents' `Grant…For`/`Withdraw…For`; `workspace.SetGrantFor`,
   `RevokeFor`; `account.Registry.RemoveFor`, `RecoverFor`, `PurgeFor`), the old name a nil
   request; and the writes only a request had before: `SyncOffRemovedFor` (a removed mailbox's own
-  sync off, which leaves one live again as it is), `ForgetRemovedIndexFor` (a removed personal
+  sync off, its agreement compared as a turn-off's, which leaves one live again as it is), `ForgetRemovedIndexFor` (a removed personal
   mailbox's kept index, at its person's word: its consent, hold and removal kept, nothing
   journaled) and `DismissNoticesFor` (a person's notices by journal id, at most
   `MaxNoticesDismissed`, an id they hold none of done); `PurgedIn` reads a deletion for good from a
-  workspace's journal, and `Request.Unbounded` is a narrowing no widening gives back (a removed
-  mailbox's kept index), compared with no moment.
+  workspace's journal.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside

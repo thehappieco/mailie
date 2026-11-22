@@ -2184,8 +2184,9 @@ authorization, the same checks in its write and the same freshness hook. No tran
     by an active owner of its team for a team's (the team's agreement withdrawn, after the
     freshness hook, `FreshRemovedSyncOff`; a personal one asks it nothing); never a live mailbox's:
     one recovered since is done, with nothing changed, and nothing of its consent, index, pause,
-    agreement or journal moves. No widening gives a removed mailbox's index back, so it compares
-    with no moment;
+    agreement or journal moves. A team's agreement is compared with the request's first moment, as
+    a team's turn-off compares it: a mailbox recovered, agreed to again and removed again since it
+    was asked keeps that agreement and what it indexed under it (`set_since`);
   - `RaiseFlags` (from, to: act, send or manage added, never read), `DropFlags`, `RemoveAccess`;
     taking away reaches a member in any standing, a former one holding nothing is done, a removed
     team mailbox's flags too for an active owner of its team, and neither asks the freshness
