@@ -21,8 +21,10 @@ jobs:
         with: {go-version: "${{ env.GO_VERSION }}", cache: true}
       - run: go build ./...
       # On Linux the race detector needs cgo: this run alone turns it on, and
-      # nothing it builds ships (the Makefile's test-race does the same).
-      - run: go test -race -coverprofile=coverage.out ./...
+      # nothing it builds ships (the Makefile's test-race does the same). The
+      # store's package runs near ten minutes under the race detector and
+      # coverage on a hosted runner, past go test's default limit: twenty.
+      - run: go test -race -timeout 20m -coverprofile=coverage.out ./...
         env: {CGO_ENABLED: "1"}
       - name: Fuzz smoke
         run: make fuzz

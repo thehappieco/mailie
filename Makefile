@@ -26,11 +26,11 @@ run: build ## Build and run the daemon (reads .env)
 test: ## Run the unit tier
 	$(GO) test $(PKGS)
 
-test-race: ## Run the unit tier with the race detector
-	CGO_ENABLED=$(RACE_CGO) $(GO) test -race $(PKGS)
+test-race: ## Run the unit tier with the race detector (twenty minutes a package: the store's runs near ten)
+	CGO_ENABLED=$(RACE_CGO) $(GO) test -race -timeout 20m $(PKGS)
 
 cover: ## Report coverage
-	CGO_ENABLED=$(RACE_CGO) $(GO) test -race -coverprofile=coverage.out $(PKGS)
+	CGO_ENABLED=$(RACE_CGO) $(GO) test -race -timeout 20m -coverprofile=coverage.out $(PKGS)
 	$(GO) tool cover -func=coverage.out | tail -1
 
 fuzz: ## Short fuzz pass over every fuzz target (the MIME parser lives or dies here)
