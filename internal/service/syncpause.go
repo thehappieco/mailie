@@ -156,7 +156,8 @@ func (s *Service) pauseSync(ctx context.Context, p Principal, accountID string, 
 // withdrawn. A team mailbox's resume names the current sync text
 // (req.Version) and records the team's agreement to it, by the caller, now,
 // as turning it on does, and only while someone reads it (conflict
-// otherwise). Resuming one that is not paused changes nothing. Offered in
+// otherwise); one removed since it was read is not found, as the write
+// reads it. Resuming one that is not paused changes nothing. Offered in
 // every edition, so that a pause never outlives the edition that offered it.
 func (s *Service) ResumeMailboxSync(ctx context.Context, p Principal, accountID string, req SyncResumeRequest) (AccountSync, error) {
 	if err := refuseDelegated(p); err != nil {
@@ -205,7 +206,17 @@ func (s *Service) resumeSync(ctx context.Context, p Principal, accountID string,
 	full := check
 	if team {
 		readable := func(tx *sql.Tx) error {
-			// As the turn-on's check: what it would store nobody could read.
+			// As the turn-on's check: a mailbox removed since it was read
+			// is not found, as the write would say, before anything is
+			// said of its readers (a removed mailbox has none); otherwise,
+			// what it would store nobody could read.
+			live, err := liveTx(ctx, a.ID)(tx)
+			switch {
+			case err != nil:
+				return E(CodeInternal, "resuming the mailbox's sync failed", err)
+			case !live:
+				return errNoAccount
+			}
 			ok, err := workspace.HasReaderTx(ctx, tx, a.ID)
 			switch {
 			case err != nil:

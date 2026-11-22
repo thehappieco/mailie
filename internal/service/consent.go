@@ -643,7 +643,10 @@ func (s *Service) removedIndexOff(ctx context.Context, p Principal, accountID st
 // (sreq: recorded in the switch's write; an agreement stamped with its first
 // moment, and a turn-off refused for an agreement given at or after its
 // first second), gives or withdraws the team's consent, on, to the current
-// sync text, and only while someone can read it. It reports what changed.
+// sync text, and only while someone can read it. Removed or live is as the
+// write reads it: one removed since it was read is never turned on (not
+// found), and turned off by an owner of the team alone. It reports what
+// changed.
 func (s *Service) teamSync(ctx context.Context, p Principal, a account.Account, on bool, version string,
 	sreq *store.Request,
 ) (store.MailboxSyncSwitch, error) {
@@ -657,18 +660,20 @@ func (s *Service) teamSync(ctx context.Context, p Principal, a account.Account, 
 		version = ""
 	}
 	check := func(tx *sql.Tx) error {
-		if !on {
-			// Removed or live as the write reads it, never as
-			// authorizeAccount did: a mailbox removed since is turned off
-			// by an active owner of its open team alone, its kept index
-			// deleted (syncOffRemoved's act), and not found to anyone else.
-			live, err := liveTx(ctx, a.ID)(tx)
-			switch {
-			case err != nil:
-				return E(CodeInternal, "switching sync failed", err)
-			case !live:
-				return s.ownsRemovedTx(ctx, tx, p, a)
-			}
+		// Removed or live as the write reads it, never as authorizeAccount
+		// did: a mailbox removed since is turned off by an active owner of
+		// its open team alone, its kept index deleted (syncOffRemoved's
+		// act), and not found to anyone else; never turned on, it is not
+		// found to anyone, before anything is said of its readers (a
+		// removed mailbox has none).
+		live, err := liveTx(ctx, a.ID)(tx)
+		switch {
+		case err != nil:
+			return E(CodeInternal, "switching sync failed", err)
+		case !live && on:
+			return errNoAccount
+		case !live:
+			return s.ownsRemovedTx(ctx, tx, p, a)
 		}
 		me, err := s.callerTx(ctx, tx, p, a.WorkspaceID)
 		switch {

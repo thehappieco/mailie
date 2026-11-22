@@ -540,7 +540,9 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   caller saw it live is turned off by an active owner of its team alone, its kept index deleted
   and the answer `off`, and is `404` to its admins, nothing turned off; an operator mailbox
   removed since is `404` to the operator's switch, nothing turned off, its kept index the
-  operator's to delete as any removed mailbox's. Withdrawing a person's own sync consent deletes
+  operator's to delete as any removed mailbox's. A turn-on, or a team mailbox's resume, of one
+  removed since is `404` to everyone, as its write reads it, never the `409` of a mailbox nobody
+  reads (a removed one has no reader). Withdrawing a person's own sync consent deletes
   the index of their removed mailboxes too, and so does a team consent migration 0011 bound to
   its linker when it stops with them (closing them is refused without `force` while someone else
   would read the removed mailbox once recovered, as for a live one).

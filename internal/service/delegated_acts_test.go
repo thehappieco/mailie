@@ -833,3 +833,66 @@ func TestTheOperatorsTurnOffOfAnOperatorMailboxRemovedMeanwhileChangesNothing(t 
 		t.Error("the operator's switch was turned off")
 	}
 }
+
+func TestTurningOnOrResumingATeamMailboxRemovedBetweenTheReadAndTheWriteIsNotFound(t *testing.T) {
+	type turnOn struct {
+		what string
+		// paused: the act resumes a paused mailbox; otherwise it turns on
+		// one switched off.
+		paused bool
+		act    func(f *fixture, tm keysTeam) error
+	}
+	on := true
+	for _, c := range []turnOn{
+		{"Carol, an admin, turning it on", false, func(f *fixture, tm keysTeam) error {
+			_, err := f.svc.SetMailboxSync(t.Context(), tm.carol, tm.shared,
+				service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync})
+			return err
+		}},
+		{"Ana, its owner, turning it on", false, func(f *fixture, tm keysTeam) error {
+			_, err := f.svc.SetMailboxSync(t.Context(), tm.ana, tm.shared,
+				service.MailboxSyncRequest{Enabled: &on, Version: f.consent().Sync})
+			return err
+		}},
+		{"Carol, an admin, turning it on through an extension", false, func(f *fixture, tm keysTeam) error {
+			_, err := f.actsFor(t, delegated(tm.carol, "on", tm.id, time.Now())).TeamSync(t.Context(), tm.shared, true,
+				f.consent().Sync)
+			return err
+		}},
+		{"Carol, an admin, resuming it", true, func(f *fixture, tm keysTeam) error {
+			_, err := f.svc.ResumeMailboxSync(t.Context(), tm.carol, tm.shared,
+				service.SyncResumeRequest{Version: f.consent().Sync})
+			return err
+		}},
+		{"Carol, an admin, resuming it through an extension", true, func(f *fixture, tm keysTeam) error {
+			_, err := f.actsFor(t, delegated(tm.carol, "resume", tm.id, time.Now())).ResumeSync(t.Context(), tm.shared,
+				f.consent().Sync)
+			return err
+		}},
+	} {
+		t.Run(c.what, func(t *testing.T) {
+			f := newFixture(t)
+			tm := syncedTeam(t, f)
+			if c.paused {
+				f.pause(t, tm.ana, tm.shared)
+			} else if _, err := f.svc.SetMailboxSync(t.Context(), tm.ana, tm.shared, switchSync(false)); err != nil {
+				t.Fatal(err)
+			}
+			agreed := f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared)
+
+			// Read live; removed by Ana before the write, its pause ended
+			// first, as a removal does.
+			err := f.raceTheWrite(t, func() error { return c.act(f, tm) }, func(tx *sql.Tx) {
+				if _, err := tx.ExecContext(t.Context(), `UPDATE accounts SET sync_paused_at = 0, sync_paused_by = ''
+					WHERE id = ?`, tm.shared); err != nil {
+					t.Fatal(err)
+				}
+				removeIn(t, tx, tm.shared, tm.ana.UserID)
+			})
+			wantCode(t, c.what+" once removed meanwhile", err, service.CodeNotFound)
+			if f.count(t, `SELECT sync_enabled_at FROM accounts WHERE id = ?`, tm.shared) != agreed {
+				t.Error("the team's agreement changed")
+			}
+		})
+	}
+}
