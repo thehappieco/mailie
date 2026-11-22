@@ -217,7 +217,7 @@ func TestRequestRecordsGoAtTheirKeepUntil(t *testing.T) {
 
 func TestARequestOutOfShapeIsRefused(t *testing.T) {
 	now := time.Now()
-	good := Request{Extension: "contract", ID: "0b5e7c1a-6f0e-4b8e-9a51-6b1d2e3f4a5b", UserID: "usr_1", Act: "pause_sync",
+	good := Request{Extension: "ext", ID: "0b5e7c1a-6f0e-4b8e-9a51-6b1d2e3f4a5b", UserID: "usr_1", Act: "pause_sync",
 		KeepUntil: now.Add(30 * 24 * time.Hour)}
 	if err := good.Check(now); err != nil {
 		t.Fatalf("a request in shape: %v", err)
