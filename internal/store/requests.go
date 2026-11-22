@@ -136,8 +136,9 @@ func (r *Request) Since() int64 {
 // its intent's first moment, at most now, so that the order in which people
 // asked decides, not the order in which requests ran; now for a widening
 // that comes with no request. A write never moves a moment that stands back
-// to it (a grant's raised_at, a team's agreement): it keeps the later one,
-// which a narrowing asked between the two must still meet.
+// to it (a grant's raised_at, a person's consent, a team's agreement): it
+// keeps the later one, which a narrowing asked between the two must still
+// meet.
 func (r *Request) Stamp(now int64) int64 {
 	if s := r.Since(); s > 0 && s < now {
 		return s

@@ -628,8 +628,10 @@ person.
   ([Removed mailboxes](#removed-mailboxes)).
 - **An agreement given through an extension** — a person's own, or a team's by its owner or
   admin, as a team mailbox's sync turned on or resumed — is recorded as on the screens: its
-  revision, its person, and its time, which is when they asked (the request's first moment). The
-  request's id lives in its record alone, never on the agreement
+  revision, its person, and its time, which is when they asked (the request's first moment), or a
+  later moment an agreement that stands holds already, which it keeps so that a withdrawal or a
+  turn-off asked between the two still meets it. The request's id lives in its record alone, never
+  on the agreement
   ([Acts an extension runs for a person](#acts-an-extension-runs-for-a-person)).
 - Disabling, removing or closing a person does not stop a team mailbox of a team others are in,
   nor remove it: it is the team's — but for a migrated consent still bound to them, below, and a
@@ -2148,9 +2150,9 @@ authorization, the same checks in its write and the same freshness hook. No tran
   (never later than now), so the order in which people asked decides, not the order in which
   requests ran: a resume asked before a turn-off and run after it never refuses that turn-off. A
   stamp never moves a moment back: a widening that runs late keeps the later moment it finds (a
-  grant's `raised_at`, a team's agreement), so a narrowing asked between the two still meets the
-  newer widening. A grant's time is its row's: a drop of one flag is refused when another was
-  raised on the same row since, the one needless refusal left.
+  grant's `raised_at`, a person's consent, a team's agreement), so a narrowing asked between the
+  two still meets the newer widening. A grant's time is its row's: a drop of one flag is refused
+  when another was raised on the same row since, the one needless refusal left.
 - **A change of a grant drawn from what someone held** (`GrantRequest.From`, `from` over REST, all
   four flags) is refused, `409`, unless the grant holds exactly that when it is written, so a flag
   taken away since the caller looked is never given back. A raise through an extension always

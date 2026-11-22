@@ -747,7 +747,8 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   team mailbox's owners turn it off or the consent still bound to its linker
   stops; with `removed_only: true` that route turns off only a removed mailbox's kept index, and
   one recovered since is `conflict` (`ErrNotRemoved`), nothing of it turned off. An agreement given through an extension (`ActFor`) is recorded as on the screens, its
-  version, its person and when they asked (the request's first moment); the request's id lives
+  version, its person and when they asked (the request's first moment, or a later moment an
+  agreement that stands holds, which it keeps); the request's id lives
   only in its record (`extension_requests`), never on the agreement. The operator turns any
   mailbox's sync off (`StopMailboxSync`,
   `POST /v1/accounts/{id}/sync/stop`, `account sync ID off`), in any workspace, live or removed,

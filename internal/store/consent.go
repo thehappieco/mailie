@@ -71,8 +71,10 @@ func (s *Store) GrantSyncConsent(ctx context.Context, userID, version string) (S
 // GrantSyncConsentFor is GrantSyncConsent as a request an extension carries
 // for the person decides it (requests.go), and reports whether it changed
 // anything: an agreement through a request is stamped with the request's
-// first moment (Request.Stamp), and recorded in the request's record. A nil
-// request is GrantSyncConsent.
+// first moment (Request.Stamp), never before an agreement that stands to
+// another text, whose later moment it keeps, since a withdrawal asked
+// between the two must still meet it; and recorded in the request's record.
+// A nil request is GrantSyncConsent.
 func (s *Store) GrantSyncConsentFor(ctx context.Context, req *Request, userID, version string) (SyncConsent, []string, bool, error) {
 	now := s.now().Unix()
 	at := req.Stamp(now)
@@ -95,7 +97,7 @@ func (s *Store) GrantSyncConsentFor(ctx context.Context, req *Request, userID, v
 		err = tx.QueryRowContext(ctx,
 			`UPDATE users
 			    SET sync_consent_at = CASE WHEN sync_consent_at = 0 OR sync_consent_version <> ?1
-			                               THEN ?2 ELSE sync_consent_at END,
+			                               THEN MAX(sync_consent_at, ?2) ELSE sync_consent_at END,
 			        sync_consent_version = ?1, updated_at = ?3
 			  WHERE id = ?4 AND status = 'active'
 			  RETURNING sync_consent_at, sync_consent_version`, version, at, now, userID,
@@ -277,8 +279,9 @@ func (s *Store) GrantActionsConsent(ctx context.Context, userID, version string)
 
 // GrantActionsConsentFor is GrantActionsConsent as a request an extension
 // carries for the person decides it (requests.go), stamped with the
-// request's first moment (Request.Stamp), and reports whether it changed
-// anything. A nil request is GrantActionsConsent.
+// request's first moment (Request.Stamp), never before an agreement that
+// stands (GrantSyncConsentFor), and reports whether it changed anything. A
+// nil request is GrantActionsConsent.
 func (s *Store) GrantActionsConsentFor(ctx context.Context, req *Request, userID, version string) (ActionsConsent, bool, error) {
 	now := s.now().Unix()
 	at := req.Stamp(now)
@@ -303,7 +306,7 @@ func (s *Store) GrantActionsConsentFor(ctx context.Context, req *Request, userID
 		err = tx.QueryRowContext(ctx,
 			`UPDATE users
 			    SET actions_consent_at = CASE WHEN actions_consent_at = 0 OR actions_consent_version <> ?1
-			                               THEN ?2 ELSE actions_consent_at END,
+			                               THEN MAX(actions_consent_at, ?2) ELSE actions_consent_at END,
 			        actions_consent_version = ?1, actions_consent_withdrawn_at = 0, updated_at = ?3
 			  WHERE id = ?4 AND status = 'active'
 			  RETURNING actions_consent_at, actions_consent_version, actions_consent_withdrawn_at`, version, at, now, userID,
@@ -417,8 +420,9 @@ func (s *Store) GrantSendConsent(ctx context.Context, userID, version string) (S
 
 // GrantSendConsentFor is GrantSendConsent as a request an extension
 // carries for the person decides it (requests.go), stamped with the
-// request's first moment (Request.Stamp), and reports whether it changed
-// anything. A nil request is GrantSendConsent.
+// request's first moment (Request.Stamp), never before an agreement that
+// stands (GrantSyncConsentFor), and reports whether it changed anything. A
+// nil request is GrantSendConsent.
 func (s *Store) GrantSendConsentFor(ctx context.Context, req *Request, userID, version string) (SendConsent, bool, error) {
 	now := s.now().Unix()
 	at := req.Stamp(now)
@@ -443,7 +447,7 @@ func (s *Store) GrantSendConsentFor(ctx context.Context, req *Request, userID, v
 		err = tx.QueryRowContext(ctx,
 			`UPDATE users
 			    SET send_consent_at = CASE WHEN send_consent_at = 0 OR send_consent_version <> ?1
-			                               THEN ?2 ELSE send_consent_at END,
+			                               THEN MAX(send_consent_at, ?2) ELSE send_consent_at END,
 			        send_consent_version = ?1, send_consent_withdrawn_at = 0, updated_at = ?3
 			  WHERE id = ?4 AND status = 'active'
 			  RETURNING send_consent_at, send_consent_version, send_consent_withdrawn_at`, version, at, now, userID,

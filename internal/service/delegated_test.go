@@ -617,6 +617,72 @@ func TestALateResumeThroughAnExtensionNeverMovesANewerAgreementBack(t *testing.T
 	}
 }
 
+func TestALateAgreementToANewerTextNeverMovesAPersonsNewerAgreementBack(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	// The same database once Mailie restarted with every text revised.
+	next := *f
+	next.opts.consent = revised
+	after, _ := next.build(t, next.opts.registry)
+	for _, c := range []struct {
+		which   service.Consent
+		column  string
+		revised string
+		agree   func() error
+	}{
+		{service.ConsentSync, "sync_consent", revised.Sync, func() error {
+			_, err := f.svc.GrantSyncConsent(ctx, tm.ana, f.consent().Sync)
+			return err
+		}},
+		{service.ConsentActions, "actions_consent", revised.Actions, func() error {
+			_, err := f.svc.GrantActionsConsent(ctx, tm.ana, f.consent().Actions)
+			return err
+		}},
+		{service.ConsentSend, "send_consent", revised.Send, func() error {
+			_, err := f.svc.GrantSendConsent(ctx, tm.ana, f.consent().Send)
+			return err
+		}},
+	} {
+		// Ana's agreement to the revised text is asked first and her
+		// withdrawal after it; both wait. Meanwhile she agrees on her own
+		// screen to the text it showed then, after the withdrawal was asked.
+		agreeAsked, withdrawalAsked := ago(10*time.Minute), ago(5*time.Minute)
+		if err := c.agree(); err != nil {
+			t.Fatal(err)
+		}
+		at := `SELECT ` + c.column + `_at FROM users WHERE id = ?`
+		agreed := f.count(t, at, tm.ana.UserID)
+		if int64(agreed) < withdrawalAsked.Unix() {
+			t.Fatalf("the %s agreement on the screen is recorded at %d, before the withdrawal was asked", c.which, agreed)
+		}
+		acts, err := after.ActFor(ctx, delegated(tm.ana, "agree-"+string(c.which), "", agreeAsked))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out, err := acts.AgreeConsent(ctx, c.which, c.revised); err != nil || !out.Changed {
+			t.Fatalf("the late %s agreement to the revised text: %+v, %v", c.which, out, err)
+		}
+		if got := f.count(t, at, tm.ana.UserID); got != agreed {
+			t.Errorf("the late %s agreement moved the agreement from %d back to %d", c.which, agreed, got)
+		}
+		var version string
+		if err := f.db.Reader().QueryRowContext(ctx, `SELECT `+c.column+`_version FROM users WHERE id = ?`, tm.ana.UserID).
+			Scan(&version); err != nil || version != c.revised {
+			t.Errorf("the %s agreement names %q (%v), want the revised text", c.which, version, err)
+		}
+		acts, err = after.ActFor(ctx, delegated(tm.ana, "withdraw-"+string(c.which), "", withdrawalAsked))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = acts.WithdrawConsent(ctx, c.which)
+		wantRefusal(t, "the "+string(c.which)+" withdrawal asked before the agreement on the screen", err, service.RefusalSetSince)
+		if f.count(t, at, tm.ana.UserID) == 0 {
+			t.Errorf("the %s withdrawal took the agreement given on the screen after it was asked", c.which)
+		}
+	}
+}
+
 func TestALateRaiseThroughAnExtensionNeverMovesANewerRaiseBack(t *testing.T) {
 	for _, giveBack := range []string{"on a screen", "through a request asked after the removal"} {
 		t.Run(giveBack, func(t *testing.T) {
