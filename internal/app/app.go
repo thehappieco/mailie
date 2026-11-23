@@ -494,7 +494,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	}()
 	extra, err := collect(extensionCtx, opts.Extensions, Deps{
 		Config: cfg, Service: svc, Log: logger, Limits: limits, SignInLimits: signInLimits,
-		Metrics: metrics.Registry(), run: extensions,
+		Metrics: metrics.Registry(), Console: catchAll(console), run: extensions,
 	})
 	if err != nil {
 		return err
@@ -669,6 +669,17 @@ func routes(rest *api.Handler, mcpHTTP, metrics, console http.Handler, extra ...
 		mux.Handle("/", console)
 	}
 	return mux, nil
+}
+
+// catchAll is what answers a request routes leaves to its catch-all: the
+// console, or, without one, the mux's own answer to a path no route takes.
+// An extension hands back to it what it does not answer below a prefix it
+// takes (Deps.Console).
+func catchAll(console http.Handler) http.Handler {
+	if console == nil {
+		return http.NotFoundHandler()
+	}
+	return console
 }
 
 // coreRoutes mounts the REST API, MCP over Streamable HTTP when mcpHTTP is

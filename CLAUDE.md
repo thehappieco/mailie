@@ -35,9 +35,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   route is mounted, its context ended at the stop and awaited without a bound before the engine,
   the registry and the database close; a `Go` once the start has begun is dropped, logged at
   error), open its own secrets with the daemon's sealer (`OpenSecret`, only
-  `secrets.ExtensionSecret(ref)`), register its metrics beside the core's (`Metrics`) and keep its
+  `secrets.ExtensionSecret(ref)`), register its metrics beside the core's (`Metrics`), keep its
   own small state in the database it describes (`State(name)`, `extension_state`: restored with it,
-  never ahead of it). `Options.Freshness` (never set by `serve`) is asked, outside every write,
+  never ahead of it) and hand back what a route of its takes below a prefix and does not answer
+  (`Console`: what the core mounts at `/`, the console with `Options.Pages`, or without one the
+  mux's own 404, never nil). `Options.Freshness` (never set by `serve`) is asked, outside every write,
   before a person's act that widens access or touches a team's shared data
   (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
   the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).

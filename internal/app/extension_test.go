@@ -20,6 +20,7 @@ import (
 	"github.com/thehappieco/mailie/internal/lockfile"
 	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/secrets"
+	"github.com/thehappieco/mailie/internal/webui"
 )
 
 // consolePage is the built console the daemons below serve.
@@ -203,7 +204,7 @@ func TestAnExtensionRouteIsServedBesideTheCoreRoutesWhichAnswerAsBefore(t *testi
 	g := <-seen
 	got, hookCtx := g.deps, g.ctx
 	if got.Service == nil || got.Log == nil || got.Limits == nil || got.SignInLimits == nil || got.Metrics == nil ||
-		got.Config.DataDir != cfg.DataDir || got.Config.HTTPAddr != cfg.HTTPAddr {
+		got.Console == nil || got.Config.DataDir != cfg.DataDir || got.Config.HTTPAddr != cfg.HTTPAddr {
 		t.Errorf("the extension was given %+v", got)
 	}
 	if hookCtx == nil || hookCtx.Err() != nil {
@@ -240,6 +241,84 @@ func TestAnExtensionRouteIsServedBesideTheCoreRoutesWhichAnswerAsBefore(t *testi
 		if a := fetch(t, http.MethodGet, base+p); a.status != http.StatusOK || a.body != consolePage {
 			t.Errorf("GET %s answered %d %q, want the console", p, a.status, a.body)
 		}
+	}
+}
+
+// handsBack is an extension that takes GET /screens/ and answers everything
+// below it but /screens/kept/ and below, which it hands back to the console's
+// catch-all. It refuses to start on Deps with no catch-all to hand back to.
+func handsBack(_ context.Context, r *Router, d Deps) error {
+	if d.Console == nil {
+		return errors.New("the extension was given no console to hand requests back to")
+	}
+	r.HandleFunc("GET /screens/", func(w http.ResponseWriter, req *http.Request) {
+		if strings.HasPrefix(req.URL.Path, "/screens/kept/") {
+			d.Console.ServeHTTP(w, req)
+			return
+		}
+		says("from the extension")(w, req)
+	})
+	return nil
+}
+
+func TestAnExtensionHandsWhatItDoesNotAnswerBelowItsPrefixBackToTheConsole(t *testing.T) {
+	cfg := localConfig(t)
+	base := runDaemon(t, cfg, Options{Extensions: []Extension{handsBack}, Pages: webui.Pages{
+		Document: func(r *http.Request) webui.Document {
+			if !strings.HasPrefix(r.URL.Path, "/screens/kept/") {
+				return webui.Document{}
+			}
+			return webui.Document{Header: http.Header{"Speculation-Rules": {`"/rules.json"`}}, Whole: true}
+		},
+	}})
+
+	if a := fetch(t, http.MethodGet, base+"/screens/one"); a.status != http.StatusOK || a.body != "from the extension" {
+		t.Errorf("GET /screens/one answered %d %q, want the extension's", a.status, a.body)
+	}
+	// What it hands back is the console's page, as the catch-all serves it:
+	// the console's own headers, and what the binary's Pages add to that
+	// document.
+	a := fetch(t, http.MethodGet, base+"/screens/kept/one?x=1")
+	if a.status != http.StatusOK || a.body != consolePage {
+		t.Errorf("GET /screens/kept/one answered %d %q, want the console's page", a.status, a.body)
+	}
+	if !strings.Contains(a.header.Get("Content-Security-Policy"), "frame-ancestors 'none'") ||
+		a.header.Get("X-Frame-Options") != "DENY" {
+		t.Errorf("the page handed back lacks the console's own headers: %v", a.header)
+	}
+	if a.header.Get("Speculation-Rules") != `"/rules.json"` || a.header.Get("Cache-Control") != "no-store" {
+		t.Errorf("the page handed back lacks what the binary's Pages add to it: %v", a.header)
+	}
+}
+
+func TestWithoutAConsoleWhatAnExtensionHandsBackIsAnsweredAsAPathNoRouteTakes(t *testing.T) {
+	for name, webDir := range map[string]func(t *testing.T) string{
+		"no console directory":              func(*testing.T) string { return "" },
+		"a directory that holds no console": func(t *testing.T) string { return t.TempDir() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := localConfig(t)
+			cfg.WebDir = webDir(t)
+			base := runDaemon(t, cfg, Options{Extensions: []Extension{handsBack}})
+
+			if a := fetch(t, http.MethodGet, base+"/screens/one"); a.status != http.StatusOK || a.body != "from the extension" {
+				t.Errorf("GET /screens/one answered %d %q, want the extension's", a.status, a.body)
+			}
+			// The daemon's answer to a path no route takes, with no console
+			// behind it, is the mux's own 404; what the extension hands back
+			// gets exactly that.
+			nobody := fetch(t, http.MethodGet, base+"/elsewhere/one")
+			if nobody.status != http.StatusNotFound {
+				t.Fatalf("GET /elsewhere/one answered %d %q, want a 404 with no console", nobody.status, nobody.body)
+			}
+			back := fetch(t, http.MethodGet, base+"/screens/kept/one")
+			if back.status != nobody.status || back.body != nobody.body ||
+				back.header.Get("Content-Type") != nobody.header.Get("Content-Type") ||
+				back.header.Get("X-Content-Type-Options") != nobody.header.Get("X-Content-Type-Options") {
+				t.Errorf("GET /screens/kept/one answered %d %q %v, want what a path no route takes answers: %d %q %v",
+					back.status, back.body, back.header, nobody.status, nobody.body, nobody.header)
+			}
+		})
 	}
 }
 

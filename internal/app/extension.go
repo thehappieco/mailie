@@ -29,21 +29,22 @@ import (
 // goroutine the extension starts on its own.
 //
 // Its routes are mounted beside the core's and before the console's
-// catch-all, which they take precedence over. A route is refused when the
-// mux refuses its pattern (malformed, or a nil handler), when it duplicates
-// or conflicts with a route already mounted, when it would take a request a
-// core route answers (a pattern more specific than a core one, such as
-// "GET /v1/accounts/mine" beside "GET /v1/accounts/{id}", or "GET /mcp"
-// beside "/mcp"), when it claims the root ("/", "/{$}", with or without a
-// method), which is the console's, and when it names a host. The mux tries a
-// pattern with a host before every pattern without one and never reports the
-// two as a conflict, so "example.com/{path...}" would take the whole API and
-// MCP for that Host; the core serves every host alike, and so do its
-// extensions. The core's routes are judged as the daemon serves them with
-// everything switched on (MCP over HTTP and the 404 it answers under /mcp/
-// when off, the instance-key routes, /metrics), so whether a route is
-// accepted never depends on MAIL_MCP_HTTP, MAIL_ADMIN_API, MAIL_METRICS_ADDR
-// or MAIL_WEB_DIR.
+// catch-all, which they take precedence over; what a route takes below a
+// prefix and does not answer it hands back to that catch-all (Deps.Console).
+// A route is refused when the mux refuses its pattern (malformed, or a nil
+// handler), when it duplicates or conflicts with a route already mounted,
+// when it would take a request a core route answers (a pattern more specific
+// than a core one, such as "GET /v1/accounts/mine" beside
+// "GET /v1/accounts/{id}", or "GET /mcp" beside "/mcp"), when it claims the
+// root ("/", "/{$}", with or without a method), which is the console's, and
+// when it names a host. The mux tries a pattern with a host before every
+// pattern without one and never reports the two as a conflict, so
+// "example.com/{path...}" would take the whole API and MCP for that Host; the
+// core serves every host alike, and so do its extensions. The core's routes
+// are judged as the daemon serves them with everything switched on (MCP over
+// HTTP and the 404 it answers under /mcp/ when off, the instance-key routes,
+// /metrics), so whether a route is accepted never depends on MAIL_MCP_HTTP,
+// MAIL_ADMIN_API, MAIL_METRICS_ADDR or MAIL_WEB_DIR.
 //
 // An extension's handlers are its own: nothing of the core's middleware (the
 // route timeouts, the body limits, the authentication, the metrics) wraps
@@ -76,6 +77,15 @@ type Deps struct {
 	// Metrics is the registry /metrics serves: an extension registers its
 	// own collectors there, beside the core's, whose names it cannot take.
 	Metrics prometheus.Registerer
+	// Console is what the core mounts at "/", the console's catch-all: the
+	// built console, its page documents with Options.Pages, or, when the
+	// daemon serves none (MAIL_WEB_DIR unset, or a directory that holds no
+	// console), the mux's own 404 for a path no route takes
+	// (http.NotFoundHandler). An extension whose route takes a prefix and
+	// answers only part of what lies below it hands the rest back here,
+	// unchanged, and it is answered as the catch-all answers it. Never nil in
+	// Deps that Run made.
+	Console http.Handler
 
 	// run is what Go, OpenSecret and State reach. Only Run makes one.
 	run *extensionRun
