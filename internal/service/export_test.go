@@ -33,6 +33,13 @@ func RunForTest(ctx context.Context, acts *PersonActs, act, accountID string,
 	return acts.run(ctx, act, accountID, false, do)
 }
 
+// RenamedLabelMeanwhileForTest is PersonActs.RenamedLabel with meanwhile
+// run between the check of the request's item and the rename's
+// authorization: what a test needs to reach that moment.
+func RenamedLabelMeanwhileForTest(ctx context.Context, acts *PersonActs, accountID, name string, meanwhile func()) (string, error) {
+	return acts.renamedLabel(ctx, accountID, name, meanwhile)
+}
+
 // KeySidesForTest calls, as p, every branch of a use case whose other side
 // is a key's or a session's own: a sealed grant given, a link's key, a
 // send's owner, a consent's flows, and the guard of what needs a session.

@@ -278,7 +278,7 @@ func kindCases() []kindCase {
 				return err
 			},
 			request: func(ctx context.Context, w kindWorld, a *service.PersonActs, _ string) (service.ActOutcome, error) {
-				return a.Rename(ctx, w.tm.shared, " Suporte ")
+				return a.Rename(ctx, w.tm.shared, " Suporte ", nil)
 			}},
 		{kind: "item.remove", prep: nothing, actor: team(ana),
 			session: func(ctx context.Context, w kindWorld, _ string) error {

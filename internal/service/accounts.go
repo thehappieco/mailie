@@ -528,6 +528,9 @@ var (
 	errMailboxNameControl = E(CodeBadRequest, "a mailbox's name has no control characters", nil)
 	errRenameKey          = E(CodeNotAuthorized, "an API key never renames a mailbox; its workspace's owners and admins do", nil)
 	errRenameNameless     = E(CodeBadRequest, `display_name is required: the mailbox's new name, or "" to clear it`, nil)
+	// errRenamedSince is a rename drawn from a label the mailbox no longer
+	// holds: renamed since, nothing written.
+	errRenamedSince = E(CodeConflict, "this mailbox was renamed since; nothing was renamed", ErrStateChanged)
 )
 
 // checkMailboxName is a mailbox's name as it is stored: trimmed of the white
@@ -585,7 +588,7 @@ func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req
 	if err != nil {
 		return Account{}, err
 	}
-	renamed, _, err := s.renameAccount(ctx, p, id, name, nil)
+	renamed, _, err := s.renameAccount(ctx, p, id, name, nil, nil)
 	if err != nil {
 		return Account{}, err
 	}
@@ -595,8 +598,13 @@ func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req
 // renameAccount is RenameAccount's act, its name checked (checkMailboxName),
 // for a request an extension carries for a person too (req: recorded in the
 // rename's write, a name the mailbox holds already recorded as having
-// changed nothing). It reports whether the name changed.
-func (s *Service) renameAccount(ctx context.Context, p Principal, id, name string, req *store.Request) (account.Account, bool, error) {
+// changed nothing). held, when not nil, is asked in the rename's write of
+// the label the mailbox is reported under then (labelHeldTx): false refuses
+// it, conflict (ErrStateChanged), with nothing written. It reports whether
+// the name changed.
+func (s *Service) renameAccount(ctx context.Context, p Principal, id, name string, req *store.Request,
+	held func(label string) bool,
+) (account.Account, bool, error) {
 	if p.IsWorkspaceKey() {
 		return account.Account{}, false, errRenameKey
 	}
@@ -605,7 +613,10 @@ func (s *Service) renameAccount(ctx context.Context, p Principal, id, name strin
 		return account.Account{}, false, err
 	}
 	renamed, changed, err := s.accounts.Repo().RenameFor(ctx, req, a.ID, name, func(tx *sql.Tx) error {
-		return s.managesTx(ctx, tx, p, a)
+		if err := s.managesTx(ctx, tx, p, a); err != nil || held == nil {
+			return err
+		}
+		return labelHeldTx(ctx, tx, a.ID, held)
 	})
 	var se *Error
 	switch {
@@ -622,6 +633,26 @@ func (s *Service) renameAccount(ctx context.Context, p Principal, id, name strin
 		s.log.Info("mailbox renamed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
 	}
 	return renamed, changed, nil
+}
+
+// labelHeldTx asks held, inside a rename's transaction, of the label the
+// mailbox is reported under now (store.MailboxLabel of its name and
+// address, as a snapshot reports it): false is a rename drawn from a label
+// the mailbox no longer holds, renamed since (errRenamedSince). A mailbox
+// removed meanwhile is not found.
+func labelHeldTx(ctx context.Context, tx *sql.Tx, id string, held func(label string) bool) error {
+	var name, email string
+	err := tx.QueryRowContext(ctx, `SELECT display_name, email FROM accounts WHERE id = ? AND removed_at = 0`, id).
+		Scan(&name, &email)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return errNoAccount
+	case err != nil:
+		return fmt.Errorf("service: reading the mailbox's label: %w", err)
+	case !held(store.MailboxLabel(name, email)):
+		return errRenamedSince
+	}
+	return nil
 }
 
 // managesTx re-reads, inside a write's transaction, that the caller manages

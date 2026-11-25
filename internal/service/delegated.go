@@ -392,13 +392,19 @@ func (a *PersonActs) TeamSync(ctx context.Context, accountID string, on bool, ve
 // found. A name widens nobody's access, so the freshness hook is never
 // asked. A mailbox that holds the name already is done, with nothing
 // changed.
-func (a *PersonActs) Rename(ctx context.Context, accountID, name string) (ActOutcome, error) {
+//
+// held, when not nil, is what the request was drawn from: it is asked, in
+// the rename's write, of the label the mailbox is reported under then
+// (store.MailboxLabel, as a snapshot reports it, "" for none), and false
+// refuses the rename, conflict (ErrStateChanged: renamed since it was
+// asked), with nothing written or recorded.
+func (a *PersonActs) Rename(ctx context.Context, accountID, name string, held func(label string) bool) (ActOutcome, error) {
 	return a.run(ctx, actRename, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
 		checked, err := checkMailboxName(name)
 		if err != nil {
 			return store.RequestOutcome{}, err
 		}
-		_, changed, err := a.s.renameAccount(ctx, a.p, accountID, checked, req)
+		_, changed, err := a.s.renameAccount(ctx, a.p, accountID, checked, req, held)
 		return store.RequestOutcome{Changed: changed}, err
 	})
 }
@@ -413,11 +419,20 @@ var errRenameRan = E(CodeConflict, "this request ran already", ErrRequestDone)
 // say the mailbox's address or its local part; never the address. It is
 // read as Rename authorizes the rename (whoever manages the mailbox; never a
 // removed one, one outside the request's workspace or in a closed team, nor
-// for a suspended person) and writes nothing, the request's record
-// included, so that an extension can refuse a name it would report
-// otherwise before anything is renamed. A request that ran already is
-// refused, its record answering it (ErrRequestDone).
+// for a suspended person), and refused as it refuses (a team closed between
+// its reads, which hides its mailboxes, team_closed, never not_found), and
+// writes nothing, the request's record included, so that an extension can
+// refuse a name it would report otherwise before anything is renamed. A
+// request that ran already is refused, its record answering it
+// (ErrRequestDone).
 func (a *PersonActs) RenamedLabel(ctx context.Context, accountID, name string) (string, error) {
+	return a.renamedLabel(ctx, accountID, name, nil)
+}
+
+// renamedLabel is RenamedLabel, with meanwhile, when not nil, run between
+// the check of the request's item and the rename's authorization: what a
+// test needs to reach that moment.
+func (a *PersonActs) renamedLabel(ctx context.Context, accountID, name string, meanwhile func()) (string, error) {
 	switch {
 	case a.ran != nil:
 		return "", errRenameRan
@@ -431,8 +446,18 @@ func (a *PersonActs) RenamedLabel(ctx context.Context, accountID, name string) (
 	if err != nil {
 		return "", err
 	}
+	if meanwhile != nil {
+		meanwhile()
+	}
 	acc, err := a.s.authorizeAccount(ctx, a.p, auth.ScopeAdmin, accountID, needManage)
 	if err != nil {
+		if CodeOf(err) == CodeNotFound {
+			// A team closed meanwhile hides its mailboxes: said as closed,
+			// as run says it of the rename.
+			if cerr := a.open(ctx); errors.Is(cerr, errTeamClosed) {
+				return "", cerr
+			}
+		}
 		return "", err
 	}
 	return store.MailboxLabel(checked, acc.Email), nil

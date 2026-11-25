@@ -294,7 +294,7 @@ func TestAMailboxsNameIsStoredTrimmedWhereverItIsGiven(t *testing.T) {
 // for p in workspaceID, as request id.
 func renamedThrough(t *testing.T, f *fixture, p service.Principal, id, workspaceID, accountID, name string) (service.ActOutcome, error) {
 	t.Helper()
-	return f.actsFor(t, delegated(p, id, workspaceID, time.Now())).Rename(t.Context(), accountID, name)
+	return f.actsFor(t, delegated(p, id, workspaceID, time.Now())).Rename(t.Context(), accountID, name, nil)
 }
 
 // recorded reports whether the extension's request id ran, and what it did.
@@ -410,7 +410,7 @@ func TestARenameThroughAnExtensionRefusesWhatASessionsRenameRefusesAndRecordsNot
 	wt := newSupportTeam(t, withheld)
 	const shared = "acc_00000000000000aa"
 	wt.link(t, withheld, shared, "support@mail.example")
-	_, err = withheld.actsFor(t, delegated(wt.ana, "w1", wt.id, time.Now())).Rename(ctx, shared, "Withheld")
+	_, err = withheld.actsFor(t, delegated(wt.ana, "w1", wt.id, time.Now())).Rename(ctx, shared, "Withheld", nil)
 	wantRefusal(t, "a withheld team's mailbox", err, service.RefusalTeamWithheld)
 	if got := storedName(t, withheld, shared); got != "" {
 		t.Errorf("a withheld team's mailbox is named %q", got)
@@ -446,7 +446,7 @@ func TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshn
 	}
 	before := mark()
 	w.hook.take()
-	out, err := w.actsFor(t, delegated(w.ana, "r1", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas")
+	out, err := w.actsFor(t, delegated(w.ana, "r1", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas", nil)
 	if err != nil || !out.Changed {
 		t.Fatalf("Ana renaming the team's mailbox through an extension: %+v, %v", out, err)
 	}
@@ -458,12 +458,62 @@ func TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshn
 		t.Errorf("the team's change mark is %d after a rename, %d before", after, before)
 	}
 	// A no-op changes nothing a report reads.
-	if out, err := w.actsFor(t, delegated(w.ana, "r2", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas"); err != nil ||
+	if out, err := w.actsFor(t, delegated(w.ana, "r2", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas", nil); err != nil ||
 		out.Changed {
 		t.Fatalf("the same name again: %+v, %v", out, err)
 	}
 	if again := mark(); again != after {
 		t.Errorf("a rename to the name it held moved the team's change mark from %d to %d", after, again)
+	}
+}
+
+// drawnFrom is what a rename was drawn from: the label want, "" for none.
+func drawnFrom(want string) func(label string) bool {
+	return func(label string) bool { return label == want }
+}
+
+func TestARenameThroughAnExtensionDrawnFromALabelRenamedSinceIsStateChangedAndWritesNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f) // support@mail.example
+	if _, err := f.svc.RenameAccount(ctx, tm.ana, tm.shared, renameTo("Suporte")); err != nil {
+		t.Fatal(err)
+	}
+	// Drawn from the label it holds: renamed.
+	acts := func(id string) *service.PersonActs { return f.actsFor(t, delegated(tm.carol, id, tm.id, time.Now())) }
+	if out, err := acts("r1").Rename(ctx, tm.shared, "Atendimento", drawnFrom("Suporte")); err != nil || !out.Changed {
+		t.Fatalf("a rename drawn from the label it holds: %+v, %v", out, err)
+	}
+	// A session renamed it since a request was drawn from "Atendimento": the
+	// write compares, refuses, and neither names it nor records the request.
+	if _, err := f.svc.RenameAccount(ctx, tm.ana, tm.shared, renameTo("Vendas")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acts("r2").Rename(ctx, tm.shared, "Compras", drawnFrom("Atendimento"))
+	wantCode(t, "a rename drawn from a label renamed since", err, service.CodeConflict)
+	wantRefusal(t, "a rename drawn from a label renamed since", err, service.RefusalStateChanged)
+	if got := storedName(t, f, tm.shared); got != "Vendas" {
+		t.Errorf("a refused rename left it named %q", got)
+	}
+	if _, ran := recorded(t, f, "r2"); ran {
+		t.Error("a refused rename recorded its request")
+	}
+	// The name the request asks, held already, is no exception: what it was
+	// drawn from is what it compares.
+	_, err = acts("r3").Rename(ctx, tm.shared, "Vendas", drawnFrom("Atendimento"))
+	wantRefusal(t, "a rename to the name it holds, drawn from another label", err, service.RefusalStateChanged)
+	// What it compares is the label a snapshot reports: none for a name that
+	// says the address's local part, whatever the name is.
+	if _, err := f.svc.RenameAccount(ctx, tm.ana, tm.shared, renameTo("Support team")); err != nil {
+		t.Fatal(err)
+	}
+	_, err = acts("r4").Rename(ctx, tm.shared, "Suporte", drawnFrom("Support team"))
+	wantRefusal(t, "a rename drawn from the name, not the label", err, service.RefusalStateChanged)
+	if out, err := acts("r5").Rename(ctx, tm.shared, "Suporte", drawnFrom("")); err != nil || !out.Changed {
+		t.Errorf("a rename drawn from no label, of a mailbox reported with none: %+v, %v", out, err)
+	}
+	if got := storedName(t, f, tm.shared); got != "Suporte" {
+		t.Errorf("it is named %q", got)
 	}
 }
 
@@ -555,4 +605,24 @@ func TestTheLabelARenameWouldLeaveIsRefusedWhereTheRenameIs(t *testing.T) {
 	wt.link(t, withheld, shared, "support@mail.example")
 	_, err = withheld.actsFor(t, delegated(wt.ana, "w1", wt.id, time.Now())).RenamedLabel(t.Context(), shared, "Withheld")
 	wantRefusal(t, "a withheld team's mailbox", err, service.RefusalTeamWithheld)
+}
+
+func TestTheLabelARenameWouldLeaveOfATeamClosedBetweenItsReadsIsSaidClosedAsTheRenameSaysIt(t *testing.T) {
+	// The request's item is read while the team is open, the rename's
+	// authorization once it closed, which hides its mailboxes: said as
+	// closed, which an extension tries again once it reopens, never as not
+	// found, which it would not.
+	f := newFixture(t)
+	tm := syncedTeam(t, f)
+	acts := f.actsFor(t, delegated(tm.ana, "l1", tm.id, time.Now()))
+	_, err := service.RenamedLabelMeanwhileForTest(t.Context(), acts, tm.shared, "Suporte", func() { f.closeTeam(t, tm.id) })
+	wantCode(t, "a team closed between the label's reads", err, service.CodeConflict)
+	wantRefusal(t, "a team closed between the label's reads", err, service.RefusalTeamClosed)
+	if _, ran := recorded(t, f, "l1"); ran {
+		t.Error("asking the label recorded the request")
+	}
+	f.reopenTeam(t, tm.id)
+	if got, err := labelIfRenamed(t, f, tm.ana, "l1", tm.id, tm.shared, "Suporte"); err != nil || got != "Suporte" {
+		t.Errorf("the same request once the team reopened: %q, %v", got, err)
+	}
 }

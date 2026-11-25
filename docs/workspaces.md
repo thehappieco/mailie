@@ -2182,14 +2182,18 @@ authorization, the same checks in its write and the same freshness hook. No tran
   (`TestEachKindThroughAnExtensionDoesWhatItsSessionDoes`):
   - `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current sync text and records the
     team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`;
-  - `Rename(name)`: a live mailbox named by whoever manages it, under the one name rule
+  - `Rename(name, held)`: a live mailbox named by whoever manages it, under the one name rule
     (`checkMailboxName`), never a removed one (`not_found`); a name widens nobody's access, so the
     freshness hook is never asked, and a mailbox that holds the name already is done, with nothing
-    changed; `RenamedLabel(name)` beside it, the label a snapshot would report once the mailbox is
-    named so (`store.MailboxLabel`: the name the rule leaves, or empty when it would say the
-    address or its local part; never the address), read as the rename authorizes it and writing
-    nothing, the request's record included, so that an extension refuses a name it would report
-    otherwise before anything is renamed;
+    changed. `held`, what the request was drawn from, is asked in the rename's write of the label
+    the mailbox is reported under then (`store.MailboxLabel`), and a label renamed since is
+    `state_changed`, nothing written or recorded, as a grant change drawn from what someone held
+    is (`GrantRequest.From`); `RenamedLabel(name)` beside it, the label a snapshot would report
+    once the mailbox is named so (`store.MailboxLabel`: the name the rule leaves, or empty when it
+    would say the address or its local part; never the address), read as the rename authorizes it
+    and refused as it refuses (a team closed between its reads `team_closed`), writing nothing,
+    the request's record included, so that an extension refuses a name it would report otherwise
+    before anything is renamed;
   - `Purge`: a removed mailbox deleted for good, by whoever may, as a session's deletion is; one
     live again is `not_removed`. What it deletes is its removal's: one removed at or after the
     second it was first asked (`accounts.removed_at`, compared in its write) was recovered and
