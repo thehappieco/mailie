@@ -2185,7 +2185,11 @@ authorization, the same checks in its write and the same freshness hook. No tran
   - `Rename(name)`: a live mailbox named by whoever manages it, under the one name rule
     (`checkMailboxName`), never a removed one (`not_found`); a name widens nobody's access, so the
     freshness hook is never asked, and a mailbox that holds the name already is done, with nothing
-    changed;
+    changed; `RenamedLabel(name)` beside it, the label a snapshot would report once the mailbox is
+    named so (`store.MailboxLabel`: the name the rule leaves, or empty when it would say the
+    address or its local part; never the address), read as the rename authorizes it and writing
+    nothing, the request's record included, so that an extension refuses a name it would report
+    otherwise before anything is renamed;
   - `Purge`: a removed mailbox deleted for good, by whoever may, as a session's deletion is; one
     live again is `not_removed`. What it deletes is its removal's: one removed at or after the
     second it was first asked (`accounts.removed_at`, compared in its write) was recovered and
@@ -2753,7 +2757,10 @@ Test names state the guarantee. At least:
   `TestARenameThroughAnExtensionToTheNameAMailboxHoldsIsRecordedAsANoOp`,
   `TestARenameThroughAnExtensionRefusesWhatASessionsRenameRefusesAndRecordsNothing`,
   `TestAMemberHoldingManageRenamesThroughAnExtensionAsInASession` and
-  `TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`; the
+  `TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`, and
+  the label it would leave
+  `TestTheLabelARenameWouldLeaveIsTheNameButOneThatSaysTheAddressAndWritesNothing` and
+  `TestTheLabelARenameWouldLeaveIsRefusedWhereTheRenameIs`; the
   repository's `TestARenameWhoseCheckRefusesChangesNothing`,
   `TestARemovedMailboxIsNotFoundToARename` and
   `TestARenameARequestDecidesIsRecordedInItsWriteAndANameHeldAlreadyAsChangingNothing`; over REST

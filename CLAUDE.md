@@ -443,7 +443,9 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   /v1/accounts/{id}`, and a person's rename through an extension: a name widens no access).
   A person acting through an extension is asked about as one signed in is. `delegated.go`:
   `ActFor(Delegation)` is the one way for an extension to run a person's request with no session
-  (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, rename, remove, recover,
+  (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, rename (beside it
+  `RenamedLabel`, the label a snapshot would report once renamed, read as the rename authorizes it,
+  writing nothing, never the address), remove, recover,
   purge, a removed mailbox's kept index off, raise and drop flags, remove access, agree to and
   withdraw a consent, sign out everywhere before a moment, dismiss notices in a batch), each the
   use case a session runs through the unexported act its method calls, with the request recorded

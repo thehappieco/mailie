@@ -403,6 +403,41 @@ func (a *PersonActs) Rename(ctx context.Context, accountID, name string) (ActOut
 	})
 }
 
+// errRenameRan is a request that ran already, asked for the label its
+// rename would leave: its record answers it.
+var errRenameRan = E(CodeConflict, "this request ran already", ErrRequestDone)
+
+// RenamedLabel is the label the mailbox would be reported under once Rename
+// names it name, as a snapshot reports one (store.MailboxLabel): the name
+// the one name rule leaves (checkMailboxName), or "" when that name would
+// say the mailbox's address or its local part; never the address. It is
+// read as Rename authorizes the rename (whoever manages the mailbox; never a
+// removed one, one outside the request's workspace or in a closed team, nor
+// for a suspended person) and writes nothing, the request's record
+// included, so that an extension can refuse a name it would report
+// otherwise before anything is renamed. A request that ran already is
+// refused, its record answering it (ErrRequestDone).
+func (a *PersonActs) RenamedLabel(ctx context.Context, accountID, name string) (string, error) {
+	switch {
+	case a.ran != nil:
+		return "", errRenameRan
+	case a.suspended:
+		return "", errActorInactive
+	}
+	if err := a.item(ctx, accountID); err != nil {
+		return "", err
+	}
+	checked, err := checkMailboxName(name)
+	if err != nil {
+		return "", err
+	}
+	acc, err := a.s.authorizeAccount(ctx, a.p, auth.ScopeAdmin, accountID, needManage)
+	if err != nil {
+		return "", err
+	}
+	return store.MailboxLabel(checked, acc.Email), nil
+}
+
 // Remove removes the mailbox (RemoveAccount): kept 30 days, or, a link that
 // never connected, deleted for good at once (Purged). One removed already is
 // said as such to whoever may recover it, and not found to anyone else.

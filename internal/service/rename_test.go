@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -464,4 +465,94 @@ func TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshn
 	if again := mark(); again != after {
 		t.Errorf("a rename to the name it held moved the team's change mark from %d to %d", after, again)
 	}
+}
+
+// The label a rename would leave (PersonActs.RenamedLabel): what a snapshot
+// reports of the mailbox once renamed, read as the rename authorizes it,
+// writing nothing.
+
+// labelIfRenamed is the label accountID would be reported under once p
+// renamed it name through an extension, as request id in workspaceID.
+func labelIfRenamed(t *testing.T, f *fixture, p service.Principal, id, workspaceID, accountID, name string) (string, error) {
+	t.Helper()
+	return f.actsFor(t, delegated(p, id, workspaceID, time.Now())).RenamedLabel(t.Context(), accountID, name)
+}
+
+func TestTheLabelARenameWouldLeaveIsTheNameButOneThatSaysTheAddressAndWritesNothing(t *testing.T) {
+	f := newFixture(t)
+	tm := syncedTeam(t, f) // support@mail.example
+	for i, c := range []struct{ name, want string }{
+		{"Suporte", "Suporte"},
+		{"  Suporte SP\t", "Suporte SP"},
+		{"Support team", ""}, // the address's local part, in any case
+		{"SUPPORT", ""},
+		{"suporte@loja", ""}, // an address
+		{"Sup", "Sup"},
+		{"", ""},
+		{"Atendimento 24h", "Atendimento 24h"},
+	} {
+		id := fmt.Sprintf("l%d", i)
+		got, err := labelIfRenamed(t, f, tm.carol, id, tm.id, tm.shared, c.name)
+		if err != nil || got != c.want {
+			t.Errorf("renamed %q, it would be reported as %q (%v), want %q", c.name, got, err, c.want)
+		}
+		if _, ran := recorded(t, f, id); ran {
+			t.Errorf("asking the label of %q recorded the request", c.name)
+		}
+	}
+	if got := storedName(t, f, tm.shared); got != "" {
+		t.Errorf("asking labels named the mailbox %q", got)
+	}
+	// What it says is what the rename then leaves.
+	if _, err := renamedThrough(t, f, tm.carol, "r1", tm.id, tm.shared, "Suporte SP"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := labelIfRenamed(t, f, tm.carol, "l2", tm.id, tm.shared, storedName(t, f, tm.shared)); err != nil ||
+		got != "Suporte SP" {
+		t.Errorf("the label of the name it holds is %q, %v", got, err)
+	}
+}
+
+func TestTheLabelARenameWouldLeaveIsRefusedWhereTheRenameIs(t *testing.T) {
+	f := newFixture(t)
+	tm := syncedTeam(t, f)
+	// Bea reads it, and manages nothing.
+	_, err := labelIfRenamed(t, f, tm.bea, "l1", tm.id, tm.shared, "Mine")
+	wantRefusal(t, "a member reading it without manage", err, service.RefusalNotAuthorized)
+	other := "acc_00000000000000bb"
+	tm.link(t, f, other, "other@mail.example")
+	_, err = labelIfRenamed(t, f, tm.bea, "l2", tm.id, other, "Mine")
+	wantRefusal(t, "a member holding nothing on it", err, service.RefusalNotFound)
+	_, err = labelIfRenamed(t, f, tm.ana, "l3", tm.id, tm.shared, strings.Repeat("é", 201))
+	wantCode(t, "a name too long", err, service.CodeBadRequest)
+	_, err = labelIfRenamed(t, f, tm.ana, "l4", authtest.Personal(t, f.db, tm.ana.UserID), tm.shared, "Elsewhere")
+	wantRefusal(t, "a mailbox named in another workspace", err, service.RefusalNotFound)
+
+	f.suspend(t, tm.carol.UserID)
+	_, err = labelIfRenamed(t, f, tm.carol, "l5", tm.id, tm.shared, "Suspended")
+	wantRefusal(t, "a suspended admin", err, service.RefusalActorInactive)
+	f.resume(t, tm.carol.UserID)
+
+	f.closeTeam(t, tm.id)
+	_, err = labelIfRenamed(t, f, tm.ana, "l6", tm.id, tm.shared, "Closed")
+	wantRefusal(t, "a closed team's mailbox", err, service.RefusalTeamClosed)
+	f.reopenTeam(t, tm.id)
+
+	// A request that ran already: its record answers.
+	if _, err := renamedThrough(t, f, tm.ana, "r1", tm.id, tm.shared, "Suporte"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = labelIfRenamed(t, f, tm.ana, "r1", tm.id, tm.shared, "Suporte")
+	wantRefusal(t, "a request that ran", err, service.RefusalRequestDone)
+
+	f.removed(t, tm.ana, tm.shared)
+	_, err = labelIfRenamed(t, f, tm.ana, "l7", tm.id, tm.shared, "Removed")
+	wantRefusal(t, "a removed mailbox", err, service.RefusalNotFound)
+
+	withheld := newFixtureWith(t, fixtureOptions{teamsWithheld: true})
+	wt := newSupportTeam(t, withheld)
+	const shared = "acc_00000000000000aa"
+	wt.link(t, withheld, shared, "support@mail.example")
+	_, err = withheld.actsFor(t, delegated(wt.ana, "w1", wt.id, time.Now())).RenamedLabel(t.Context(), shared, "Withheld")
+	wantRefusal(t, "a withheld team's mailbox", err, service.RefusalTeamWithheld)
 }
