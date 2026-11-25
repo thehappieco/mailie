@@ -1149,31 +1149,50 @@ func (r *Repository) SetState(ctx context.Context, id string, state State, reaso
 // Rename sets a live mailbox's name, once check, run first in the same
 // transaction, allows it: ErrNotFound for no mailbox, a removed one included.
 // Only the name changes, so nothing is journaled and no listener is told: a
-// name decides nothing about sync. The row is answered as it is now.
+// name decides nothing about sync. A mailbox that holds the name already is
+// not written. The row is answered as it is now.
 func (r *Repository) Rename(ctx context.Context, id, name string, check func(*sql.Tx) error) (Account, error) {
-	var out Account
-	err := r.store.Write(ctx, func(tx *sql.Tx) error {
+	out, _, err := r.RenameFor(ctx, nil, id, name, check)
+	return out, err
+}
+
+// RenameFor is Rename as a request an extension carries for a person decides
+// it (store.Request): recorded in the rename's transaction, as having changed
+// nothing when the mailbox holds that name already. It reports whether the
+// name changed. A nil request is Rename.
+func (r *Repository) RenameFor(ctx context.Context, req *store.Request, id, name string, check func(*sql.Tx) error) (Account, bool, error) {
+	var (
+		out     Account
+		changed bool
+	)
+	err := r.store.WriteRequest(ctx, req, id, func(tx *sql.Tx) error {
 		if check != nil {
 			if err := check(tx); err != nil {
 				return err
 			}
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE accounts SET display_name = ?, updated_at = ? WHERE id = ? AND removed_at = 0`,
-			name, r.now().Unix(), id)
-		if err != nil {
-			return fmt.Errorf("account: rename: %w", err)
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("account: rename: %w", err)
-		}
-		if n == 0 {
+		var current string
+		err := tx.QueryRowContext(ctx, `SELECT display_name FROM accounts WHERE id = ? AND removed_at = 0`, id).Scan(&current)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
 			return ErrNotFound
+		case err != nil:
+			return fmt.Errorf("account: rename: %w", err)
+		}
+		if current != name {
+			if _, err := tx.ExecContext(ctx, `UPDATE accounts SET display_name = ?, updated_at = ? WHERE id = ? AND removed_at = 0`,
+				name, r.now().Unix(), id); err != nil {
+				return fmt.Errorf("account: rename: %w", err)
+			}
+			changed = true
 		}
 		out, err = scanAccount(tx.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accounts WHERE id = ?`, id))
 		return err
-	})
-	return out, err
+	}, func() store.RequestOutcome { return store.RequestOutcome{Changed: changed} })
+	if err != nil {
+		return Account{}, false, err
+	}
+	return out, changed, nil
 }
 
 // MarkNeedsReauth stops an account until a person consents again.

@@ -208,7 +208,10 @@ white space around it, at most 200 characters, valid UTF-8 with no control chara
 it; anything else is `400` and nothing changes. The answer is the mailbox as `GET
 /v1/accounts/{id}` shows it. A name widens nobody's access: the freshness hook is never asked, and
 nothing is journaled; a followed workspace's change mark rises in the rename's transaction
-(migration 0025's trigger), so the platform hears the new label from the next snapshot. The console
+(migration 0025's trigger), so an extension reports the new label in the next snapshot. A
+person's rename an extension carries runs the same act
+([`PersonActs.Rename`](#acts-an-extension-runs-for-a-person)), recorded once in its write, a name
+the mailbox holds already as a no-op that writes nothing else. The console
 links a mailbox with no name and asks for one once it is connected; `display_name` on `POST
 /v1/accounts` and on a link is still taken, for a console of the release before and for API callers.
 
@@ -2017,7 +2020,10 @@ nothing, and one question it asks. No transport calls any of them, and none take
   mailbox, live and removed until it is deleted for good: its provider as presented (`icloud` for
   generic IMAP on Apple's servers), how it signs in, its state and, in error or needing a new
   authorization, a reason from a fixed list matched exactly on its state's fixed text
-  (`scope_missing`, `mailbox_refused`, `token_rejected`, `unproved`, else `other`), when it first
+  (`scope_missing`, `mailbox_refused`, `token_rejected`, `unproved`; `grant_ended`, a grant the
+  provider ended, a refresh refused as no longer valid or the provider asking for a new sign-in,
+  whose fixed text `account.GrantEnded` recognises with the provider's code after it; else
+  `other`), when it first
   connected (not known for an OAuth mailbox connected before migration 0027), the person who linked
   it, its key's epoch, whether Mailie itself files the copy of what is sent from it (the send
   path's own rule, by what the last login recorded of the server: never for Gmail or Microsoft,
@@ -2176,6 +2182,10 @@ authorization, the same checks in its write and the same freshness hook. No tran
   (`TestEachKindThroughAnExtensionDoesWhatItsSessionDoes`):
   - `SyncNow`, `PauseSync`, `ResumeSync` (a team's names the current sync text and records the
     team's agreement), `LiftHold` (the person's own personal mailbox), `Remove`;
+  - `Rename(name)`: a live mailbox named by whoever manages it, under the one name rule
+    (`checkMailboxName`), never a removed one (`not_found`); a name widens nobody's access, so the
+    freshness hook is never asked, and a mailbox that holds the name already is done, with nothing
+    changed;
   - `Purge`: a removed mailbox deleted for good, by whoever may, as a session's deletion is; one
     live again is `not_removed`. What it deletes is its removal's: one removed at or after the
     second it was first asked (`accounts.removed_at`, compared in its write) was recovered and
@@ -2738,8 +2748,15 @@ Test names state the guarantee. At least:
   `TestANameTooLongOrWithAControlCharacterIsRefusedAndNothingChanges`,
   `TestALinkOrAnAddCarryingANameTheRenameRefusesIsABadRequestAndStoresNothing`,
   `TestAMailboxsNameIsStoredTrimmedWhereverItIsGiven`,
-  `TestARenameMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`; the repository's
-  `TestARenameWhoseCheckRefusesChangesNothing` and `TestARemovedMailboxIsNotFoundToARename`; over REST
+  `TestARenameMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`; through an extension
+  `TestARenameThroughAnExtensionRunsOnceAndAnswersItsFirstOutcomeAfter`,
+  `TestARenameThroughAnExtensionToTheNameAMailboxHoldsIsRecordedAsANoOp`,
+  `TestARenameThroughAnExtensionRefusesWhatASessionsRenameRefusesAndRecordsNothing`,
+  `TestAMemberHoldingManageRenamesThroughAnExtensionAsInASession` and
+  `TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing`; the
+  repository's `TestARenameWhoseCheckRefusesChangesNothing`,
+  `TestARemovedMailboxIsNotFoundToARename` and
+  `TestARenameARequestDecidesIsRecordedInItsWriteAndANameHeldAlreadyAsChangingNothing`; over REST
   `TestRenamingAMailboxIsAPatchOfItsDisplayNameAnsweredAsAGet` and the fixture `account_renamed`; the
   command line's `TestAccountRenameSendsTheNameAndPrintsTheMailbox`.
 - An owner's access (platform decision 0060), in `internal/service/owneraccess_test.go`:

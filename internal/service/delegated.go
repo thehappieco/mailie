@@ -108,6 +108,7 @@ const (
 	actRemovedIndexOff = "removed_index_off"
 	actSignOutEvery    = "sign_out_everywhere"
 	actDismissNotices  = "dismiss_notices"
+	actRename          = "rename"
 )
 
 // PersonActs are what an extension may run for one person's request
@@ -382,6 +383,23 @@ func (a *PersonActs) TeamSync(ctx context.Context, accountID string, on bool, ve
 		}
 		sw, err := a.s.teamSync(ctx, a.p, acc, on, version, req)
 		return store.RequestOutcome{Changed: sw.Changed}, err
+	})
+}
+
+// Rename names the mailbox (RenameAccount), as whoever manages it, under
+// the one name rule (checkMailboxName: trimmed, at most 200 characters, no
+// control character, "" clearing it): never a removed mailbox, which is not
+// found. A name widens nobody's access, so the freshness hook is never
+// asked. A mailbox that holds the name already is done, with nothing
+// changed.
+func (a *PersonActs) Rename(ctx context.Context, accountID, name string) (ActOutcome, error) {
+	return a.run(ctx, actRename, accountID, false, func(req *store.Request) (store.RequestOutcome, error) {
+		checked, err := checkMailboxName(name)
+		if err != nil {
+			return store.RequestOutcome{}, err
+		}
+		_, changed, err := a.s.renameAccount(ctx, a.p, accountID, checked, req)
+		return store.RequestOutcome{Changed: changed}, err
 	})
 }
 

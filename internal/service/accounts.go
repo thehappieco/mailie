@@ -534,8 +534,8 @@ var (
 // space around it, at most maxMailboxName characters, valid UTF-8 with no
 // control character (Unicode's Cc, as a person's name, auth.NormalizeName; a
 // format character, as emoji sequences use, passes). "" is no name. The one
-// rule of a rename, an add and a link alike, and of the contract's
-// item.rename once an extension runs it through RenameAccount.
+// rule of a rename, an add and a link alike, and of a person's rename an
+// extension carries (PersonActs.Rename).
 func checkMailboxName(name string) (string, error) {
 	name = strings.TrimSpace(name)
 	if utf8.RuneCountInString(name) > maxMailboxName {
@@ -564,12 +564,13 @@ type RenameAccountRequest struct {
 // The freshness hook is never asked (freshness.go): a name widens nobody's
 // access. Nothing is journaled: no state changed. A followed workspace's
 // change mark rises in the rename's transaction (migration 0025's trigger),
-// so its next snapshot carries the label.
+// so its next snapshot carries the label. A mailbox that holds the name
+// already is not written.
 //
-// The platform's item.rename command, once an extension executes it, runs
-// through here with its actor and keeps these rules: the name trimmed, at
-// most 200 characters, no control character, "" (the command's null)
-// clearing it, a removed mailbox not found.
+// A person's rename an extension carries runs the same act
+// (PersonActs.Rename), under these rules: the name trimmed, at most 200
+// characters, no control character, "" clearing it, a removed mailbox not
+// found.
 func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req RenameAccountRequest) (Account, error) {
 	if err := refuseDelegated(p); err != nil {
 		return Account{}, err
@@ -584,24 +585,43 @@ func (s *Service) RenameAccount(ctx context.Context, p Principal, id string, req
 	if err != nil {
 		return Account{}, err
 	}
-	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage)
+	renamed, _, err := s.renameAccount(ctx, p, id, name, nil)
 	if err != nil {
 		return Account{}, err
 	}
-	renamed, err := s.accounts.Repo().Rename(ctx, a.ID, name, func(tx *sql.Tx) error {
+	return s.present(ctx, p, renamed)[0], nil
+}
+
+// renameAccount is RenameAccount's act, its name checked (checkMailboxName),
+// for a request an extension carries for a person too (req: recorded in the
+// rename's write, a name the mailbox holds already recorded as having
+// changed nothing). It reports whether the name changed.
+func (s *Service) renameAccount(ctx context.Context, p Principal, id, name string, req *store.Request) (account.Account, bool, error) {
+	if p.IsWorkspaceKey() {
+		return account.Account{}, false, errRenameKey
+	}
+	a, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, id, needManage)
+	if err != nil {
+		return account.Account{}, false, err
+	}
+	renamed, changed, err := s.accounts.Repo().RenameFor(ctx, req, a.ID, name, func(tx *sql.Tx) error {
 		return s.managesTx(ctx, tx, p, a)
 	})
 	var se *Error
 	switch {
 	case errors.As(err, &se):
-		return Account{}, err
+		return account.Account{}, false, err
+	case requestRefusal(err) != nil:
+		return account.Account{}, false, requestRefusal(err)
 	case errors.Is(err, account.ErrNotFound):
-		return Account{}, errNoAccount
+		return account.Account{}, false, errNoAccount
 	case err != nil:
-		return Account{}, E(CodeInternal, "renaming the mailbox failed", err)
+		return account.Account{}, false, E(CodeInternal, "renaming the mailbox failed", err)
 	}
-	s.log.Info("mailbox renamed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
-	return s.present(ctx, p, renamed)[0], nil
+	if changed {
+		s.log.Info("mailbox renamed", "account", a.ID, "workspace", a.WorkspaceID, "by", p.Actor())
+	}
+	return renamed, changed, nil
 }
 
 // managesTx re-reads, inside a write's transaction, that the caller manages

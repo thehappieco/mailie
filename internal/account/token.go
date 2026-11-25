@@ -191,8 +191,23 @@ var transientErrorCodes = map[string]bool{
 	"authorization_pending":   true,
 }
 
+// GrantEnded reports whether reason, an account's state reason, is a grant
+// the provider ended as deadGrantReason records one: exactly
+// ReasonSignInAgain, or ReasonRefreshTokenInvalid alone or followed by a
+// detail in parentheses (" (AADSTS50173: …)"). Any other text, one that
+// merely contains those words included, is not.
+func GrantEnded(reason string) bool {
+	if reason == ReasonSignInAgain || reason == ReasonRefreshTokenInvalid {
+		return true
+	}
+	detail, ok := strings.CutPrefix(reason, ReasonRefreshTokenInvalid+" (")
+	return ok && len(detail) > 1 && strings.HasSuffix(detail, ")")
+}
+
 // deadGrantReason reports whether a token-endpoint error means the grant is
-// gone for good, and says so in words an operator can act on.
+// gone for good, and says so in words an operator can act on: one of the
+// fixed texts GrantEnded recognises, never the provider's own but for
+// Microsoft's code.
 func deadGrantReason(err *oauth2.RetrieveError) (string, bool) {
 	if transientErrorCodes[err.ErrorCode] {
 		return "", false
@@ -201,9 +216,9 @@ func deadGrantReason(err *oauth2.RetrieveError) (string, bool) {
 	case "invalid_grant":
 		// Both providers use this for a revoked, expired or password-changed
 		// grant. Microsoft adds a code saying which.
-		return "the refresh token is no longer valid" + microsoftDetail(err), true
+		return ReasonRefreshTokenInvalid + microsoftDetail(err), true
 	case "interaction_required", "consent_required", "login_required":
-		return "the identity provider is asking the user to sign in again", true
+		return ReasonSignInAgain, true
 	case "unauthorized_client", "invalid_client":
 		// The client, not the grant: see clientRejected. Returned here as
 		// well so the AADSTS fallback below cannot reclassify it.
@@ -214,7 +229,7 @@ func deadGrantReason(err *oauth2.RetrieveError) (string, bool) {
 	// but only when the error code itself was not one of the transient ones
 	// handled above.
 	if detail := microsoftDetail(err); detail != "" {
-		return "the refresh token is no longer valid" + detail, true
+		return ReasonRefreshTokenInvalid + detail, true
 	}
 	return "", false
 }

@@ -505,6 +505,87 @@ func TestADeadGrantStopsTheAccountAndSaysWhy(t *testing.T) {
 	}
 }
 
+func TestEveryDeadGrantsReasonIsAGrantTheProviderEnded(t *testing.T) {
+	// Each way a token endpoint says the grant is gone for good, as Google
+	// and Entra answer: the reason left on the account is one GrantEnded
+	// recognises, so a report says grant_ended and never the provider's text.
+	for name, body := range map[string]string{
+		"google's invalid_grant": `{"error":"invalid_grant","error_description":"Token has been expired or revoked."}`,
+		"entra's disuse": `{"error":"invalid_grant","error_codes":[70008],` +
+			`"error_description":"AADSTS70008: The refresh token has expired due to inactivity"}`,
+		"entra's other disuse":            `{"error":"invalid_grant","error_codes":[700082]}`,
+		"entra's password change":         `{"error":"invalid_grant","error_codes":[50173]}`,
+		"entra's 70000":                   `{"error":"invalid_grant","error_codes":[70000]}`,
+		"entra's 700084":                  `{"error":"invalid_grant","error_codes":[700084]}`,
+		"entra's suberror":                `{"error":"invalid_grant","suberror":"bad_token"}`,
+		"entra's code in its description": `{"error":"invalid_grant","error_description":"AADSTS9002313: Invalid request."}`,
+		"entra's code under another error": `{"error":"invalid_request","error_codes":[50173],` +
+			`"error_description":"AADSTS50173: The provided grant has expired."}`,
+		"interaction required": `{"error":"interaction_required"}`,
+		"consent required":     `{"error":"consent_required"}`,
+		"login required":       `{"error":"login_required"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			repo, _ := newRepo(t)
+			a := seed(t, repo, "person@example.com", provider.KindMicrosoft)
+			idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(idp.Close)
+			config := &oauth2.Config{
+				ClientID: "client",
+				Endpoint: oauth2.Endpoint{TokenURL: idp.URL + "/token", AuthStyle: oauth2.AuthStyleInParams},
+			}
+			expired := &oauth2.Token{
+				AccessToken: "old", RefreshToken: "refresh-0",
+				TokenType: "Bearer", Expiry: time.Now().Add(-time.Hour),
+			}
+			_, err := account.NewTokenSourceForTest(t.Context(), a.ID, config, expired, repo).Token(t.Context())
+			if !errors.Is(err, provider.ErrNeedsReauth) {
+				t.Fatalf("want ErrNeedsReauth, got %v", err)
+			}
+			got, err := repo.Get(t.Context(), a.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != account.StateNeedsReauth || !account.GrantEnded(got.StateReason) {
+				t.Errorf("the account is %s, %q: want needs_reauth for a grant the provider ended", got.State, got.StateReason)
+			}
+		})
+	}
+}
+
+func TestOnlyTheFixedTextsOfAGrantTheProviderEndedAreOne(t *testing.T) {
+	for reason, want := range map[string]bool{
+		account.ReasonRefreshTokenInvalid: true,
+		account.ReasonRefreshTokenInvalid + " (AADSTS50173: the password was changed or the tokens were revoked)": true,
+		account.ReasonRefreshTokenInvalid + " (AADSTS70000)":                                                      true,
+		account.ReasonRefreshTokenInvalid + " (bad_token)":                                                        true,
+		account.ReasonSignInAgain:                                                                                 true,
+		// The words inside another text, or with something else after them,
+		// are not a grant the provider ended.
+		"the provider said " + account.ReasonRefreshTokenInvalid:            false,
+		account.ReasonRefreshTokenInvalid + "; authorize the account again": false,
+		account.ReasonRefreshTokenInvalid + ".":                             false,
+		account.ReasonRefreshTokenInvalid + " ()":                           false,
+		account.ReasonRefreshTokenInvalid + " (AADSTS50173":                 false,
+		account.ReasonRefreshTokenInvalid + " (AADSTS50173) again":          false,
+		account.ReasonRefreshTokenInvalid + "(AADSTS50173)":                 false,
+		strings.ToUpper(account.ReasonRefreshTokenInvalid):                  false,
+		account.ReasonSignInAgain + " (AADSTS50173)":                        false,
+		account.ReasonSignInAgain + ".":                                     false,
+		account.ReasonTokenRejected:                                         false,
+		account.ReasonMailboxRefused:                                        false,
+		"":                                                                  false,
+	} {
+		if got := account.GrantEnded(reason); got != want {
+			t.Errorf("GrantEnded(%q) = %v, want %v", reason, got, want)
+		}
+	}
+}
+
 func TestAnInvalidClientIsAConfigErrorNotADeadGrant(t *testing.T) {
 	// A rotated or expired client secret refuses every account's refresh at
 	// once. Marking each one for re-consent would send every person through a

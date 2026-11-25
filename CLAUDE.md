@@ -413,7 +413,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   recovered, its kept last readers protected, until it is deleted for good). `settings.go` is what
   it reports beside it: a followed workspace's snapshot and settings in one read
   (`WorkspaceReport`: availability, who may link, the team sync text, each mailbox from fixed lists
-  — a reason matched exactly on `account.Reason*`, `filesSentCopy` beside the send path's rule —
+  — a reason matched exactly on `account.Reason*`, a grant the provider ended (`grant_ended`) by
+  `account.GrantEnded`, `filesSentCopy` beside the send path's rule —
   and each member, each list with its own bound, the settings read even when the snapshot is too
   large), a person's own settings (`PersonSettings`: consents against the texts accepted now,
   enrolment, the last sign-out everywhere, notices from the journal's label and hint, never the
@@ -439,15 +440,16 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   that ended the actor's place stops the act. Never asked for reading, removing, recovering, taking
   access away, a personal mailbox deleted for good or its kept index turned off, the sweep, the
   operator's acts, or a key's own acts, nor for renaming a mailbox (`RenameAccount`, `PATCH
-  /v1/accounts/{id}`: a name widens no access; the platform's `item.rename` has no freshness gate).
+  /v1/accounts/{id}`, and a person's rename through an extension: a name widens no access).
   A person acting through an extension is asked about as one signed in is. `delegated.go`:
   `ActFor(Delegation)` is the one way for an extension to run a person's request with no session
-  (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, remove, recover, purge,
-  a removed mailbox's kept index off, raise and drop flags, remove access, agree to and withdraw a
-  consent, sign out everywhere before a moment, dismiss notices in a batch), each the use case a
-  session runs through the unexported act its method calls, with the request recorded in its
-  write (`store.Request`): once only, a no-op recorded, its item in the request's workspace, a
-  closed team `team_closed`, a narrowing refused only for a widening at or after its first second,
+  (`PersonActs`: sync now, pause, resume, lift hold, team sync on and off, rename, remove, recover,
+  purge, a removed mailbox's kept index off, raise and drop flags, remove access, agree to and
+  withdraw a consent, sign out everywhere before a moment, dismiss notices in a batch), each the
+  use case a session runs through the unexported act its method calls, with the request recorded
+  in its write (`store.Request`): once only, a no-op recorded, its item in the request's
+  workspace, a closed team `team_closed`, a narrowing refused only for a widening at or after its
+  first second,
   a widening stamped with it, an error after the commit answered from the record. To whoever may:
   a recovery of a mailbox live again is done, of one the workspace's journal shows deleted for
   good `recovery_over` (both as its write reads it too); a team's turn-off of a mailbox removed
@@ -663,8 +665,9 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   gives, takes or removes an owner's flags (platform decision 0060, `ownerAccessTx`: before the
   freshness hook, and again in the write with the target's role then), owners change each other's,
   and supplying a waiting owner the key is no flag change. Renaming a mailbox is `manage`'s
-  (`PATCH /v1/accounts/{id}`, never a key's, never a removed one's), under one name rule for a
-  rename, an add and a link (`checkMailboxName`: trimmed, 200 characters, no control character).
+  (`PATCH /v1/accounts/{id}`, or `PersonActs.Rename` through an extension, a name it holds already
+  recorded as a no-op; never a key's, never a removed one's), under one name rule for a rename, an
+  add and a link (`checkMailboxName`: trimmed, 200 characters, no control character).
   A team mailbox
   someone reads always keeps a reader (keys and roles never count). An API key belongs to its
   workspace: only its owners and admins, signed in, create, list and revoke keys (a key never

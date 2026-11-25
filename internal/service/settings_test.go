@@ -127,8 +127,15 @@ func TestEveryStateReasonMapsToOneReasonCodeAndOnlyOnAnErrorOrANeedsReauth(t *te
 		account.ReasonDeclined:       service.ReasonOther,
 		account.ReasonFailed:         service.ReasonOther,
 		account.ReasonNoAddress:      service.ReasonOther,
-		// A dead grant's, an older text's, none: never matched loosely.
-		"the refresh token is no longer valid; authorize the account again": service.ReasonOther,
+		// A grant the provider ended: its fixed texts, the refresh's with
+		// the provider's code after it.
+		account.ReasonRefreshTokenInvalid:                                               service.ReasonGrantEnded,
+		account.ReasonRefreshTokenInvalid + " (AADSTS70008: it expired through disuse)": service.ReasonGrantEnded,
+		account.ReasonSignInAgain:                                                       service.ReasonGrantEnded,
+		// An older text, the words inside another, none: never matched loosely.
+		account.ReasonRefreshTokenInvalid + "; authorize the account again": service.ReasonOther,
+		"the provider said: " + account.ReasonRefreshTokenInvalid:           service.ReasonOther,
+		account.ReasonSignInAgain + " (AADSTS50173)":                        service.ReasonOther,
 		account.ReasonScopeMissing + ".":                                    service.ReasonOther,
 		"":                                                                  service.ReasonOther,
 	}

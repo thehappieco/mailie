@@ -116,7 +116,7 @@ func (w kindWorld) names(t *testing.T) map[string]string {
 }
 
 // digest is what an act changed, every id named as names names it: each
-// mailbox's removal, pause, hold, agreement and index; each person's
+// mailbox's removal, pause, hold, agreement, index and name; each person's
 // consents, last sign-out everywhere and live sessions; who holds what; the
 // journal, in order; and who is told what.
 func (w kindWorld) digest(t *testing.T, names map[string]string) []string {
@@ -140,7 +140,7 @@ func (w kindWorld) digest(t *testing.T, names map[string]string) []string {
 		`SELECT 'mailbox', id, removed_at <> 0, sync_paused_at <> 0, sync_paused_by, sync_held_at <> 0, sync_enabled_at <> 0,
 		        sync_enabled_by, sync_consent_version, sync_enabled_via,
 		        (SELECT count(*) FROM folders f WHERE f.account_id = a.id) + (SELECT count(*) FROM messages m WHERE m.account_id = a.id),
-		        removed_by
+		        removed_by, display_name
 		   FROM accounts a`,
 		`SELECT 'person', id, sync_consent_at <> 0, sync_consent_version, actions_consent_at <> 0, actions_consent_version,
 		        actions_consent_withdrawn_at <> 0, send_consent_at <> 0, send_consent_version, send_consent_withdrawn_at <> 0,
@@ -271,6 +271,15 @@ func kindCases() []kindCase {
 			request: func(ctx context.Context, w kindWorld, a *service.PersonActs, _ string) (service.ActOutcome, error) {
 				return a.TeamSync(ctx, w.tm.shared, false, "")
 			}},
+		{kind: "item.rename", prep: nothing, actor: team(carol),
+			session: func(ctx context.Context, w kindWorld, _ string) error {
+				name := " Suporte "
+				_, err := w.f.svc.RenameAccount(ctx, w.tm.carol, w.tm.shared, service.RenameAccountRequest{DisplayName: &name})
+				return err
+			},
+			request: func(ctx context.Context, w kindWorld, a *service.PersonActs, _ string) (service.ActOutcome, error) {
+				return a.Rename(ctx, w.tm.shared, " Suporte ")
+			}},
 		{kind: "item.remove", prep: nothing, actor: team(ana),
 			session: func(ctx context.Context, w kindWorld, _ string) error {
 				_, err := w.f.svc.RemoveAccount(ctx, w.tm.ana, w.tm.shared, service.RemoveAccountRequest{Confirm: w.tm.shared})
@@ -385,8 +394,8 @@ func TestEachKindThroughAnExtensionDoesWhatItsSessionDoes(t *testing.T) {
 	for _, c := range cases {
 		kinds[strings.Fields(c.kind)[0]] = true
 	}
-	if len(kinds) != 17 {
-		t.Fatalf("the cases cover %d kinds, want the 17 an extension carries", len(kinds))
+	if len(kinds) != 18 {
+		t.Fatalf("the cases cover %d kinds, want the 18 an extension carries", len(kinds))
 	}
 	for _, c := range cases {
 		t.Run(c.kind, func(t *testing.T) {

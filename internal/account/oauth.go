@@ -296,6 +296,13 @@ const (
 	// working: the mail server refused the account's access token, a freshly
 	// refreshed one included, and the account moved to needs_reauth.
 	ReasonTokenRejected = "the mail server rejected the account's access token"
+	// ReasonRefreshTokenInvalid and ReasonSignInAgain are a grant the
+	// provider ended (deadGrantReason, GrantEnded): a refresh refused as no
+	// longer valid (revoked, expired through disuse, ended by a password
+	// change), which Microsoft's code, when it names one, follows in
+	// parentheses; or the provider asking the person to sign in again.
+	ReasonRefreshTokenInvalid = "the refresh token is no longer valid"
+	ReasonSignInAgain         = "the identity provider is asking the user to sign in again"
 )
 
 // failureReason is the state_reason a failed consent attempt leaves behind.

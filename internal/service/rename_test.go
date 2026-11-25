@@ -3,6 +3,7 @@ package service_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
@@ -282,5 +283,185 @@ func TestAMailboxsNameIsStoredTrimmedWhereverItIsGiven(t *testing.T) {
 	}
 	if got, err := w.svc.RenameAccount(t.Context(), w.ana, added.Account.ID, renameTo(" Compras\n")); err != nil || got.DisplayName != "Compras" {
 		t.Errorf("a rename answered %+v, %v", got, err)
+	}
+}
+
+// A rename an extension carries for a person (PersonActs.Rename): the same
+// act, run once, a name held already recorded as a no-op.
+
+// renamedThrough is a rename of accountID to name that an extension carries
+// for p in workspaceID, as request id.
+func renamedThrough(t *testing.T, f *fixture, p service.Principal, id, workspaceID, accountID, name string) (service.ActOutcome, error) {
+	t.Helper()
+	return f.actsFor(t, delegated(p, id, workspaceID, time.Now())).Rename(t.Context(), accountID, name)
+}
+
+// recorded reports whether the extension's request id ran, and what it did.
+func recorded(t *testing.T, f *fixture, id string) (service.ActOutcome, bool) {
+	t.Helper()
+	out, ran, err := f.svc.RequestOutcome(t.Context(), "ext", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out, ran
+}
+
+func TestARenameThroughAnExtensionRunsOnceAndAnswersItsFirstOutcomeAfter(t *testing.T) {
+	f := newFixture(t)
+	tm := syncedTeam(t, f)
+	out, err := renamedThrough(t, f, tm.carol, "r1", tm.id, tm.shared, "  Suporte\t")
+	if err != nil || !out.Changed || out.Ran {
+		t.Fatalf("Carol, an admin, renaming the team's mailbox: %+v, %v", out, err)
+	}
+	if got := storedName(t, f, tm.shared); got != "Suporte" {
+		t.Errorf("it is named %q, want the name trimmed", got)
+	}
+	if out, ran := recorded(t, f, "r1"); !ran || !out.Changed {
+		t.Errorf("the request's record: %+v, ran %v", out, ran)
+	}
+	// Renamed since by a session: the request again answers what it did,
+	// and names nothing again.
+	if _, err := f.svc.RenameAccount(t.Context(), tm.ana, tm.shared, renameTo("Atendimento")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = renamedThrough(t, f, tm.carol, "r1", tm.id, tm.shared, "Suporte")
+	if err != nil || !out.Ran || !out.Changed {
+		t.Errorf("the request again: %+v, %v; want its first outcome", out, err)
+	}
+	if got := storedName(t, f, tm.shared); got != "Atendimento" {
+		t.Errorf("the request again named it %q", got)
+	}
+}
+
+func TestARenameThroughAnExtensionToTheNameAMailboxHoldsIsRecordedAsANoOp(t *testing.T) {
+	f := newFixture(t)
+	tm := syncedTeam(t, f)
+	if _, err := f.svc.RenameAccount(t.Context(), tm.ana, tm.shared, renameTo("Suporte")); err != nil {
+		t.Fatal(err)
+	}
+	out, err := renamedThrough(t, f, tm.carol, "r1", tm.id, tm.shared, " Suporte ")
+	if err != nil || out.Changed || out.Ran {
+		t.Fatalf("a rename to the name it holds: %+v, %v; want done with nothing changed", out, err)
+	}
+	if out, ran := recorded(t, f, "r1"); !ran || out.Changed {
+		t.Errorf("the request's record: %+v, ran %v; want a no-op recorded", out, ran)
+	}
+	if _, err := f.svc.RenameAccount(t.Context(), tm.ana, tm.shared, renameTo("Atendimento")); err != nil {
+		t.Fatal(err)
+	}
+	out, err = renamedThrough(t, f, tm.carol, "r1", tm.id, tm.shared, "Suporte")
+	if err != nil || !out.Ran || out.Changed {
+		t.Errorf("the no-op again, renamed since: %+v, %v; want its first outcome", out, err)
+	}
+	if got := storedName(t, f, tm.shared); got != "Atendimento" {
+		t.Errorf("the no-op again named it %q", got)
+	}
+}
+
+func TestARenameThroughAnExtensionRefusesWhatASessionsRenameRefusesAndRecordsNothing(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	tm := syncedTeam(t, f)
+	refused := func(what, id string, err error, refusal service.Refusal) {
+		t.Helper()
+		wantRefusal(t, what, err, refusal)
+		if _, ran := recorded(t, f, id); ran {
+			t.Errorf("%s was recorded", what)
+		}
+	}
+	// Bea reads it, and manages nothing.
+	_, err := renamedThrough(t, f, tm.bea, "r1", tm.id, tm.shared, "Mine")
+	refused("a member reading it without manage", "r1", err, service.RefusalNotAuthorized)
+	other := "acc_00000000000000bb"
+	tm.link(t, f, other, "other@mail.example")
+	_, err = renamedThrough(t, f, tm.bea, "r2", tm.id, other, "Mine")
+	refused("a member holding nothing on it", "r2", err, service.RefusalNotFound)
+	_, err = renamedThrough(t, f, tm.ana, "r3", tm.id, tm.shared, strings.Repeat("é", 201))
+	wantCode(t, "a name too long", err, service.CodeBadRequest)
+	refused("a name too long", "r3", err, service.RefusalNone)
+	_, err = renamedThrough(t, f, tm.ana, "r4", authtest.Personal(t, f.db, tm.ana.UserID), tm.shared, "Elsewhere")
+	refused("a mailbox named in another workspace", "r4", err, service.RefusalNotFound)
+
+	// Suspended, the person renames nothing: a name is no narrowing of
+	// their own.
+	f.suspend(t, tm.carol.UserID)
+	_, err = renamedThrough(t, f, tm.carol, "r5", tm.id, tm.shared, "Suspended")
+	refused("a suspended admin", "r5", err, service.RefusalActorInactive)
+	f.resume(t, tm.carol.UserID)
+
+	// A closed team: said as closed, tried again once it reopens.
+	f.closeTeam(t, tm.id)
+	_, err = renamedThrough(t, f, tm.ana, "r6", tm.id, tm.shared, "Closed")
+	wantCode(t, "a closed team's mailbox", err, service.CodeConflict)
+	refused("a closed team's mailbox", "r6", err, service.RefusalTeamClosed)
+	f.reopenTeam(t, tm.id)
+
+	// A removed mailbox is not found, to its owners too.
+	f.removed(t, tm.ana, tm.shared)
+	_, err = renamedThrough(t, f, tm.ana, "r7", tm.id, tm.shared, "Removed")
+	refused("a removed mailbox", "r7", err, service.RefusalNotFound)
+	if got := storedName(t, f, tm.shared) + storedName(t, f, other); got != "" {
+		t.Errorf("refused renames named the mailboxes %q", got)
+	}
+
+	// Teams withheld: nothing of a team is renamed.
+	withheld := newFixtureWith(t, fixtureOptions{teamsWithheld: true})
+	wt := newSupportTeam(t, withheld)
+	const shared = "acc_00000000000000aa"
+	wt.link(t, withheld, shared, "support@mail.example")
+	_, err = withheld.actsFor(t, delegated(wt.ana, "w1", wt.id, time.Now())).Rename(ctx, shared, "Withheld")
+	wantRefusal(t, "a withheld team's mailbox", err, service.RefusalTeamWithheld)
+	if got := storedName(t, withheld, shared); got != "" {
+		t.Errorf("a withheld team's mailbox is named %q", got)
+	}
+}
+
+func TestAMemberHoldingManageRenamesThroughAnExtensionAsInASession(t *testing.T) {
+	f := newFixture(t)
+	tm := syncedTeam(t, f)
+	_, err := renamedThrough(t, f, tm.bea, "r1", tm.id, tm.shared, "Suporte")
+	wantRefusal(t, "Bea without manage", err, service.RefusalNotAuthorized)
+	tm.grant(t, tm.shared, workspace.Flags{Read: true, Manage: true})
+	// The refused request recorded nothing: the same request runs now.
+	if out, err := renamedThrough(t, f, tm.bea, "r1", tm.id, tm.shared, "Suporte"); err != nil || !out.Changed || out.Ran {
+		t.Errorf("Bea, holding manage now: %+v, %v", out, err)
+	}
+	// Her personal mailbox is hers to rename.
+	own := f.mailbox(t, tm.bea, "bea@mail.example")
+	if out, err := renamedThrough(t, f, tm.bea, "r2", authtest.Personal(t, f.db, tm.bea.UserID), own, "Minha"); err != nil ||
+		!out.Changed {
+		t.Errorf("Bea renaming her own mailbox: %+v, %v", out, err)
+	}
+	if got := storedName(t, f, tm.shared) + "/" + storedName(t, f, own); got != "Suporte/Minha" {
+		t.Errorf("the names are %q", got)
+	}
+}
+
+func TestARenameThroughAnExtensionMarksAFollowedWorkspaceChangedAndAsksTheFreshnessHookNothing(t *testing.T) {
+	w := newFreshWorld(t)
+	box := w.box(t, "vendas@example.com")
+	mark := func() int {
+		return w.count(t, `SELECT coalesce((SELECT seq FROM workspace_changes WHERE workspace_id = ?), 0)`, dirTeamID)
+	}
+	before := mark()
+	w.hook.take()
+	out, err := w.actsFor(t, delegated(w.ana, "r1", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas")
+	if err != nil || !out.Changed {
+		t.Fatalf("Ana renaming the team's mailbox through an extension: %+v, %v", out, err)
+	}
+	if asked := w.hook.take(); len(asked) != 0 {
+		t.Errorf("a rename through an extension asked the freshness hook %+v", asked)
+	}
+	after := mark()
+	if after <= before {
+		t.Errorf("the team's change mark is %d after a rename, %d before", after, before)
+	}
+	// A no-op changes nothing a report reads.
+	if out, err := w.actsFor(t, delegated(w.ana, "r2", dirTeamID, time.Now())).Rename(t.Context(), box, "Vendas"); err != nil ||
+		out.Changed {
+		t.Fatalf("the same name again: %+v, %v", out, err)
+	}
+	if again := mark(); again != after {
+		t.Errorf("a rename to the name it held moved the team's change mark from %d to %d", after, again)
 	}
 }

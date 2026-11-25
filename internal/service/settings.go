@@ -46,7 +46,7 @@ func Availabilities() []Availability {
 type MailboxReason string
 
 // Why a mailbox in error or needing a new authorization does, by its state's
-// fixed reason (account.Reason*), compared exactly.
+// fixed reason (account.Reason*), compared exactly, or account.GrantEnded's.
 const (
 	// ReasonScopeMissing is a grant that does not reach the mailbox.
 	ReasonScopeMissing MailboxReason = "scope_missing"
@@ -57,13 +57,19 @@ const (
 	// ReasonUnproved is a grant the mail server could not be reached to
 	// prove.
 	ReasonUnproved MailboxReason = "unproved"
-	// ReasonOther is any other reason, a dead grant's and none included.
+	// ReasonGrantEnded is a grant the provider ended: a refresh refused as
+	// no longer valid, or the provider asking for a new sign-in
+	// (account.GrantEnded).
+	ReasonGrantEnded MailboxReason = "grant_ended"
+	// ReasonOther is any other reason, none included.
 	ReasonOther MailboxReason = "other"
 )
 
 // MailboxReasons are every reason a report says.
 func MailboxReasons() []MailboxReason {
-	return []MailboxReason{ReasonScopeMissing, ReasonMailboxRefused, ReasonTokenRejected, ReasonUnproved, ReasonOther}
+	return []MailboxReason{
+		ReasonScopeMissing, ReasonMailboxRefused, ReasonTokenRejected, ReasonUnproved, ReasonGrantEnded, ReasonOther,
+	}
 }
 
 // MailboxStates are every state a report says of a mailbox, as its row has
@@ -348,8 +354,9 @@ func presentMailboxSettings(mb workspace.MailboxSettings) MailboxSettings {
 }
 
 // mailboxReason is why a mailbox in error, disabled or needing a new
-// authorization is, by its state's fixed reason compared exactly; empty in
-// any other state.
+// authorization is, by its state's fixed reason compared exactly (a grant
+// the provider ended by account.GrantEnded, which allows only the
+// provider's code after its fixed text); empty in any other state.
 func mailboxReason(state, reason string) MailboxReason {
 	switch account.State(state) {
 	case account.StateError, account.StateDisabled, account.StateNeedsReauth:
@@ -365,6 +372,9 @@ func mailboxReason(state, reason string) MailboxReason {
 		return ReasonTokenRejected
 	case account.ReasonUnproved:
 		return ReasonUnproved
+	}
+	if account.GrantEnded(reason) {
+		return ReasonGrantEnded
 	}
 	return ReasonOther
 }
