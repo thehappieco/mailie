@@ -1,9 +1,10 @@
 # Self-hosting
 
-Mailie runs as one process: a static binary, one SQLite database in a data directory, and the
-built console it serves as static files. This page is how to run it on a server of your own, from
-a binary under systemd or in a container, behind a reverse proxy that terminates TLS. The packaging
-is in [`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example systemd units.
+Mailie runs as one process: a static binary and one SQLite database in a data directory. It has
+no web screen: you run it from its command line, and your tools use its REST API and its MCP server
+with keys you make there. This page is how to run it on a server of your own, from a binary under
+systemd or in a container, behind a reverse proxy that terminates TLS. The packaging is in
+[`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example systemd units.
 
 - [Requirements](#requirements)
 - [The configuration a server needs](#the-configuration-a-server-needs)
@@ -11,7 +12,7 @@ is in [`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example syste
 - [With Docker alone](#with-docker-alone)
 - [From a binary, with systemd](#from-a-binary-with-systemd)
 - [TLS through a reverse proxy](#tls-through-a-reverse-proxy)
-- [The first owner](#the-first-owner)
+- [The first key](#the-first-key)
 - [Mailboxes and OAuth clients](#mailboxes-and-oauth-clients)
 - [MCP clients](#mcp-clients)
 - [Health, metrics and logs](#health-metrics-and-logs)
@@ -24,11 +25,12 @@ is in [`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example syste
 
 - **A Linux machine** (amd64 or arm64) that can reach your mail providers: IMAP on 993, SMTP on
   465 or 587, and their OAuth endpoints on 443. From outside, only the reverse proxy's 443 (and 80)
-  need to be open.
-- **A name and a certificate.** The console and MCP clients reach the daemon through a reverse
-  proxy that terminates TLS (Caddy, nginx); the daemon itself only speaks plain HTTP on loopback.
-- **To build it:** Docker with BuildKit (any current Docker Engine or Docker Desktop) builds both
-  the binary and the console in the image. Without Docker, Go 1.27 and Node 24.
+  need to be open, and only for tools on other machines.
+- **A name and a certificate**, for MCP clients and scripts on other machines: they reach the
+  daemon through a reverse proxy that terminates TLS (Caddy, nginx); the daemon itself only speaks
+  plain HTTP on loopback. Tools on the server's own machine reach it there.
+- **To build it:** Docker with BuildKit (any current Docker Engine or Docker Desktop) builds the
+  binary in the image. Without Docker, Go 1.27. Neither needs Node: the server has no web console.
 - **Disk** for the index, which holds metadata only (never bodies or attachments), and for the
   download spool: an attachment or an original being downloaded is held whole under the data
   directory, at most `MAIL_DOWNLOAD_SPOOL_MAX_BYTES` (1 GiB by default) at once.
@@ -47,43 +49,51 @@ A server needs at least these:
 | Variable | On a server |
 |---|---|
 | `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, the send-hash root and the salt key. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
-| `MAIL_PUBLIC_URL` | The `https://` origin people reach the console at, such as `https://mail.example.org`: no path, no trailing slash. Invite links and the web OAuth redirect (`<MAIL_PUBLIC_URL>/oauth/return`) are built from it, never from a request's `Host`. |
-| `MAIL_ENV` | `prod`: logs in JSON, and refuses an `http://` `MAIL_PUBLIC_URL` and the settings that would leak a token. |
+| `MAIL_ENV` | `prod`: logs in JSON, and refuses the settings that would leak a token. |
 | `MAIL_TRUSTED_PROXIES` | The address the daemon sees your reverse proxy connect from (see [below](#the-proxys-address)). Without it every client shares one rate limit. |
-| `MAIL_GOOGLE_WEB_CLIENT_ID`, `_SECRET`; `MAIL_MICROSOFT_WEB_CLIENT_ID`, `_SECRET` | The web OAuth clients, for Gmail and Microsoft mailboxes ([below](#mailboxes-and-oauth-clients)). iCloud and IMAP mailboxes need none. |
+| `MAIL_GOOGLE_CLIENT_ID`, `_SECRET`; `MAIL_MICROSOFT_CLIENT_ID` | The installed OAuth clients, for Gmail and Microsoft mailboxes ([below](#mailboxes-and-oauth-clients)). iCloud and IMAP mailboxes need none. |
 
-Three more say where things are: `MAIL_DATA_DIR` (the database), `MAIL_HTTP_ADDR` (what the daemon
-listens on) and `MAIL_WEB_DIR` (the built console). The image and the systemd unit set them; leave
-them out of your environment file.
+`MAIL_PUBLIC_URL`, the web OAuth clients (`MAIL_GOOGLE_WEB_CLIENT_*`,
+`MAIL_MICROSOFT_WEB_CLIENT_*`) and `MAIL_WEB_DIR` are for an edition that serves a web page: a
+self-hosted server leaves them unset (["The open console leaves"](#the-open-console-leaves), under
+Upgrades, says what to do with the ones an older release needed). Two more say where things are:
+`MAIL_DATA_DIR` (the database) and `MAIL_HTTP_ADDR` (what the daemon listens on). The image and the
+systemd unit set them; leave them out of your environment file.
 
 ## With Docker Compose
 
 [`deploy/compose.yaml`](../deploy/compose.yaml) builds the image from your checkout and runs it
 with its root file system read-only, no capabilities, `no-new-privileges`, the database on a named
-volume (`mailie_data`) and the port published on the host's loopback only (`127.0.0.1:8080`).
+volume (`mailie_data`) and the port published on the host's loopback only (`127.0.0.1:8080`). It
+keeps `MAIL_WEB_DIR` empty, whatever `deploy/.env` says: the daemon serves the API only.
 
 ```sh
 cp .env.example deploy/.env
 chmod 600 deploy/.env
-# Edit deploy/.env: MAIL_CREDENTIAL_KEY_HEX, MAIL_PUBLIC_URL, MAIL_ENV=prod, MAIL_TRUSTED_PROXIES.
+# Edit deploy/.env: MAIL_CREDENTIAL_KEY_HEX, MAIL_ENV=prod, MAIL_TRUSTED_PROXIES, the OAuth clients.
 cd deploy
 docker compose build
-docker compose run --rm mailie user invite --bootstrap --role owner --email you@example.com   # the first owner
+docker compose run --rm mailie apikey create --bootstrap --scope admin --name cli   # the first key
 docker compose up -d
 curl -fsS http://127.0.0.1:8080/v1/healthz
 ```
 
 `deploy/.env` holds the credential key: Git ignores it, and it never enters the image (the build
-context lets in only `go.mod`, `go.sum`, `cmd/`, `internal/` and `web/`). Compose reads the file
-itself, so write values without quotes unless a value holds a `$`, and then in single quotes.
+context lets in only `go.mod`, `go.sum`, `cmd/` and `internal/`). Compose reads the file itself, so
+write values without quotes unless a value holds a `$`, and then in single quotes.
 
 The rest of this page writes the commands from `deploy/`:
 
 | What | How |
 |---|---|
-| A command that talks to the running daemon (`account`, `user invite`, and `apikey create\|list\|revoke` with `MAIL_ADMIN_API=true`) | `docker compose exec -e MAIL_ADMIN_KEY mailie mailserver account list`, with `MAIL_ADMIN_KEY` in your shell |
+| A command that talks to the running daemon (`account`, `user`, `workspace`, `member`, `access`, and `apikey create\|list\|revoke` with `MAIL_ADMIN_API=true`) | `docker compose exec -e MAIL_ADMIN_KEY mailie mailserver account list`, with `MAIL_ADMIN_KEY` in your shell |
 | A command that needs the daemon stopped (`--bootstrap`, `migrate`, `rewrap-credentials`) | `docker compose stop mailie`, then `docker compose run --rm mailie <command>`, then `docker compose start mailie` |
 | The logs | `docker compose logs -f mailie` |
+
+`docker compose exec` gives the command your terminal, so `account add --password -` asks for the
+password at a prompt that does not show it; to pipe one in instead, add `-T`
+(`printf '%s\n' "$APP_PASSWORD" | docker compose exec -T -e MAIL_ADMIN_KEY mailie mailserver account
+add --email you@icloud.com --password -`).
 
 `apikey create`, `apikey list` and `apikey revoke` call routes the daemon mounts only with
 `MAIL_ADMIN_API=true` in its environment (`deploy/.env`; off by default, and the commands then say
@@ -107,20 +117,21 @@ docker run -d --name mailie --env-file deploy/.env \
 ```
 
 `docker run --env-file` takes every value literally, quotes and comments after it included: write
-values bare, comments on lines of their own. Keep
-`MAIL_DATA_DIR`, `MAIL_HTTP_ADDR` and `MAIL_WEB_DIR` out of that file, so the image's
-(`/data`, `0.0.0.0:8080`, `/usr/share/mailie/console`) apply.
+values bare, comments on lines of their own. Keep `MAIL_DATA_DIR`, `MAIL_HTTP_ADDR` and
+`MAIL_WEB_DIR` out of that file, so the image's (`/data`, `0.0.0.0:8080`, and no web directory)
+apply.
 
 What the image is:
 
-- **Three stages.** Node 24 builds the open console, Go 1.27 builds a static binary
-  (`CGO_ENABLED=0`, `-trimpath`, the version stamped in), and both are copied onto distroless's
-  `static-debian13` image, which holds CA certificates, time zones and little else: no shell, no
-  package manager. Every base image is pinned by digest.
-- **It runs as `nonroot` (65532:65532)**, and the binary and the console belong to root. `/data` is
-  the only place it writes, besides `/tmp`; it is `0700` and the daemon's, and a new named volume
-  takes that owner and mode. A bind mount needs the same: `chown 65532:65532` and `chmod 700` on
-  the host directory.
+- **Two stages.** Go 1.27 builds a static binary (`CGO_ENABLED=0`, `-trimpath`, the version
+  stamped in), and it is copied onto distroless's `static-debian13` image, which holds CA
+  certificates, time zones and little else: no shell, no package manager. Every base image is
+  pinned by digest. The image is the daemon alone: REST and MCP, with no web console and no
+  `MAIL_WEB_DIR`; `GET /` answers 404.
+- **It runs as `nonroot` (65532:65532)**, and the binary belongs to root. `/data` is the only place
+  it writes, besides `/tmp`; it is `0700` and the daemon's, and a new named volume takes that owner
+  and mode. A bind mount needs the same: `chown 65532:65532` and `chmod 700` on the host
+  directory.
 - **No secret is built in.** Everything comes from the container's environment when it starts.
 - **No `HEALTHCHECK`:** the image has no tool to run one. Check from outside (see
   [Health](#health-metrics-and-logs)).
@@ -129,22 +140,20 @@ What the image is:
 
 ## From a binary, with systemd
 
-Build the binary and the console on any machine with Go 1.27 and Node 24. The binary is static, so
-it can be built elsewhere for the server's platform:
+Build the binary on any machine with Go 1.27. It is static, so it can be built elsewhere for the
+server's platform:
 
 ```sh
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version=$(git describe --always --dirty)" -o dist/mailserver ./cmd/mailserver
-make web-install web-build      # the console, into web/dist
 ```
 
-Or take both out of the image (`docker build --platform linux/amd64 …` for another machine):
+Or take it out of the image (`docker build --platform linux/amd64 …` for another machine):
 
 ```sh
-mkdir -p dist web/dist
+mkdir -p dist
 docker create --name mailie-files mailie:local
 docker cp mailie-files:/usr/local/bin/mailserver dist/mailserver
-docker cp mailie-files:/usr/share/mailie/console/. web/dist/
 docker rm mailie-files
 ```
 
@@ -154,18 +163,18 @@ On the server, as root, with [`deploy/mailie.service`](../deploy/mailie.service)
 useradd --system --user-group --home-dir /var/lib/mailie --no-create-home --shell /usr/sbin/nologin mailie
 install -d -o mailie -g mailie -m 0700 /var/lib/mailie
 install -m 0755 dist/mailserver /usr/local/bin/mailserver
-mkdir -p /usr/local/share/mailie/console && cp -R web/dist/. /usr/local/share/mailie/console/
 install -d -m 0700 /etc/mailie
 install -m 0600 .env.example /etc/mailie/mailie.env
-# Edit /etc/mailie/mailie.env: MAIL_CREDENTIAL_KEY_HEX, MAIL_PUBLIC_URL, MAIL_ENV=prod, MAIL_TRUSTED_PROXIES.
+# Edit /etc/mailie/mailie.env: MAIL_CREDENTIAL_KEY_HEX, MAIL_ENV=prod, MAIL_TRUSTED_PROXIES, the OAuth clients.
 install -m 0644 deploy/mailie.service /etc/systemd/system/mailie.service
 systemctl daemon-reload
 ```
 
 The unit runs the daemon as `mailie` with the database in `/var/lib/mailie`, listening on
-`127.0.0.1:8080`. The environment file belongs to root, `0600`: systemd reads it before the daemon
-starts, so the daemon's user cannot read the file itself. systemd reads that file without a shell:
-one `NAME=value` per line, and no comment after a value.
+`127.0.0.1:8080`, and serves the API only: it sets no `MAIL_WEB_DIR`. The environment file belongs
+to root, `0600`: systemd reads it before the daemon starts, so the daemon's user cannot read the
+file itself. systemd reads that file without a shell: one `NAME=value` per line, and no comment
+after a value.
 
 The unit is hardened: no capabilities, a read-only system (`ProtectSystem=strict`) with only its
 state directory writable, a private `/tmp`, no devices, no other users' homes, a system-call filter,
@@ -197,17 +206,18 @@ mailie-admin() {
 ```
 
 The commands that open the database (`--bootstrap`, `migrate`, `rewrap-credentials`) need the
-daemon stopped (`systemctl stop mailie`); the ones that talk to it (`account`, `user invite`, and
-`apikey create|list|revoke`) need it running and the admin key in `/etc/mailie/admin.env`. The
-`apikey` ones also need `MAIL_ADMIN_API=true` in `/etc/mailie/mailie.env` (off by default);
-without it, `apikey create --bootstrap` issues a key with the daemon stopped. With `--pty` a
-command can ask for a password at your terminal; to pipe its input instead, use `--pipe`.
+daemon stopped (`systemctl stop mailie`); the ones that talk to it (`account`, `user`,
+`workspace`, `member`, `access`, and `apikey create|list|revoke`) need it running and the admin key
+in `/etc/mailie/admin.env`. The `apikey` ones also need `MAIL_ADMIN_API=true` in
+`/etc/mailie/mailie.env` (off by default); without it, `apikey create --bootstrap` issues a key
+with the daemon stopped. With `--pty` a command can ask for a password at your terminal
+(`account add --password -`); to pipe its input instead, use `--pipe`.
 
 ## TLS through a reverse proxy
 
 The daemon speaks plain HTTP. **Never expose port 8080:** put a reverse proxy on the same machine
-in front of it, publish only 443 (and 80, for the redirect and certificate issuance), and set
-`MAIL_PUBLIC_URL` to the `https://` origin the proxy serves.
+in front of it, and publish only 443 (and 80, for the redirect and certificate issuance). Tools on
+other machines then reach REST and MCP at `https://mail.example.org`.
 
 What the proxy must do:
 
@@ -289,48 +299,78 @@ server {
 Docker publishes ports past host firewalls such as ufw and firewalld: that is why
 `compose.yaml` publishes on `127.0.0.1` only. Keep it that way.
 
-## The first owner
+## The first key
 
-The first person is invited from the command line, with the daemon stopped, as an owner: the
-invite decides the role, and signing up first makes nobody an owner. Set `MAIL_PUBLIC_URL` first:
-the invite link is built from it.
+The command line is a REST client of the daemon, and it authenticates with an instance key of the
+`admin` scope. The first one is issued straight into the database, with the daemon stopped (the
+Compose steps above already made it):
 
 ```sh
 # Compose, from deploy/:
 docker compose stop mailie
-docker compose run --rm mailie user invite --bootstrap --role owner --email you@example.com
+docker compose run --rm mailie apikey create --bootstrap --scope admin --name cli
 docker compose start mailie
+export MAIL_ADMIN_KEY=<the key it printed>
 
 # systemd, with the helper above:
 sudo systemctl stop mailie
-mailie-admin user invite --bootstrap --role owner --email you@example.com
+mailie-admin apikey create --bootstrap --scope admin --name cli
 sudo systemctl start mailie
+sudoedit /etc/mailie/admin.env     # MAIL_ADMIN_KEY=<the key it printed>
 ```
 
-Open the link it prints, choose a name and a password, and invite the others from the console or
-with `mailserver user invite --email ADDRESS [--role owner|member]` beside the running daemon. An
-admin key for the command line comes the same way:
-`mailserver apikey create --bootstrap --scope admin --name cli`, with the daemon stopped (with
-systemd, `mailie-admin apikey create --bootstrap …`, and the key it prints goes in
-`/etc/mailie/admin.env`).
+Instance keys reach the operator workspace's mailboxes, which are the ones the command line adds,
+and nothing else; they last a year at most (`--days N` for less). Give each tool a key of its own,
+with the scope it needs and, with `--accounts IDS`, only some of the mailboxes:
+`mailserver apikey create --scope read --name assistant`, through the daemon with
+`MAIL_ADMIN_API=true`, or `--bootstrap` with it stopped.
 
 ## Mailboxes and OAuth clients
 
-iCloud and other IMAP mailboxes connect with a password and need nothing more. Gmail and
-Microsoft mailboxes need OAuth clients you register yourself, for your server: the
-[README](../README.md#mailboxes-and-providers) walks through both providers.
+With the key, a mailbox is added, its sync turned on and checked:
 
-On a server, the console uses the **web clients** (`MAIL_GOOGLE_WEB_CLIENT_*`,
-`MAIL_MICROSOFT_WEB_CLIENT_*`), each registered with the redirect
-`https://mail.example.org/oauth/return`: your `MAIL_PUBLIC_URL` followed by `/oauth/return`,
-exactly. The installed clients (`MAIL_GOOGLE_CLIENT_ID`, `MAIL_MICROSOFT_CLIENT_ID`) redirect to a
-listener the daemon opens on its own loopback, which a browser on another machine, or outside the
-container, cannot reach: on a server they serve only the command line's `account add --paste`.
+```sh
+mailie-admin account add --email you@icloud.com --password -        # an iCloud or IMAP password
+mailie-admin account add --email you@example.org --paste           # Gmail or Microsoft, on a server
+mailie-admin account sync <account id> on
+mailie-admin account sync <account id> status
+```
+
+(With Compose, `docker compose exec -e MAIL_ADMIN_KEY mailie mailserver …` in place of
+`mailie-admin`.) Nothing of a mailbox is stored until its sync is turned on, and `account add` says
+so; its first pass reaches 90 days back (`--initial-days N` reaches further, a negative number
+everything). The [README](../README.md#the-operators-mailboxes) lists the rest: renaming, pausing,
+removing and recovering.
+
+iCloud and other IMAP mailboxes connect with a password, which `--password -` reads at a prompt
+that does not show it, or from a pipe: never as an argument, which `sudo`, `systemd-run` and shell
+history record. Gmail and Microsoft mailboxes need OAuth clients you register yourself, for your
+server: the [README](../README.md#mailboxes-and-providers) walks through both providers.
+
+- **The installed clients are the only way to link Gmail and Microsoft** on a self-hosted server
+  (`MAIL_GOOGLE_CLIENT_ID` and `_SECRET`, `MAIL_MICROSOFT_CLIENT_ID`). For each authorization the
+  daemon opens a listener on its own loopback, where the provider sends the browser back: a
+  browser on the daemon's machine reaches it, and one on another machine, or outside the
+  container, does not. On a server, `account add --paste` (and `account authorize ID --paste` when
+  a grant has to be renewed) prints the provider's address to open in any browser and takes back
+  the address the browser ends on, which looks like a connection error.
+- **Google's mail scope is restricted.** An app left unverified shows Google's "unverified app"
+  screen and serves at most 100 users over the project's life; in *Testing*, every refresh token
+  expires after 7 days, so set the publishing status to **In production**.
+- **Microsoft's is a public client:** a "Mobile and desktop applications" platform with the
+  redirect `http://localhost`, public client flows allowed and no secret. Entra's security defaults
+  block the device-code flow (`--device`), so `--paste` is the way on a server.
+- **The web clients** (`MAIL_GOOGLE_WEB_CLIENT_*`, `MAIL_MICROSOFT_WEB_CLIENT_*`, with
+  `MAIL_PUBLIC_URL`) are for an edition that serves a web page, whose redirect is a page of its
+  own. A self-hosted server has none, but a mailbox the open console of an earlier release linked
+  through one refreshes only with it: keep them until such mailboxes are linked again
+  ([Moving from the open console](../README.md#moving-from-the-open-console)).
 
 ## MCP clients
 
-MCP is served at `<MAIL_PUBLIC_URL>/mcp` through the same proxy, with the API keys the owners and
-admins of a workspace create in the console. From the machine an MCP client runs on:
+MCP is served at `https://mail.example.org/mcp` through the same proxy (or at
+`http://localhost:8080/mcp` on the server itself), with an instance key made for the tool
+([above](#the-first-key)). From the machine an MCP client runs on:
 
 ```sh
 mailserver mcp install --client claude-desktop --url https://mail.example.org
@@ -1083,6 +1123,45 @@ An ordinary migration: one table added, `oauth_links`, and no row of a schema-25
   mailbox's first key (`public_key`, `namespace`, `grant`) with a link's return, and may take up to
   70 s to answer it.
 
+### The open console leaves
+
+No migration: the schema does not change, and going back is the binary (and its console) you kept.
+The self-hosted server has no web console any more: it is run from its command line and used
+through REST and MCP with keys.
+
+- **Nobody signs in.** The image has no console and sets no `MAIL_WEB_DIR`, `compose.yaml` keeps
+  it empty, and `deploy/mailie.service` no longer sets it: the daemon serves the API only, and
+  `GET /` answers 404. Install the new unit once (`install -m 0644 deploy/mailie.service
+  /etc/systemd/system/mailie.service`, then `systemctl daemon-reload`): the older one keeps serving
+  the old console's files, which no longer match the API. Remove the console's files
+  (`/usr/local/share/mailie/console`) once you will not go back.
+- **People's mailboxes stay where they are.** A mailbox linked in the console belongs to its
+  person's or its team's workspace, which no instance key reaches. It keeps syncing under the
+  consent it was given, and the workspace keys made for it work until they expire or are revoked,
+  but nobody signs in to change it. At every start the daemon logs, at warn, `mailboxes outside the
+  operator workspace, in personal or team workspaces: no instance key reaches them`, with their
+  counts (`personal_live`, `personal_removed`, `team_live`, `team_removed`: removed ones are kept
+  until they are deleted for good) and a hint naming the README's section
+  [Moving from the open console](../README.md#moving-from-the-open-console), which says how to link
+  each address again into the operator workspace and then delete the people. It logs nothing when
+  there are none. A mailbox linked through a web client refreshes only with it: keep its variables,
+  and `MAIL_PUBLIC_URL`, until it is linked again, and remove them after.
+- **The command line.** `account add --password` takes only `-`: the password is typed at a prompt
+  that does not show it, or is the first line of standard input (its line ending alone taken off,
+  at most 4096 bytes). A script that passed it as an argument is refused before anything is sent:
+  `account add: --password takes no password on the command line, which sudo, systemd-run and shell
+  history record; give --password - and pipe the password on standard input, or type it at the
+  prompt; nothing was added`. `account add` and `account authorize` say where the mailbox's sync
+  stands (``its sync is off until `mailserver account sync ID on` ``), where `account add` said it
+  was ready to sync.
+- **For scripts:** `GET /v1/me/storage` counts each mailbox's `bytes` by usage rule 1
+  (`rule_version`; [`console.md`](console.md#storage)), what the database holds for it, where it
+  summed the mail server's sizes, which are now `provider_bytes`; it lists a removed mailbox
+  (`removed: true`) to whoever lists it on the removed mailboxes' own paths, until it is deleted for
+  good; and it answers `database_bytes` only to the operator (an instance key with the admin scope,
+  restricted to no mailbox), no longer to an owner signed in. The refusals of a sign-in session's
+  token at `/mcp` and of a key nobody agreed to the key terms through name no console.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
@@ -1096,9 +1175,7 @@ docker compose up -d
 sudo systemctl stop mailie
 sudo cp -a /var/lib/mailie /var/lib/mailie.before-upgrade
 sudo cp -a /usr/local/bin/mailserver /usr/local/bin/mailserver.previous
-sudo cp -a /usr/local/share/mailie/console /usr/local/share/mailie/console.previous
 sudo install -m 0755 dist/mailserver /usr/local/bin/mailserver
-sudo rsync -a --delete web/dist/ /usr/local/share/mailie/console/
 sudo systemctl start mailie
 ```
 
@@ -1124,12 +1201,13 @@ git checkout <the commit you upgraded from>   # git pull printed it; the next bu
 sudo systemctl stop mailie
 sudo rsync -a --delete /var/lib/mailie.before-upgrade/ /var/lib/mailie/
 sudo install -m 0755 /usr/local/bin/mailserver.previous /usr/local/bin/mailserver
-sudo rsync -a --delete /usr/local/share/mailie/console.previous/ /usr/local/share/mailie/console/
 sudo systemctl start mailie
 ```
 
 The copy is the database in clear apart from the credentials: delete it, and the kept version, once
-the new version has proved itself.
+the new version has proved itself. Going back from the release without the open console to one with
+it puts back that release's unit as well (`deploy/mailie.service` at the commit you upgraded from),
+which names the console's files, and those files if you removed them.
 
 Going back from the release that brings the key scheme (migration 0013) puts back the old password
 hashes and drops every enrolment made since. When you upgrade again, to a release after the one that
@@ -1140,24 +1218,22 @@ with the same remedy, or clearing the site's data in their browser.
 
 ## A forgotten password
 
-A person who forgot their password replaces it with their recovery code, in the console, which
-stops every API key they created: they create new ones once signed in. Nobody can set a password,
-through the API or the command line: the server never knows one. A person who lost
-both their password and their recovery code gets a **reset invitation** from the operator, with the
-daemon stopped: `user password --bootstrap` prints a link, valid seven days and once, for that
-person only. With it they choose a new password and get a new recovery code and a new account key;
-their sessions end then, every API key they created stops (the command says how many are live),
-and everything sealed to their old key goes: their personal mailboxes
-then need a new key, which they write in the console, and a team's mailboxes a reader to give them
-theirs again. Until the link is used, nothing of theirs changes; a newer one replaces it. It is
-also the way back for a person who signed up before the key scheme and never enrolled
-([The upgrade leaves](#the-upgrade-leaves-the-release-after-the-key-schemes)): it gives them their
-first account key and recovery code, and clears their old password hash.
+A self-hosted server has no web screen, so nobody signs in to it and no password of anyone's is
+used there: the command line and every tool authenticate with keys. A database made through the
+open console of an earlier release still holds its people, their account keys and their recovery
+codes, which the people commands administer (`user`, `workspace`, `member`, `access`).
+
+`mailserver user password --bootstrap --email ADDRESS [--force]`, with the daemon stopped, still
+prints a **reset invitation** for such a person: a link, valid seven days and once, whose page a
+web console serves, so nothing on a self-hosted server opens it. It changes nothing until it is
+used. Nobody can set a password, through the API or the command line: the server never knows one.
+To reach a person's mailboxes from the command line, link them again into the operator workspace
+([Moving from the open console](../README.md#moving-from-the-open-console)).
 
 It refuses, naming the mailboxes, while the person is the last who can read a team mailbox that
 has a key, even in a team they are alone in: nobody could give them its key again. On a team
-mailbox without a key the reset takes nothing, and they keep reading it. Have another member given read
-first, or, when the old key is truly lost, pass `--force`.
+mailbox without a key the reset takes nothing, and they keep reading it. Pass `--force` when the
+old key is truly lost.
 
 ```sh
 # Compose, from deploy/:

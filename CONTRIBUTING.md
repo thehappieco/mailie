@@ -13,10 +13,11 @@ we will ask you to agree to the terms under which we accept it; until then, open
 
 ## What belongs here
 
-This repository is the self-hosted server: the daemon, the command line, the open console in `web/`
-and their documentation. The hosted service's web app and its operations (deployment, hosting,
-billing) live in a private repository. A change here must not depend on them, and the core of the
-console (`web/src`) must not import from outside it.
+This repository is the self-hosted server: the daemon, the command line, the core of the web
+console in `web/` (which an edition compiles; a self-hosted server serves no web screen) and their
+documentation. The hosted service's web app and its operations (deployment, hosting, billing) live
+in a private repository. A change here must not depend on them, and the core of the console
+(`web/src`) must not import from outside it.
 
 ## Checks
 
@@ -24,7 +25,7 @@ Run these before opening a pull request:
 
 ```sh
 make check          # gofmt, vet, layout and the unit tests with -race (offline, no Node)
-make web-check      # the console's typecheck, unit tests and build (Node 24)
+make web-check      # the console's core: typecheck and unit tests (Node 24)
 make public-source  # the public snapshot builds from the allowlist
 ```
 
@@ -37,9 +38,9 @@ way, or move it aside.
 If you touch IMAP, CONDSTORE, actions or sending, also run `make it` (Docker: Dovecot and Mailpit).
 CI runs all of these, golangci-lint, govulncheck and gitleaks over the full history.
 
-If you change a route the console reads, regenerate the contract fixtures from the handlers
-(`go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`); never edit them by
-hand.
+If you change a route the console's core or a client reads, regenerate the contract fixtures from
+the handlers (`go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`); never
+edit them by hand.
 
 ## Conventions
 

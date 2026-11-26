@@ -1267,11 +1267,10 @@ kit's non-extractable private key), `web/src/state/grants.ts` (the person's own 
 seal the key to someone else), `web/src/state/stepUp.ts` with `components/StepUpPrompt.vue` (the
 step-up asked before every call of section 11, over whatever dialog is open),
 `web/src/state/accounts.ts` (the link's key, section 12.11), `web/src/state/team.ts` ("read" with
-a grant, section 12.13) and `web/src/state/mailboxKeys.ts` with `components/MailboxKeyPanel.vue`
-(waiting for the key, supplying it, a first key from the sheet or right after a sign-in and never
-on a restored session, section 12.14, and a personal mailbox's new key, section 12.12), held by
-`web/test/mailboxKeys.spec.ts`, `web/test/mailboxKeys.page.spec.ts` and `web/test/accounts.spec.ts`
-with the kit's real cryptography: every grant the console seals opens for its recipient, with
+a grant, section 12.13) and `web/src/state/mailboxKeys.ts` (waiting for the key, supplying it, a
+first key from an edition's page or right after a sign-in and never on a restored session, section
+12.14, and a personal mailbox's new key, section 12.12), held by `web/test/mailboxKeys.spec.ts` and
+`web/test/accounts.spec.ts` with the kit's real cryptography: every grant the console seals opens for its recipient, with
 `openGrant`, to the key whose public half the server holds.
 
 The server's half of the hosted sections (6.3, 11's hosted step-up, 12.8 and 12.10) is
@@ -1306,8 +1305,8 @@ depends on it. Those settled on 2026-10-09 say so.
 3. **The new-password minimum.** Settled by the owner: twelve code points, the platform's (section
    5.1), for new passwords only.
 4. **The open console and the kit's names.** Settled: the console's sources import the kit by its
-   package name, which `web/test/hosted.ts` sets aside as code, and the open console's build carries
-   none of the platform profile's labels; a future import that would need them is a question for
+   package name, which `web/test/hosted.ts` sets aside as code, and the open console's build carried
+   none of the platform profile's labels (this repository builds no console since); a future import that would need them is a question for
    the owner first.
 5. **The upgrade's oracle.** Settled by the owner: the legacy route and the `upgrade` answer exist in
    one release only and leave in the next (section 12.7), with the release notes saying so; the

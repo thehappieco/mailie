@@ -23,6 +23,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `install` writes Claude Desktop's or Cursor's configuration (atomic, 0600, one `.bak-mailie`, empty
   when there was no file, never from `--uninstall`; no symbolic link below the home on the way) after
   checking the key, and for Claude Code only prints the command. The key is never an argument.
+  Nor is a mailbox's password: `account add --password` takes only `-` (typed at a prompt that does
+  not show it, or the first line of standard input, its line ending alone taken off, at most 4096
+  bytes; any other value refused before anything is sent, `errPasswordArgument`), and `account
+  add` and `account authorize` say where the mailbox's sync stands, as the daemon answered it
+  (`mailboxSyncNote`: held, paused, on, else off until `account sync ID on`).
 - `internal/app` — the daemon's assembly (`app.Run`), which `serve` calls and another binary may
   too; `Options.Extensions` mounts routes before the console's catch-all, refused at start if one
   names a host, duplicates or would take a request from a core route. An extension signs people in
@@ -52,7 +57,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   key holds on a team's mailbox are `not_authorized` (`errTeamKeys`), and no key reaches a team's
   mailbox (one a database still holds included: listed nowhere, refused by name), while listing a
   team's keys, revoking them and taking away stay. `Options.SyncPauseOffered` (set by `serve`, for
-  the open edition; another binary sets it only once its sync text says what a pause does) offers
+  the operator's `account sync ID pause|resume`; another binary sets it only once its sync text
+  says what a pause does) offers
   a person's pause of one mailbox's sync: left unset, the core refuses every such pause
   (`not_authorized`), never a recovery's pause nor a resume, so an edition offers it by opting in,
   never by forgetting to withhold it. `Options.NameFollowsIdentity` (never set by `serve`) names a
@@ -77,7 +83,13 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `serve`) refuses every issued key, at authentication and every re-check, while their records
   still apply, and reports each live one stopped (`withdrawn`). The hourly housekeeping, at start
   too, records the end of the issued keys that expired and deletes what is no longer kept of them
-  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`).
+  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`). At every start, a page or none, `--mcp-stdio`
+  included, the daemon warns of the mailboxes outside the operator workspace, which no instance
+  key reaches (`warnWorkspaceMailboxes`, `workspacemailboxes.go`: one line at warn with
+  `personal_live`, `personal_removed`, `team_live` and `team_removed`, and a hint naming the
+  README's "Moving from the open console"; counts only, never an address, a label or an id;
+  nothing when there are none, and never under `ExternalSignInOnly`; a count that fails is logged
+  and never stops the start).
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials (an own key's secret
@@ -173,6 +185,18 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   removed at or after the request's first second (recovered and removed again since), and
   `DismissNoticesFor` (a person's notices by journal id, at most `MaxNoticesDismissed`, an id they
   hold none of done); `PurgedIn` reads a deletion for good from a workspace's journal.
+  What a mailbox holds (`usage.go`, `Usage`): usage rule 1 (`RuleVersion`), logical and
+  deterministic, the same rows giving the same figure on every server and after every `VACUUM`:
+  per mailbox, every value of its `messages` rows still in their folder (a copy per folder), their
+  `parts`, its `folders` and its open `drafts` (`octet_length` for text and blobs, 8 for a
+  non-null number, 0 for `NULL`), in one statement; never the full-text index, any index's
+  overhead, the `bodies` cache, attachments, sends, the journals, notices, keys or grants; beside
+  it `ProviderBytes`, the `RFC822.SIZE` sum. The columns it counts are written out
+  (`usageTables`) and held to the schema by `TestTheUsageRuleCoversEveryColumnOfTheTablesItCounts`:
+  a migration that touches `messages`, `parts`, `folders` or `drafts` lists its columns there and
+  decides whether `RuleVersion` moves. `CountWorkspaceMailboxes` (`workspacemailboxes.go`) counts
+  the mailboxes outside the operator workspace, personal and team, live and removed, whatever their
+  state, for the start-up warning.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -310,8 +334,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   asked until its return (10 minutes, kept 10 more for its starter to read how it ended), at most
   `MaxLinksWaiting` (5) waiting per person, a new one replacing theirs for the same provider and
   workspace; it learns the address from the token endpoint's ID token (`identity.go`: audience,
-  issuer, Microsoft's tenant, times, Google's verification; no signature, as OIDC allows there;
-  every refusal `ErrNoAddress` naming only its check; nothing else of the token kept) once its
+  issuer, Microsoft's tenant, times, Google's verification, and a subject, `sub`, present, at most
+  255 bytes, visible ASCII; no signature, as OIDC allows there; every refusal `ErrNoAddress`
+  naming only its check; `identityOf` returns the `sub` and Microsoft's `tid`, lowercased, beside
+  the address, `linkIdentity`, for the trial codes, kept, logged and put in an error nowhere, and
+  printed, logged or encoded as `[link identity]`; `finishLink` keeps the address alone; nothing
+  else of the token kept) once its
   return took it (`taken_at`, read in the take's transaction, which waits for the writer
   `LinkTakeTimeout`, 5 s, at most: `ErrLinkBusy`, nothing taken; its finish bounded from then),
   refuses a mailbox the workspace holds, proves the grant, and creates the mailbox with its key and
@@ -467,7 +495,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   closed list for an act's refusal, read from the sentinel its `*Error` carries
   (`ErrActorInactive` and `ErrFreshUnconfirmed` are also what the freshness hook carries).
   `GrantRequest.From`: a grant change drawn from what someone held, refused (`conflict`) unless the
-  grant holds exactly that in the write.
+  grant holds exactly that in the write. `storage.go`: `GET /v1/me/storage` by usage rule 1
+  (`rule_version`, `bytes`, `provider_bytes`), the live mailboxes the caller reads and the removed
+  ones they list on the removed mailboxes' own paths (`removedToCount`: a personal workspace's
+  person, a team's active owners of an open team not withheld, the operator for the operator
+  workspace's), each `removed` until deleted for good; `database_bytes` the operator's alone. The
+  refusals of a tool's credential (`errToolNeedsKey`, `errKeyNotAgreed`) name no console.
 - `internal/api` — REST `/v1/...`, SSE and the long poll, each checking its caller again at
   `Service.AccessChanged`, and downloads checking before the first byte and between chunks, refused
   or cut off (never ended whole) once the caller may no longer read; the operator's hold of an
@@ -486,27 +519,34 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   standalone GET stream), opens a session the server ended again with the client's own `initialize`
   and subscriptions, never follows a redirect, and sends the key only to the endpoint. `Check` opens
   and closes a session with a key. See `docs/mcp.md`, "Connect a client".
-- `internal/webui` — serves the built console from `MAIL_WEB_DIR` (via `os.Root`), mounted last;
+- `internal/webui` — serves an edition's built page from `MAIL_WEB_DIR` (via `os.Root`), mounted
+  last (a self-hosted server sets none: the API only, `GET /` a 404);
   a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths; what an embedding binary adds
   to its page documents and beside them is `Pages` (`pages.go`, `NewWith`), which never weakens
   the page's own headers. It is also a transport for depguard.
-- `web/` — the console: Vue 3 + TS + Vite, with no router, Pinia or UI library. A Node project of
-  its own: `go.mod` ignores it, `make check` does not touch it. `web/src` is the **core** every
-  edition of the console shares, plus the **open edition** (`web/src/open`), which a self-hosted
-  server serves. Another edition (the hosted service's app, private) compiles `web/src` from
-  source; nothing under `web/src` imports from outside it, and the open console names nothing of
-  the hosted service (`web/test/editions.spec.ts`, `web/test/hosted.ts`). An edition may draw the
-  core's panels in a frame of its own (`useConsoleFrame`, `useAppLifecycle`, `AppOverlays`,
-  `.console-surface`, `requestWorkspace`): only `App.vue` holds the page still (`html.fixed-frame`),
-  and the open console is built on the same pieces. See `docs/console.md`, "Editions".
-- `deploy/` — the self-hosting packaging (`docs/self-hosting.md`): `Dockerfile` (Node builds the
-  open console, Go a static binary, both onto distroless `static-debian13:nonroot`; the build
-  context is the root, where `.dockerignore` is an allowlist), `compose.yaml` (read-only, no
+- `web/` — the console's **core**: Vue 3 + TS, with no router, Pinia or UI library, which an
+  edition compiles from source; it ships no edition, no entry and no page, and nothing here builds
+  or serves one (a self-hosted server has no web console, platform decision 0063; the open edition,
+  `web/src/open`, `main.ts`, `index.html` and `App.vue`, was deleted with the panels only it drew).
+  A Node project of its own: `go.mod` ignores it, `make check` does not touch it, `vitest.config.ts`
+  runs its specs, which run under an edition of their own (`web/test/edition.ts`: placeholder
+  texts under the daemon's default revisions, a test console on `ConsoleShell`), imported by
+  nothing under `web/src`. The edition (the hosted service's app, private) compiles `web/src`;
+  nothing under `web/src` imports from outside it, and nothing under `web/src` or `web/public`
+  names the hosted service (`web/test/editions.spec.ts`, `web/test/hosted.ts`). The core's
+  catalogs hold only the core's own words. An edition may draw the core's panels in a frame of its
+  own (`useConsoleFrame`, `useAppLifecycle`, `AppOverlays`, `.console-surface`,
+  `requestWorkspace`); a root of its own that wants the page held still calls `useFixedFrame`
+  (`html.fixed-frame`), which no file of the core does. See `docs/console.md`, "Editions".
+- `deploy/` — the self-hosting packaging (`docs/self-hosting.md`), API only: `Dockerfile` (Go
+  builds a static binary onto distroless `static-debian13:nonroot`, with no console and no
+  `MAIL_WEB_DIR`; the build context is the root, where `.dockerignore` is an allowlist of `go.mod`,
+  `go.sum`, `cmd/` and `internal/`), `compose.yaml` (`MAIL_WEB_DIR` kept empty, read-only, no
   capabilities, the port on loopback, a named volume, a fixed subnet whose gateway is the
   documented `MAIL_TRUSTED_PROXIES`) and example systemd units (`mailie.service`,
-  hardened; `mailie-backup.service` and its timer). Base images are pinned by digest: a Go or Node
-  bump (go.mod's toolchain, CI's `GO_VERSION`) moves the Dockerfile's stage with it. `make image`
-  builds `mailie:local`.
+  hardened, no `MAIL_WEB_DIR`; `mailie-backup.service` and its timer). Base images are pinned by
+  digest: a Go bump (go.mod's toolchain, CI's `GO_VERSION`) moves the Dockerfile's stage with it.
+  `make image` builds `mailie:local`.
 - `scripts/export-public.py` — `make public-source`: the public source as an allowlist of this
   checkout, without history: exactly what Git tracks there, refusing a file Git ignores or does not
   track yet, symlinks, environment files, local secrets and forbidden strings; the one local file it
@@ -522,15 +562,17 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
 ```sh
 cp .env.example .env            # fill MAIL_CREDENTIAL_KEY_HEX (openssl rand -hex 32)
 make build
-./bin/mailserver apikey create --bootstrap --scope admin --name cli   # no daemon, like user invite --bootstrap
+./bin/mailserver apikey create --bootstrap --scope admin --name cli   # no daemon, like every --bootstrap
 export MAIL_ADMIN_KEY=<the printed key>
 ./bin/mailserver serve          # 127.0.0.1:8080, MCP at /mcp, stdio with --mcp-stdio
 ```
 
-Console: `MAIL_PUBLIC_URL=http://localhost:5174` in `.env`,
-`./bin/mailserver user invite --bootstrap --role owner --email you@example.com` (with the daemon stopped), the
-daemon, and `make web-install && make web-dev`. Open the invite link with `localhost`, never
-`127.0.0.1`. Details, and registering the OAuth clients, in `README.md` and `docs/console.md`.
+Then, beside the daemon: `./bin/mailserver account add --email you@icloud.com --password -` (the
+password typed at a prompt, or piped), or `--email you@gmail.com` through the installed OAuth
+client (`--paste` without a browser on this machine), and `./bin/mailserver account sync ID on`:
+nothing is indexed before. There is no console to run: a self-hosted server has none. Details, and
+registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the REST reference is
+`docs/console.md`.
 
 ## How to test
 
@@ -540,14 +582,14 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
 - `make it` starts `it/compose.yml` (Dovecot 2.4.5, Mailpit) and runs `go test -tags integration`.
   It is the only place CONDSTORE, SPECIAL-USE and a real XOAUTH2 run; CI runs it, it is not
   optional.
-- Console: `make web-check` (typecheck, vitest, build), outside `make check`; CI runs it in a job of
-  its own on Node 24. The contract fixtures in `internal/api/testdata/contract/` are written by the
-  real handlers (`go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`) and
+- The console's core: `make web-check` (typecheck and vitest, no build), outside `make check`; CI
+  runs it in a job of its own on Node 24. The contract fixtures in
+  `internal/api/testdata/contract/` are written by the real handlers (`go test ./internal/api -run TestTheContractFixturesMatchTheHandlers -update`) and
   read by `web/test/contract.spec.ts`; never edit them by hand or create them from the web side.
 - `make public-source` exports the public snapshot; run it before a pull request.
 - `make image` builds the self-hosting image (Docker, outside `make check`); CI's `image` job builds
-  it through `deploy/compose.yaml`, starts it with a throwaway key and checks `/v1/healthz`, the
-  console and a clean stop.
+  it through `deploy/compose.yaml`, starts it with a throwaway key and checks `/v1/healthz`, a 404
+  under `/v1`, `POST /mcp`'s 401, `GET /`'s 404 (no console) and a clean stop.
 - Tests that connect to the in-process IMAP server (on `127.0.0.1`) turn `AllowPrivate` on, as the
   integration tier does; the ones that prove the private-host refusal leave it off.
 
@@ -783,12 +825,13 @@ daemon, and `make web-install && make web-dev`. Open the invite link with `local
   checked again right before the mail server is touched; a withdrawal of either writes its moment
   (`actions_consent_withdrawn_at`, `send_consent_withdrawn_at`, migration 0024) in the `UPDATE`
   that clears it and a grant clears that in its own, answered as `withdrawn_at`, never beside a
-  consent, so an edition may ask only someone who never answered (the open console asks again); a workspace key's are the key terms its
+  consent, so an edition may ask only someone who never answered, or ask again; a workspace key's are the key terms its
   creator agreed to (recorded on the key), with the key, its flag and its scope checked again
   instead, so no text says a person's own switch stops a key created since 0012. The revisions come
-  from
-  `MAIL_CONSENT_VERSION_*`, whose defaults are the open console's texts
-  (`web/src/open/versions.ts`). **A pause is not a consent.** A personal mailbox's person, a team
+  from `MAIL_CONSENT_VERSION_*`, whose defaults name the deleted open console's last texts (the git
+  history keeps them), pinned in Go alone (`internal/config/consent.go`, `consent_test.go`) and
+  named by the core's specs (`web/test/edition.ts`) and the contract fixtures; an operator mailbox
+  records none. **A pause is not a consent.** A personal mailbox's person, a team
   mailbox's owners and admins by their role (freshness `FreshTeamSync`), and the operator an
   operator mailbox's, pause one mailbox's sync (`POST …/sync/pause`; `sync_paused_at`,
   `sync_paused_by`, migration 0025) while its consent stands and nothing holds it, where the

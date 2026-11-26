@@ -5,23 +5,22 @@ Mailie is a mail server for your own tools: one Go binary that connects several 
 gives them a single **REST API** and an **MCP server**, so a script or an AI assistant can search,
 read, act on and send mail with a key you control.
 
-- **A local index, not a copy of your mail.** With your consent the server syncs each mailbox's
-  metadata (senders, recipients, subjects, dates, sizes, folders, flags) into SQLite, with
+- **A local index, not a copy of your mail.** Once you turn a mailbox's sync on, the server indexes
+  its metadata (senders, recipients, subjects, dates, sizes, folders, flags) into SQLite, with
   full-text search over subject, sender and recipients. Message bodies, attachments and originals
   are fetched from the mail server when someone asks for them and are never stored.
 - **New mail in real time.** IMAP IDLE feeds an event journal, served as Server-Sent Events, a
   long poll and the MCP tool `wait_for_new_mail`.
 - **Actions on the real mailbox.** Mark read or unread, star, archive, move and trash, on the mail
-  server itself, only when the mailbox's owner has allowed it. Nothing is ever deleted for good,
-  and reading a message never marks it as read.
+  server itself, with a key allowed to act. Nothing is ever deleted for good, and reading a message
+  never marks it as read.
 - **Sending.** Plain-text messages, replies and forwards with attachments, through each mailbox's
   own SMTP server. Every send needs an explicit `confirm: true`, an idempotency key is reserved
   before the server is dialed, and a send whose outcome is unknown is never retried.
 - **One service, two transports.** REST and MCP are thin adapters over the same service layer, so
   the same rules decide who sees what, whichever way a tool comes in.
-- **The server console.** A small web console where the people you invite connect their own
-  mailboxes, decide what the server may do with them, create API keys for their tools and see
-  what the index holds.
+- **Run from its command line.** No web screen: you add mailboxes, switch their sync and make keys
+  with `mailserver`, and your tools use REST and MCP with those keys.
 - **Small to run.** No cgo: one static binary, one SQLite file, one data directory.
 
 ## Status
@@ -32,18 +31,18 @@ may still change.
 | Works today | Not yet |
 |---|---|
 | Gmail, Microsoft 365 and Outlook.com (OAuth2), iCloud Mail, generic IMAP | Drafts kept on the server |
-| Sync with per-person consent, search, reading on demand | Search in message bodies |
+| Sync switched on per mailbox, search, reading on demand | Search in message bodies |
 | Read/unread, star, archive, move, trash, undo | Composing HTML |
 | Sending over REST, with attachments, replies and forwards | MCP tools that send |
 | MCP over Streamable HTTP and stdio, with read and action tools | OAuth for MCP clients (claude.ai web connectors) |
-| The server console, invitations, workspace API keys | Webhooks |
-| Encrypted database backups to S3 | |
+| The command line: mailboxes, sync, keys, backups | Webhooks |
+| Encrypted database backups to S3 | Replacing a mailbox's stored password |
 | A Docker image, Compose and a hardened systemd unit for self-hosting | |
 
 ## Quick start
 
-You need Go 1.27, and Node 24 to build the console, or only Docker for the image
-([`docs/self-hosting.md`](docs/self-hosting.md)). `make help` lists every target.
+You need Go 1.27, or only Docker for the image ([`docs/self-hosting.md`](docs/self-hosting.md)).
+`make help` lists every target.
 
 ```sh
 git clone https://github.com/thehappieco/mailie.git && cd mailie
@@ -56,87 +55,82 @@ make build                      # bin/mailserver
 start without it. **Keep a copy with your other secrets: losing it means authorizing every mailbox
 again.**
 
-### With the console
-
-Serve the built console from the daemon, at `http://localhost:8080`:
+Then an admin key for the command line, the daemon, and a mailbox:
 
 ```sh
-make web-install web-build      # the open console, into web/dist
-cat >> .env <<'EOF'
-MAIL_WEB_DIR=web/dist
-MAIL_PUBLIC_URL=http://localhost:8080
-EOF
-
-# The first person, invited as the owner who administers the server. Like every --bootstrap
-# command, it opens the database directly and refuses to run while the daemon is up.
-./bin/mailserver user invite --bootstrap --role owner --email you@example.com
-
-./bin/mailserver serve          # 127.0.0.1:8080
-```
-
-Open the invite link the command printed, using `localhost` (not `127.0.0.1`), choose a name and a
-password, and connect your mailboxes. iCloud and IMAP mailboxes need nothing more; Gmail and
-Microsoft need the OAuth clients [below](#mailboxes-and-providers). To develop the console instead,
-see [`docs/console.md`](docs/console.md#running-the-console-locally).
-
-### With an admin key and the command line
-
-```sh
+# Like every --bootstrap command, this opens the database directly and refuses to run while the
+# daemon is up.
 ./bin/mailserver apikey create --bootstrap --scope admin --name cli
 export MAIL_ADMIN_KEY=<the key it printed>
-./bin/mailserver serve &
+./bin/mailserver serve &        # 127.0.0.1:8080
 
-./bin/mailserver account add --email you@icloud.com --password <app-specific password>
+# A password mailbox: the password is typed at a prompt that does not show it, or piped in.
+./bin/mailserver account add --email you@icloud.com --password -
+# A Gmail or Microsoft mailbox, through the installed OAuth client (below): opens the provider's page.
+./bin/mailserver account add --email you@gmail.com
+
 ./bin/mailserver account list
-./bin/mailserver account sync <account id> on      # a mailbox added this way syncs only when you say so
+./bin/mailserver account sync <account id> on       # nothing is indexed until you turn it on
+./bin/mailserver account sync <account id> status
 curl -H "Authorization: Bearer $MAIL_ADMIN_KEY" 'http://127.0.0.1:8080/v1/messages?q=invoice'
 ```
 
 The command-line tools are REST clients of the running daemon and authenticate with
-`MAIL_ADMIN_KEY`. `account add` for Gmail or Microsoft opens the provider's consent page (with
-`--paste` on a machine without a browser); this needs the OAuth clients below.
+`MAIL_ADMIN_KEY`. `account add` says where the new mailbox's sync stands, for instance
+``added you@icloud.com as acc_…; its sync is off until `mailserver account sync acc_… on` ``.
+
+`--password` takes only `-`: never the password itself, which `sudo`, `systemd-run` and shell
+history record. At a terminal the password is typed at a prompt that does not show it; otherwise
+it is the first line of standard input (`printf '%s\n' "$APP_PASSWORD" | mailserver account add
+--email you@icloud.com --password -`), with only its line ending taken off and nothing after it
+read, at most 4096 bytes. Any other value is refused before anything is sent. The daemon logs in
+once with the password before it stores it, so a wrong one is refused and stored nowhere.
+
+Give each tool a key of its own, with the scope it needs, rather than the admin key:
+`mailserver apikey create --scope read --name assistant [--accounts IDS]`. It calls the daemon's
+`/v1/apikeys` routes, which exist only with `MAIL_ADMIN_API=true` in the daemon's environment;
+without them, `apikey create --bootstrap` issues a key with the daemon stopped. A tool then speaks
+REST ([The API](#the-api)) or MCP ([MCP](#mcp)) with it.
 
 ## Mailboxes and providers
 
-The OAuth registrations identify **your server**, not a mailbox: one registration serves every
-account of that provider, and each person consents for their own mailbox in the browser.
+The command line links Gmail and Microsoft mailboxes through **installed OAuth clients** you
+register yourself (`MAIL_GOOGLE_CLIENT_ID`, `MAIL_MICROSOFT_CLIENT_ID`); they are the only way to
+link them on a self-hosted server. A registration identifies **your server**, not a mailbox: one
+serves every account of its provider, and whoever owns a mailbox consents for it in a browser.
 
-There are two kinds of client, and a server can have both; each account remembers which one
-issued its grant and always refreshes with it:
+- For each authorization the daemon opens a listener on its own loopback, and the provider sends
+  the browser back there (`http://127.0.0.1:<port>` for Google, `http://localhost:<port>` for
+  Microsoft). `account add` opens that browser: it must run on the daemon's machine.
+- On a server, `account add --paste` prints the provider's address instead: open it in a browser
+  anywhere, consent, and paste back the address the browser ends on, which looks like a connection
+  error. `account authorize ID [--paste]` does the same when a grant has to be renewed.
+- Each account remembers the client that issued its grant and always refreshes with it.
 
-- **Installed clients** (`MAIL_GOOGLE_CLIENT_ID`, `MAIL_MICROSOFT_CLIENT_ID`) redirect to a
-  listener the daemon opens on loopback for each authorization (`http://127.0.0.1:<port>` for
-  Google, `http://localhost:<port>` for Microsoft). The command line uses them, and so does a
-  console whose `MAIL_PUBLIC_URL` is on `localhost`: the browser must be on the daemon's machine.
-- **Web clients** (`MAIL_GOOGLE_WEB_CLIENT_ID`/`_SECRET`, `MAIL_MICROSOFT_WEB_CLIENT_ID`/`_SECRET`)
-  redirect to `<MAIL_PUBLIC_URL>/oauth/return`. A console reached from anywhere else needs them;
-  a console that is not on loopback is never offered the loopback flow.
+The daemon also takes **web clients** (`MAIL_GOOGLE_WEB_CLIENT_ID`/`_SECRET`,
+`MAIL_MICROSOFT_WEB_CLIENT_ID`/`_SECRET`), which redirect to `<MAIL_PUBLIC_URL>/oauth/return`, a
+page of a web console. A self-hosted server needs none: they serve an edition that has a web page,
+and the mailboxes an older release's console linked through them, which refresh only with them
+until they are linked again ([Moving from the open console](#moving-from-the-open-console)).
 
 ### Google
 
 1. In the [Google Cloud Console](https://console.cloud.google.com/), create a project and
    configure the **OAuth consent screen** (type *External*).
 2. Under **Data access**, add the scope `https://mail.google.com/`, the one IMAP and SMTP accept,
-   which Google lists as *restricted*, and the sign-in scopes `openid` and
-   `https://www.googleapis.com/auth/userinfo.email` (*non-sensitive*). The console's web flow asks
-   for the last two only when it links a mailbox at Google: the person chooses the account on
-   Google's page, and Google tells the daemon its address. Re-authorizing a mailbox, and the
-   command line, ask for the mail scope alone.
+   which Google lists as *restricted*. The command line asks for it alone.
 3. Set the publishing status to **In production**, even unverified. In *Testing*, every refresh
-   token expires after 7 days. An unverified app shows Google's "unverified app" screen and is
-   limited to 100 users over the project's life, which is plenty for yourself and your team.
-4. **Credentials → Create credentials → OAuth client ID:**
-   - **Desktop app** for the installed client. There is no redirect to register: Google accepts
-     the loopback address. Put the id (and the secret Google shows, which protects nothing for a
-     desktop client) in `MAIL_GOOGLE_CLIENT_ID` and `MAIL_GOOGLE_CLIENT_SECRET`.
-   - **Web application** for the console. Authorized redirect URI: exactly
-     `<MAIL_PUBLIC_URL>/oauth/return`, port included (for example
-     `http://localhost:8080/oauth/return`, or `https://mail.example.org/oauth/return`). No
-     JavaScript origins: the daemon exchanges the code, never the browser. Put the id and secret
-     in `MAIL_GOOGLE_WEB_CLIENT_ID` and `MAIL_GOOGLE_WEB_CLIENT_SECRET`.
+   token expires after 7 days, so every Gmail mailbox would need authorizing again each week. An
+   unverified app shows Google's "unverified app" screen and is limited to 100 users over the
+   project's life, which is plenty for yourself and your team; going past that takes Google's
+   verification of the restricted scope.
+4. **Credentials → Create credentials → OAuth client ID → Desktop app.** There is no redirect to
+   register: Google accepts the loopback address. Put the id (and the secret Google shows, which
+   protects nothing for a desktop client) in `MAIL_GOOGLE_CLIENT_ID` and
+   `MAIL_GOOGLE_CLIENT_SECRET`.
 
 Google allows 15 simultaneous IMAP connections per account across all of its clients (Mailie uses
-at most three), and changing the account's password revokes the refresh token.
+at most three per mailbox), and changing the account's password revokes the refresh token.
 
 ### Microsoft 365 and Outlook.com
 
@@ -146,23 +140,10 @@ at most three), and changing the account's password revokes the refresh token.
 2. **API permissions → Add → APIs my organization uses → Office 365 Exchange Online → Delegated**:
    `IMAP.AccessAsUser.All` and `SMTP.Send`. If the tenant restricts user consent, an administrator
    grants them. The daemon also asks for `offline_access`.
-3. The installed client: **Authentication → Add a platform → Mobile and desktop applications**,
-   redirect `http://localhost` (Entra ignores the port; `127.0.0.1` and `[::1]` are not accepted),
-   and **Allow public client flows: Yes**. No secret. Its id goes in `MAIL_MICROSOFT_CLIENT_ID`.
-4. The web client, as a **separate registration**: **Add a platform → Web**, redirect
-   `<MAIL_PUBLIC_URL>/oauth/return` (for local use `http://localhost/oauth/return`, which covers
-   any port), **Allow public client flows: No**, and a client secret under **Certificates &
-   secrets**. Never `/oauth/callback`, the loopback path. Id and secret go in
-   `MAIL_MICROSOFT_WEB_CLIENT_ID` and `MAIL_MICROSOFT_WEB_CLIENT_SECRET`. Note the secret's expiry
-   date: an expired secret makes every refresh fail with `invalid_client`, which the daemon reports
-   as a configuration error, not as a revoked grant. Under its **API permissions**, add **Microsoft
-   Graph → Delegated → OpenId permissions** `openid` and `email`: the console asks for them when it
-   links a mailbox at Microsoft, so that Microsoft names the account chosen on its page.
-   Re-authorizing asks for the mail permissions alone. A tenant whose administrator consented to
-   the web registration before these two were added consents again (**Enterprise applications →
-   the app → Permissions → Grant admin consent**); until then its people connect by entering the
-   mailbox's address, which asks only for what was consented. A shared mailbox is always connected
-   that way.
+3. **Authentication → Add a platform → Mobile and desktop applications**, redirect
+   `http://localhost` (Entra ignores the port; `127.0.0.1` and `[::1]` are not accepted), and
+   **Allow public client flows: Yes**. A public client has no secret. Its id goes in
+   `MAIL_MICROSOFT_CLIENT_ID`.
 
 Microsoft refuses passwords for IMAP, so Microsoft mailboxes connect with OAuth only. In a work
 tenant, each mailbox needs IMAP and, for sending, SMTP AUTH enabled:
@@ -175,7 +156,7 @@ Security defaults and Conditional Access must allow IMAP and SMTP with modern au
 personal Outlook.com account that answers `BAD User is authenticated but not connected` needs
 "Let devices and apps use IMAP" turned on in its settings. The device-code flow
 (`account add --device`, `MAIL_MICROSOFT_DEVICE_CODE=true`) exists for machines without a browser,
-but Entra security defaults block it.
+but Entra security defaults block it: `--paste` is the way on a server.
 
 ### iCloud Mail and other IMAP servers
 
@@ -185,82 +166,115 @@ App-Specific Passwords); the daemon knows Apple's servers. A custom iCloud+ doma
 account's `@icloud.com` address as the user name:
 
 ```sh
-mailserver account add --email you@icloud.com --password <app-specific password>
+mailserver account add --email you@icloud.com --password -
 mailserver account add --email you@yourdomain.com --provider icloud \
-  --login-user you@icloud.com --password <app-specific password>
+  --login-user you@icloud.com --password -
 ```
 
 Any other IMAP server takes its own host, port and password (`--imap-host`, `--smtp-host`,
 `--smtp-tls`, …). Every password account logs in once before it is saved. IMAP and SMTP always
 use TLS. A host that resolves to a loopback, private, link-local or CGNAT address is refused when
-the daemon dials it unless `MAIL_ACCOUNT_ALLOW_PRIVATE=true`, so a host typed into the console
-cannot reach your internal network.
+the daemon dials it unless `MAIL_ACCOUNT_ALLOW_PRIVATE=true`, so a host someone names cannot reach
+your internal network. No route replaces a stored password yet: when an app-specific password
+changes, remove the mailbox, delete it for good and add it again.
 
-## The console
+## The operator's mailboxes
 
-The console is a static build (`web/`, Vue 3) that the daemon serves on the same origin as the API
-when `MAIL_WEB_DIR` points at it. Each person signs in to their own account and has four sections:
-**Mailboxes** (connect, authorize, follow sync), **API keys & MCP**, **Storage** (what their
-mailboxes take up in the index) and **Account** (name, password, sessions, and the permissions for
-sync and for actions). There is no mail to read or write in it: a tool does that, with a key.
+The mailboxes the command line adds belong to the **operator workspace**, which only instance keys
+reach. As the operator, with `MAIL_ADMIN_KEY`:
 
-- Sessions are bearer tokens, never cookies, valid for 14 days.
-- The server never receives a password. The browser derives an auth key from it, which the server
-  keeps as a hash, and keeps each person's **account key**, a key pair it made, under the password
-  and under a recovery code shown once at sign-up; the server holds the public half and the wraps it
-  cannot open. Signing in, changing the password and recovering it are the key scheme's ceremonies
-  ([`docs/key-scheme.md`](docs/key-scheme.md)); replacing the recovery code, like changing the
-  password, needs the password proved in the same request, never a session alone. The account
-  keys protect no mail yet: the index stays in clear on the server, as before
-  ([`docs/key-scheme-threat-model.md`](docs/key-scheme-threat-model.md)).
-- People are invited (`mailserver user invite --email X [--role owner|member]`), never sign up on
-  their own. Each person has a personal workspace for their own mailboxes, and may belong to
-  **teams**, whose mailboxes are the team's and are shared through per-mailbox grants (`read`,
-  `act`, `send`); a team's owners and admins manage every mailbox of the team by their role, decide
-  who holds what, and read nothing by being one. A mailbox you neither hold a grant on nor manage
-  does not exist for you. The instance `owner` invites people to the server and closes their
-  accounts, and sees no mailbox by being one; the mailboxes the command line creates belong to the
-  operator workspace, which only instance keys reach. See [`docs/workspaces.md`](docs/workspaces.md).
-- Nothing from a person's mailboxes is stored until they turn sync on in the console, and turning
-  it off deletes their index; a team's mailbox syncs once an owner or an admin turns it on for the
-  team, and turning it off deletes its index for everyone. As the operator,
-  `mailserver account sync ID off` turns any mailbox's sync off and deletes its index, telling
-  whoever read it ([`docs/workspaces.md`](docs/workspaces.md#consents)). Actions on messages are a
-  second, separate permission.
-- Removing a mailbox keeps it 30 days, used by nothing, and then deletes it for good with its
-  index; within them its workspace's owners (a team's owners, never its admins) recover it, its sync
-  paused until someone who may turns it on, or delete it for good sooner, and everyone else who read
-  it is told in the console. A link that never connected is deleted at once. As the operator,
-  `mailserver account purge ID` deletes any removed mailbox for good
+- `mailserver account list` lists them with their state; `account rename ID NAME` names one,
+  `account folders ID` lists its folders, and `account authorize ID` renews a grant that ended.
+- **Sync.** Nothing of a mailbox is stored until `mailserver account sync ID on`. Its first pass
+  reaches 90 days back (`account add --initial-days N` reaches further, a negative number
+  everything), and new mail follows. `account sync ID status` says how far it got and `now` asks
+  for a pass; `pause` keeps the index, read and searched, while nothing new is indexed, until
+  `resume`; `off` deletes the index.
+- **Removing.** `mailserver account remove ID` keeps a mailbox 30 days, used by nothing, and then
+  deletes it for good with its index; within them `account recover ID` brings it back, its sync
+  paused until `account sync ID resume`, and `account purge ID` deletes it for good sooner. A
+  link that never connected is deleted at once. `account removed` lists the removed ones
   ([`docs/workspaces.md`](docs/workspaces.md#removed-mailboxes)).
-- `mailserver user disable --email X` ends a person's sessions and revokes the API keys they
-  created; `mailserver user delete --email X` deletes them with the mailboxes of their personal
-  workspace, credentials, index, sessions, keys and personal workspace, and every team they were
-  the only member of; the mailboxes of a team others are in stay the team's. Either refuses, without
-  `--force`, someone their teams depend on: a team's last owner, the last person who can read one
-  of its mailboxes (a removed one, kept for a recovery, until it is deleted for good), or the
-  linker whose own consent a team mailbox someone else reads still syncs under since the upgrade.
-- Teams from the command line, as the operator: `mailserver workspace list|create|rename|close|reopen`,
-  `mailserver member list|role|remove`, `mailserver access list|grant|revoke` (the operator grants
-  `manage` to members only), and `mailserver user invite --email X --workspace ID [--role owner|admin|member]`
-  for a team invite.
-- A forgotten password is recovered with the recovery code, which stops every API key the person
-  created. A person who lost both gets a **reset invitation** from the operator, with the daemon
-  stopped: `mailserver user password --bootstrap --email X` prints a single-use link with which
-  they choose a new password and get a new account key; their sessions end, the API keys they
-  created stop and what was granted to the old key goes. It refuses, without `--force`,
-  the last person who can read a team mailbox, a removed one included until it is deleted for
-  good. No route sets or resets a password. It is also the
-  way back for a person who signed up before the key scheme and never signed in on the release that
-  brought it ([`docs/self-hosting.md`](docs/self-hosting.md#upgrades)).
+- **What they hold.** `GET /v1/me/storage` says what each mailbox holds in the database, by a
+  versioned rule (`rule_version`), its removed ones included until they are deleted for good, and
+  to the operator the database's own size ([`docs/console.md`](docs/console.md#storage)).
 
-[`docs/console.md`](docs/console.md) covers the console, its REST API, consent, events and the
-OAuth flows in detail.
+The daemon also keeps people, personal workspaces and teams, which the people commands (`user`,
+`workspace`, `member`, `access`) administer: a database made through the open console of earlier
+releases holds them ([Moving from the open console](#moving-from-the-open-console)). Nobody signs
+in to a self-hosted server: it has no web screen.
+
+## Moving from the open console
+
+Earlier releases served a web console where the people you invited signed in and linked their own
+mailboxes, into their personal workspace or a team. A mailbox belongs to the workspace it was
+linked into and never changes workspace, so an instance key does not reach those mailboxes. At
+every start, while the database holds any, the daemon logs one warning with their counts, never an
+address or an id:
+
+```
+time=… level=WARN msg="mailboxes outside the operator workspace, in personal or team workspaces: no instance key reaches them" personal_live=2 personal_removed=0 team_live=1 team_removed=1 hint="to reach them with an instance key, link each address again into the operator workspace: see \"Moving from the open console\" in the README"
+```
+
+`personal_removed` and `team_removed` count the removed mailboxes, kept until they are deleted for
+good. A daemon that cannot count them says so at warn and starts anyway.
+
+To move them, link each address again into the operator workspace, and only then delete the
+people:
+
+1. **Make an instance key**, if you have none: `mailserver apikey create --bootstrap --scope admin
+   --name cli` with the daemon stopped, then `export MAIL_ADMIN_KEY=<the key>`.
+2. **Link each address again** into the operator workspace with `mailserver account add --email
+   ADDRESS` (Gmail and Microsoft through the installed clients [above](#mailboxes-and-providers),
+   iCloud and IMAP with `--password -`), turn its sync on with `mailserver account sync ID on`, and
+   check that it syncs (`account sync ID status`, `account list`). An address is linked at most
+   once per workspace, so the new mailbox lives beside the old one, in another workspace.
+   `mailserver workspace list`, `member list --workspace ID` and `access list --workspace ID` name
+   the workspaces, their people and their mailboxes. While both exist, a Gmail account holds up to
+   six of its 15 connections.
+3. **Only then delete the people**, members before owners, each with
+   `mailserver user delete --email - --force` and the address on standard input
+   (`printf '%s\n' ADDRESS | mailserver user delete --email - --force`). It runs through the daemon
+   with `MAIL_ADMIN_KEY` (an instance key with the admin scope, restricted to no mailbox), or with
+   `--bootstrap` while the daemon is stopped. Each deletion removes, for good and at once, the
+   person, the mailboxes of their personal workspace (live and removed) with their credentials and
+   index, their sessions, keys and invitations, and every team they were the only member of, with
+   that team's mailboxes; a team others are still in keeps its mailboxes until its last member
+   goes. `--force` overrides the refusals that protect whoever remains: the server's last active
+   owner, a team's last active owner, the last person who can read a team mailbox (a removed one
+   kept for recovery included), and the person whose own consent a team mailbox still syncs under
+   since the upgrade that gave teams their mailboxes (that sync stops, and its index is deleted).
+   Linking first matters for Google: deleting a Gmail mailbox for good revokes its grant at
+   Google, which Google keeps one of per account and Cloud project, and the daemon skips that while
+   another mailbox here holds the same account.
+4. **Check that the start-up warning is gone**: restart the daemon and look for the line. It goes
+   once no personal or team mailbox is left, live or removed: deleting their people deletes theirs,
+   and `account purge ID` deletes any removed mailbox for good (`account removed --workspace ID`
+   lists a workspace's). Then the web client's variables, `MAIL_PUBLIC_URL` and `MAIL_WEB_DIR` can
+   leave the environment, with the old console's files.
+
+A re-link keeps the mail, which the provider holds, and loses everything Mailie held about the
+mailbox:
+
+- the index older than the new first sync, 90 days back unless `--initial-days` says otherwise;
+- every message, folder and event id, and every cursor a client holds (an event stream's, a
+  search's next page);
+- who held what on it: grants and flags, its mailbox key and the grants sealed of it, and what
+  every API key held on it, keys an issuer made included;
+- the notices about it and its entries in the mailbox journal;
+- its send records, with their idempotency keys;
+- its name, and a team's agreement to sync it and its pause.
+
+The same way moves a mailbox between a self-hosted server and the hosted service: link it on the
+other side, check that it syncs, then remove it where it was. Nothing of the index moves, only the
+mail the provider keeps. A mailbox removed on one side keeps its address taken in its workspace
+there for 30 days, so linking it back within them needs a recovery or deleting it for good first,
+and each server that links a Gmail account holds up to three of its 15 connections.
 
 ## The API
 
-Every route is under `/v1` and takes `Authorization: Bearer <key or session>`. Errors are
-`{"code", "message"}` with one of seven codes. A few examples:
+Every route is under `/v1` and takes `Authorization: Bearer <key>`. Errors are `{"code",
+"message"}` with one of seven codes. A few examples:
 
 ```sh
 H="Authorization: Bearer $KEY"
@@ -273,13 +287,16 @@ curl -H "$H" -H 'Idempotency-Key: 7d1c0e1a' localhost:8080/v1/messages/send \
   --form-string 'compose={"account_id":"acc_…","to":[{"email":"bea@example.org"}],"subject":"Hello","text":"Hi Bea","confirm":true}'
 ```
 
+[`docs/console.md`](docs/console.md) is the REST reference: every route, its JSON, consent,
+events, storage and the OAuth flows.
+
 ### Keys and scopes
 
 | Scope | Allows |
 |---|---|
 | `read` | listing, searching, reading bodies, downloading attachments and originals, waiting for new mail. It never marks anything as read. |
-| `write` | the above, plus flags, moves, archive and trash. A person acts only with `act` on the mailbox, signed in, after allowing actions in the console themselves; a workspace key only with `act` on it, under the key terms its creator agreed to. |
-| `send` | the above, plus sending. A person sends only with `send` on the mailbox, signed in, after allowing sending, under their own name; a workspace key only with `send` on it, under the address alone, unless the server says keys may not send (`MAIL_KEYS_MAY_SEND=false`). Every send needs `confirm: true`. |
+| `write` | the above, plus flags, moves, archive and trash. A workspace key acts only with `act` on the mailbox, under the key terms its creator agreed to. |
+| `send` | the above, plus sending. A workspace key sends only with `send` on the mailbox, under the address alone, unless the server says keys may not send (`MAIL_KEYS_MAY_SEND=false`). Every send needs `confirm: true`. |
 | `admin` | the above, plus mailboxes, keys and people. |
 
 There are two kinds of key:
@@ -287,20 +304,18 @@ There are two kinds of key:
 - **Instance keys**, for the operator: `mailserver apikey create --scope SCOPE --name NAME
   [--accounts IDS] [--days N]`, at most a year, optionally restricted to some of the operator
   workspace's mailboxes. Over REST and MCP alike they reach only those, the operator workspace's,
-  never a person's.
+  never a person's or a team's.
 
   `apikey create`, `apikey list` and `apikey revoke PREFIX` call the daemon's `/v1/apikeys` routes,
   which exist only while it runs with `MAIL_ADMIN_API=true` (off by default; otherwise the daemon
   answers 404). Without them, `apikey create --bootstrap` issues a key straight into the database,
   with the daemon stopped, as for the first key above; listing and revoking need the routes.
-- **Workspace keys**, which an owner or an admin of a workspace creates in the console (in a
-  personal workspace, its person): `read`, `write` or `send`, for 30, 90 or 365 days, at most 20
-  alive per workspace. A key belongs to its workspace and acts as nobody: it reaches exactly the
-  mailboxes it was given, each with `read`, `act` or `send` — `read` only from someone who reads
-  that mailbox — and keeps them whoever gave them, until an owner or an admin takes them out or
-  revokes it. Every owner and admin of the workspace sees every key and may revoke it; it also
-  stops when the person who created it leaves the workspace or is closed. Members create none. See
-  [`docs/workspaces.md`](docs/workspaces.md#api-keys).
+- **Workspace keys** belong to a person's or a team's workspace, and reach exactly the mailboxes of
+  it they were given, each with `read`, `act` or `send`: `read`, `write` or `send`, for 30, 90 or
+  365 days, at most 20 alive per workspace. Its owners and admins create them signed in, which a
+  self-hosted server, with no web screen, no longer offers; a database from the open console keeps
+  the ones it holds until they expire or are revoked (`mailserver apikey revoke PREFIX` revokes any
+  key). See [`docs/workspaces.md`](docs/workspaces.md#api-keys).
 
 Keys are stored only as Argon2id hashes and shown once. Revoked keys stay listed, because they
 answer "what could have read this mailbox". An instance key restricted to mailboxes that have all
@@ -312,8 +327,8 @@ mailbox reaches nothing.
 The daemon is an MCP server: Streamable HTTP at `/mcp` and stdio. Tools to read (`list_accounts`,
 `list_folders`, `search_messages`, `get_message`, `get_attachment`, `wait_for_new_mail`) and to act
 (`mark_read`, `flag_message`, `move_message`, `trash_message`), and `mail://` resources. MCP takes
-API keys only, never a console session; an owner or an admin of a workspace creates one in the
-console.
+API keys only, never a sign-in session's token: on a self-hosted server, an instance key from
+`mailserver apikey create`, which `--accounts` restricts to the mailboxes the tool may use.
 
 Connecting a client, from the machine it runs on (the same binary, which needs nothing of the
 daemon's there):
@@ -342,13 +357,14 @@ taking a key back, limits and what is logged — is in [`docs/mcp.md`](docs/mcp.
 
 [`docs/self-hosting.md`](docs/self-hosting.md) takes a server from a checkout to running: with
 Docker Compose, Docker or a hardened systemd unit ([`deploy/`](deploy)), behind Caddy or nginx,
-with the first owner, OAuth clients, backups, upgrades and a forgotten password. In short:
+with the first key, OAuth clients, backups and upgrades. In short:
 
 - The daemon listens on `127.0.0.1:8080` and speaks plain HTTP. To reach it from elsewhere, put a
   reverse proxy that terminates TLS in front, set `MAIL_TRUSTED_PROXIES` to the proxy's address
-  (otherwise every client shares one rate limit), `MAIL_PUBLIC_URL` to the public `https://`
-  origin, and `MAIL_ENV=prod`. Turn response buffering off for `/v1/events` and `/mcp`, which
-  stream.
+  (otherwise every client shares one rate limit) and `MAIL_ENV=prod`. Turn response buffering off
+  for `/v1/events` and `/mcp`, which stream.
+- With `MAIL_WEB_DIR` empty, as the image and the systemd unit leave it, it serves the API only:
+  REST, MCP and `/metrics`, and `GET /` answers 404.
 - `/metrics` (Prometheus) is served on the main listener unless `MAIL_METRICS_ADDR` gives it one
   of its own; keep it off the public proxy.
 - One daemon per data directory: a lock refuses a second one. `mailserver migrate` applies schema
@@ -377,22 +393,21 @@ optional, and designed so that the host can create backups but never read or del
 
 - **What the server holds.** One OAuth refresh token or password per mailbox, encrypted with
   AES-256-GCM under `MAIL_CREDENTIAL_KEY_HEX` and bound to its account and field, and the send-hash
-  root, sealed the same way; the index of
-  metadata of synced mailboxes; Argon2id hashes of passwords and keys; SHA-256 hashes of session
-  tokens. Message bodies and attachments are never stored: while one is being served it sits in a
-  `0600` temporary file that is removed when the response ends.
+  root, sealed the same way; the index of metadata of synced mailboxes; Argon2id hashes of keys;
+  SHA-256 hashes of session tokens. Message bodies and attachments are never stored: while one is
+  being served it sits in a `0600` temporary file that is removed when the response ends.
 - **Who can read it.** Whoever has both the database and `MAIL_CREDENTIAL_KEY_HEX` can reach the
   mailboxes; whoever runs the server can read the index. The key lives in the environment, which
   protects copies and backups of the database, not against code running as the daemon's user. On
   EC2 an AWS KMS key can seal the credentials instead (`MAIL_CREDENTIAL_KMS_KEY_ARN`, a data key
   per credential): no key is then in the environment, and every unwrapping is a call KMS's policy
   allows and CloudTrail records ([`docs/self-hosting.md`](docs/self-hosting.md#credentials-under-aws-kms)).
-- **Who sees what.** For other people, owners included, a person's mailbox does not exist: it is
-  `not_found`, never `forbidden`. Instance keys belong to the operator: over REST they see every
-  mailbox but never change a person's messages or send from a person's mailbox, and over MCP they
-  reach only the mailboxes nobody owns. Changing a person's mailbox or sending from it needs that
-  person's own consent, checked again before every command that changes the mailbox and before
-  every connection to the submission server.
+- **Who sees what.** Instance keys belong to the operator and reach only the operator workspace's
+  mailboxes (with `--accounts`, only some of them), over REST and MCP alike. A mailbox of a
+  person's or a team's workspace is `not_found` to them, never `forbidden`, and so it is to
+  everyone who holds nothing on it. Acting needs the `write` scope and sending the `send` scope,
+  every send with `confirm: true`, and who may is asked again before every command that changes
+  the mailbox and before every connection to the submission server.
 - **No local exception.** A process on the same machine still needs a key. Rate limits apply per
   address and to failed attempts per key prefix; failures never lock out a whole address.
 - **Logs** carry ids, never subjects, addresses, bodies, tokens or passwords.
@@ -401,9 +416,10 @@ Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
 
 ## Editions
 
-This repository is the **self-hosted edition**: the server, the command line and the server
-console, under Apache-2.0. Running it needs no account or subscription, and it talks to nobody but
-your mail providers (and AWS, if you configure backups).
+This repository is the **self-hosted edition**, under Apache-2.0: the server and its command line,
+used through REST and MCP, with no web screen; and, in [`web/`](web), the core of a web console
+that an edition with a web page compiles. Running it needs no account or subscription, and it
+talks to nobody but your mail providers (and AWS, if you configure backups).
 
 The Happie Co also runs a **hosted Mailie** at [mailie.thehappie.co](https://mailie.thehappie.co),
 built on this server. Its web app, which adds reading and writing mail in the browser, and its
@@ -414,9 +430,9 @@ operations live in a private repository.
 ```sh
 make check          # gofmt, vet, layout and the unit tests with -race; offline, no Node
 make it             # the integration tier: Dovecot and Mailpit in Docker
-make web-check      # the console: typecheck, tests and build (needs Node)
+make web-check      # the console's core: typecheck and tests (needs Node)
 make public-source  # the public source snapshot, as it is published
-make image         # the self-hosting image, mailie:local (Docker)
+make image          # the self-hosting image, mailie:local (Docker)
 ```
 
 [`docs/architecture.md`](docs/architecture.md) explains the layout and the rules that keep mail

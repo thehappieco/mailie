@@ -25,7 +25,8 @@ earlier contributions under MIT), storage on modernc.org/sqlite
 (BSD-3-Clause), which embeds SQLite (public domain), backups and the
 credentials under AWS KMS on the AWS SDK for Go v2 (Apache-2.0), and the
 envelope of those credentials on The Happie Co kit (Apache-2.0). The
-console's build bundles Vue (MIT).
+console's core in web/ is written for Vue (MIT), which an edition's build
+bundles; this repository builds none.
 
 The following Apache-2.0 dependencies are compiled into the binary and carry
 NOTICE files, reproduced here as section 4(d) of their licence asks:

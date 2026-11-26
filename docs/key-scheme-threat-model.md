@@ -540,9 +540,9 @@ account key is not its recipient's now refused),
 `internal/auth/grants_test.go` (a disable and a reset take every grant and keep the flags),
 `internal/api/mailboxkeys_test.go` (the routes, no route taking a private key) and
 `internal/mcp/mailboxkey_test.go` (a key sees none of it); the console's half in
-`web/test/mailboxKeys.spec.ts`, `web/test/mailboxKeys.page.spec.ts` and `web/test/accounts.spec.ts`
-(every grant it seals opens for its recipient to the mailbox's key and for nobody else, sealed to
-the recipient as the server serves them just before, never as a page listed them before their
+`web/test/mailboxKeys.spec.ts` and `web/test/accounts.spec.ts` (every grant it seals opens for its
+recipient to the mailbox's key and for nobody else, sealed to the recipient as the server serves
+them just before, never as a page listed them before their
 reset, one that opens to a key the sealer chose is refused, a recipient key of low order is
 refused, a mailbox private key is zeroed once sealed, every write waits for a fresh step-up, giving
 "read" with a grant and handing the key over ask for it only in a browser that holds the person's

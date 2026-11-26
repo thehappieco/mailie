@@ -1,31 +1,35 @@
-# The server console and its API
+# The REST API and the console's core
 
-The console is where a person signs in to **their** account on a Mailie server and connects their
-own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their personal
-workspace or in a team. The open console (`web/`) has five sections: **Mailboxes**, **Members**
-(the people of the team shown, or making a team), **API keys & MCP** (the keys of the workspace
-shown, for its owners and admins, and how to connect a tool over MCP), **Storage** and **Account**
-(name, password, sessions, what they allow the server to do, sync and actions, and the API keys
-they created). No mail is read or written there; a tool does that, with a key.
+This document is Mailie's REST API, the one the command line, every script and tool, and a web
+console use, and the core of a web console (`web/src`) that an edition with a web page compiles.
+A self-hosted server has no web console: it is run from its command line and used through REST and
+MCP with keys ([README](../README.md)). The open console that earlier releases served was deleted
+(its edition, `web/src/open`, and the panels only it drew); the core it was built on stays, for an
+edition of its own, such as the hosted service's app. Where this document says "the console", it
+means such an edition's page, built on the core, where a person signs in to **their** account and
+connects their own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their
+personal workspace or in a team.
 
-This document is the console's architecture and the REST API it uses, which is the same API the
-command line and any other client use. The MCP server is in [`mcp.md`](mcp.md), backups in
-[`backup.md`](backup.md), and how to register the OAuth clients in the
-[README](../README.md#mailboxes-and-providers).
+The MCP server is in [`mcp.md`](mcp.md), backups in [`backup.md`](backup.md), and how to register
+the OAuth clients in the [README](../README.md#mailboxes-and-providers).
 
 ## How it is served
 
 ```
-browser ──► <MAIL_PUBLIC_URL> ──► mailserver
-            /              → internal/webui (files of MAIL_WEB_DIR, a single-page app)
+client ──► mailserver
             /v1/...        → internal/api   (REST)
             /mcp           → internal/mcp   (unless MAIL_MCP_HTTP=false)
-            /oauth/return  → the single-page app (a console route, not a server one)
+            /              → internal/webui (an edition's build in MAIL_WEB_DIR), or 404 without one
+            /oauth/return  → that edition's page (a page route, not a server one)
 ```
 
-- **One origin.** The console and the API are served by the same process on the same origin: no
-  CORS, no cookie, and the CSP can say `connect-src 'self'`. In development Vite
-  (`localhost:5174`) proxies `/v1` and `/mcp` to the daemon (`127.0.0.1:8080`) for the same effect.
+- **API only, on a self-hosted server.** `MAIL_WEB_DIR` is empty there (the image, `compose.yaml`
+  and the systemd unit leave it so): the daemon answers REST and MCP, and `GET /` and every other
+  path outside them `404`.
+- **One origin**, for an edition's page. The page and the API are served by the same process on
+  the same origin (`MAIL_PUBLIC_URL`): no CORS, no cookie, and the CSP can say `connect-src
+  'self'`. An edition's development server proxies `/v1` and `/mcp` to the daemon
+  (`127.0.0.1:8080`) for the same effect.
 - **`internal/webui`** serves a build from `MAIL_WEB_DIR`, never through `go:embed`, so `go build`
   and `make check` never need Node. Empty (the default) is an API-only daemon. It is mounted last,
   as a catch-all: an unknown path under `/v1/`, `/mcp` or `/.well-known/` answers a **JSON 404**,
@@ -61,47 +65,57 @@ browser ──► <MAIL_PUBLIC_URL> ──► mailserver
   addresses and names under `.localhost`, and never in `prod`. `config.Load` refuses anything
   else. Unset, the header is the policy it always was, byte for byte. A browser enforces every
   policy a page carries, so an origin must also be in the meta policy of that edition's
-  `index.html`; the open console's says `connect-src 'self'`, so with it the setting changes
-  nothing.
+  `index.html`.
 - **The console never shows the server's `message`.** It translates the `code` (and the operation
   it was doing) into its own words: English, and the Portuguese, Spanish, French and German
   catalogs in `web/src/ui/locales`.
 
 ### Editions
 
-`web/src` is a **core** that every edition shares, plus the open edition in `web/src/open`. An
-edition calls `configureEdition()` (`web/src/edition.ts`) before mounting: the console component
-built on `components/ConsoleShell.vue`, the texts a person agrees to (sync, actions, a new key's
-terms, `keyTerms`, optional: an edition without it offers no "Create key", as for a server whose
-keys are made elsewhere by their issuer, and still lists and revokes the keys it holds) with their
-revisions — the sync text drawn for a team (its `team` prop, the team's name)
-where an owner or an admin agrees to it on the team's behalf, connecting a mailbox into it or
-turning a team mailbox's sync on, and without it where a person agrees for their own mailboxes,
-one revision either way, as the key terms take `team` — what the frame calls itself (`shell`: the breadcrumb's root and the
-sidebar's name; the open edition's is the server's "Console"), its sections as data (each one the
-workspace shown's, or with `scope: 'person'` the person's own, where the breadcrumb names no
-workspace; the API keys section is the workspace's), a few sentences it words its own
-way, whether to show how to connect over MCP, whether people make and run teams on this server
-(`teams`: the open edition's, for the local workspace source), whether the account sheet offers
-pausing one mailbox's sync (`syncPause`: an opt-in the open edition sets, as the server's
-`app.Options.SyncPauseOffered`, which `serve` sets; left out, the sheet offers no Pause and still
-shows a paused mailbox, a recovered one included, and its Resume, which is never hidden), whether the account section names
-the person's role on this server (`serverRole`, the open edition's), and optional extras (a
-byline, legal components, more translations, its own look, the languages it offers and where the
-theme and the language are kept, below). The core's own sentences never name the frame: they say
-"this page". Other extension points are
-`onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()` (`state/live.ts`), `addDescriber()` for an
-edition's own operations (`ui/errors.ts`, `state/failure.ts`), `onActionsConsent()` and the account
-section's pieces (`AccountPanel`, `SessionsRow`, `SyncPermission`, `ActionsPermission`,
-`PermissionRow`), and the pieces of a frame of a host's own (below).
+`web/src` is the **core** an edition of the console compiles from source, in a project of its own
+that builds and serves the page. It ships no edition and no root of its own: the open edition
+(`web/src/open`), its entry (`web/src/main.ts`), `web/index.html`, its root (`App.vue`) and the
+settings panels only it drew were deleted, and the git history keeps them. An edition calls
+`configureEdition()` (`web/src/edition.ts`) before mounting: the console component built on
+`components/ConsoleShell.vue`, which the edition's own root draws, the texts a person agrees to
+(sync, actions, a new key's terms, `keyTerms`, optional: an edition without it offers no "Create
+key", as for a server whose keys are made elsewhere by their issuer, and still lists and revokes
+the keys it holds) with their revisions — the sync text drawn for a team (its `team` prop, the
+team's name) where an owner or an admin agrees to it on the team's behalf, connecting a mailbox
+into it or turning a team mailbox's sync on, and without it where a person agrees for their own
+mailboxes, one revision either way, as the key terms take `team` — what the frame calls itself (`shell`: the
+breadcrumb's root and the sidebar's name), its sections as data (each one the workspace shown's, or
+with `scope: 'person'` the person's own, where the breadcrumb names no workspace; the API keys
+section is the workspace's), a few sentences it words its own way, whether people make and run
+teams on this server (`teams`, for the local workspace source), and optional extras (a byline,
+legal components, more translations, its own look, the languages it offers and where the theme and
+the language are kept, below). The core's own sentences never name the frame: they say "this
+page". Other extension points are `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess()`
+(`state/live.ts`), `addDescriber()` for an edition's own operations (`ui/errors.ts`,
+`state/failure.ts`), `onActionsConsent()`, and the pieces of a frame of a host's own (below).
+
+A few of an edition's fields are read by no screen of the core since the panels that read them went
+with the open console: the edition's own pages read them, or its specs set them. They are
+`console` (which the edition's root draws), `copy.mailboxesIntro`, `copy.indexHint`,
+`copy.actionsOff` and `copy.keysSection` (sentences of the mailboxes, a mailbox's sheet, the
+dialog that turned actions off, and a team mailbox's access), `mcp` (whether to show how to connect
+over MCP, where `GET /v1/me/mcp` says the server answers there), `personalKeysOnly` (the server's
+`app.Options.KeysInPersonalWorkspaceOnly`), `syncPause` (an opt-in, as the server's
+`app.Options.SyncPauseOffered`; a paused mailbox, a recovered one included, and its Resume are
+shown either way), `serverRole` (whether the person's role on this server is named) and
+`mailboxAccess` (below).
+
+The core's specs run under an edition of their own (`web/test/edition.ts`, configured by
+`web/test/setup.ts`), which nothing under `web/src` imports: placeholder texts nobody agrees to,
+under the daemon's default revisions (`internal/config/consent.go`), the ones the contract fixtures
+are written under, and a test console built on `ConsoleShell`.
 
 An edition may draw its own **look** in the places the frame keeps for it (`look`). `look.brand` is
 drawn in place of the core's lockup (`BrandLockup`) atop the sidebar and atop the signed-out card,
 with two props: `place` (`'menu'` or `'card'`, the type `BrandPlace`) and `label`, the accessible
 name the core gives its lockup there ("Mailie" on the card; in the sidebar "Mailie", or "Mailie ·"
-and the edition's root, such as the open edition's "Mailie · Console"), which the brand carries as
-its own. `look.appearance`, one root element and no props, is drawn in place of the appearance menu
-(`AppearanceMenu`) in the header and atop the card, and shows and changes the theme
+and the edition's root), which the brand carries as its own. `look.appearance`, one root element
+and no props, is drawn in place of the appearance menu (`AppearanceMenu`) in the header and atop the card, and shows and changes the theme
 (`ui/preferences.ts`) and the language (`ui/i18n.ts`). Each place keeps the core's when the edition
 sets nothing for it; the top of the card wraps, the control below the brand, when the two do not fit
 on one line. `locales` narrows the languages offered to some of the core's five, always with
@@ -112,7 +126,7 @@ order); a saved or browser language outside them is passed over for the next one
 sets itself again after the language was chosen (once the page knows how people sign in, say)
 moves a page that shows a language it no longer offers to the next one the same way, saving
 nothing. The catalogs
-keep their four translations either way. The open edition sets neither.
+keep their four translations either way.
 
 An edition may also say **where the theme and the language are kept** (`preferences`, a
 `PreferenceStore` of `ui/preferences.ts`: `read(name)` and `write(name, value)` for `'theme'` and
@@ -127,24 +141,23 @@ and its language at the page's next load. An edition's entry may also say how a 
 while the page runs is shown: `initializeTheme({ reread })` (a `ThemeReread`) is given each theme
 read again (the tab shown again, another tab's save) and a function that shows it, which it calls
 exactly once, when and how it chooses (fading the page into it, say); never for the theme read
-before the first frame, nor when the system's scheme changes under a theme that follows it. The
-open console's entry passes none: a theme read again shows at once.
+before the first frame, nor when the system's scheme changes under a theme that follows it. An
+entry that passes none shows a theme read again at once.
 `configureEdition` installs the edition's store before it narrows the languages, and puts the one
 before back when it refuses an edition. The core checks what a store answers as it checks its own
 (an unknown theme is `system`, an unknown language passed over), takes a language as any tag
 `supportedLocale` reads (`pt-BR` is `pt`) and writes the core's codes (`pt`, `en`, `es`, `fr`,
-`de`); a store that throws only forgets. The open edition sets none (`web/test/editions.spec.ts`).
+`de`); a store that throws only forgets. An edition that sets none keeps the core's own
+(`web/test/editions.spec.ts`).
 
 The console's colours, light and dark, its monospace font, its motion curves and the shapes of a
 few surfaces are custom properties declared in `web/src/ui/palette.css` alone: `styles.css` and
 the components read them and declare none of them (a component keeps only its own, such as the
-lockup's size). The open console's entry (`web/src/main.ts`)
-imports the palette before `styles.css`; another edition's entry may import it the same way, or
-declare the same properties its own way instead of importing it. The shapes default to the open
-console's: `--card-radius` and `--card-shadow` (the signed-out card), `--dialog-radius` and
-`--dialog-shadow` (`ConsoleDialog` and `AccountSheet`, and the rounded side of the drawer and of the
-sheet on a phone), and `--control-radius` (the card's primary button). `web/test/palette.spec.ts`
-holds every `var(--…)` under `web/src` to a declaration under `web/src` (the palette's, or the
+lockup's size). An edition's entry imports the palette before `styles.css`, or declares the same
+properties its own way instead of importing it. The palette's shapes are `--card-radius` and
+`--card-shadow` (the signed-out card), `--dialog-radius` and `--dialog-shadow` (`ConsoleDialog`,
+and the rounded side of the drawer and of a sheet on a phone), and `--control-radius` (the card's
+primary button). `web/test/palette.spec.ts` holds every `var(--…)` under `web/src` to a declaration under `web/src` (the palette's, or the
 component's own), except `--app-height` and `--app-top`, which `state/appLifecycle.ts` writes at
 run time and every read names a fallback for; and it holds the palette's tokens to `palette.css`
 alone: the list in `web/test/palette.ts`, for the light page, the same declarations for dark
@@ -183,12 +196,12 @@ words the sentence beside a guarded write, which the core's names the password;
 `copy.accountRecovered` says why a key stopped when its creator's account was recovered
 (`account_recovered`), which the core's says without naming where; the edition's describer (`addDescriber`) words the `no_account_key` and `not_enrolled`
 failures (the core's say to sign in again here, and, for `not_enrolled`, to ask the administrator
-for a reset link). The open edition sets none of these.
+for a reset link).
 
 An edition's pages may also be drawn in a **frame of a host's own** rather than in
 `ConsoleShell`: the core's panels inside another sidebar and header, on a page whose document
-scrolls. The core keeps what such a host needs apart from its own frame, and the open console is
-built on the same pieces, so it behaves as it always did:
+scrolls. The core keeps what such a host needs apart from its own frame, and an edition's root
+that draws `ConsoleShell` is built on the same pieces:
 
 - **The console kept going.** `useConsoleFrame()` (`state/consoleFrame.ts`), called from the setup
   of whatever draws the frame once the person is signed in, does what `ConsoleShell` does while it
@@ -206,14 +219,13 @@ built on the same pieces, so it behaves as it always did:
   `console-content`; a host puts them around the panels it draws. A sheet or dialog closed after the
   control that opened it went away returns the focus to `#console-content`: a host gives its content
   area that id.
-- **Scrolling.** Only the core's own frame owns the page's scrolling: `App.vue` asks for it
-  (`useFixedFrame()`, `ui/frame.ts`), which puts `fixed-frame` on `<html>` while it is mounted, and
-  only under that class are `html`, `body` and `#app` held to the viewport with nothing to scroll
-  and `#app` fixed to the visual viewport. Any other root leaves it off, and its document scrolls
-  as any page does; a root of an edition's own that wants the core's frame (a full-screen card of
-  its own, say) calls `useFixedFrame()` too.
+- **Scrolling.** The core's own frame owns the page's scrolling only where an edition's root asks
+  for it (`useFixedFrame()`, `ui/frame.ts`; no file of the core does), which puts `fixed-frame` on
+  `<html>` while that root is mounted, and only under that class are `html`, `body` and `#app` held
+  to the viewport with nothing to scroll and `#app` fixed to the visual viewport. Any other root
+  leaves it off, and its document scrolls as any page does.
 - **The page's life and what goes over it.** `useAppLifecycle()` (`state/appLifecycle.ts`), called
-  once from the setup of the page's root, runs what `App.vue` runs around its phases: it captures a
+  once from the setup of the page's root, runs what a page does around its phases: it captures a
   provider's return, a reset link and an invitation before anything renders, sweeps the provider
   records this tab never used, keeps the first keys after a sign-in, writes the visual viewport's
   height and offset (`--app-height`, `--app-top`), finishes a captured return once the session is
@@ -255,18 +267,10 @@ built on the same pieces, so it behaves as it always did:
   from remembering the workspace for the person's next visit, for a page that should write nothing
   of one: the one remembered before is still read, to choose one when nothing else does. A host
   keeps its address in step with `currentID`, which the core may still change by itself.
-- **Who uses a mailbox, elsewhere.** `mailboxAccess` (`{ href(account), label() }`) has the
-  mailbox's sheet (`AccountSheet`) draw one link to `href` in place of its Access section
-  (`AccessPanel`), for the same owners and admins of a team who would see that section; the
-  mailbox's key (`MailboxKeyPanel`), which is the person's own, stays on the sheet. Unset, the
-  sheet holds the section. Below its people, that section lists the API keys holding something on
-  the mailbox, and says where what a key holds is changed by the name the edition gives its keys'
-  section (`copy.keysSection`, the open edition's "API keys & MCP"); an edition that names none
-  leaves that sentence out.
-- **Keys of a personal workspace alone.** `personalKeysOnly`, for an edition whose server keeps
-  API keys to personal workspaces (`app.Options.KeysInPersonalWorkspaceOnly`), leaves a team
-  mailbox's Access section without its keys, and a team's member is told that its people and who
-  uses each mailbox are managed by its owners and admins, naming no keys. Unset, a team has keys.
+- **Who uses a mailbox, elsewhere.** `mailboxAccess` (`{ href(account), label() }`) says where an
+  edition manages who uses a mailbox and what each may do (a path of this origin, and the link's
+  words): the mailbox's sheet that drew that link went with the open console, and an edition's own
+  pages read it.
 - **Acting on one mailbox, on a page of the edition's own.** A page that acts on one person's
   access to one mailbox, drawn by an edition from the core's state (`state/team.ts`,
   `state/mailboxKeys.ts`) rather than from its panels, gives Read with `giveRead(accountID,
@@ -275,12 +279,11 @@ built on the same pieces, so it behaves as it always did:
   makes the change only while they hold exactly that, so a flag taken away since the page drew it
   is never given back. A grant goes with it, sealed from the giver's own under a step-up, exactly
   where `saveGrant` would send one. A refusal is said, the directory and the members are read
-  again, and nothing is sent again: the page draws what they hold now and asks again. The open
-  console's Access section keeps `saveGrant`.
-- **The person's sessions.** `SessionsRow`, the row of `AccountPanel` that says how long this
-  session lasts and signs out here or everywhere (asking once more), may be drawn wherever a host
-  shows the person's own settings, with words of its own (`title`, `description`,
-  `signOutLabel`). Signing out goes through the core's `signOut`, and so the edition's `signedOut`.
+  again, and nothing is sent again: the page draws what they hold now and asks again. `saveGrant`
+  (`state/team.ts`) sets every flag of a grant from what the page drew (`before`) to what it shows
+  (`after`), for a page that draws them all.
+- **Signing out.** The core's `signOut` (`state/session.ts`, here or everywhere) ends the session
+  in this browser, tells the server, and then calls the edition's `signedOut`.
 
 `ConsoleShell` itself also serves an edition whose person's own settings are elsewhere (on pages
 of its own, in such a frame): its `account`, the person's own section that the sidebar's profile
@@ -289,18 +292,14 @@ who is signed in, as text that opens nothing, beside Sign out, and the header ha
 button. `links` (`ConsoleLinks`: `{label, items}`, each item `{id, label, icon, href}`) draws,
 after the sections in the sidebar and in the drawer, a navigation of plain links named `label` and
 headed by it: places the frame never holds, which leave the page (no section is current there).
-The open edition sets `account` and no links, and its frame is the one it always was.
-
-The open edition reaches them only through `ConsoleShell` and `App.vue`.
 
 The hosted service's app is such an edition, kept in a private repository: it compiles `web/src`
 from source and adds reading and writing mail. The direction is one way. Nothing under `web/src`
 imports from outside it or through an alias (a package of the console's `dependencies`, such as
-the kit `web/src/crypto/mailie.ts` builds the key scheme on, is not an alias), and the open console
-names nothing of the hosted service (`web/test/editions.spec.ts` reads every file under `web/src`
-and `web/public`, and `web/index.html`, for the names in `web/test/hosted.ts`, setting aside only
-the kit's package name in an import; the build fails on an output file that has one). Keep both in
-mind when you change the core: an edition you cannot see builds on it.
+the kit `web/src/crypto/mailie.ts` builds the key scheme on, is not an alias), and the core names
+nothing of the hosted service (`web/test/editions.spec.ts` reads every file under `web/src` and
+`web/public` for the names in `web/test/hosted.ts`, setting aside only the kit's package name in an
+import). Keep both in mind when you change the core: an edition you cannot see builds on it.
 
 ## People and credentials
 
@@ -467,9 +466,9 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 - **The recovery code is shown once**, after a sign-up, a recovery and a reset link, and after the
   person replaces theirs, in a dialog that stays until they say they saved it
   (`components/RecoveryCodeDialog.vue`); nothing keeps it once it closes.
-- **A new recovery code** (`components/AccountPanel.vue`) asks for the password every time,
-  derives the current auth key under the account's own salt and parameters, and sends it with the
-  new wrap and proof; the password is never sent.
+- **A new recovery code** (`replaceRecoveryCode`, `state/account.ts`) asks for the password every
+  time, derives the current auth key under the account's own salt and parameters, and sends it with
+  the new wrap and proof; the password is never sent.
 - **The step-up prompt** (`components/StepUpDialog.vue`, mounted once for the page by
   `components/StepUpPrompt.vue`) is asked for before every call the step-up guards
   ([Mailbox keys](#mailbox-keys)): linking a mailbox, giving Read with a grant, handing a
@@ -497,15 +496,16 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
   defended only the upgrade's one password in clear, and left with it; the account key's database
   drops the store an older console kept, with the addresses in it, the first time a page of this
   release opens it. A person from before the key scheme who never enrolled is told what a wrong
-  password is told. One still signed in from before it (no `user.public_key`) is told in their
-  account that their password no longer signs them in and to ask the administrator for a reset
-  link, and is offered neither a password change nor a recovery code, nor asked to sign in
-  again, which would not work.
+  password is told. One still signed in from before it (no `user.public_key`) is refused a link
+  (`not_enrolled`, whose words an edition's describer gives: the core's say to ask the
+  administrator for a reset link), and the open console's account section, which said so too and
+  offered neither a password change nor a recovery code, went with it.
 
 ### Invitations
 
 Nobody signs up uninvited. An invitation is single-use, valid only for its address, for 7 days, and
-records the role asked for.
+records the role asked for. Its link opens the sign-up of an edition's page: a self-hosted server
+serves none, so nothing there opens it.
 
 - `mailserver user invite --email X [--role owner|member]` calls `POST /v1/users/invites` with
   `MAIL_ADMIN_KEY` (an unrestricted instance admin key; a signed-in owner may call the route too)
@@ -697,7 +697,7 @@ Argon2id hash is stored; the prefix names it in lists and logs. Scopes are order
   `apikey revoke PREFIX` are clients of those routes, so they need it too. Without it the only way
   to issue one is `mailserver apikey create --bootstrap`, which writes to the database with the
   daemon stopped.
-- **Workspace keys**, which an owner or an admin of a workspace creates in the console (see
+- **Workspace keys**, which an owner or an admin of a workspace creates signed in (see
   [API keys](#api-keys) below), scope `read`, `write` or `send`. They act as nobody and reach the
   mailboxes of their workspace they hold something on; they are the only way a tool reaches a
   mailbox outside the operator workspace.
@@ -765,260 +765,93 @@ syncs nothing, is never switched on again (`409`), and is marked `no_reader`; it
 and delete it for good to link it again, and its owners and admins turn its sync off to delete what
 is still indexed. A team mailbox syncs under its **workspace's consent** ([Sync and consent](#sync-and-consent)).
 
-### Workspaces in the console
+### Workspaces in the console's core
 
-The console decides nothing here: every rule is the server's, and a screen only offers what the
-caller's role and flags allow and says beforehand what a protection refuses (`web/src/ui/access.ts`,
-whose rules are tests of their own). A refusal is said in the console's words, from its `code`.
+What the core's state and its few components do with workspaces, for an edition's pages. They
+decide nothing: every rule is the server's, and a page only offers what the caller's role and flags
+allow and says beforehand what a protection refuses (`web/src/ui/access.ts`, whose rules are tests
+of their own). A refusal is said in the console's words, from its `code`. The open console's
+screens (the mailboxes' cards and sheets, a team mailbox's access, a workspace's API keys, its
+removed mailboxes, its members, storage and the person's own account) went with it; the routes they
+used are below, for whatever draws them now.
 
-- **The workspace shown.** The sidebar (the drawer on a phone) has a switcher once the person
-  belongs to more than one workspace, and the header's breadcrumb names the one shown on the
-  sections that are a workspace's (Mailboxes, Members, API keys & MCP, Storage), never on the
-  person's own (Account), which an edition may mark `scope: 'person'` (its account section always
-  is).
+- **The workspace shown.** The frame's switcher (`components/WorkspaceSwitcher.vue`, in the sidebar,
+  and the drawer on a phone) appears once the person belongs to more than one workspace, and the
+  header's breadcrumb names the one shown on the sections that are a workspace's, never on the
+  person's own, which an edition marks `scope: 'person'`.
   It is kept in memory for the tab; the last one chosen is remembered for each person apart, in
   this host's local storage under a key naming only their opaque user id
   (`mailie_workspace:usr_…`, never a cookie, so no request and no other host carries it; someone
   else signing in on the same browser does not open on it, and signing out, even everywhere,
   clears no preference, this one included), and checked against `GET /v1/workspaces`, which is
   read before any list: one the person is no longer in is never asked for, and the personal
-  workspace is shown instead. The mailboxes (`GET /v1/accounts`), Storage (`GET /v1/me/storage`)
-  and the event stream (`GET /v1/events`) pass `?workspace=`; a card
-  of another workspace that an answer names is left out of the list. Choosing another workspace
-  reads its lists again and opens its stream from now; an answer for the one before that lands
-  later is dropped. A page whose address names the workspace it shows asks for it instead
-  (`requestWorkspace`, "Editions"), and remembers nothing of it. A server without workspaces
-  (`404`) lists everything together. Any other
-  failure to read them holds every list and the stream, and says why, rather than read them
+  workspace is shown instead. The mailboxes (`GET /v1/accounts`), storage (`GET /v1/me/storage`)
+  and the event stream (`GET /v1/events`) pass `?workspace=`; a mailbox of another workspace that
+  an answer names is left out of the list. Choosing another workspace reads its lists again and
+  opens its stream from now; an answer for the one before that lands later is dropped. A page whose
+  address names the workspace it shows asks for it instead (`requestWorkspace`, "Editions"), and
+  remembers nothing of it. A server without workspaces (`404`) lists everything together. Any
+  other failure to read them holds every list and the stream, and says why, rather than read them
   without `?workspace=`, which would show a team's mailboxes as the person's own: while the console
   is shown it asks again by itself (2 s doubling to 30 s, or as long as a rate limit asks), and
-  reads the lists once the workspace is known. Refresh reads the workspaces again too, as does a
+  reads the lists once the workspace is known. A refresh reads the workspaces again too, as does a
   refusal for want of a role (`not_authorized` from a team or access route): a role changed
   elsewhere, or a team joined in another tab, shows without reloading.
-- **API keys are the workspace's** ([`workspaces.md`](workspaces.md), "API keys"). **API keys &
-  MCP** is there for an owner or an admin of the team shown, or the person of their personal
-  workspace, and not for a member, whose team says that its owners and admins manage its people,
-  access and API keys (the console never asks a member's team for its keys). It lists every key of
-  the workspace, revoked and expired ones too, live first: what each holds on each mailbox, who
-  created it (in a team), and what a key from before keys belonged to workspaces does differently
-  (`origin`, `carried_over`). Creating one asks for a name, a scope (`send` only where
-  `GET /v1/me/mcp` says `keys_send`), what it holds on each of the workspace's mailboxes
-  (`GET /v1/accounts?workspace=`: `read` only on those the viewer reads, `act` with `read` and a
-  scope that acts, `send` with the send scope; none, a key that reaches nothing yet) and a
-  lifetime, above the edition's key terms, worded for the team or the personal workspace; the
-  secret is shown once. A key's sheet changes what it holds, mailbox by mailbox, ticked and then
-  saved (`PUT …/accounts/{account_id}` with all three flags, or `DELETE` when none is left), gives
-  a carried-over key nothing, and lists its sends (`GET …/sends`: state, mailbox, time and how many
-  recipients, never who or what) for a key that can send. Revoking asks first; for a carried-over
-  key it takes this workspace's mailboxes out of it, and says so after (the key may still work
-  elsewhere). The workspace's limit of 20 counts what the server counts: neither carried-over keys
-  nor the ones the upgrade moved in (`origin`). Each team mailbox's **Access** lists the keys
-  holding something on it (`keys`), never as readers, and takes the mailbox out of one after
-  asking. **Account** lists the keys the person created, in every workspace (`GET /v1/me/apikeys`),
-  once there is one, and revokes any of them (`DELETE /v1/me/apikeys/{prefix}`), a carried-over one
-  in every workspace, which its note there says. A revoked key says why it stopped (`stop_reason`,
-  `ui/apikeys.ts` `stopReasonLabel`) on its card, in its sheet and after its date among the
-  person's own, as what happened to them when they created it ("You left its workspace."); a key
-  someone revoked, or one revoked before the server recorded why, says nothing more, and a reason
-  a newer server records shows as its identifier.
-- **The person's own settings are not a workspace's.** The dialog
-  that turns the person's own sync off says it deletes the index of
-  their personal mailboxes, and, to someone in a team, that a team's mailboxes sync under the
-  team's consent and keep syncing, but for one they linked before the upgrade whose carried-over
-  consent no owner or admin has confirmed yet, which stops with its index. It reads no list first.
-- **Each mailbox** says on its card what the person may do with it (`access`: Read, Act, Send,
-  Manage). Folders and Sync need `read`; authorizing again needs manage; a mailbox seen without
-  `read` (an owner's or an admin's card of a team mailbox, say) says so instead of offering them,
-  and one that needs authorizing tells whoever does not manage it that an owner or an admin has
-  to. One whose key the person waits for (`access.waiting_key`) says that instead, apart from not
-  reading it: in a team, that anyone who reads it can hand the key over; a personal one, that its
-  details offer a new key ([Mailbox keys](#mailbox-keys)). Removing is a team's owners' (or a
-  personal mailbox's person's; `ui/access.ts` `owns`), and an admin's only for a link of their own
-  that never connected, which the server deletes at once; an admin is told that only an owner
-  removes the team's mailboxes. Whether it connected is the server's to say (`connected`: something
-  to sign in with was stored), never its state: a mailbox being authorized again is back to
-  `pending_auth` and is kept all the same, and a first link whose consent failed is in `error` and
-  goes at once. It says beforehand that the mailbox is kept 30 days, recoverable, that what keys
-  held on it goes, and in a team that everyone who reads it is told, or that one that never
-  connected is deleted at once; it asks for the mailbox's address typed and sends its id as
-  `confirm`. The answer (`Removal`) says until when it is kept, which the notice repeats, or that it
-  was deleted at once.
-- **A member of a team** gets the switcher and cards for the mailboxes they hold a grant on
-  (re-authorizing where they hold `manage`; an edition with Mail and Compose offers those they read
-  or may send from). No Members, no API keys, no Access, no team sync switch and no removing: one
-  line instead, on the team's mailboxes and in Members, says that its owners and admins manage the
-  team's people, who can use each mailbox and its API keys; the console never asks for the members,
-  the directory or the keys, which the server refuses them. No Leave. Nor is the person's own
-  consent card asked in a team: a team's mailboxes sync under the team's consent, and a member's
-  sheet says that its owners and admins turn it on.
-- **Who can use a mailbox** (the sheet's Access, in a team, for its owners and admins): every
-  active member with their flags, ticked and then saved. `read` is offered only to a viewer who
-  reads the mailbox (on one that has a key, the flag and the key: `readsNow`, the directory's
-  `sealed` at its `epoch`); `act` only for someone who reads; `send` for anyone; `manage` for
-  members (owners and admins manage by their role, so theirs is shown ticked and is not theirs to
-  change). Someone who holds Read without the key is marked as waiting for it. Read given on a
-  mailbox that has a key to a member with an account key (the members list's `seal_id` and
-  `public_key`) goes with their grant, sealed in the viewer's browser from their own after a
-  step-up, which the row says before it is saved; to a member without one, and on a mailbox
-  without a key, by the flag alone.
-  The mailbox's last reader (`last_reader_of`, or `readers` of 1) is marked, and taking their read
-  is not offered; an owner or an admin who does not read it is told that they cannot give Read,
-  not even to themselves, and one who waits for its key, that they can once someone who reads it
-  hands it over; a mailbox nobody can read
-  (`no_reader`) says so, and that an owner removing it, and deleting it for good to link it again,
-  is the way out. To an admin an owner's row is read only (`grantPermissions`' `owner` lock: every
-  box disabled, no Save, "Only an owner changes an owner's access", platform decision 0060); an
-  owner changes every row.
-  A change that only takes flags away is `DELETE …/access/{user}?flags=` naming them; one that gives
-  anything sets the grant exactly (`PUT`, all four). The sheet also shows the mailbox's sync for
-  the team — who turned it on, when and to which revision, and whether it is the current one or a
-  consent the upgrade carried over from its linker (still bound to them), or one kept stopped with
-  its index because they were disabled — with the switch: on shows the sync text and sends its
-  revision (the console's own, never the server's: a server that already asks about another text is
-  offered a reload); off asks for the address typed and says the index is deleted for its
-  `readers`. A consent to an earlier text, or a carried-over one, offers confirming it for the team
-  in place of the switch. One kept stopped says that its index stays only while it is stopped:
-  turning it on resumes from it, and turning it off, deleting the mailbox for good or deleting the
-  account of the person it is still bound to deletes it. A mailbox nobody can read offers no way to turn
-  it on, and offers turning off alone while something of it is still on or kept. An owner or an admin sees every team mailbox's card in the list, from the role; the
-  access directory (`GET /v1/workspaces/{id}/access`) is read again whenever one of the team's
-  mailboxes leaves or joins their list.
-- **Connecting a mailbox** is offered only where the person may link one (their personal
-  workspace, or a team they own or administer), one button per provider
+- **Connecting a mailbox** (`components/ConnectButtons.vue`) is drawn only where the person may
+  link one (their personal workspace, or a team they own or administer), one button per provider
   ([Linking at the provider](#linking-at-the-provider), "In the console"), always into the
   workspace shown (`workspace_id`, the personal one included): to link into another workspace, the
-  person shows it first. In a team where they may not, the section says that its owners and admins
-  connect its mailboxes, whether its list is empty or not, and offers to show the personal
-  workspace; a closed or withheld team says only why nothing of it can be used. Into a team, the
-  buttons say the mailbox is connected with sync off and that its sync is turned on for the team
-  once it is connected: the new mailbox's card then shows the sync text with an unticked "Turn on
-  sync for {team}" (`components/NewMailbox.vue`), which gives the team's agreement through the
-  sheet's turn-on. A provider's return shows the workspace of the mailbox it authorized. A link
-  carries the mailbox's first key, and asks for the step-up first when the session's has less than
-  two minutes left ([Mailbox keys](#mailbox-keys)). A link refused (`409`) for an address the
-  workspace keeps removed is told apart only by its owners (`components/RemovedAddressOffer.vue`):
-  the form reads the workspace's removed mailboxes and, when the address is one of them, says since
-  and until when it is kept and offers recovering it, or deleting it for good (its address typed
-  again) and connecting it anew; anyone else is told that the address is connected already, or
-  removed and kept, and that an owner can recover it or delete it for good.
-- **Removed mailboxes** (`components/RemovedMailboxes.vue`), below the cards, for the workspace's
-  owners only (`owns`: the person of their personal workspace, an active owner of a team; nobody
-  else's console asks for them): each removed mailbox of the workspace shown
-  (`GET /v1/workspaces/{id}/removed-mailboxes`), who removed it and when, until when it is kept, in
-  a team how many people would read it again, and whether its index went with its sync (once
-  recovered, a resume or a turn-on starts it over from the last 90 days). Recover
-  (`POST …/recover`) brings its card back, its sync paused, off or turned off as the answer says,
-  and the notice says which; one nobody in the team who could read
-  it is left to read (`no_reader`) offers no recovery, which the server refuses, and says to delete
-  it for good and connect it again, while one that only someone suspended on the server would read,
-  once resumed, offers it and says that its sync is resumed once someone reads it. Delete for good asks for its address typed and sends its id
-  (`POST …/purge` `{confirm}`); already gone counts as done. The list is shown only while there is
-  one, or while it could not be read, and is read again on Refresh, after a removal, and when
-  access changes. A server older than removed mailboxes (`404`) has none.
-- **A mailbox recovered** comes back paused (`sync.paused`) where its consent stands, and is one
-  paused mailbox like any other (below), resumed by the same people; one whose consent was off
-  comes back off (a personal one offers turning sync on, a team's its team sync), and one the
-  server's operator turned off comes back turned off. The notice the recovery gives says which of
-  the three (`notices.ts`, from the answer's `sync`).
-- **A paused mailbox** (`sync.paused`; `components/SyncPause.vue` in the sheet's Sync section)
-  reads "Paused" on its card and in its sheet, since when, and what it kept: what it indexed is
-  still searched and read, but nothing new is indexed until it is resumed, or, with nothing
-  indexed (`messages` 0: paused or recovered before its first pass), that a resume indexes the
-  last 90 days. Its figures stay (Messages indexed, Last sync), Sync now is not offered, and the
-  storage section says the same. Its person pauses and resumes a personal mailbox (`POST
-  …/sync/pause`, `…/sync/resume` with no body); a team's owners and admins, by their role, a
-  team's. Pause asks first, saying what the pause keeps and that what changes on the mail server
-  meanwhile shows only once sync is resumed, and for a team that its other readers are told; it is
-  offered only where the edition offers it (`syncPause`) and while the mailbox syncs. A team's
-  Resume shows the edition's sync text for the team and sends its revision (`{"version"}`), the
-  team's agreement given again, through the dialog the team's turn-on shares
-  (`components/TeamSyncAgreement.vue`); a server that already asks about another text is offered
-  a reload. A team mailbox nobody can read offers no Resume (its team sync says why), and one only
-  a suspended member would read once resumed offers none either and says it waits for them. Its
-  owners and admins are told who paused it, from the access directory (`paused_by`; a recovery's
-  pause names whoever recovered it); a member who reads it is told an owner or an admin of the team
-  paused it, and that they resume it. While it is paused its team sync offers only turning it off
-  (never on, nor confirming an earlier text: the resume is the one way back, and it agrees), whose
-  dialog says it ends the pause too, and an agreement to an earlier text, or one still tied to
-  whoever connected it, says that resuming its sync is what agrees again. Once a pause or a
-  resume is done, focus goes to the button that took the place of the one pressed, or, where none
-  did (the edition offers no pause, or the mailbox does not sync once resumed), to the Sync
-  heading.
-- **A mailbox the server's operator turned off** (`sync.held`, a personal mailbox: `POST
-  …/sync/stop`) reads "Turned off" on its card and in its sheet, since when, with no index and
-  nothing syncing until its person turns it on again (`{"enabled": true}` alone, "Turn sync on
-  again"), naming nobody. The worker-less `stopped` state with no error reads "Starting", so
-  "Paused" names only a pause.
-- **Notices** (`components/PersonNotices.vue`, in the console's frame above every section, every
-  edition's): the person's notices (`GET /v1/me/notices`), in whichever workspace they happened —
-  a mailbox they read removed, or a team mailbox's sync turned off or paused, by someone else —
-  naming the mailbox as the server does (its address while kept, a masked hint once deleted) and
-  where it stands now, never who did it. Each is said once through the live region the first time
-  it is read, and stays until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery or
-  the pause's end, or gone
-  with its entry in the server's journal, at 90 days at most. They are read when the console
-  starts, on Refresh, when access changes, when the stream says `event: notice`, and after the
+  person shows it first. Into a team, the buttons say the mailbox is connected with sync off and
+  that its sync is turned on for the team once it is connected: the new mailbox's card then shows
+  the sync text with an unticked "Turn on sync for {team}" (`components/NewMailbox.vue`), which
+  gives the team's agreement as turning a team mailbox's sync on does. A provider's return shows
+  the workspace of the mailbox it authorized. A link carries the mailbox's first key, and asks for
+  the step-up first when the session's has less than two minutes left
+  ([Mailbox keys](#mailbox-keys)). A link refused (`409`) for an address the workspace keeps
+  removed is told apart only by its owners (`components/RemovedAddressOffer.vue`): the form reads
+  the workspace's removed mailboxes and, when the address is one of them, says since and until when
+  it is kept and offers recovering it, or deleting it for good (its address typed again) and
+  connecting it anew; anyone else is told that the address is connected already, or removed and
+  kept, and that an owner can recover it or delete it for good.
+- **Notices** (`components/PersonNotices.vue`, in the console's frame above every section): the
+  person's notices (`GET /v1/me/notices`), in whichever workspace they happened — a mailbox they
+  read removed, or a team mailbox's sync turned off or paused, by someone else — naming the mailbox
+  as the server does (its address while kept, a masked hint once deleted) and where it stands now,
+  never who did it. Each is said once through the live region the first time it is read, and stays
+  until dismissed (`DELETE /v1/me/notices/{id}`), withdrawn by a recovery or the pause's end, or
+  gone with its entry in the server's journal, at 90 days at most. They are read when the console
+  starts, on a refresh, when access changes, when the stream says `event: notice`, and after the
   person resumes a team mailbox or turns its sync off, which withdraws a pause's notices that no
-  event announces; a server
-  older than notices (`404`) has none, and a failure to read them is shown nowhere: the next read
-  tries again.
-- **Events.** `event: access` reads the list again (once for several, a second later), Storage if
+  event announces; a server older than notices (`404`) has none, and a failure to read them is
+  shown nowhere: the next read tries again.
+- **Events.** `event: access` reads the list again (once for several, a second later), storage if
   it was read, what was read of the team shown (its members and its directory), the workspace's
   removed mailboxes and the person's notices if they were read, and forgets the folders of a
   mailbox no longer readable; an edition hears it through `onLiveAccess()`. `event: notice` reads
   the person's notices again. A stream narrowed to a workspace the person is no longer in ends with
   `not_found`: the console reads their workspaces again, shows another and says which went. So
-  does a list narrowed to the workspace shown (the mailboxes, Storage) that answers `not_found`,
+  does a list narrowed to the workspace shown (the mailboxes, storage) that answers `not_found`,
   once for that workspace (`workspaceVanished`): a directory the workspaces come from may have
   replaced the person's own, or ended their membership, under a session still open, and the one
   shown then is the one remembered if it is still listed, else the person's own. A failure keeps
   how long the server asked to wait (`Failure.retryAfter`, from `Retry-After`), which an act the
   server could not yet confirm with that directory carries.
-- **Members** (the open edition, `teams`): shown for the personal workspace, where a person
-  creates a team (and becomes its owner) and sees the teams they are in, and, to its owners and
-  admins, for a team made here (`source: local`); a team mirrored from elsewhere is changed there,
-  and the section is not shown for it. A team's people with their roles: an owner changes anyone's
-  role and status, removes anyone, and leaves while another owner remains; an admin disables,
-  enables and removes members only. The last active owner and the last reader of a mailbox
-  (`last_reader_of`) are marked, and the actions their protection refuses are not offered. A
-  mailbox someone is the last reader of is named by its address when the page knows it: a live
-  one from the person's own list or the directory, a removed one, for the team's owners, from its
-  removed mailboxes (read for that, once, when a mailbox there is not live), marked "(removed)";
-  otherwise by how many there are. When one of them is removed (in the removed list, or, once the
-  directory is read, in neither it nor the person's list) the note adds that a removed mailbox
-  keeps them until an owner recovers it and gives someone else Read, or deletes it for good. The
-  server works those marks out across the team, so the members are read again whole after any
-  change of role, status or membership, and whenever one of the team's mailboxes leaves or joins
-  the person's list, and so are the pending invitations when they were read, since any such change
-  ends the ones its person made; the person's own role follows their row as listed. The members
-  are read again too when one of the team's removed mailboxes is deleted for good from this
-  console, which ends the protection it kept. Disabling and removing ask
-  first, saying what goes (the person's grants in the team, its invitations still waiting for
-  them, the invitations they made there). Owners and admins rename the team and invite (an admin,
-  members only): the link is shown once, in a dialog that only its own buttons close, copied on
-  request and never kept, in storage or in the list of pending invitations, which only revokes.
-  Before an invitation is made the dialog says who its link works for: someone with an account
-  here, signed in; and someone without one only when the person inviting is an owner of the
-  server. A person disabled on the server is marked "Disabled on this server", and a suspended one
-  (`person_suspended`) "Suspended" instead: their place and their grants wait, unusable, until the
-  suspension lifts where it was decided.
 - **A team nothing can be used in.** A closed team (`closed_at`) and one this server's edition
   does not offer yet (`withheld`, which comes first) are still listed and chosen, marked so in the
-  switcher ("Closed", "Not offered here") and among the person's teams in Members
-  (`ui/access.ts` `workspaceUnusable`). Mailboxes, Members, API keys & MCP and Storage then show a
-  notice in place of what they hold, naming the team and saying why nothing in it can be used and
-  that nothing of it is lost (`components/UnusableWorkspace.vue`); nothing is offered there, and
-  the console never asks for the team's people, directory, invitations or keys, which the server
-  refuses. A refusal of its mailboxes' list is not shown beside the notice. Once the workspaces read
-  again say it reopened, its mailboxes, keys and figures are read again.
-- **An invitation opened signed in.** Where teams are made here, an invitation link no longer signs
-  the browser out: the remembered session is restored and asked to join the team the invitation
-  names (`POST /v1/auth/invites/accept`), saying that joining gives access to no mailbox. One for
-  another address offers signing out to use it. Signed out, the link still opens the sign-up form,
-  and someone with an account signs in instead and then accepts it. The invitation's code stays in
-  memory until it is used or set aside. Where teams are not made here (an edition without `teams`),
-  an invitation only ever creates an account, and one the sign-up refuses says only that, and to
-  ask for a new one: there is no signing in to accept it.
+  switcher ("Closed", "Not offered here"; `ui/access.ts` `workspaceUnusable`). A section of it then
+  shows a notice in place of what it holds, naming the team and saying why nothing in it can be
+  used and that nothing of it is lost (`components/UnusableWorkspace.vue`); the core never asks
+  for the team's people, directory, invitations or keys, which the server refuses. Once the
+  workspaces read again say it reopened, its mailboxes, keys and figures are read again.
+- **An invitation opened signed in.** Where teams are made here (an edition's `teams`), an
+  invitation link no longer signs the browser out: the remembered session is restored and asked to
+  join the team the invitation names (`components/InvitationDialog.vue`, `POST
+  /v1/auth/invites/accept`), saying that joining gives access to no mailbox. One for another
+  address offers signing out to use it. Signed out, the link still opens the sign-up form, and
+  someone with an account signs in instead and then accepts it. The invitation's code stays in
+  memory until it is used or set aside. Where teams are not made here, an invitation only ever
+  creates an account, and one the sign-up refuses says only that, and to ask for a new one: there
+  is no signing in to accept it.
 
 ## Errors
 
@@ -1101,7 +934,7 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET/POST/DELETE /v1/me/sync-consent` | see [Sync](#sync-and-consent) | the person's consent to sync |
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
-| `GET /v1/me/storage` | read | what the mailboxes the caller may read take up in the index; `?workspace=` narrows |
+| `GET /v1/me/storage` | read | what the database holds for the mailboxes the caller may read, and the removed ones they list, by usage rule 1; `?workspace=` narrows ([Storage](#storage)) |
 | `GET /v1/me/mcp` | read | `{http, keys_send}`: whether this server answers MCP over HTTP at `/mcp`, and whether its API keys may send (`MAIL_KEYS_MAY_SEND`) |
 | `GET /v1/me/notices`, `DELETE /v1/me/notices/{id}` | session (a key: `403`) | `[PersonNotice]`, the person's notices, the newest first; dismissing one → 204, one they do not have `404` |
 | `GET /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the keys the person created, in every workspace; `POST` answers `400` |
@@ -1200,13 +1033,21 @@ uses `POST /v1/accounts` with the address.
   daemon takes the link, once, waiting for its one writer five seconds at most (busier than that,
   nothing is taken: `500` with a `Retry-After`, for the same return), and from that moment, which
   the link records, exchanges the code, reads the address from the token endpoint's ID
-  token (its audience, issuer, Microsoft's tenant, its times, Google's verification), refuses a
+  token (its audience, issuer, Microsoft's tenant, its times, Google's verification, its subject), refuses a
   mailbox the workspace holds under it, live or removed, under any spelling of one Gmail account
   (one `409` for both, so an admin who is not an owner learns nothing of a removed one), proves
   the grant with one login as that address, and creates the mailbox, its key, the person's grant
   and the team's agreement to sync, at the current text, in one transaction, which asks again who
   may link and the step-up. The answer is the mailbox as `GET /v1/accounts/{id}` shows it. The
   ID token is never kept; neither are the account's identifier at the provider nor its tenant.
+  OpenID Connect requires the token's subject (`sub`), and the link requires one it can use: a
+  token whose `sub` is missing, empty, longer than 255 bytes or holds anything but visible ASCII
+  (`0x21` to `0x7e`) is refused as the other checks are, the link failing with `the provider named
+  no usable address for the account`, and its error, which may be logged, names only its subject
+  check, never a value. The `sub`, and for Microsoft the tenant (`tid`, lowercased), are read and
+  returned beside the address for the trial codes a mailbox's trial will be keyed on, and stored,
+  logged or put in an error nowhere: printed or encoded by mistake, they say `[link identity]`.
+  Nothing uses them yet; the link stores the address alone.
 - **Reading it.** `GET /v1/accounts/oauth/links/{id}` is how its starter's console learns how a
   return it did not hear the answer of ended, or follows one still `finishing`. A failed link says
   why with one of the reasons below, or `the provider named no usable address for the account`
@@ -1219,22 +1060,22 @@ uses `POST /v1/accounts` with the address.
   membership, the team closing), and with a reset, a recovery and a sign-out everywhere; its return
   is then `404`. Re-authorizing a mailbox linked this way is the ordinary consent, for its address,
   with its scopes alone.
-- **In the console** (`components/ConnectButtons.vue`, `state/accounts.ts` `connectAtProvider`). The
-  accounts section draws one button per provider the server offers (`GET /v1/providers`; none drawn
-  for one it does not, and "This server has no way to connect a mailbox yet" for none), once and
-  only once the workspaces are read: in the empty card while the workspace has no mailbox, above
-  the cards otherwise, as one group named by its heading, each button described by its line, with
-  one status line and one alert. Where the person may not link (a member of a team, a closed or
-  withheld team) there is none, and the section says why. Google's and Microsoft's, where the
-  server offers them the `web` flow and this tab keeps a start, go straight to the provider's
-  account chooser: no dialog, no address, no name and no workspace to choose. The mailbox goes into
+- **In the console** (`components/ConnectButtons.vue`, `state/accounts.ts` `connectAtProvider`).
+  `ConnectButtons`, drawn on an edition's page of mailboxes, draws one button per provider the
+  server offers (`GET /v1/providers`; none drawn for one it does not, and "This server has no way to
+  connect a mailbox yet" for none), once and only once the workspaces are read, as one group named
+  by its heading (`quiet` inside a card that already says what it is for), each button described by
+  its line, with one status line and one alert. Where the person may not link (a member of a team, a
+  closed or withheld team) it is not drawn, and the edition's page says why. Google's and
+  Microsoft's, where the server offers them the `web` flow and this tab keeps a start, go straight
+  to the provider's account chooser: no dialog, no address, no name and no workspace to choose. The mailbox goes into
   the workspace shown, always named (`workspace_id`, the person's personal workspace included),
   and the link carries neither `display_name` nor `sync_consent_version`, which come once it is
   connected (below). Microsoft's button keeps the address form one small link away ("Enter the
   mailbox's address instead", for a shared mailbox and for an organization whose administrator must
-  approve Mailie), which opens its form in a dialog (`components/AddAccountDialog.vue` around
-  `components/ConnectForm.vue`), with "Use the account I choose at Microsoft" back to the chooser;
-  that form is `POST /v1/accounts` with the address. Gmail has no such link. A server with only the
+  approve Mailie), which asks the edition to open its form (the `form` event, which an edition
+  answers with `components/ConnectForm.vue` in a dialog), with "Use the account I choose at
+  Microsoft" back to the chooser; that form is `POST /v1/accounts` with the address. Gmail has no such link. A server with only the
   installed client asks for the address, and so does a browser that refuses site storage: the
   start, which tells a link's return from a consent's and has it carry the key, would be lost on the
   way to the provider (`canKeepOAuthStart`; a start that could not be kept leaves for no provider,
@@ -1258,7 +1099,7 @@ uses `POST /v1/accounts` with the address.
   says `created`) is the section's arrival, drawn first, in place of the success notice, with its
   heading focused: "Nickname (optional)", at most the server's 200 characters, and, for a team's
   owners and admins while its sync is off and not paused, the edition's sync text drawn for the team
-  with an unticked "Turn on sync for {team}" (the sheet's turn-on, `switchTeamSync`, the team's
+  with an unticked "Turn on sync for {team}" (`switchTeamSync`, `state/team.ts`, the team's
   agreement to the revision the page shows; a server that already names another offers a reload).
   Done sends the rename when a name was typed (`PATCH /v1/accounts/{id}`) and the agreement when
   ticked, each once: a refusal is said under its own part, what succeeded is not sent again. Skip
@@ -1282,12 +1123,11 @@ uses `POST /v1/accounts` with the address.
 ### Naming a mailbox
 
 A mailbox's nickname (`display_name`) is shown in place of its address wherever it is listed. The
-console asks for it once the mailbox is connected (above), never before, and its sheet shows it
-always ("None" without one): whoever manages the mailbox changes it in place (Change, or Add; the
-field takes the focus, Save and Cancel give it back) or removes it, and a refusal is said beside the
-field. The server's rule is one for a rename, an add and a link
-([`workspaces.md`](workspaces.md#mailboxes), "Naming a mailbox"): trimmed, at most 200 characters, no
-control character, `""` clearing it.
+console asks for it once the mailbox is connected (above), never before; whoever manages the
+mailbox changes or clears it (`PATCH /v1/accounts/{id}`, `{"display_name"}`), and the operator
+names an operator mailbox with `mailserver account rename ID NAME`. The server's rule is one for a
+rename, an add and a link ([`workspaces.md`](workspaces.md#mailboxes), "Naming a mailbox"): trimmed,
+at most 200 characters, no control character, `""` clearing it.
 
 ### Mailbox keys
 
@@ -1416,29 +1256,24 @@ one ([`key-scheme.md`](key-scheme.md) section 16):
   one, or sealed to another key); a member given Read meanwhile is said to be (`give-read`,
   `conflict`), and a refusal that nothing read again explains is said for what it is. A browser
   without the giver's account key says so beside the row, and before the step-up is asked.
-- **The key's section of a mailbox's sheet** (`components/MailboxKeyPanel.vue`,
-  `state/mailboxKeys.ts`), for anyone who holds Read on it, owner, admin or member: a member who
-  waits for the key is told who can hand it over (`suppliers`), or that nobody reads the mailbox
-  now; someone who reads it is shown who waits for it (`waiting`) and hands it to each, sealed from
-  their own grant to the member as the key read in the same call lists them, never as the sheet
-  showed them, and once more after a `409` (`PUT …/grants/{user}`); a mailbox read without a key
-  offers its first key,
-  naming whom it is sealed to beside them (`keyless_readers`, `POST …/mailbox-key`); and a
-  personal mailbox whose person waits for its key, or whose own grant does not open in this
-  browser (tried when its sheet opens), offers a new key at the next epoch, sealed to them alone
-  (`PUT …/mailbox-key`). A team mailbox is never offered a new key: one nobody reads keeps its
-  "nobody can read" note, and is only removed. The section reads the key, and tries the person's
-  own grant, when the sheet opens and when the card says something new of it (another epoch, Read
-  or the key gained or lost), never because a sync replaced the card. Each write asks for the
-  step-up first, and reads the key, the card and the team's directory again after it, or after a
-  `409`.
+- **A mailbox's key** (`state/mailboxKeys.ts`, for an edition's page; the open console drew it in
+  the mailbox's sheet), for anyone who holds Read on it, owner, admin or member: for a member who
+  waits for the key, who can hand it over (`suppliers`), or that nobody reads the mailbox now; for
+  someone who reads it, who waits for it (`waiting`), handing it to each, sealed from their own
+  grant to the member as the key read in the same call lists them, and once more after a `409`
+  (`PUT …/grants/{user}`); a mailbox's first key, for one read without a key, sealed to whom it
+  names (`keyless_readers`, `POST …/mailbox-key`); and a personal mailbox's new key at the next
+  epoch, sealed to its person alone, for one whose person waits for its key or whose own grant does
+  not open in this browser (`PUT …/mailbox-key`). A team mailbox is never given a new key: one
+  nobody reads is only removed. Each write asks for the step-up first, and reads the key, the
+  mailbox and the team's directory again after it, or after a `409`.
 - **First keys after a sign-in**: right after every sign-in in this page (`state/session.ts`
   `onSignIn`, from `beginSession`), never on the page load of an older session, while the
   sign-in's step-up time counts and this browser keeps the person's account key, the console reads
   `GET /v1/accounts` and writes the first key of every mailbox the person reads without one (never
   an operator's), one request per mailbox, sealed to them and to its `keyless_readers`; a `409` (someone enrolled, or
   another tab keyed it) reads the mailbox key again and tries once more. A mailbox it did not key
-  is left for its sheet.
+  is left for a page that writes it.
 - **Failures** are said by operation (`give-read`, `load-mailbox-key`, `supply-key`, `first-key`,
   `new-key`, and `not_enrolled` for a link), in the console's words, never the server's.
 
@@ -1636,14 +1471,18 @@ Each text a person agrees to has a revision, configured on the daemon:
 
 | Variable | Default | The text |
 |---|---|---|
-| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-4` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), who reads a team mailbox's index, and that a removed mailbox is kept 30 days with it, recoverable, its readers told (`web/src/open/SyncText.vue`) |
-| `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-3` | the server changing a mailbox when someone allowed to act on it asks, and a key given Act acting under the key terms, not under this agreement (`web/src/open/ActionsText.vue`) |
-| `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console has no such text) |
-| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-3` | what a tool holding a new key can do (`web/src/open/KeyTermsText.vue`) |
+| `MAIL_CONSENT_VERSION_SYNC` | `2026-10-open-sync-4` | what sync stores, under whose agreement (a person's for their personal mailboxes, the team's for a team's), who reads a team mailbox's index, and that a removed mailbox is kept 30 days with it, recoverable, its readers told (the open console's `SyncText.vue`, its fourth revision) |
+| `MAIL_CONSENT_VERSION_ACTIONS` | `2026-10-open-actions-3` | the server changing a mailbox when someone allowed to act on it asks, and a key given Act acting under the key terms, not under this agreement (its `ActionsText.vue`, the third) |
+| `MAIL_CONSENT_VERSION_SEND` | `2026-10-open-sending` | sending from their mailboxes (the open console had no such text) |
+| `MAIL_CONSENT_VERSION_KEYS` | `2026-10-open-api-keys-3` | what a tool holding a new key can do (its `KeyTermsText.vue`, the third) |
 
-The defaults are the open console's texts, held to `web/src/open/versions.ts` by
-`web/test/contract.spec.ts`: moving a default without a new text fails the build. A server that
-serves another console sets the revisions its texts carry. The console sends the revision of the
+The defaults name the last texts of the open console earlier releases served, whose words the
+repository's history keeps under `web/src/open`. No page in this repository shows a text now: they
+stay as they were, so that what a database recorded under them keeps its meaning, pinned in Go
+alone (`internal/config/consent.go`, held by `consent_test.go`), and the core's specs
+(`web/test/edition.ts`, held to the contract fixtures by `web/test/contract.spec.ts`) name the same
+revisions. An operator mailbox records none. A server whose people agree to texts on an edition's
+page sets the revisions its texts carry. The console sends the revision of the
 text it showed, never `current_version`, and the daemon accepts only the configured one. Changing a
 revision asks everybody again: a consent to another revision of actions or sending stops counting
 (they are refused) until the person agrees to the new text; a consent to another revision of sync
@@ -1657,7 +1496,7 @@ revisions than the daemon's sees every agreement refused, and offers only a relo
 key may send. The `send` scope and the `send` flag are then refused when a key is created or given
 a mailbox, every send by a workspace key is refused, and `sends` is `false` on every key, and
 `GET /v1/me/mcp` says `keys_send: false`, so a console offers neither. It defaults to `true` only
-under the open console's key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms
+under the default key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms
 must set it, or the daemon refuses to start, since only those terms say whether a key may send.
 Those terms are also what a key's actions answer to: a key acts where it is given Act whatever
 anyone chooses about actions in their account, but for a person's key the upgrade to workspace keys
@@ -1666,28 +1505,61 @@ carried over, which acts only while its creator allows actions.
 `MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT` goes with them too: `true` is for a console whose key terms
 say a key acts only while its person allows actions. Every workspace key then acts only while the
 person who created it is active and agrees to the actions text at the current revision, as a
-person's key carried over by migration 0012 always does. It defaults to `false` under the open
-console's key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms sets it, or the
+person's key carried over by migration 0012 always does. It defaults to `false` under the default
+key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms sets it, or the
 daemon refuses to start.
 
 ## Storage
 
-`GET /v1/me/storage` (read scope, any credential) is what the mailboxes the caller may read take up
-in the index: `{mailboxes: [{account_id, workspace_id, email, messages, bytes}], workspaces:
-[{workspace_id, mailboxes, messages, bytes}], total: {messages, bytes}, database_bytes?}`, the
-mailboxes sorted by address. `workspaces` sums them per workspace, never a mailbox the caller
-cannot read, so it is not a workspace's whole usage; `?workspace=` narrows the answer to one.
+`GET /v1/me/storage` (read scope, any credential) is what the database holds for the caller's
+mailboxes: the live ones they may read and the removed ones they list, sorted by address, then id.
+`?workspace=` narrows the answer to one workspace the caller reaches. There is no quota field.
 
-- **Whose mailboxes**: the ones the caller may **read** — the rule of `GET /v1/accounts`, narrowed
-  to the `read` flag, since a grant that only shows a mailbox does not open its index; an instance
-  key answers only for the operator workspace's, never a person's. A mailbox never synced, or whose
-  index was deleted, is listed with zeros; one whose account needs signing in again keeps, and
-  reports, what was already indexed.
-- **Per folder copy**: `messages` counts the index rows still in their folder and `bytes` sums their
-  `RFC822.SIZE`, so a Gmail message under three synced labels counts three times. `bytes` is the
-  mail's size on its server, not what the index keeps of it.
-- **`database_bytes`**, only for an instance `owner` signed in: `mail.db` plus `mail.db-wal` on
-  disk, everybody's data included.
+```jsonc
+{
+  "rule_version": 1,
+  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "email": "…", "removed": false,
+                 "messages": 2, "bytes": 1037, "provider_bytes": 8642}],
+  "workspaces": [{"workspace_id": "wsp_…", "mailboxes": 1, "messages": 2, "bytes": 1037, "provider_bytes": 8642}],
+  "total": {"messages": 2, "bytes": 1037, "provider_bytes": 8642},
+  "database_bytes": 1048576            // the operator only
+}
+```
+
+- **`bytes` is usage rule 1** (`rule_version`, `store.RuleVersion`): a logical, deterministic
+  measure of what this server's database holds for a mailbox, the same on every server for the same
+  rows, whatever `VACUUM` or SQLite's pages do. Per mailbox it sums every value of each `messages`
+  row still in its folder (not vanished), the `parts` rows of those messages, the mailbox's
+  `folders` rows and its open `drafts` (none today: nothing writes a draft yet). A stored value
+  counts its bytes for text and blobs (UTF-8 bytes, not characters), 8 for an integer or a real, 0
+  for `NULL`. Compare figures only under one `rule_version`: any change to what counts is a new
+  version.
+- **Not counted:** the full-text index and SQLite's index overhead, the bodies and attachments
+  fetched on demand (a bounded cache), sends, the events journal, the mailbox journal, notices,
+  keys and grants.
+- **Per folder copy.** `messages` counts the index rows still in their folder, so a Gmail message
+  under three synced labels counts three times, in `messages`, `bytes` and `provider_bytes` alike.
+- **`provider_bytes`** sums the same copies' `RFC822.SIZE`, as the mail server reports it: the
+  mail's size on its server, not what the index keeps of it (`bytes` was that figure before rule
+  1).
+- **Whose mailboxes.** The live ones the caller may **read**, as before — the rule of
+  `GET /v1/accounts`, narrowed to the `read` flag, since a grant that only shows a mailbox does not
+  open its index; an instance key answers only for the operator workspace's, never a person's. A
+  mailbox never synced, or whose index was deleted, is listed with zeros (its folders' bytes if it
+  kept them); one whose account needs signing in again keeps, and reports, what was already
+  indexed.
+- **Removed mailboxes count until they are deleted for good** (`"removed": true`), in the sums of
+  their workspace and the total, to whoever lists them on the removed mailboxes' own paths: a
+  personal workspace's person and a team's active owners, signed in, of their open workspaces (never
+  its admins, its members or a key), and the operator for the operator workspace's alone, as its
+  live ones. Where teams are withheld, a team's removed mailboxes are not listed. Once a mailbox is
+  deleted for good (by its owners or the operator early, or by the hourly sweep after its 30 days),
+  it leaves the answer.
+- **`workspaces`** sums the mailboxes listed per workspace, in the order they first appear, never a
+  mailbox the caller cannot read or list removed: it is not a workspace's whole usage.
+- **`database_bytes`**, only for the operator (an instance key with the admin scope, restricted to
+  no mailbox): `mail.db` plus `mail.db-wal` on disk, everybody's data included. A person signed in,
+  an instance owner included, is not told it.
 
 ## Events: SSE and long poll
 
@@ -1849,8 +1721,8 @@ shape of `SyncConsent` and one more field, `withdrawn_at`: when the person last 
 (`users.actions_consent_withdrawn_at`, migration 0024), written in the same `UPDATE` that clears the
 consent and cleared by the one that gives it again, so it is never beside a consent. It is absent
 for a person who never answered, which tells the two apart; a withdrawal made before migration 0024
-reads as never answered. The open console asks again either way; an edition that asks for a
-permission only the first time leaves a person who withdrew it alone. Without sync there is no
+reads as never answered. An edition may ask again either way (the open console did), or ask for a
+permission only the first time and leave a person who withdrew it alone. Without sync there is no
 index, and without an index no message to act on; an index that stays while sync is stopped is not
 acted on either, but for a paused mailbox's (point 6 below).
 
@@ -1929,8 +1801,8 @@ confirmation. `trash` without a trash folder, or of a message already in it, is 
 
 Plain-text messages, replies and forwards with attachments, sent through the account's SMTP server.
 Mailie does not keep what is sent: the text and attachments are on the server only while the send
-runs, and the copy stays in the provider's Sent folder. The open console has no compose screen;
-sending is an API feature.
+runs, and the copy stays in the provider's Sent folder. Sending is an API feature: no page of this
+repository composes.
 
 ### Consent to sending
 
@@ -1939,8 +1811,8 @@ Its **own** consent, like actions: `users.send_consent_at` and `users.send_conse
 has. `GET /v1/me/send-consent` reads it; `POST {"version": …}` and `DELETE`
 are the person's, signed in. Withdrawing deletes nothing and stops sending at once: every send checks
 the consent when it is accepted and **again right before each connection to the SMTP server**. The
-open console never asks for this consent, so on a server running it a person's mailbox does not
-send unless that person agrees through the API with their session.
+open console never asked for this consent, so a person's mailbox on a server it served sends only
+once that person agrees through the API with their session.
 
 ### Who may send
 
@@ -2125,47 +1997,19 @@ revoking and taking away stay ([`workspaces.md`](workspaces.md#api-keys)).
   `confirm: true`, at most 100 a day; the message goes out under the address alone; its record is
   the key's own, and its owners and admins list its sends.
 
-The console shows the MCP address (`<origin>/mcp`) and the Claude Code command only when
-`GET /v1/me/mcp` says the server answers there.
+`GET /v1/me/mcp` says whether the server answers MCP over HTTP at `<origin>/mcp` (`http`) and
+whether its keys may send (`keys_send`), for an edition that shows how to connect a tool.
 
-## Running the console locally
+The operator's own keys, instance keys, are `/v1/apikeys` (`mailserver apikey create|list|revoke`),
+mounted only with `MAIL_ADMIN_API=true` ([Keys and scopes](#keys-and-scopes)).
 
-Prerequisites: Go 1.27, Node 24, and a `.env` with `MAIL_CREDENTIAL_KEY_HEX` (see the README).
+## Checking the console's core
 
-```sh
-echo 'MAIL_PUBLIC_URL=http://localhost:5174' >> .env
-make build
-./bin/mailserver user invite --bootstrap --role owner --email you@example.com   # daemon stopped
-make run                     # the daemon, on 127.0.0.1:8080
-make web-install web-dev     # another terminal: http://localhost:5174, /v1 and /mcp proxied
-```
-
-Open the invite link with `localhost`, never `127.0.0.1`: Google's web client matches host and port
-exactly, and Entra does not accept `127.0.0.1`. The dev server's port is fixed (`strictPort`)
-because a registered redirect names it.
-
-- Generic IMAP needs no configuration. A server on `localhost` or a private network (a local
-  Dovecot) needs `MAIL_ACCOUNT_ALLOW_PRIVATE=true`.
-- iCloud needs only the app-specific password.
-- Gmail and Microsoft without web clients use the `loopback` flow with the installed clients: the
-  console shows the provider's link, you consent in a new tab, the daemon receives the redirect on
-  its own listener, and the console notices through the `account.state` event. The browser must be
-  on the daemon's machine.
-- With web clients, they use the `web` flow, registered for `http://localhost:5174/oauth/return`.
-
-To serve the build from the daemon instead:
-
-```sh
-make web-build
-MAIL_WEB_DIR=web/dist MAIL_PUBLIC_URL=http://localhost:8080 ./bin/mailserver serve
-```
-
-The Google web client then needs `http://localhost:8080/oauth/return` registered as well. To run the
-daemon on another port, set `MAIL_HTTP_ADDR=127.0.0.1:8081` and point the dev server at it with
-`MAIL_DEV_TARGET=http://127.0.0.1:8081 make web-dev`.
-
-`make web-check` runs the console's typecheck, tests and build; it is not part of `make check`, and
-CI runs it in a job of its own. `web/README.md` describes the tests and the optional browser QA.
+There is no console to run here: a self-hosted server serves no web page, and an edition builds
+and serves its own from a project of its own. `make web-install web-check` installs the core's
+dependencies and runs its typecheck and unit tests (Node 24), under the specs' own edition
+(`web/test/edition.ts`); it is not part of `make check`, and CI runs it in a job of its own.
+`web/README.md` describes the tests and the browser QA helpers an edition's QA builds on.
 
 ## Not implemented
 
@@ -2175,10 +2019,10 @@ CI runs it in a job of its own. `web/README.md` describes the tests and the opti
 - Self-service sign-up, email verification, password recovery by email (the recovery code
   recovers a forgotten password, and the operator's reset invitation a lost recovery code too:
   [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
-- A screen for the server's own people: inviting someone to the server, disabling or deleting a
-  person (`POST /v1/users/*`); the routes and the command line exist. A team's people have theirs
-  (Members).
+- A web screen of any kind on a self-hosted server: the people commands and routes exist
+  (`mailserver user|workspace|member|access`, `POST /v1/users/*`), with no page of this repository
+  behind them.
 - OAuth for MCP clients: `/mcp` takes a key as a bearer.
-- Renaming or pausing a mailbox, and replacing the stored password of a password mailbox.
+- Replacing the stored password of a password mailbox.
 - Periodic cleanup of expired sessions (they stay with the account; unused invitations are swept).
-- The device-code flow in the console.
+- The device-code flow on a web page.

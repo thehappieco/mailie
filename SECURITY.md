@@ -49,8 +49,8 @@ verifier is the same offline oracle.
   read this mailbox".
 - A person's mailbox is invisible to other people, owners included. Changing it or sending from it
   needs that person's own consent, checked again before every command that changes the mailbox and
-  before every connection to the submission server. Instance keys belong to the operator and see
-  every mailbox over REST.
+  before every connection to the submission server. Instance keys belong to the operator and reach
+  only the operator workspace's mailboxes, over REST and MCP alike, never a person's or a team's.
 - Mail servers are reached over TLS only, and an account host that resolves to a loopback, private,
   link-local or CGNAT address is refused at dial time unless the operator allows it.
 - Logs redact addresses and credentials and carry ids rather than subjects or content.

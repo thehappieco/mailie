@@ -464,6 +464,10 @@ a backup deletes at once what is overdue (`Service.SweepRemovedMailboxes`).
   use. Its address stays taken in its workspace, a Gmail account's under
   every spelling ([Mailboxes](#mailboxes)): linking it again is `409`, which says until when it is
   kept; an owner recovers it, or deletes it for good to link it again.
+- **What it keeps still counts** in `GET /v1/me/storage` until it is deleted for good (platform
+  decision 0042): listed with `"removed": true`, and in its workspace's sum and the total, to
+  whoever lists it on the removed mailboxes' own paths — its person, a team's active owners, the
+  operator for an operator mailbox ([Storage](#storage)).
 - **It keeps protecting until it is deleted for good.** Whoever would read it once recovered — an
   active member holding `read` and, on a mailbox that has a key, a grant at its current epoch
   (`store.KeptReaderSQL`, the one rule on it as if it were live) — counts in every protection as a
@@ -899,7 +903,7 @@ included: these routes take a session or the operator's key.
 | instance invite (`POST /v1/users/invites`) | yes | no | yes |
 | disable a person (`POST /v1/users/disable`) | yes, not themselves | no | yes |
 | delete a person (`POST /v1/users/delete`) | yes, not themselves | no | yes |
-| `database_bytes` in storage | yes | no | no |
+| `database_bytes` in storage | no | no | yes |
 | every key, instance and workspace keys (`/v1/apikeys`, with `MAIL_ADMIN_API=true`): list, revoke; issue instance keys | no | no | yes |
 
 ## Protections
@@ -1406,7 +1410,7 @@ holds there. Instead:
   be in that workspace.
 - The console keeps the current workspace itself (per tab, remembered for each person in local
   storage) and passes `?workspace=` so a view never fetches another workspace's data
-  ([`console.md`](console.md), "Workspaces in the console").
+  ([`console.md`](console.md), "Workspaces in the console's core").
 
 ## Events
 
@@ -1467,20 +1471,29 @@ renders, as it renders a credential failure today.
 
 ## Storage
 
-`GET /v1/me/storage` answers for the mailboxes the caller can **read**:
+`GET /v1/me/storage` answers for the live mailboxes the caller can **read**, and for the removed
+ones they list on the removed mailboxes' own paths, until each is deleted for good:
 
 ```jsonc
 {
-  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "email": "…", "messages": 2, "bytes": 1037}],
-  "workspaces": [{"workspace_id": "wsp_…", "mailboxes": 1, "messages": 2, "bytes": 1037}],
-  "total": {"messages": 2, "bytes": 1037},
-  "database_bytes": 1048576            // an instance owner's session only, as today
+  "rule_version": 1,
+  "mailboxes": [{"account_id": "acc_…", "workspace_id": "wsp_…", "email": "…", "removed": false,
+                 "messages": 2, "bytes": 1037, "provider_bytes": 8642}],
+  "workspaces": [{"workspace_id": "wsp_…", "mailboxes": 1, "messages": 2, "bytes": 1037, "provider_bytes": 8642}],
+  "total": {"messages": 2, "bytes": 1037, "provider_bytes": 8642},
+  "database_bytes": 1048576            // the operator only
 }
 ```
 
-`workspaces` sums the caller's readable mailboxes per workspace, never a mailbox they cannot read,
-so it is not a workspace's whole usage. An instance key answers for the operator workspace, a
-workspace key for the mailboxes it reads.
+`bytes` is what the database holds for a mailbox under usage rule 1 (`rule_version`): its live
+messages' rows, their parts, its folders and its open drafts, each value counted by its bytes, a
+message in several folders once in each; `provider_bytes` sums the same copies' sizes as the mail
+server reports them ([`console.md`](console.md#storage) has the rule whole). `workspaces` sums the
+mailboxes listed per workspace, never one the caller cannot read or list removed, so it is not a
+workspace's whole usage. An instance key answers for the operator workspace (the operator for its
+removed mailboxes too), a workspace key for the mailboxes it reads, never removed ones; a person
+signed in for the mailboxes they read, and the removed ones of their personal workspace and of the
+open teams they own. `database_bytes` is the operator's alone.
 
 ## REST
 
@@ -2726,13 +2739,8 @@ Test names state the guarantee. At least:
   (`TestTheSyncPauseRoutesAnswerTheMailboxsSync`, the contract fixtures); the command line's
   (`TestServeOffersPausingOneMailboxsSync`, `TestTheOperatorRecoversAMailboxPausedAndResumesIt`,
   `TestHeldLinesNameNoActor`); MCP's (`TestListAccountsSaysAPausedMailboxIsSearchableButNotUpdated`);
-  and the console's, in `web/test/syncPause.page.spec.ts` (a person pauses and resumes their own
-  mailbox; a team's owner resumes it through the team's sync text, sending the revision shown, or
-  is offered a reload; a team mailbox nobody reads, or only a suspended member would, offers no
-  Resume; a member is offered nothing; a recovered mailbox is resumed in an edition that does not
-  offer the pause; a recovered notice says paused, turned off or off), `sync.spec.ts` (Paused,
-  Turned off and Starting), `notices.page.spec.ts` and `contract.spec.ts` (the five fixtures under
-  their guards).
+  and the console core's `contract.spec.ts` (the five fixtures under their guards). The open
+  console's screens of a pause, and their specs, went with it.
 
 - Visibility: `TestAMemberWithoutAGrantCannotSeeTheMailbox` over REST, the event stream, the long
   poll and storage, and over MCP, which takes keys only,
@@ -3192,8 +3200,7 @@ Test names state the guarantee. At least:
   a hold and read taken away), `TestNothingIsSentOfAMessageWhoseAccessGoesWhileTheMailServerIsRead`
   (an original, an attachment and a message's body; the same, and the mailbox removed),
   `TestADownloadStopsAtItsKeysExpiry`, `TestAnIssuedKeyEndedAtItsExpiryChecksOpenRequestsAgain`
-  (`internal/service`) and `TestADownloadOfAKeyStillReadingIsSentWhole`. The console (vitest): `keys.page.spec.ts`, an
-  edition without key terms offers no Create key.
+  (`internal/service`) and `TestADownloadOfAKeyStillReadingIsSentWhole`.
 
 ## Conflicts and resolutions
 

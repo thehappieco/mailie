@@ -1,8 +1,8 @@
 # MCP
 
 The daemon speaks the Model Context Protocol, so an AI assistant (Claude Code, for one) or any other
-MCP client can search and read the mailboxes a key of their workspace holds and, with a write key,
-act on them. It is the
+MCP client can search and read the mailboxes a key reaches (an instance key the operator
+workspace's, a workspace's key what it holds) and, with a write key, act on them. It is the
 same service as the REST API: the same rules about who sees what, the same search of the index, the
 same bodies fetched from the mail server on request and never stored, the same actions behind the
 same consent. No authorization rule lives in `internal/mcp`.
@@ -20,14 +20,21 @@ same consent. No authorization rule lives in `internal/mcp`.
 
 ## Who gets in, and what they see
 
-- **Keys only.** `/mcp` refuses a console session token (`401`): a session is a person in a
-  browser, and copying it into an assistant's configuration must not work.
-- **A workspace's key.** A tool reaches mail only with a key of the mailbox's workspace, which an
-  owner or an admin of it created in the console, under the workspace's API keys (in a personal
-  workspace, its person), with the scope and lifetime they chose. Creating it is their agreement to
+- **Keys only.** `/mcp` refuses a sign-in session's token (`401`): a session is a person in a
+  browser, and copying it into an assistant's configuration must not work. The refusal says so
+  without naming where a key is made: `the MCP server takes an API key of the workspace whose
+  mailboxes the tool uses, never a sign-in session's token`.
+- **On a self-hosted server, an instance key.** A self-hosted server has no web screen, so nobody
+  signs in to make a workspace's key there: a tool uses an instance key the operator makes with
+  `mailserver apikey create`, which reaches the operator workspace's mailboxes (below).
+- **A workspace's key.** A tool reaches a person's or a team's mail only with a key of the
+  mailbox's workspace, which an owner or an admin of it created signed in (in a personal workspace,
+  its person), with the scope and lifetime they chose. Creating it is their agreement to
   the key terms, which say what a tool holding it can do, and the key records the revision of the
   text they saw (`terms_version`). A key nobody agreed to the terms through is refused here and over
-  REST (`403`); the upgrade to workspace keys (migration 0012) revoked every one.
+  REST (`403`: `this key was not created by a person who agreed to the key terms, so it reaches no
+  mail; a tool needs a key whose creator agreed to them`); the upgrade to workspace keys (migration
+  0012) revoked every one.
 - **What a key reaches** is exactly what it holds, read at each call: the mailboxes of its
   workspace it was given, each with `read`, `act` or `send` (`docs/workspaces.md`, "API keys").
   `read` is given only by an owner or an admin who reads the mailbox, so a key never reads more
@@ -56,8 +63,8 @@ same consent. No authorization rule lives in `internal/mcp`.
   at the next call. A session belongs to the key that opened it: another key presenting the same
   `Mcp-Session-Id` gets `403`.
 - **Origin.** A request whose `Origin` is another site is refused (`403`), against DNS rebinding.
-  Pages on this machine (`localhost`, `127.0.0.1`, `::1`) and the console's own origin
-  (`MAIL_PUBLIC_URL`) are allowed. The SDK's own localhost protection is off, because behind a
+  Pages on this machine (`localhost`, `127.0.0.1`, `::1`) and the origin `MAIL_PUBLIC_URL` names,
+  where an edition serves its page, are allowed. The SDK's own localhost protection is off, because behind a
   reverse proxy every request reaches the loopback listener with the public `Host`.
 - `/.well-known/oauth-*` answer `404` and a `401` carries no `resource_metadata`, so a client uses the
   key it was given instead of starting an OAuth discovery that cannot succeed.
@@ -117,10 +124,11 @@ would let an intermediary keep a response and serve it to someone else, and this
 
 ## Connect a client
 
-A client needs two things: the server's address, and an API key. An owner or an admin of a
-workspace creates one in the console, under the workspace's API keys, for the mailboxes, scope and
-lifetime they choose (in a personal workspace, its person does); the operator's instance keys come
-from `mailserver apikey create`. The key is the only credential: whoever holds it
+A client needs two things: the server's address, and an API key. On a self-hosted server it is an
+instance key: `mailserver apikey create --scope read --name assistant [--accounts IDS] [--days N]`,
+with the scope the tool needs and, with `--accounts`, only some of the operator workspace's
+mailboxes (through the daemon with `MAIL_ADMIN_API=true`, or `--bootstrap` with it stopped). Where
+people sign in, an owner or an admin of a workspace creates one for its mailboxes, signed in. The key is the only credential: whoever holds it
 reaches what it reaches, so it goes where only its owner can read it, never into a command line
 someone else can see, an address or a log.
 
@@ -147,8 +155,6 @@ claude mcp add --transport http --scope user mailie https://mail.example.com/mcp
   --header "Authorization: Bearer <your key>"
 ```
 
-The console shows this command with the server's own address beside a workspace's API keys, and a
-new key's dialog copies it with the key in it, whenever the server answers MCP over HTTP.
 `mailserver mcp install --client claude-code --url https://mail.example.com` checks that the address
 answers MCP and prints the same command with `<your key>` where the key goes, and writes nothing:
 Claude Code keeps its servers in `~/.claude.json`, its own state file, which it rewrites while it runs
@@ -171,7 +177,7 @@ reaching a server elsewhere, or beside a daemon on the same one (unlike `serve -
 whole daemon).
 
 - **The key** comes from `MAILIE_API_KEY` and nowhere else; there is no flag for it. Without it, or
-  with something that is not an API key (a console session token, for one), `mcp connect` refuses to
+  with something that is not an API key (a sign-in session's token, for one), `mcp connect` refuses to
   start. It sends the key only to the address given, and never follows a redirect, which would take
   the key along.
 - **What passes:** everything. The bridge copies JSON-RPC messages both ways without reading them:
@@ -265,9 +271,9 @@ again. Restart the client after a change.
 
 The key sits in the client's file (Cursor's, Claude Desktop's, readable only by you after `mcp
 install`) or in Claude Code's. Removing the entry does not make the key stop working: revoking it does.
-An owner or an admin of its workspace revokes it in the console, under the workspace's API keys, and
-the person who created it under their own keys in their account; the operator revokes any key with
-`mailserver apikey revoke PREFIX`. A revoked key stops at its next request — over HTTP the client gets
+The operator revokes any key with `mailserver apikey revoke PREFIX` (with `MAIL_ADMIN_API=true`);
+where people sign in, an owner or an admin of its workspace revokes a workspace's key, and the
+person who created it does too. A revoked key stops at its next request — over HTTP the client gets
 `401`, and `mcp connect` ends with a line saying so — and `mcp install --uninstall` then clears the
 entry.
 
@@ -304,11 +310,10 @@ what the key still names. Beside a daemon that is already running, use `mcp conn
 
 `MAIL_MCP_HTTP=false` (default `true`) leaves `/mcp` unmounted: every method
 on `/mcp` and under it answers the API's JSON `404` (`{"code":"not_found","message":"no such
-endpoint"}`), with or without a console, and no event store is built (the startup log says
+endpoint"}`), with or without a web page, and no event store is built (the startup log says
 `mcp_http=off` instead of its bounds). `serve --mcp-stdio` works either way; `mcp connect` and
 `mcp install` need HTTP, and say so when it is off. `GET /v1/me/mcp`
-answers `{"http":false}`, and the console's API keys section then shows no MCP address and no
-command.
+answers `{"http":false}`, so an edition's page shows no MCP address and no command.
 
 ## Protocol versions
 
@@ -355,7 +360,9 @@ bridge relays the negotiation, `server/discover` included, on a connection of it
 - **No content** is stored in the database: a search reads the index; a body or attachment comes
   from the mail server and leaves in the response, as over REST.
 
-## Keys in the console
+## Keys over REST
 
-The routes (`GET/POST /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}`), their JSON and their rules
-are in [`console.md`](console.md#api-keys).
+The operator's instance keys are `/v1/apikeys` (`mailserver apikey create|list|revoke`), mounted
+only with `MAIL_ADMIN_API=true`. A workspace's keys are `/v1/workspaces/{id}/apikeys`, and the ones
+a person created `GET /v1/me/apikeys` and `DELETE /v1/me/apikeys/{prefix}`, for a person signed in:
+their JSON and their rules are in [`console.md`](console.md#api-keys).
