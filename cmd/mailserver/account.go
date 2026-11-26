@@ -237,10 +237,13 @@ func passwordArg(ctx context.Context, email, value string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("account add: reading the password: %w; nothing was added", err)
 	}
-	if len(line) > maxPasswordBytes {
+	// A line ending in CRLF loses its carriage return before the limit is
+	// asked, so that the limit is the password's whichever ending it came
+	// with.
+	password := strings.TrimSuffix(string(line), "\r")
+	if len(password) > maxPasswordBytes {
 		return "", errPasswordTooLong
 	}
-	password := strings.TrimSuffix(string(line), "\r")
 	if password == "" {
 		return "", errNoPassword
 	}
@@ -249,12 +252,13 @@ func passwordArg(ctx context.Context, email, value string) (string, error) {
 
 // readPasswordLine reads r up to its first line feed, a byte at a time so
 // that nothing past it is consumed, and returns the line without the line
-// feed; the end of input ends a line too. It stops one byte past
-// maxPasswordBytes, which the caller refuses.
+// feed; the end of input ends a line too. It stops two bytes past
+// maxPasswordBytes, room for a carriage return the caller takes off and one
+// byte more, which the caller refuses.
 func readPasswordLine(r io.Reader) ([]byte, error) {
 	var b [1]byte
 	var line []byte
-	for len(line) <= maxPasswordBytes {
+	for len(line) <= maxPasswordBytes+1 {
 		n, err := r.Read(b[:])
 		if n > 0 {
 			if b[0] == '\n' {

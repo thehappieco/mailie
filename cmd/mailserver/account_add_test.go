@@ -182,6 +182,8 @@ func TestPasswordDashWithNoPasswordToReadAddsNothing(t *testing.T) {
 		{"\n", errNoPassword},
 		{"\r\n", errNoPassword},
 		{strings.Repeat("x", maxPasswordBytes+1) + "\n", errPasswordTooLong},
+		{strings.Repeat("x", maxPasswordBytes+1) + "\r\n", errPasswordTooLong},
+		{strings.Repeat("x", maxPasswordBytes) + "\rmore\n", errPasswordTooLong},
 		{strings.Repeat("x", 1<<20), errPasswordTooLong},
 	} {
 		pipeStdin(t, c.input)
@@ -193,10 +195,13 @@ func TestPasswordDashWithNoPasswordToReadAddsNothing(t *testing.T) {
 		t.Errorf("the daemon was asked %d times", len(sent))
 	}
 
-	// The longest password it takes is sent.
-	pipeStdin(t, strings.Repeat("x", maxPasswordBytes)+"\n")
-	if _, err := addPasswordMailbox(t, d, "-"); err != nil {
-		t.Errorf("a password of %d bytes: %v", maxPasswordBytes, err)
+	// The longest password it takes is sent, whichever line ending it came
+	// with.
+	for _, ending := range []string{"\n", "\r\n", ""} {
+		pipeStdin(t, strings.Repeat("x", maxPasswordBytes)+ending)
+		if _, err := addPasswordMailbox(t, d, "-"); err != nil {
+			t.Errorf("a password of %d bytes ending %q: %v", maxPasswordBytes, ending, err)
+		}
 	}
 }
 
