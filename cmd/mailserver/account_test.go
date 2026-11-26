@@ -58,7 +58,7 @@ func TestWaitingForConsentRidesOutARateLimit(t *testing.T) {
 	cfg, polls := fakeDaemon(t, throttled, state("active", ""))
 
 	started := time.Now()
-	if err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute); err != nil {
+	if _, err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute); err != nil {
 		t.Fatalf("waitForState: %v", err)
 	}
 	if polls.Load() != 2 {
@@ -72,7 +72,7 @@ func TestWaitingForConsentRidesOutARateLimit(t *testing.T) {
 
 func TestWaitingForConsentStopsWhenTheAccountFails(t *testing.T) {
 	cfg, polls := fakeDaemon(t, state("error", "consent was declined"))
-	err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute)
+	_, err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute)
 	if err == nil || !strings.Contains(err.Error(), "consent was declined") {
 		t.Fatalf("err = %v, want the reason the account failed", err)
 	}
@@ -86,7 +86,7 @@ func TestWaitingForConsentGivesUpOnARealError(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"code":"not_found","message":"no such account"}`))
 	})
-	if err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute); err == nil ||
+	if _, err := waitForState(t.Context(), cfg, "acc_1", "active", time.Minute); err == nil ||
 		!strings.Contains(err.Error(), "no such account") {
 		t.Fatalf("err = %v", err)
 	}
@@ -110,14 +110,16 @@ func TestACustomDomainOnICloudCanNameItsSignInFromTheCLI(t *testing.T) {
 	t.Cleanup(srv.Close)
 	cfg := config.Config{HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: "deadbeef.secret"}
 
+	pipeStdin(t, "abcd-efgh-ijkl-mnop\n")
 	err := accountAdd(t.Context(), cfg, []string{
-		"--email", "ana@lima.example", "--provider", "icloud", "--password", "abcd-efgh-ijkl-mnop",
+		"--email", "ana@lima.example", "--provider", "icloud", "--password", "-",
 		"--login-user", "ana@icloud.com",
 	})
 	if err != nil {
 		t.Fatalf("account add: %v", err)
 	}
-	if sent["login_user"] != "ana@icloud.com" || sent["email"] != "ana@lima.example" || sent["provider"] != "icloud" {
+	if sent["login_user"] != "ana@icloud.com" || sent["email"] != "ana@lima.example" || sent["provider"] != "icloud" ||
+		sent["password"] != "abcd-efgh-ijkl-mnop" {
 		t.Errorf("sent %v", sent)
 	}
 	for _, key := range []string{"imap_host", "imap_port", "smtp_host", "smtp_port", "smtp_tls"} {

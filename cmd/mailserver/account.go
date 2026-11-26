@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -62,10 +63,28 @@ type accountJSON struct {
 	SyncTier    string `json:"sync_tier"`
 	LastError   string `json:"last_error"`
 	Sync        struct {
+		Enabled     bool  `json:"enabled"`
 		Held        bool  `json:"held"`
 		Paused      bool  `json:"paused"`
 		PausedSince int64 `json:"paused_since"`
 	} `json:"sync"`
+}
+
+// mailboxSyncNote says where a mailbox's sync stands, as the daemon
+// answered it, and the command that starts it when it does not run: an
+// operator mailbox syncs nothing until the operator switches it on.
+func mailboxSyncNote(accountID string, a accountJSON) string {
+	switch {
+	case a.Sync.Held:
+		// Never an operator mailbox's, said all the same.
+		return "its sync is held until its person turns it on"
+	case a.Sync.Paused:
+		return fmt.Sprintf("its sync is paused until `mailserver account sync %s resume`", accountID)
+	case a.Sync.Enabled:
+		return fmt.Sprintf("its sync is on; `mailserver account sync %s status` shows how far it got", accountID)
+	default:
+		return fmt.Sprintf("its sync is off until `mailserver account sync %s on`", accountID)
+	}
 }
 
 type authFlowJSON struct {
@@ -88,7 +107,7 @@ func accountAdd(ctx context.Context, cfg config.Config, args []string) error {
 	displayName := fs.String("name", "", "how to label this account")
 	paste := fs.Bool("paste", false, "print the URL and wait for the redirect to be pasted back, for a machine with no browser")
 	device := fs.Bool("device", false, "show a code to type on another device (Microsoft only; usually blocked by tenant policy)")
-	password := fs.String("password", "", "IMAP password, for a generic server, or an app-specific password for iCloud")
+	password := fs.String("password", "", passwordFlagUsage)
 	imapHost := fs.String("imap-host", "", "override the IMAP host")
 	imapPort := fs.Int("imap-port", 0, "override the IMAP port")
 	smtpHost := fs.String("smtp-host", "", "override the SMTP host")
@@ -104,6 +123,12 @@ func accountAdd(ctx context.Context, cfg config.Config, args []string) error {
 	if *email == "" {
 		return errors.New("account add: --email is required")
 	}
+	// Before anything is sent: a password given as an argument is refused
+	// here, and one read from standard input is read once.
+	secret, err := passwordArg(ctx, *email, *password)
+	if err != nil {
+		return err
+	}
 
 	flow := "loopback"
 	switch {
@@ -117,7 +142,7 @@ func accountAdd(ctx context.Context, cfg config.Config, args []string) error {
 		"email": *email, "display_name": *displayName, "flow": flow,
 	}
 	for key, value := range map[string]any{
-		"provider": *providerName, "password": *password, "imap_host": *imapHost,
+		"provider": *providerName, "password": secret, "imap_host": *imapHost,
 		"smtp_host": *smtpHost, "smtp_tls": *smtpTLS, "login_user": *loginUser,
 	} {
 		if s, ok := value.(string); ok && s != "" {
@@ -141,16 +166,128 @@ func accountAdd(ctx context.Context, cfg config.Config, args []string) error {
 		return fmt.Errorf("account add: unexpected response: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "registered %s as %s\n", result.Account.Email, result.Account.ID)
 	if result.Auth == nil {
-		fmt.Fprintln(os.Stderr, "ready to sync")
+		// A password mailbox: the daemon logged in with it once before it
+		// stored it. Its sync is whatever the answer says, which for an
+		// operator mailbox is off until the operator switches it on.
+		fmt.Fprintf(os.Stderr, "added %s as %s; %s\n", result.Account.Email, result.Account.ID,
+			mailboxSyncNote(result.Account.ID, result.Account))
 		return nil
 	}
+	fmt.Fprintf(os.Stderr, "registered %s as %s; it needs authorising\n", result.Account.Email, result.Account.ID)
 	return finishAuthorization(ctx, cfg, result.Account.ID, result.Auth, flow)
 }
 
-// finishAuthorization walks the person through consent.
+// passwordFlagUsage is account add's --password help.
+const passwordFlagUsage = "only -, which reads the IMAP password (an app-specific one for iCloud) from standard " +
+	"input: typed at a prompt that does not show it, or the first line of what is piped in. Never the password " +
+	"itself, which sudo, systemd-run and shell history record"
+
+// maxPasswordBytes bounds a password read from standard input: a file piped
+// in by mistake is refused rather than sent.
+const maxPasswordBytes = 4096
+
+var (
+	// errPasswordArgument is a password given on the command line.
+	errPasswordArgument = errors.New("account add: --password takes no password on the command line, which sudo, " +
+		"systemd-run and shell history record; give --password - and pipe the password on standard input, " +
+		"or type it at the prompt; nothing was added")
+	// errNoPassword is --password - with nothing to read.
+	errNoPassword = errors.New("account add: --password - read no password from standard input; nothing was added")
+	// errPasswordTooLong is more than a password on standard input.
+	errPasswordTooLong = fmt.Errorf("account add: the password read from standard input is longer than %d bytes; "+
+		"nothing was added", maxPasswordBytes)
+)
+
+// passwordArg resolves account add's --password: empty is none, for a
+// mailbox that signs in with its provider; "-" is the password, read from
+// standard input; anything else is refused, before anything is sent, and
+// never quoted back. An argument is seen by whatever records the command
+// line — sudo's log, systemd-run's journal, shell history, ps — and a
+// mailbox's password must reach nothing but the daemon, which seals it.
+//
+// At a terminal the password is typed without echo; otherwise it is the
+// first line of standard input, read a byte at a time so nothing past it is
+// consumed. Only the line ending is taken off it (a line feed, and a
+// carriage return before one), never a space: a mail server may take a
+// password that begins or ends with one, and inner spaces (as Google shows
+// an app password) are the password's. A space a pipe added by mistake is
+// harmless kept: the daemon logs in once with the password before it stores
+// it, so a wrong one is refused, said and stored nowhere, where trimming
+// would turn a right one into a wrong one with nothing to say why.
+func passwordArg(ctx context.Context, email, value string) (string, error) {
+	switch value {
+	case "":
+		return "", nil
+	case "-":
+	default:
+		return "", errPasswordArgument
+	}
+	var (
+		line []byte
+		err  error
+	)
+	if stdinIsTerminal() {
+		fmt.Fprintf(os.Stderr, "Password for %s (not shown): ", email)
+		line, err = readHidden(ctx)
+		fmt.Fprintln(os.Stderr) // the Return the terminal did not echo
+	} else {
+		line, err = readPasswordLine(stdin)
+	}
+	if err != nil {
+		return "", fmt.Errorf("account add: reading the password: %w; nothing was added", err)
+	}
+	if len(line) > maxPasswordBytes {
+		return "", errPasswordTooLong
+	}
+	password := strings.TrimSuffix(string(line), "\r")
+	if password == "" {
+		return "", errNoPassword
+	}
+	return password, nil
+}
+
+// readPasswordLine reads r up to its first line feed, a byte at a time so
+// that nothing past it is consumed, and returns the line without the line
+// feed; the end of input ends a line too. It stops one byte past
+// maxPasswordBytes, which the caller refuses.
+func readPasswordLine(r io.Reader) ([]byte, error) {
+	var b [1]byte
+	var line []byte
+	for len(line) <= maxPasswordBytes {
+		n, err := r.Read(b[:])
+		if n > 0 {
+			if b[0] == '\n' {
+				return line, nil
+			}
+			line = append(line, b[0])
+		}
+		if errors.Is(err, io.EOF) {
+			return line, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+	return line, nil
+}
+
+// finishAuthorization walks the person through consent, and says where the
+// mailbox's sync stands once it is authorised.
 func finishAuthorization(ctx context.Context, cfg config.Config, accountID string, flow *authFlowJSON, kind string) error {
+	authorised, err := authorize(ctx, cfg, accountID, flow, kind)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "authorised; %s\n", mailboxSyncNote(accountID, authorised))
+	return nil
+}
+
+// authorize runs one consent flow to its end and returns the mailbox as the
+// daemon answered then.
+func authorize(ctx context.Context, cfg config.Config, accountID string, flow *authFlowJSON,
+	kind string,
+) (accountJSON, error) {
 	switch kind {
 	case "device":
 		fmt.Fprintf(os.Stderr, "\nOn any device, open %s\nand enter the code: %s\n",
@@ -165,14 +302,15 @@ func finishAuthorization(ctx context.Context, cfg config.Config, accountID strin
 		fmt.Fprintln(os.Stderr, "connection error; that is expected) and press enter:")
 		var pasted string
 		if _, err := fmt.Scanln(&pasted); err != nil {
-			return fmt.Errorf("account add: reading the pasted address: %w", err)
+			return accountJSON{}, fmt.Errorf("account add: reading the pasted address: %w", err)
 		}
-		if _, err := adminPost(ctx, cfg, "/v1/accounts/oauth/callback",
-			map[string]any{"redirect_url": strings.TrimSpace(pasted)}); err != nil {
-			return err
+		// The daemon answers with the mailbox it authorised.
+		var authorised accountJSON
+		if err := adminCall(ctx, cfg, "/v1/accounts/oauth/callback",
+			map[string]any{"redirect_url": strings.TrimSpace(pasted)}, &authorised); err != nil {
+			return accountJSON{}, err
 		}
-		fmt.Fprintln(os.Stderr, "authorised")
-		return nil
+		return authorised, nil
 
 	default:
 		fmt.Fprintln(os.Stderr, "\nOpening a browser to authorise this account. If nothing opens, visit:")
@@ -190,8 +328,10 @@ func finishAuthorization(ctx context.Context, cfg config.Config, accountID strin
 const pollInterval = 2 * time.Second
 
 // waitForState polls until an account reaches a state, fails, or the wait runs
-// out.
-func waitForState(ctx context.Context, cfg config.Config, accountID, want string, timeout time.Duration) error {
+// out, and returns the account as it was when it reached that state.
+func waitForState(ctx context.Context, cfg config.Config, accountID, want string,
+	timeout time.Duration,
+) (accountJSON, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
@@ -208,27 +348,27 @@ func waitForState(ctx context.Context, cfg config.Config, accountID, want string
 			// rather than abandon the flow they are halfway through.
 			next = max(failure.RetryAfter, pollInterval)
 		case err != nil:
-			return err
+			return accountJSON{}, err
 		default:
 			var a accountJSON
 			if err := json.Unmarshal(raw, &a); err != nil {
-				return fmt.Errorf("account: unexpected response: %w", err)
+				return accountJSON{}, fmt.Errorf("account: unexpected response: %w", err)
 			}
 			switch a.State {
 			case want:
-				fmt.Fprintln(os.Stderr, "authorised")
-				return nil
+				return a, nil
 			case "needs_reauth", "error":
-				return fmt.Errorf("authorisation failed: %s", firstNonEmpty(a.StateReason, a.LastError, "no reason given"))
+				return accountJSON{}, fmt.Errorf("authorisation failed: %s",
+					firstNonEmpty(a.StateReason, a.LastError, "no reason given"))
 			}
 		}
 		if time.Now().After(deadline) {
-			return errors.New("timed out waiting for authorisation; " +
-				"run `mailserver account authorize` to try again")
+			return accountJSON{}, fmt.Errorf("timed out waiting for authorisation; "+
+				"run `mailserver account authorize %s` to try again", accountID)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return accountJSON{}, ctx.Err()
 		case <-time.After(next):
 		}
 	}
@@ -475,7 +615,7 @@ func accountRemoved(ctx context.Context, cfg config.Config, args []string) error
 // its 30 days. Its sync comes back paused until it is resumed (account sync
 // ID resume), or off when the operator had switched it off (account sync ID
 // on), as the answer says; a person's or a team's is recovered by its
-// owners, in the console.
+// owners.
 func accountRecover(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("account recover", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -592,8 +732,8 @@ type syncJSON struct {
 // accountSync shows an account's sync, asks for a pass, switches an
 // operator mailbox's on, pauses or resumes an operator mailbox's sync, its
 // index kept, or turns any mailbox's off. A person's mailbox syncs when
-// they turn sync on in the console, and a team's when its owners or admins
-// do, and the daemon refuses to let anyone else turn it on for them; off is
+// they turn sync on, and a team's when its owners or admins do, and the
+// daemon refuses to let anyone else turn it on for them; off is
 // the operator's turn-off (POST /v1/accounts/{id}/sync/stop), of a mailbox of
 // any workspace, live or removed, which deletes its index and tells its
 // readers: how the operator erases a mailbox's index when asked to, or stops
