@@ -16,11 +16,11 @@ func TestTheKeyCommandsNameMailAdminAPIWhenTheDaemonHasNoKeyRoutes(t *testing.T)
 	// the API's JSON not_found, and an earlier release with no console the
 	// router's plain-text 404. Either way the operator is told why.
 	for name, reply := range map[string]func(http.ResponseWriter){
-		"with the console": func(w http.ResponseWriter) {
+		"this release": func(w http.ResponseWriter) {
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"code":"not_found","message":"not found"}`))
+			_, _ = w.Write([]byte(`{"code":"not_found","message":"no such endpoint"}`))
 		},
-		"without the console": func(w http.ResponseWriter) {
+		"an earlier release without the console": func(w http.ResponseWriter) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte("404 page not found\n"))
@@ -30,6 +30,19 @@ func TestTheKeyCommandsNameMailAdminAPIWhenTheDaemonHasNoKeyRoutes(t *testing.T)
 		if _, err := adminGet(t.Context(), cfg, "/v1/apikeys"); err == nil || !strings.Contains(err.Error(), "MAIL_ADMIN_API=true") {
 			t.Errorf("%s: apikey list failed with %v, which does not name MAIL_ADMIN_API", name, err)
 		}
+	}
+}
+
+func TestAKeyNobodyHoldsDoesNotBlameMailAdminAPI(t *testing.T) {
+	// A mounted key route's own not_found, a prefix no key has, is the
+	// operator's mistake, not the daemon's configuration.
+	cfg, _ := fakeDaemon(t, func(w http.ResponseWriter) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":"not_found","message":"no such api key"}`))
+	})
+	_, err := adminDo(t.Context(), cfg, http.MethodDelete, "/v1/apikeys/0a0b0c99", nil)
+	if err == nil || strings.Contains(err.Error(), "MAIL_ADMIN_API") {
+		t.Errorf("revoking a key nobody holds failed with %v", err)
 	}
 }
 
