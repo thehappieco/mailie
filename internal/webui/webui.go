@@ -1,11 +1,12 @@
-// Package webui serves the built web console.
+// Package webui serves a built web console, when a deployment has one.
 //
 // From a directory rather than from the binary. Embedding the built assets
 // would make `go build` and `make check` depend on a Node toolchain, and would
 // mean rebuilding the daemon to change a stylesheet. The cost is that a
-// deployment ships two things, the binary and a console's build (web/dist,
-// the open console, on a self-hosted server; the cloud app's on the hosted
-// one), which is what a release directory is for.
+// deployment with a console ships two things, the binary and the console's
+// build (the cloud app's, on the hosted service), which is what a release
+// directory is for. A self-hosted server has none: it serves the API alone,
+// and this package's NotFound is what it answers at /mcp.
 //
 // The console holds a session token that can remove mailboxes, so the headers
 // below are load-bearing rather than decoration: anything that can run script
@@ -25,10 +26,11 @@ import (
 	"github.com/thehappieco/mailie/internal/service"
 )
 
-// contentSecurityPolicy is the policy web/index.html also carries in a meta
-// tag. Set in both places on purpose: the meta tag survives being served by
-// some other static server, and the header cannot be stripped by rewriting the
-// HTML and is the only one that applies to responses that are not documents.
+// contentSecurityPolicy is the policy a console's index.html also carries in
+// a meta tag (testdata/index.html holds the one this package checks). Set in
+// both places on purpose: the meta tag survives being served by some other
+// static server, and the header cannot be stripped by rewriting the HTML and
+// is the only one that applies to responses that are not documents.
 // The meta copy leaves out frame-ancestors, which browsers ignore there.
 //
 // connect-src 'self' is the property the design rests on: the console and the
@@ -154,10 +156,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	clean := path.Clean("/" + r.URL.Path)
 	h.headers(w)
 
-	// Paths that belong to the API or to MCP never fall back to the page. An
-	// unknown endpoint answered with 200 and HTML is a client that parses the
-	// console as JSON and reports a syntax error about a route that does not
-	// exist.
+	// Paths that belong to the API, /mcp among them, never fall back to the
+	// page. An unknown endpoint answered with 200 and HTML is a client that
+	// parses the console as JSON and reports a syntax error about a route
+	// that does not exist.
 	if isAPIPath(clean) {
 		notFoundJSON(w)
 		return

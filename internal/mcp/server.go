@@ -124,7 +124,7 @@ Start with list_accounts. search_messages searches the index of synced mailboxes
 
 To watch for new mail, call wait_for_new_mail in a loop, passing the next_cursor of each answer as since_cursor.
 
-mark_read, flag_message, move_message and trash_message change the real mailbox, which the person sees in every mail app; they need a write key and the owner's permission for actions in the console. Confirm with the person before moving or trashing. Trash is reversible: the messages stay in the provider's trash and move_message brings them back. Mailie never deletes permanently.
+mark_read, flag_message, move_message and trash_message change the real mailbox, which the person sees in every mail app; they need a write key that may act on the mailbox, and, where the key acts only while the person who created it allows actions, that permission. Confirm with the person before moving or trashing. Trash is reversible: the messages stay in the provider's trash and move_message brings them back. Mailie never deletes permanently.
 
 Message ids are Mailie's numbers, not the Message-ID header; folder ids come from list_folders.`
 

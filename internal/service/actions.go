@@ -111,7 +111,8 @@ type ActionResult struct {
 // Errors of the action routes.
 var (
 	errActionsOff = E(CodeConflict,
-		"actions are off: you have not allowed them in the console", nil)
+		"actions are off: the person who asks, or who created this key, has not allowed them, and only that "+
+			"person can", nil)
 	errNotOperator = E(CodeNotAuthorized,
 		"a mailbox of the operator workspace is changed only with an instance key", nil)
 	errNoSafeMove = E(CodeConflict,

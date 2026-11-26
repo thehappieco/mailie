@@ -336,7 +336,8 @@ func TestWithdrawingWhileAnActionWaitsForTheServerStopsItBeforeAnyChange(t *test
 		err := <-done
 		b.box.OnCall(nil)
 		wantCode(t, tc.name+" after the withdrawal", err, service.CodeConflict)
-		if msg := service.MessageOf(err); msg != "actions are off: you have not allowed them in the console" {
+		if msg := service.MessageOf(err); msg != "actions are off: the person who asks, or who created this key, has "+
+			"not allowed them, and only that person can" {
 			t.Errorf("%s: message = %q", tc.name, msg)
 		}
 		for _, c := range b.box.Calls() {

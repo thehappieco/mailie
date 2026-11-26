@@ -251,7 +251,8 @@ func TestNobodyActsWithoutTheirOwnCurrentConsent(t *testing.T) {
 	// (TestAKeyActsOnlyWithActAndTheWriteScopeUnderItsKeyTerms).
 	_, err := b.m.svc.SetFlags(ctx, b.owner, service.SetFlagsRequest{IDs: []int64{a}, Seen: yes()})
 	wantCode(t, "her session without consent", err, service.CodeConflict)
-	if msg := service.MessageOf(err); msg != "actions are off: you have not allowed them in the console" {
+	if msg := service.MessageOf(err); msg != "actions are off: the person who asks, or who created this key, has not "+
+		"allowed them, and only that person can" {
 		t.Errorf("message = %q", msg)
 	}
 	// Consent to an older text is not consent to this one.

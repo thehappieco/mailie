@@ -56,9 +56,10 @@ type CreateAPIKeyRequest struct {
 	Name       string   `json:"name"`
 	Scope      string   `json:"scope"`
 	AccountIDs []string `json:"account_ids,omitempty"`
-	// UserID is refused. No key acts as a person: a workspace's keys are
-	// created in the console by its owners and admins, agreeing to the key
-	// terms (workspacekeys.go).
+	// UserID is refused. No key acts as a person, and this route makes
+	// instance keys alone: a workspace's keys belong to the workspace, made
+	// by its owners and admins under the key terms (workspacekeys.go), or by
+	// an issuer (issuedkeys.go).
 	UserID        string `json:"user_id,omitempty"`
 	ExpiresInDays int    `json:"expires_in_days,omitempty"`
 }
@@ -111,8 +112,7 @@ func (s *Service) CreateAPIKey(ctx context.Context, p Principal, req CreateAPIKe
 	}
 	if strings.TrimSpace(req.UserID) != "" {
 		return CreatedAPIKey{}, E(CodeBadRequest,
-			"user_id is not accepted: no key acts as a person; an owner or an admin of a workspace creates its keys "+
-				"in the console", nil)
+			"user_id is not accepted: no key acts as a person, and this makes instance keys alone", nil)
 	}
 	name := strings.TrimSpace(req.Name)
 	if name == "" || utf8.RuneCountInString(name) > maxKeyName {

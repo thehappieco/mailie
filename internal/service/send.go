@@ -275,7 +275,7 @@ var (
 	errSendConfirm = E(CodeBadRequest,
 		"sending requires confirm=true: the request is the confirmation that the person asked to send this message", nil)
 	errSendOff = E(CodeConflict,
-		"sending is off: you have not allowed it in the console", nil)
+		"sending is off: you have not allowed it, and only you can", nil)
 	errNotSendingOperator = E(CodeNotAuthorized,
 		"a mailbox of the operator workspace sends only with an instance key", nil)
 	errSendKeyRequired = E(CodeBadRequest,

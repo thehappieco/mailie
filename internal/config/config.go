@@ -76,9 +76,9 @@ type Config struct {
 	// answered 429 until another ends.
 	DownloadSpoolBytes int64
 
-	// WebDir is the built console (web/dist, or the cloud app's build on the
-	// hosted service). Empty serves the API only, which is a perfectly good
-	// deployment.
+	// WebDir is a built console, served at the root: an edition's, such as
+	// the hosted service's app (this repository builds none). Empty, the
+	// default, serves the API only, which is what a self-hosted server does.
 	WebDir string
 	// PublicURL is the origin a browser uses to reach the console, such as
 	// https://console.mailie.example. It is the single source for the
@@ -95,7 +95,7 @@ type Config struct {
 	ConnectSrc []string
 	// AccountAllowPrivate lets mail accounts point at loopback, private,
 	// link-local or CGNAT addresses. Off by default: a host somebody typed
-	// into the console is a server-side connection to wherever they chose,
+	// in for a mailbox is a server-side connection to wherever they chose,
 	// which is the shape of every SSRF.
 	AccountAllowPrivate bool
 
@@ -116,7 +116,8 @@ type Config struct {
 	MicrosoftDeviceCode bool
 	// KeysMaySend lets a workspace's API keys send email, where the key
 	// holds the send flag on the mailbox and has the send scope. On by
-	// default under the open console's key terms, which say a key may send.
+	// default, under the default key terms (DefaultKeyTermsVersion), which
+	// say a key may send.
 	// Off, for an edition whose key terms do not cover sending, the send
 	// scope is refused when a key is created and every send by a workspace
 	// key is refused; instance keys are the operator's and are not affected.
@@ -138,14 +139,14 @@ type Config struct {
 	// KeysActUnderCreatorConsent holds a workspace key's actions to its
 	// creator's own actions consent as well: the key acts only while the
 	// person who created it allows actions at the current revision (and is
-	// active). Off by default, under the open console's key terms, which
-	// say the key terms cover what a key does. On, for an edition whose key
+	// active). Off by default, under the default key terms, which say the
+	// key terms cover what a key does. On, for an edition whose key
 	// terms promise that a key acts only while its person allows actions.
 	// Like MAIL_KEYS_MAY_SEND, a deployment whose MAIL_CONSENT_VERSION_KEYS
 	// names other terms sets it itself.
 	KeysActUnderCreatorConsent bool
-	// Consent names the revisions of the texts a person agrees to in the
-	// console (see ConsentVersions).
+	// Consent names the revisions of the texts a person agrees to (see
+	// ConsentVersions).
 	Consent ConsentVersions
 	// RetiredMCP names the variables of an earlier release's MCP server that
 	// this environment sets to something that asks for MCP: MAIL_MCP_HTTP
@@ -299,15 +300,15 @@ func Load() (Config, error) {
 
 	errs = append(errs, cfg.Log.validate()...)
 
-	// The open key terms say a key may send; another edition's say what
-	// they say, and a daemon serving them is told, never assumed.
+	// The default key terms say a key may send; other terms say what they
+	// say, and a daemon serving them is told, never assumed.
 	if v, _ := os.LookupEnv("MAIL_KEYS_MAY_SEND"); v == "" && cfg.Consent.Keys != DefaultKeyTermsVersion {
 		bad("MAIL_KEYS_MAY_SEND: set it to true or false: MAIL_CONSENT_VERSION_KEYS names key terms other " +
-			"than the open console's, and only those terms say whether an API key may send")
+			"than the default ones, and only those terms say whether an API key may send")
 	}
 	if v, _ := os.LookupEnv("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT"); v == "" && cfg.Consent.Keys != DefaultKeyTermsVersion {
 		bad("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT: set it to true or false: MAIL_CONSENT_VERSION_KEYS names key terms " +
-			"other than the open console's, and only those terms say whether a key acts under its creator's actions consent")
+			"other than the default ones, and only those terms say whether a key acts under its creator's actions consent")
 	}
 
 	// Google issues a client secret for Desktop clients and the token endpoint

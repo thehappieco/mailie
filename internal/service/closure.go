@@ -503,8 +503,8 @@ func fromClosure(err error, what string) error {
 			"turn the mailbox's sync on for the team, first (an owner recovers a removed mailbox first, "+
 			"or deletes it for good), or pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrLastOwner):
-		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people "+
-			"from the console. Pass force to do it anyway", err)
+		return E(CodeConflict, "that is the last active owner; nobody would be left to invite people. "+
+			"Pass force to do it anyway", err)
 	case errors.Is(err, auth.ErrUserNotFound):
 		return E(CodeNotFound, "no account has that address", err)
 	default:

@@ -105,8 +105,9 @@ func (ss *session) addTools() {
 // by hand by its pointer, forever; a copy built per session would be resolved
 // again for each one and kept after it closed.
 func toolDefinitions() map[string]*sdk.Tool {
-	actionNote := " Changes the real mailbox, as every mail app will show it. Needs a write key and the owner's " +
-		"permission for actions in the console. ids are 1 to 100 messages of one account."
+	actionNote := " Changes the real mailbox, as every mail app will show it. Needs a write key that may act on " +
+		"the mailbox, and, where the key acts only while the person who created it allows actions, that " +
+		"permission. ids are 1 to 100 messages of one account."
 	tools := []*sdk.Tool{{
 		Name:  "list_accounts",
 		Title: "List mailboxes",

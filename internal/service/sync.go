@@ -270,5 +270,5 @@ func errSyncOff(a account.Account) error {
 	case a.OwnerUserID == "":
 		return E(CodeConflict, "sync is off for this team mailbox; an owner or an admin of the team has to turn it on", ErrSyncOff)
 	}
-	return E(CodeConflict, "sync is off: its person has not turned it on in the console", ErrSyncOff)
+	return E(CodeConflict, "sync is off: its person has not turned it on, and only they can", ErrSyncOff)
 }
