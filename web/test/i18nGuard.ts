@@ -2,9 +2,8 @@
 // literal t('…') in its sources is translated, in all four languages, with
 // the same placeholders; each key lives in exactly one catalog; and none of
 // the project's own catalogs keeps a key its sources no longer use. Not a
-// spec itself: test/i18n.spec.ts runs it over the core and the open edition,
-// and another edition's spec over its own sources, with the core's catalogs
-// beneath its own.
+// spec itself: test/i18n.spec.ts runs it over the core, and an edition's spec
+// over its own sources, with the core's catalogs beneath its own.
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 

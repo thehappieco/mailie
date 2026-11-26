@@ -1,8 +1,8 @@
 // The core's seams for an edition whose people prove themselves again another
 // way than a password (Edition.stepUp and Edition.copy.stepUpHint), and whose
 // sign-in opens or makes the account key itself (adoptSession, which begins
-// keyed for the person it names). The open edition sets none of them, and
-// keeps its password dialog and sentences.
+// keyed for the person it names). The specs' edition (test/edition.ts) sets
+// none of them, and keeps the core's password dialog and sentences.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, h } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
@@ -21,11 +21,11 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-/** A fresh page whose edition is the open one with extra, and Ana signed in with no step-up time. */
+/** A fresh page whose edition is the specs' one with extra, and Ana signed in with no step-up time. */
 async function load(extra: Partial<Edition> = {}) {
   vi.resetModules()
-  const [{ configureEdition }, { openEdition }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-  configureEdition({ ...openEdition, ...extra })
+  const [{ configureEdition }, { testEdition }] = await Promise.all([import('../src/edition'), import('./edition')])
+  configureEdition({ ...testEdition, ...extra })
   const [session, stepUp, vault, prompt] = await Promise.all([
     import('../src/state/session'), import('../src/state/stepUp'), import('../src/state/accountVault'),
     import('../src/components/StepUpPrompt.vue'),
@@ -161,16 +161,16 @@ describe('an edition’s own step-up', () => {
     s.stepUpRefused()
   })
 
-  it('words the sentence beside a guarded write as the edition says, and the open edition’s names the password', async () => {
+  it('words the sentence beside a guarded write as the edition says, and the core’s names the password', async () => {
     let s = await load()
     expect(s.stepUpHint()).toBe('It asks for your password if you have not entered it in the last ten minutes.')
     s.stepUpPrompt.open = true
     expect(await drawn(s.StepUpPrompt)).toContain('Enter your password again')
 
-    const { openEdition } = await import('../src/open/edition')
+    const { testEdition } = await import('./edition')
     s = await load({
       stepUp: async () => {},
-      copy: { ...openEdition.copy, stepUpHint: () => 'It asks you to sign in again if you have not in the last ten minutes.' },
+      copy: { ...testEdition.copy, stepUpHint: () => 'It asks you to sign in again if you have not in the last ten minutes.' },
     })
     expect(s.stepUpHint()).toBe('It asks you to sign in again if you have not in the last ten minutes.')
   })
@@ -179,8 +179,8 @@ describe('an edition’s own step-up', () => {
 describe('the session an edition’s sign-in adopts, and the account key', () => {
   async function page() {
     vi.resetModules()
-    const [{ configureEdition }, { openEdition }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-    configureEdition(openEdition)
+    const [{ configureEdition }, { testEdition }] = await Promise.all([import('../src/edition'), import('./edition')])
+    configureEdition(testEdition)
     const [session, vault] = await Promise.all([import('../src/state/session'), import('../src/state/accountVault')])
     return { ...session, vault }
   }

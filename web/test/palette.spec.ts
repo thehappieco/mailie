@@ -2,7 +2,7 @@
 // else declares them: an edition's entry imports it before the stylesheet,
 // or declares the same properties its own way (docs/console.md, "Editions").
 // The tokens are the list test/palette.ts keeps, the light page's once and
-// the dark page's twice the same, with the open console's shapes. And every
+// the dark page's twice the same, with the core's shapes. And every
 // custom property a source reads must be declared by a stylesheet under src/,
 // or the page would draw it with nothing.
 import { readdirSync, readFileSync } from 'node:fs'
@@ -115,20 +115,17 @@ describe('the palette', () => {
     expect(darkTokens.filter(name => !(COLOUR_TOKENS as readonly string[]).includes(name))).toEqual([])
   })
 
-  it('keeps the open console’s shapes: the card’s, the dialogs’ and the card’s button’s', () => {
+  it('keeps the core’s shapes: the card’s, the dialogs’ and the card’s button’s', () => {
     const values = valuesOf(LIGHT)
     for (const [name, value] of Object.entries(GEOMETRY)) expect(values[name], name).toBe(value)
   })
 
-  it('is palette.css’s alone: no other stylesheet under src/ declares a token, styles.css no custom property at all, and the open console imports the palette before it', () => {
+  it('is palette.css’s alone: no other stylesheet under src/ declares a token, and styles.css no custom property at all', () => {
     const tokens = new Set(TOKENS)
     const elsewhere = stylesheets.filter(sheet => sheet.file !== join('ui', 'palette.css'))
       .flatMap(sheet => declared(sheet.css).filter(name => tokens.has(name)).map(name => `${name} (${sheet.file})`))
     expect(elsewhere).toEqual([])
     expect(stylesheets.length).toBeGreaterThan(10)
     expect(declared(read(join(src, 'ui', 'styles.css')))).toEqual([])
-    const main = read(join(src, 'main.ts'))
-    expect(main).toContain("import './ui/palette.css'")
-    expect(main.indexOf("import './ui/palette.css'")).toBeLessThan(main.indexOf("import './ui/styles.css'"))
   })
 })

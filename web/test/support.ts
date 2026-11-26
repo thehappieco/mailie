@@ -81,11 +81,11 @@ export function serve(route: Route) {
   })
 }
 
-/** A new page load: fresh modules, configured with the open edition as src/main.ts does. */
+/** A new page load: fresh modules, configured with the test edition (test/edition.ts) as test/setup.ts does. */
 export async function freshModules(): Promise<void> {
   vi.resetModules()
-  const [{ configureEdition }, { openEdition }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-  configureEdition(openEdition)
+  const [{ configureEdition }, { testEdition }] = await Promise.all([import('../src/edition'), import('./edition')])
+  configureEdition(testEdition)
 }
 
 /** Lets pending promise chains (and fake-indexeddb, which runs on setImmediate) settle. */

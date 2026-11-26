@@ -1,9 +1,8 @@
 // The daemon as far as the console's core can tell, in memory, for the
-// browser QA of every edition: the open console's (test/browser/console.mjs)
-// and any other built on this core, which imports this file and adds its own
-// routes and state through extend. Not a spec, and nothing here reaches a
-// daemon, a provider or a personal browser profile. Also the helpers both
-// QA scripts use.
+// browser QA of every edition built on this core, which imports this file and
+// adds its own routes and state through extend. Not a spec, and nothing here
+// reaches a daemon, a provider or a personal browser profile. Also the
+// helpers an edition's QA scripts share.
 import assert from 'node:assert/strict'
 import { enrolment, KDF, saltOf } from './keyScheme.mjs'
 

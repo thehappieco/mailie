@@ -2,7 +2,7 @@ package config
 
 import "fmt"
 
-// ConsentVersions name the revisions of the texts a person agrees to in the
+// ConsentVersions name the revisions of the texts a person agrees to in a
 // console: what sync stores (Sync), Mailie changing their mailboxes when they
 // ask (Actions), sending from them (Send), and what a tool holding an API key
 // they create in a workspace can do (Keys).
@@ -22,12 +22,19 @@ type ConsentVersions struct {
 	Keys    string // MAIL_CONSENT_VERSION_KEYS
 }
 
-// The revisions asked for when none is configured: the texts of the open
-// console in web/, the console a self-hosted server serves. It asks about
-// sync, actions and keys; it has no text about sending, so nobody agrees to
-// sending from it. A deployment that serves another console sets the
-// revisions that console's texts carry, as the hosted service does for its
-// own app.
+// The revisions asked for when none is configured. They name the texts of the
+// open console a self-hosted server served until it was deleted (platform
+// decision 0063), whose words the repository's history keeps under
+// web/src/open: what sync stores (SyncText.vue, its fourth revision), what
+// actions on messages change (ActionsText.vue, its third) and what a tool
+// holding a new API key can do (KeyTermsText.vue, its third). It had no text
+// about sending, so nobody agreed to sending from it. No console in this
+// repository shows a text now: a deployment whose people agree to texts sets
+// the revisions its own texts carry, as the hosted service does for its app.
+// The defaults stay as they were, so that what a database recorded under them
+// keeps its meaning, and the core's console specs (web/test/edition.ts) and
+// the contract fixtures (internal/api/testdata/contract) name the same
+// revisions. They are pinned here, in Go alone, by consent_test.go.
 const (
 	DefaultSyncConsentVersion    = "2026-10-open-sync-4"
 	DefaultActionsConsentVersion = "2026-10-open-actions-3"

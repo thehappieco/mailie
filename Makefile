@@ -1,5 +1,5 @@
 .PHONY: help build run test test-race cover fuzz vet fmt lint-layout lint check it tidy clean \
-	backup-tool image public-source web-install web-dev web-build web-test web-check
+	backup-tool image public-source web-install web-test web-check
 
 GO   ?= go
 GOLANGCI_LINT ?= golangci-lint
@@ -44,7 +44,7 @@ fuzz: ## Short fuzz pass over every fuzz target (the MIME parser lives or dies h
 vet: ## go vet
 	$(GO) vet $(PKGS)
 
-# web/ is the open console, a Node project with its own check (web-check).
+# web/ is the console's core, a Node project with its own check (web-check).
 # commercial/, where a development checkout nests the private cloud, is a
 # module of its own with its own Makefile. Nothing in either is Go this module
 # owns, least of all node_modules, so fmt and lint-layout skip them — as
@@ -82,9 +82,9 @@ backup-tool: ## Build dist/mailserver-linux-amd64 for a restore on another machi
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath \
 	  -ldflags "-s -w -X main.version=$$(git describe --always --dirty)" -o dist/mailserver-linux-amd64 ./cmd/mailserver
 
-# The self-hosting image: the daemon and the open console, built by Docker
-# from this checkout (deploy/Dockerfile; docs/self-hosting.md). It needs
-# neither Go nor Node here.
+# The self-hosting image: the daemon alone, REST and MCP with no web console,
+# built by Docker from this checkout (deploy/Dockerfile; docs/self-hosting.md).
+# It needs no Go here.
 image: ## Build the self-hosting image mailie:local with Docker
 	docker build -f deploy/Dockerfile --build-arg VERSION=$$(git describe --always --dirty) -t mailie:local .
 
@@ -95,26 +95,19 @@ image: ## Build the self-hosting image mailie:local with Docker
 public-source: ## Export the allowlisted public source snapshot to dist/mailie-source.tar.gz
 	python3 scripts/export-public.py --output dist/mailie-source.tar.gz
 
-# The console. Deliberately not part of check: the Go tiers must never need
-# Node, and CI runs these in a job of its own. web-* is the open console
-# (web/), what a self-hosted server serves; another edition's targets live
-# with it. Every edition's dev server takes localhost:5174, the port the
-# OAuth web client's redirect names: run one at a time. The open console
-# wants the daemon of make run.
-web-install: ## Install the open console's dependencies exactly as locked
+# The console's core (web/), which the editions compile from source; a
+# self-hosted server serves no console (platform decision 0063), so there is
+# nothing here to build or serve, only the core's types and specs to check.
+# Deliberately not part of check: the Go tiers must never need Node, and CI
+# runs these in a job of its own.
+web-install: ## Install the console core's dependencies exactly as locked
 	cd $(WEB) && $(NPM) ci
 
-web-dev: ## Serve the open console on localhost:5174, proxying /v1 and /mcp to the daemon
-	cd $(WEB) && $(NPM) run dev
-
-web-build: ## Build the open console into web/dist, which MAIL_WEB_DIR serves on a self-hosted server
-	cd $(WEB) && $(NPM) run build
-
-web-test: ## Run the open console's unit tests
+web-test: ## Run the console core's unit tests
 	cd $(WEB) && $(NPM) test
 
-web-check: ## Typecheck, test and build the open console
-	cd $(WEB) && $(NPM) run typecheck && $(NPM) test && $(NPM) run build
+web-check: ## Typecheck and test the console core
+	cd $(WEB) && $(NPM) run typecheck && $(NPM) test
 
 clean: ## Remove build output
 	rm -rf $(BIN) dist coverage.out

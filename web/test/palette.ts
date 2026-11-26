@@ -16,7 +16,7 @@ export const COLOUR_TOKENS = [
   '--radius', '--mono', '--ease', '--pop',
 ] as const
 
-/** The shapes of a few surfaces, with the open console's values, which palette.css keeps as they were. */
+/** The shapes of a few surfaces, with the core's values, which palette.css keeps as they were. */
 export const GEOMETRY: Readonly<Record<string, string>> = {
   '--card-radius': '22px',
   '--card-shadow': '0 18px 70px #0000000d',

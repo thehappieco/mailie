@@ -1,6 +1,6 @@
-// What the page does around its phases, whoever draws them: the core's own
-// root (App.vue), or a host's root that draws the same phases inside a frame
-// of its own (docs/console.md, "Editions"). The phases are the session's
+// What the page does around its phases, whoever draws them: an edition's root
+// in the core's own frame (ui/frame.ts), or one that draws the same phases
+// inside a frame of its own (docs/console.md, "Editions"). The phases are the session's
 // (state/session.ts): restoring a remembered session, signed out, or ready;
 // and, once ready, finishing a provider's return the page captured
 // (finishing: components/OAuthReturnView.vue is drawn meanwhile).

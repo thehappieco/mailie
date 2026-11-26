@@ -1,18 +1,16 @@
 // The core's hooks for an edition whose people sign in another way: its own
 // sign-in in place of the password card (Edition.signIn), the session its
 // route answers adopted as a password sign-in's is (adoptSession), a word
-// after a deliberate sign-out (Edition.signedOut), and no password to change
-// for a person who has none. And its own look atop the card (Edition.look):
-// its brand and appearance control in place of the core's. The open edition
-// sets none of them, and its screens stay as they are.
+// after a deliberate sign-out (Edition.signedOut). And its own look atop the
+// card (Edition.look): its brand and appearance control in place of the
+// core's. The specs' edition (test/edition.ts) sets none of them, and the
+// core's screens stay as they are.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, defineComponent, h, type Component } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
-import AccountPanel from '../src/components/AccountPanel.vue'
 import SignInView from '../src/components/SignInView.vue'
 import { configureEdition, type Edition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
-import OpenAccount from '../src/open/OpenAccount.vue'
+import { testEdition } from './edition'
 import { session } from '../src/state/session'
 import { ana, failure, json, reply, serve, settle, stubPage } from './support'
 
@@ -38,7 +36,7 @@ const Appearance = defineComponent({ name: 'Appearance', render: () => h('div', 
 const invitation = { invite: 'SyntheticInviteCode_0123456789abcdefghijklmn', email: 'new@example.test' }
 
 afterEach(() => {
-  configureEdition(openEdition)
+  configureEdition(testEdition)
   Object.assign(session, { phase: 'signed-out', user: null, expiresAt: 0, notice: '' })
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -46,7 +44,7 @@ afterEach(() => {
 
 describe('an edition’s own sign-in', () => {
   it('takes the password card’s place, in the same frame, with the brand above and the legal footer below', async () => {
-    configureEdition({ ...openEdition, signIn: ProviderSignIn, legal: { signInFooter: Legal } })
+    configureEdition({ ...testEdition, signIn: ProviderSignIn, legal: { signInFooter: Legal } })
     for (const props of [{ invitation: null }, { invitation }]) {
       const html = await render(SignInView, props)
       expect(html).toMatch(/<div class="unlock"><div class="unlock-card"><div class="auth-top">/)
@@ -62,7 +60,7 @@ describe('an edition’s own sign-in', () => {
   })
 
   it('keeps the core’s notes about a session that ended and a mailbox waiting to finish connecting', async () => {
-    configureEdition({ ...openEdition, signIn: ProviderSignIn })
+    configureEdition({ ...testEdition, signIn: ProviderSignIn })
     Object.assign(session, { notice: 'expired' })
     const html = await render(SignInView, { invitation: null })
     expect(html).toContain('Your session ended. Sign in again.')
@@ -71,8 +69,8 @@ describe('an edition’s own sign-in', () => {
     expect(html).not.toContain('auth-footer')
   })
 
-  it('is not there when the edition sets none: the open edition’s card signs in with a password, as before', async () => {
-    for (const edition of [openEdition, { ...openEdition, signIn: undefined } satisfies Edition]) {
+  it('is not there when the edition sets none: the core’s card signs in with a password, as before', async () => {
+    for (const edition of [testEdition, { ...testEdition, signIn: undefined } satisfies Edition]) {
       configureEdition(edition)
       const html = await render(SignInView, { invitation: null })
       expect(html).toContain('<h1>Sign in</h1>')
@@ -88,7 +86,7 @@ describe('an edition’s own sign-in', () => {
 describe('an edition’s look atop the signed-out card', () => {
   it('draws the edition’s brand and appearance control in place of the core’s, the brand told it is on the card and named Mailie', async () => {
     for (const signIn of [undefined, ProviderSignIn]) {
-      configureEdition({ ...openEdition, signIn, look: { brand: Brand, appearance: Appearance } })
+      configureEdition({ ...testEdition, signIn, look: { brand: Brand, appearance: Appearance } })
       const html = await render(SignInView, { invitation: null })
       expect(html).toContain('<div class="auth-top"><span class="edition-brand" role="img" aria-label="Mailie" data-place="card"></span><div class="edition-appearance"><button type="button">Theme</button></div></div>')
       for (const core of ['class="lockup"', 'appearance-trigger', 'appearance-dialog']) expect(html).not.toContain(core)
@@ -97,18 +95,18 @@ describe('an edition’s look atop the signed-out card', () => {
   })
 
   it('draws only what the edition sets, and the core’s in the other place', async () => {
-    configureEdition({ ...openEdition, look: { brand: Brand } })
+    configureEdition({ ...testEdition, look: { brand: Brand } })
     let html = await render(SignInView, { invitation: null })
     expect(html).toMatch(/<div class="auth-top"><span class="edition-brand"[^>]*data-place="card"><\/span><button type="button" class="appearance-trigger"/)
     expect(html).not.toContain('class="lockup"')
-    configureEdition({ ...openEdition, look: { appearance: Appearance } })
+    configureEdition({ ...testEdition, look: { appearance: Appearance } })
     html = await render(SignInView, { invitation: null })
     expect(html).toMatch(/<div class="auth-top"><span class="lockup" data-size="44" role="img" aria-label="Mailie">[^]*<div class="edition-appearance">/)
     expect(html).not.toContain('appearance-trigger')
   })
 
   it('is the core’s when the edition sets none: the lockup and the appearance menu, as before', async () => {
-    for (const edition of [openEdition, { ...openEdition, look: {} } satisfies Edition]) {
+    for (const edition of [testEdition, { ...testEdition, look: {} } satisfies Edition]) {
       configureEdition(edition)
       const html = await render(SignInView, { invitation: null })
       expect(html).toMatch(/<div class="auth-top"><span class="lockup" data-size="44" role="img" aria-label="Mailie">[^]*?<\/span><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><\/div><h1>Sign in<\/h1>/)
@@ -118,33 +116,11 @@ describe('an edition’s look atop the signed-out card', () => {
   })
 })
 
-describe('a person without a password', () => {
-  const changePassword = 'Change the password you sign in with'
-
-  it('is not offered to change one, and keeps everything else of the account section', async () => {
-    Object.assign(session, { phase: 'ready', user: { ...ana, has_password: false }, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
-    for (const component of [AccountPanel, OpenAccount]) {
-      const html = await render(component)
-      expect(html).not.toContain(changePassword)
-      expect(html).not.toContain('mailie-password-change')
-      expect(html).toContain('Sign out everywhere')
-      expect(html).toContain(ana.email)
-    }
-  })
-
-  it('is told apart from everyone else, who keeps the change, from a server that says so or one too old to', async () => {
-    for (const user of [{ ...ana, has_password: true }, ana]) {
-      Object.assign(session, { phase: 'ready', user, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
-      expect(await render(OpenAccount)).toContain(changePassword)
-    }
-  })
-})
-
 describe('the session an edition’s sign-in adopts', () => {
   async function load(signedOut?: () => void) {
     vi.resetModules()
-    const [{ configureEdition: configure }, { openEdition: open }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-    configure({ ...open, signedOut })
+    const [{ configureEdition: configure }, { testEdition: base }] = await Promise.all([import('../src/edition'), import('./edition')])
+    configure({ ...base, signedOut })
     const state = await import('../src/state/session')
     const vault = await import('../src/state/sessionVault')
     const { ApiError } = await import('../src/api/http')
@@ -199,8 +175,8 @@ describe('the session an edition’s sign-in adopts', () => {
 describe('the edition’s word after signing out', () => {
   async function load(signedOut: () => void) {
     vi.resetModules()
-    const [{ configureEdition: configure }, { openEdition: open }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-    configure({ ...open, signedOut })
+    const [{ configureEdition: configure }, { testEdition: base }] = await Promise.all([import('../src/edition'), import('./edition')])
+    configure({ ...base, signedOut })
     const state = await import('../src/state/session')
     const vault = await import('../src/state/sessionVault')
     const { ApiError } = await import('../src/api/http')

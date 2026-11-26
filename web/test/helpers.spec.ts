@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configureEdition, edition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
+import { testEdition } from './edition'
 import { draftRequest, emptyDraft, guessHosts, isICloudAddress, portForSecurity, signsInWithPassword } from '../src/ui/accountDraft'
 import { describe as describeFailure, describeFolders } from '../src/ui/errors'
 import { countdown, initials } from '../src/ui/format'
@@ -288,10 +288,10 @@ describe('failure text', () => {
     expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toBe('This invitation cannot create an account for this address. It may have expired or been used, or it invites you to a team: sign in to the account you already have, and open the link again.')
     try {
       // Where workspaces come from elsewhere an invitation only ever creates an account: no step to send anyone to.
-      configureEdition({ ...openEdition, teams: false })
+      configureEdition({ ...testEdition, teams: false })
       expect(describeFailure({ op: 'sign-up', code: 'not_authorized' })).toBe('This invitation cannot create an account for this address. It may have expired or been used: ask for a new one.')
     } finally {
-      configureEdition(openEdition)
+      configureEdition(testEdition)
     }
   })
   it('says that the lists wait for the workspaces, whatever kept them from loading', () => {

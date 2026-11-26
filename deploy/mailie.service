@@ -1,6 +1,6 @@
 # An example systemd unit for running Mailie from a binary, hardened.
 # docs/self-hosting.md, "From a binary, with systemd", has the steps around it:
-# the user, the binary, the console and the environment file.
+# the user, the binary and the environment file.
 #
 # The paths are examples; change them together. The daemon's user is a system
 # user of its own (mailie), the database is in the state directory systemd
@@ -8,7 +8,7 @@
 # file only root can read.
 
 [Unit]
-Description=Mailie mail server (REST, MCP and the console)
+Description=Mailie mail server (REST and MCP)
 Documentation=https://github.com/thehappieco/mailie/blob/main/docs/self-hosting.md
 Wants=network-online.target
 After=network-online.target
@@ -25,7 +25,6 @@ ExecStart=/usr/local/bin/mailserver serve
 # itself. Loopback only: a reverse proxy on this host terminates TLS.
 Environment=MAIL_DATA_DIR=/var/lib/mailie
 Environment=MAIL_HTTP_ADDR=127.0.0.1:8080
-Environment=MAIL_WEB_DIR=/usr/local/share/mailie/console
 EnvironmentFile=/etc/mailie/mailie.env
 StateDirectory=mailie
 StateDirectoryMode=0700

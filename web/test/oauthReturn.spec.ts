@@ -462,8 +462,8 @@ describe('finishing a link at the provider', () => {
     await freshModules()
     const steps = await import('../src/state/stepUp')
     if (stepUp) {
-      const [{ configureEdition }, { openEdition }] = await Promise.all([import('../src/edition'), import('../src/open/edition')])
-      configureEdition({ ...openEdition, stepUp: stepUp(steps) })
+      const [{ configureEdition }, { testEdition }] = await Promise.all([import('../src/edition'), import('./edition')])
+      configureEdition({ ...testEdition, stepUp: stepUp(steps) })
     }
     const session = await import('../src/state/session')
     const accounts = await import('../src/state/accounts')

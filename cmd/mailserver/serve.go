@@ -19,13 +19,15 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, args []s
 	return app.Run(ctx, cfg, logger, serveOptions(version, *mcpStdio))
 }
 
-// serveOptions are the open edition's: what `serve` runs the daemon with.
+// serveOptions are the self-hosted edition's: what `serve` runs the daemon with.
 func serveOptions(version string, mcpStdio bool) app.Options {
 	return app.Options{
 		Version:  version,
 		MCPStdio: mcpStdio,
-		// The open edition offers pausing one mailbox's sync: its sync text
-		// (web/src/open/SyncText.vue) promises nothing a pause breaks.
+		// The self-hosted edition offers pausing one mailbox's sync: its
+		// operator pauses and resumes an operator mailbox from the command
+		// line (`account sync ID pause|resume`), and no console shows a sync
+		// text a pause could break (platform decision 0063).
 		SyncPauseOffered: true,
 	}
 }

@@ -1,9 +1,8 @@
 /* The palette: the custom properties the console's stylesheets read for its
    colours, light and dark, its monospace font and motion curves, and the
    corners and shadows of the sign-in card and the dialogs. Nothing else
-   declares them: an edition's entry imports this file before styles.css, as
-   the open console's does (src/main.ts), or declares the same properties its
-   own way instead (docs/console.md, "Editions"). test/palette.spec.ts holds
+   declares them: an edition's entry imports this file before styles.css, or
+   declares the same properties its own way instead (docs/console.md, "Editions"). test/palette.spec.ts holds
    every var(--…) a source reads to a declaration under src/, and these
    tokens (the list in test/palette.ts) to this file alone, the shapes at
    their defaults. */
@@ -108,9 +107,9 @@
   }
 }
 
-/* Geometry: the sign-in card, the dialogs (ConsoleDialog, AccountSheet, the
-   drawer and the sheet on a phone, where one side stays square), and the
-   card's primary button. */
+/* Geometry: the sign-in card, the dialogs (ConsoleDialog, the drawer and a
+   sheet on a phone, where one side stays square), and the card's primary
+   button. */
 :root {
   --card-radius: 22px;
   --card-shadow: 0 18px 70px #0000000d;

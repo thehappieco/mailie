@@ -5,11 +5,12 @@
 // against, in strict mode (unknown keys fail too, so a rename on either side
 // fails here instead of on a screen). The fixtures are the Go side's to
 // write: a missing one is a failure, never something to create from here.
-// The handlers run with the daemon's default consent revisions, which are the
-// open console's texts (src/open/versions.ts). The fixtures of the routes the
-// open console never calls (messages, actions on them, sending) are checked
-// by the edition that reads them; a key's sends, which its workspace's owners
-// and admins list, are the console's.
+// The handlers run with the daemon's default consent revisions
+// (internal/config/consent.go), which the specs' edition names
+// (test/edition.ts). The fixtures of the routes the core never calls
+// (messages, actions on them, sending) are checked by the edition that reads
+// them; a key's sends, which its workspace's owners and admins list, are the
+// core's.
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -34,7 +35,7 @@ import { invitationLink } from '../src/api/workspaces'
 import { grantChange, workspaceUnusable } from '../src/ui/access'
 import { heldOn, listed } from '../src/api/apikeys'
 import { keyStanding, scopeActs, stopReasonLabel } from '../src/ui/apikeys'
-import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
+import { ACTIONS_TEXT_VERSION, KEY_TERMS_VERSION, SEND_TEXT_VERSION, SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from './edition'
 import { signupLink } from '../src/ui/signupLink'
 import { knownReasons } from '../src/ui/reasons'
 
@@ -281,7 +282,7 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(linked.email).toBe(invite.email)
   })
 
-  it('asks for consent to the revision the open console’s sync text is, and says when it was given', () => {
+  it('asks for consent to the daemon’s default revision of the sync text, and says when it was given', () => {
     const before = fixture('sync_consent') as SyncConsent
     const after = fixture('sync_consent_given') as SyncConsent
     expect(before).toEqual({ consented: false, current_version: CONSENT_TEXT_VERSION })
@@ -290,11 +291,11 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(after.consented_at).toBeGreaterThan(0)
   })
 
-  it('shows the consent text of the very revision the daemon asks about', () => {
-    // The console agrees to the revision its own text is. A daemon whose
-    // default (config.DefaultSyncConsentVersion) moved without a new
-    // open/SyncText.vue (and SYNC_TEXT_VERSION with it) would ask people to
-    // reload into the same old text, so the build fails here instead.
+  it('names the default revision the specs’ edition agrees to, in every answer about sync', () => {
+    // An edition agrees to the revision its own text is. The specs' edition
+    // names the daemon's defaults (config.DefaultSyncConsentVersion), so a
+    // default that moved without test/edition.ts fails here, before a spec
+    // agrees to a revision the default daemon would refuse.
     expect((fixture('sync_consent') as SyncConsent).current_version).toBe(CONSENT_TEXT_VERSION)
     expect((fixture('sync_consent_given') as SyncConsent).current_version).toBe(CONSENT_TEXT_VERSION)
   })
@@ -337,9 +338,8 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(folders.find(folder => folder.role === 'inbox')?.id).toBeGreaterThan(0)
   })
 
-  it('asks for consent to actions on the revision the console’s text describes, apart from sync’s', () => {
-    // As with sync: a daemon whose default moved without a new
-    // open/ActionsText.vue (and ACTIONS_TEXT_VERSION) fails the build here.
+  it('asks for consent to actions on the daemon’s default revision of the actions text, apart from sync’s', () => {
+    // As with sync: a default that moved without test/edition.ts fails here.
     const before = fixture('actions_consent') as ActionsConsent
     const after = fixture('actions_consent_given') as ActionsConsent
     expect(before).toEqual({ consented: false, current_version: ACTIONS_TEXT_VERSION })
@@ -484,9 +484,9 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(isMailboxAccessList([older])).toBe(true)
   })
 
-  it('names the revision of a sending text the open console does not show, apart from the others', () => {
-    // The open console asks nobody about sending, but the daemon's default
-    // still names a revision of its own, which a deployment's console must
+  it('names the revision of a sending text the core does not show, apart from the others', () => {
+    // The core asks nobody about sending, but the daemon's default still
+    // names a revision of its own, which a deployment whose people send must
     // replace with its text's. The answer has actions' shape.
     const before = fixture('send_consent') as SyncConsent
     expect(isActionsConsent(before, true)).toBe(true)

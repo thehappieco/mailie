@@ -57,9 +57,10 @@ jobs:
       - name: Integration tier
         run: make it
 
-  # The open console, on its own: the Go jobs above never need Node, and a
-  # broken console build must not hide behind a green Go suite or the other
-  # way round.
+  # The console's core (web/), on its own: the Go jobs above never need Node,
+  # and a broken core must not hide behind a green Go suite or the other way
+  # round. There is nothing to build: the editions build their own page, and a
+  # self-hosted server serves no console.
   web:
     runs-on: ubuntu-latest
     defaults:
@@ -74,12 +75,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      - run: npm run build
 
   # The self-hosting image (deploy/Dockerfile), built and started the way
   # deploy/compose.yaml runs it: read-only, without capabilities, with a
-  # throwaway credential key. It must answer /v1/healthz, serve the console
-  # and stop cleanly on SIGTERM.
+  # throwaway credential key. It must answer /v1/healthz, serve the API and
+  # MCP with no console, and stop cleanly on SIGTERM.
   image:
     runs-on: ubuntu-latest
     env:
@@ -91,7 +91,7 @@ jobs:
           umask 077
           key=$(openssl rand -hex 32)
           echo "::add-mask::$key"
-          printf 'MAIL_CREDENTIAL_KEY_HEX=%s\nMAIL_PUBLIC_URL=http://localhost:8080\n' "$key" > deploy/.env
+          printf 'MAIL_CREDENTIAL_KEY_HEX=%s\n' "$key" > deploy/.env
       - name: Validate the compose file
         run: docker compose config --quiet
       - name: Build the image
@@ -107,14 +107,11 @@ jobs:
           done
           echo "no healthy answer within 60 s"
           exit 1
-      - name: The console and the API answer
+      - name: The API and MCP answer, and no console
         run: |
-          page=$(curl -fsS http://127.0.0.1:8080/)
-          grep -q '<div id="app">' <<<"$page"
-          asset=$(grep -m 1 -oE '/assets/index-[A-Za-z0-9_-]+\.js' <<<"$page")
-          curl -fsS -o /dev/null "http://127.0.0.1:8080$asset"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/no-such-route)" = 404
           test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 404
       - name: Stop it cleanly
         run: |
           docker compose stop
@@ -152,7 +149,6 @@ jobs:
           npm ci
           npm run typecheck
           npm test
-          npm run build
 
   # The gitleaks CLI, pinned, over the full history: a secret committed once
   # and deleted since still fails.

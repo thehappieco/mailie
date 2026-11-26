@@ -10,8 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CreatedKey, KeyMailbox, Workspace, WorkspaceKey } from '../src/api/types'
 import { isCreatedKey, isWorkspaceKey, keyStopReasons } from '../src/api/types'
 import { configureEdition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
-import { KEY_TERMS_VERSION } from '../src/open/versions'
+import { testEdition } from './edition'
+import { KEY_TERMS_VERSION } from './edition'
 import {
   MAX_LIVE_KEYS, claudeCommand, keyAccessRules, keyFlagEditable, keyOriginNote, keyPerson, keyStanding, mcpEndpoint, scopeLabel, stopReasonLabel,
   toggleKeyFlag, type KeyFacts,
@@ -517,13 +517,13 @@ describe('what the console says about keys', () => {
   })
 
   it('lets an edition say in its own words that an account was recovered', () => {
-    configureEdition({ ...openEdition, copy: { ...openEdition.copy, accountRecovered: mine => mine ? 'You recovered it elsewhere.' : 'Recovered elsewhere.' } })
+    configureEdition({ ...testEdition, copy: { ...testEdition.copy, accountRecovered: mine => mine ? 'You recovered it elsewhere.' : 'Recovered elsewhere.' } })
     try {
       expect(stopReasonLabel('account_recovered', true)).toBe('You recovered it elsewhere.')
       expect(stopReasonLabel('account_recovered')).toBe('Recovered elsewhere.')
       expect(stopReasonLabel('creator_left')).toBe('Its creator left the workspace.')
     } finally {
-      configureEdition(openEdition)
+      configureEdition(testEdition)
     }
   })
 

@@ -17,11 +17,13 @@ func minimal(t *testing.T, extra map[string]string) map[string]string {
 	return env
 }
 
-func TestEveryConsentVersionDefaultsToTheOpenConsolesText(t *testing.T) {
-	// The open console's texts (web/src/open) name these revisions, and its
-	// contract spec holds them to the fixtures the handlers write; a default
-	// that moved without them would ask everybody to agree to a text nobody
-	// wrote.
+func TestEveryConsentVersionDefaultsToTheRevisionsTheOpenConsoleLastNamed(t *testing.T) {
+	// The defaults name the deleted open console's last texts, which the
+	// repository's history keeps (consent.go). They are pinned here, in Go
+	// alone: a default that moved would ask everybody who agreed under it to
+	// agree again to a text nobody wrote, and the core's console specs
+	// (web/test/edition.ts) and the contract fixtures name these same
+	// revisions.
 	setenv(t, minimal(t, nil))
 	cfg, err := config.Load()
 	if err != nil {
@@ -103,13 +105,14 @@ func TestTheMCPHTTPEndpointIsOnUnlessSwitchedOff(t *testing.T) {
 	}
 }
 
-func TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTheyMay(t *testing.T) {
-	// The open console's key terms say a key may send. Another edition's
-	// may not: a daemon serving them is never left to a default that would
-	// let its keys send what its terms say they cannot.
+func TestKeysSendByDefaultOnlyUnderTheDefaultKeyTermsAndAnotherEditionSaysWhetherTheyMay(t *testing.T) {
+	// The default key terms (the deleted open console's last, consent.go)
+	// say a key may send. Another edition's may not: a daemon serving them is
+	// never left to a default that would let its keys send what its terms say
+	// they cannot.
 	setenv(t, minimal(t, nil))
 	if cfg, err := config.Load(); err != nil || !cfg.KeysMaySend {
-		t.Fatalf("the open key terms: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
+		t.Fatalf("the default key terms: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
 	}
 	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1"}))
 	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_KEYS_MAY_SEND") {
@@ -123,8 +126,8 @@ func TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTh
 		}
 	}
 	// Whether a key acts under its creator's actions consent goes with the
-	// key terms the same way: off under the open terms, said by the edition
-	// under its own.
+	// key terms the same way: off under the default terms, said by the
+	// edition under its own.
 	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": "edition-keys-1", "MAIL_KEYS_MAY_SEND": "false"}))
 	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT") {
 		t.Fatalf("other key terms without MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT: err = %v", err)
@@ -134,9 +137,9 @@ func TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTh
 	if cfg, err := config.Load(); err != nil || !cfg.KeysActUnderCreatorConsent {
 		t.Errorf("other key terms with MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT=true: %v, %v", cfg.KeysActUnderCreatorConsent, err)
 	}
-	// Set to the open terms by name, it is the open default again.
+	// Set to the default terms by name, it is the default again.
 	setenv(t, minimal(t, map[string]string{"MAIL_CONSENT_VERSION_KEYS": config.DefaultKeyTermsVersion}))
 	if cfg, err := config.Load(); err != nil || !cfg.KeysMaySend {
-		t.Errorf("the open key terms named: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
+		t.Errorf("the default key terms named: KeysMaySend = %v, %v; want true", cfg.KeysMaySend, err)
 	}
 }

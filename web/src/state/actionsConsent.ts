@@ -28,8 +28,8 @@ interface ConsentState {
   consentedAt: number
   /**
    * When the person last took the consent back, while they have not given
-   * it again; 0 when they never answered (or consent). The open console asks
-   * again regardless; an edition that asks only the first time reads it.
+   * it again; 0 when they never answered (or consent). The core asks again
+   * regardless; an edition that asks only the first time reads it.
    */
   withdrawnAt: number
   /** The revision the server asks about now; the page's own text is the edition's actions.version. */

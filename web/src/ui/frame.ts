@@ -1,9 +1,10 @@
 // The core's own frame owns the page's scrolling: the document never scrolls,
 // and #app is fixed to the visual viewport and scrolls inside it, so a phone's
 // keyboard shrinks the page instead of covering the field being typed in
-// (ui/styles.css, under FIXED_FRAME_CLASS on <html>). App.vue asks for it, for
-// every phase it draws. A host that draws a frame of its own around the
-// core's panels leaves it off, and its document scrolls as any page does.
+// (ui/styles.css, under FIXED_FRAME_CLASS on <html>). An edition's root asks
+// for it, for every phase it draws; no file of the core does. A host that
+// draws a frame of its own around the core's panels leaves it off, and its
+// document scrolls as any page does.
 
 import { onBeforeMount, onBeforeUnmount } from 'vue'
 

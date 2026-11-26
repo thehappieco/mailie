@@ -292,21 +292,23 @@ func TestExtraOriginsAreAddedToConnectSrcAndNowhereElse(t *testing.T) {
 	}
 }
 
-// The page's own copy of the policy (web/index.html's meta tag), which a
-// static server other than the daemon still serves, must be the header's but
-// for frame-ancestors, which a browser ignores in a meta tag: a directive in
-// one and not the other would let one serving allow what the other refuses.
+// A page's own copy of the policy (testdata/index.html, the meta tag an
+// edition's page carries), which a static server other than the daemon still
+// serves, must be the header's but for frame-ancestors, which a browser
+// ignores in a meta tag: a directive in one and not the other would let one
+// serving allow what the other refuses. The core ships no page of its own
+// (platform decision 0063); this is the copy an edition starts from.
 func TestThePagesOwnPolicyIsTheHeadersButForFrameAncestors(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	raw, err := os.ReadFile(filepath.Join("testdata", "index.html"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	match := regexp.MustCompile(`(?s)http-equiv="Content-Security-Policy"\s+content="([^"]*)"`).FindSubmatch(raw)
 	if match == nil {
-		t.Fatal("web/index.html carries no Content-Security-Policy meta tag")
+		t.Fatal("testdata/index.html carries no Content-Security-Policy meta tag")
 	}
 	want := strings.Replace(alwaysPolicy, " frame-ancestors 'none';", "", 1)
 	if got := string(match[1]); got != want {
-		t.Errorf("web/index.html's policy = %q\nwant the header's without frame-ancestors, %q", got, want)
+		t.Errorf("testdata/index.html's policy = %q\nwant the header's without frame-ancestors, %q", got, want)
 	}
 }

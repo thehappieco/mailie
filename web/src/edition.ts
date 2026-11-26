@@ -1,13 +1,18 @@
 // What an edition of the console brings to the core.
 //
-// The core (everything under src/ but open/) is the console every
-// edition shares: signing in, the session, connecting mailboxes and their
-// sync, API keys, the person's account and permissions, the event stream.
+// The core (everything under src/) is what every edition of the console
+// shares: signing in, the session, connecting mailboxes and their sync, API
+// keys, the person's permissions, the event stream, and the frame.
 // An edition is the rest: the console shown once someone is signed in, with
 // its own sections, and the texts a person agrees to, which belong to
-// whoever runs the server. The open edition (src/open, served by a
-// self-hosted server) is one; another builds on this core from its own
-// project, through an alias. Each configures one before mounting.
+// whoever runs the server. An edition builds on this core from its own
+// project, through an alias, and configures it before mounting. The core
+// ships none: a self-hosted server has no web console (platform decision
+// 0063), and the core's specs run under one of their own (test/edition.ts).
+//
+// A few fields are read by no screen of the core since the open console's
+// panels went with it: an edition reads them itself, or sets them for its
+// own specs. Each says so.
 //
 // A text a person agrees to travels with its revision. The core sends the
 // revision of the text it showed, never the one the server names: when the
@@ -44,7 +49,7 @@ export interface PermissionText extends AgreementText {
 }
 
 export interface Edition {
-  /** What a signed-in person sees: the edition's sections, built on components/ConsoleShell.vue. */
+  /** What a signed-in person sees: the edition's sections, built on components/ConsoleShell.vue. The edition's own root draws it. */
   console: Component
   /**
    * What sync stores: agreed to before anything from a mailbox is kept. One
@@ -77,19 +82,16 @@ export interface Edition {
   copy: {
     /** The section with the person's own settings and permissions, as other sentences name it. */
     accountSection(): string
-    /** Under an empty list of mailboxes: what connecting one does. */
+    /** Under an empty list of mailboxes: what connecting one does. Read by no screen of the core. */
     mailboxesIntro(): string
-    /** In a syncing mailbox's sheet: what the index keeps, and where a message's body comes from. */
+    /** In a syncing mailbox's sheet: what the index keeps, and where a message's body comes from. Read by no screen of the core. */
     indexHint(): string
-    /** In the dialog that turns actions off: what stops. */
+    /** In the dialog that turns actions off: what stops. Read by no screen of the core. */
     actionsOff(): string
     /**
      * The section where a workspace's API keys, and what each holds on its
-     * mailboxes, are changed, as the Access section of a team mailbox names
-     * it (components/AccessPanel.vue): "… is changed in {section}". Unset:
-     * that sentence is left out. An edition whose keys are a personal
-     * workspace's alone sets personalKeysOnly instead, which leaves the
-     * section's keys out altogether.
+     * mailboxes, are changed, as a team mailbox's access names it: "… is
+     * changed in {section}". Read by no screen of the core.
      */
     keysSection?(): string
     /**
@@ -109,20 +111,16 @@ export interface Edition {
     accountRecovered?(mine: boolean): string
   }
   /**
-   * Whether the API keys section shows how to reach the MCP server at this
-   * page's origin + /mcp: the URL, and the Claude Code command. Shown only
-   * where the server also says it answers there (GET /v1/me/mcp, state/mcp.ts),
-   * which an edition that sets this false never asks.
+   * Whether the edition shows how to reach the MCP server at this page's
+   * origin + /mcp, where the server also says it answers there
+   * (GET /v1/me/mcp). Read by no screen of the core.
    */
   mcp: boolean
   /**
    * Whether this server's API keys belong to personal workspaces alone, as
    * its key terms say (the server's app.Options.KeysInPersonalWorkspaceOnly,
-   * which refuses a team's keys and lets none reach a team's mailbox): a
-   * team mailbox's Access section (components/AccessPanel.vue) lists no API
-   * keys, and a member of a team is not told that its keys are managed by
-   * its owners and admins (components/AccountsPanel.vue). Unset: a team has
-   * keys of its own, as on a self-hosted server.
+   * which refuses a team's keys and lets none reach a team's mailbox). Read
+   * by no screen of the core.
    */
   personalKeysOnly?: boolean
   /**
@@ -136,17 +134,17 @@ export interface Edition {
   teams?: boolean
   /**
    * Whether this server offers pausing one mailbox's sync (the server's
-   * app.Options.SyncPauseOffered, which `serve` sets): the account sheet
-   * offers Pause to those who may. An edition sets it only once the sync text
-   * its people agree to says what a pause does; left out, the sheet offers no
-   * Pause, and still shows a paused mailbox (a recovered one, in any edition)
-   * and offers its Resume.
+   * app.Options.SyncPauseOffered): an edition sets it only once the sync text
+   * its people agree to says what a pause does. A paused mailbox (a recovered
+   * one, in any edition) is shown, and its Resume offered, either way. Read by
+   * no screen of the core.
    */
   syncPause?: boolean
   /**
-   * Whether the account section names the person's role on this server (an
-   * owner, who brings people onto it, or a member): a self-hosted server's.
-   * An edition whose people have no role on the server leaves it out.
+   * Whether the edition's account section names the person's role on this
+   * server (an owner, who brings people onto it, or a member). An edition
+   * whose people have no role on the server leaves it out. Read by no screen
+   * of the core.
    */
   serverRole?: boolean
   /**
@@ -247,12 +245,9 @@ export interface Edition {
     accountAccess?: Component
   }
   /**
-   * Where who uses a mailbox, and what each may do, is managed, when that is
-   * not on the mailbox's sheet (components/AccountSheet.vue): the sheet then
-   * draws one link there in place of its Access section (AccessPanel), for
-   * the same people it would show that section to (a team's owners and
-   * admins). The mailbox's key (MailboxKeyPanel), the person's own, stays on
-   * the sheet. Unset: the sheet holds the Access section.
+   * Where who uses a mailbox, and what each may do, is managed, for an
+   * edition that links there (a team's owners and admins manage it). Read by
+   * no screen of the core.
    */
   mailboxAccess?: {
     /** The link's target for this mailbox: a path of this origin. */

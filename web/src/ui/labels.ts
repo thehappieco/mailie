@@ -85,7 +85,7 @@ export function stateDetail(account: Account): string {
   }
   switch (account.state) {
     case 'active':
-      // How far the sync has come is the sync block's to say (ui/sync.ts), and a pause or the operator's hold too.
+      // How far the sync has come is the edition's to say, from the account's sync block; a pause and the operator's hold are said here.
       if (account.sync.held) return t('Connected. Sync is off.')
       if (account.sync.paused) return t('Connected. Sync is paused.')
       return account.sync.enabled ? t('Connected. Sync is on.') : t('Connected. Sync is off.')

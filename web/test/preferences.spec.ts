@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureEdition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
+import { testEdition } from './edition'
 import { initializeLocale, locale, setLocale } from '../src/ui/i18n'
 import { hostPreferences, initializeTheme, readPreference, setPreferenceStore, setTheme, theme, writePreference, type PreferenceName, type PreferenceStore } from '../src/ui/preferences'
 
@@ -22,7 +21,7 @@ beforeEach(() => {
   vi.stubGlobal('location', { hostname: 'mail.example.org', protocol: 'https:' })
   vi.stubGlobal('localStorage', { getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value) } })
 })
-afterEach(() => { cleanup?.(); cleanup = undefined; configureEdition(openEdition); locale.value = 'en'; vi.unstubAllGlobals() })
+afterEach(() => { cleanup?.(); cleanup = undefined; configureEdition(testEdition); locale.value = 'en'; vi.unstubAllGlobals() })
 
 describe('appearance preferences', () => {
   it('follows the system at startup and when it changes', () => {
@@ -87,8 +86,7 @@ describe('appearance preferences', () => {
     // Nothing read again writes the store.
     expect(writes).toEqual([])
   })
-  it('shows a theme read again at once in the open console, whose entry gives no reread', () => {
-    expect(readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')).toMatch(/^initializeTheme\(\)$/m)
+  it('shows a theme read again at once where the entry gives no reread', () => {
     cleanup = initializeTheme(); cookies.set('mailie_theme', 'light'); doc.dispatchEvent(new Event('visibilitychange'))
     expect([theme.value, doc.documentElement.dataset.theme]).toEqual(['light', 'light'])
   })
@@ -110,7 +108,7 @@ describe('a store an edition installs', () => {
     cookies.set('mailie_theme', 'light'); cookies.set('mailie_locale', 'fr'); saved.set('mailie_theme', 'light')
     vi.stubGlobal('navigator', { languages: ['de-DE'] })
     const { store, kept, written } = memoryStore({ theme: 'dark', locale: 'pt-BR' })
-    configureEdition({ ...openEdition, preferences: store })
+    configureEdition({ ...testEdition, preferences: store })
     cleanup = initializeTheme(); initializeLocale()
     expect([theme.value, doc.documentElement.dataset.theme, locale.value]).toEqual(['dark', 'dark', 'pt'])
     setTheme('system'); setLocale('es'); setLocale('pt')
@@ -121,7 +119,7 @@ describe('a store an edition installs', () => {
     // Restoring the theme asks the store again.
     kept.set('theme', 'light'); doc.dispatchEvent(new Event('visibilitychange')); expect(theme.value).toBe('light')
     // The edition set again without one: the core's own, as ever.
-    configureEdition(openEdition)
+    configureEdition(testEdition)
     expect(readPreference('theme')).toBe('light'); expect(readPreference('locale')).toBe('fr')
     writePreference('theme', 'dark'); expect(writes).toEqual(['mailie_theme=dark; Path=/; Max-Age=31536000; SameSite=Lax; Secure'])
     expect(setPreferenceStore(null)).toBe(hostPreferences)
@@ -129,11 +127,11 @@ describe('a store an edition installs', () => {
 
   it('is checked as the core’s own is: an unknown value is none, and a store that throws only forgets', () => {
     vi.stubGlobal('navigator', { languages: ['es-MX'] })
-    configureEdition({ ...openEdition, preferences: memoryStore({ theme: 'sepia', locale: 'xx' }).store })
+    configureEdition({ ...testEdition, preferences: memoryStore({ theme: 'sepia', locale: 'xx' }).store })
     cleanup = initializeTheme(); initializeLocale()
     expect([theme.value, locale.value]).toEqual(['system', 'es'])
     const refusing: PreferenceStore = { read: () => { throw Error('denied') }, write: () => { throw Error('denied') } }
-    configureEdition({ ...openEdition, preferences: refusing })
+    configureEdition({ ...testEdition, preferences: refusing })
     expect(() => { initializeLocale(); setTheme('dark'); setLocale('pt') }).not.toThrow()
     expect([theme.value, doc.documentElement.dataset.theme, locale.value]).toEqual(['dark', 'dark', 'pt'])
     expect(writes).toEqual([])
@@ -142,10 +140,10 @@ describe('a store an edition installs', () => {
   it('is in place before a language the edition no longer offers gives way, and an edition refused leaves the one before', () => {
     vi.stubGlobal('navigator', { languages: ['de-DE'] })
     locale.value = 'fr'
-    configureEdition({ ...openEdition, locales: ['pt', 'en', 'es'], preferences: memoryStore({ locale: 'es' }).store })
+    configureEdition({ ...testEdition, locales: ['pt', 'en', 'es'], preferences: memoryStore({ locale: 'es' }).store })
     expect(locale.value).toBe('es')
     const { store } = memoryStore({ theme: 'dark' })
-    expect(() => configureEdition({ ...openEdition, locales: ['pt'], preferences: store })).toThrow(/must include 'en'/)
+    expect(() => configureEdition({ ...testEdition, locales: ['pt'], preferences: store })).toThrow(/must include 'en'/)
     expect(readPreference('theme')).toBeNull()
     expect(readPreference('locale')).toBe('es')
   })

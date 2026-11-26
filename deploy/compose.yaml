@@ -1,5 +1,5 @@
-# Mailie with Docker Compose: the daemon and the open console in one
-# container, built from this checkout with deploy/Dockerfile. From the
+# Mailie with Docker Compose: the daemon, REST and MCP with no web console, in
+# one container, built from this checkout with deploy/Dockerfile. From the
 # checkout's root:
 #
 #   cp .env.example deploy/.env       # then set MAIL_CREDENTIAL_KEY_HEX in it (openssl rand -hex 32)
@@ -22,12 +22,13 @@ services:
     env_file: .env
     environment:
       # The image's own paths, kept whatever .env says (a development .env
-      # names others): the database lives on the volume below, the console is
-      # in the image, and the daemon listens on every address of the
-      # container, which only the port published below reaches.
+      # names others): the database lives on the volume below, and the daemon
+      # listens on every address of the container, which only the port
+      # published below reaches. No console: MAIL_WEB_DIR stays empty, even
+      # where .env names one.
       MAIL_DATA_DIR: /data
       MAIL_HTTP_ADDR: 0.0.0.0:8080
-      MAIL_WEB_DIR: /usr/share/mailie/console
+      MAIL_WEB_DIR: ""
     ports:
       # The host's loopback only, for a reverse proxy on the same host that
       # terminates TLS. Never publish 8080 on a public address: the daemon

@@ -2,7 +2,7 @@
 // account for a pass.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Account } from '../src/api/types'
-import { SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from '../src/open/versions'
+import { SYNC_TEXT_VERSION as CONSENT_TEXT_VERSION } from './edition'
 import { account, failure, freshModules, json, reply, type Route, serve, stubPage, syncing, syncOff } from './support'
 
 const VERSION = CONSENT_TEXT_VERSION
@@ -127,7 +127,7 @@ describe('consent to sync', () => {
     expect(sync.consent.problem).toEqual({ op: 'grant-sync', code: 'bad_request' })
     expect(sync.consent.consented).toBe(false)
     const { describe: describeFailure } = await import('../src/ui/errors')
-    expect(describeFailure(sync.consent.problem!)).toBe('The text about sync changed on this server while this page was open. Reload the page to read the current text.')
+    expect(describeFailure(sync.consent.problem!)).toBe('The sync text changed while this page was open.')
   })
 
   it('turns sync off with DELETE, forgets folder lists read from the index, and does not ask again at once', async () => {
@@ -213,37 +213,11 @@ describe('asking for a sync', () => {
   })
 })
 
-describe('the words of an account’s sync', () => {
-  const words = async (sync: Account['sync'], state: Account['state'] = 'active') => {
-    const { syncView } = await import('../src/ui/sync')
+describe('an account’s pause', () => {
+  it('a paused mailbox reads as connected with its sync paused, and a held one with its sync off', async () => {
     const { stateDetail } = await import('../src/ui/labels')
-    const shown = account({ state, sync })
-    return { view: syncView(shown, Date.UTC(2026, 8, 22)), detail: stateDetail(shown) }
-  }
-
-  it('a paused mailbox reads Paused, since when, and that its index is kept', async () => {
-    const { view, detail } = await words(syncing({ running: false, state: 'stopped', paused: true, paused_since: 1_790_000_000 }))
-    expect(view).toEqual({ tone: 'off', label: 'Paused', detail: 'Paused since September 21, 2026. Mailie keeps what it indexed, so it can still be searched and read, but indexes nothing new until sync is resumed.' })
-    expect(detail).toBe('Connected. Sync is paused.')
-    // Paused whatever else it says: its agreement may not hold now (nobody reads it, its person is off).
-    expect((await words(syncOff({ paused: true, paused_since: 1_790_000_000, messages: 4 }))).view?.label).toBe('Paused')
-  })
-
-  it('a paused mailbox that kept no index says nothing is indexed and that a resume indexes the last 90 days', async () => {
-    const { view } = await words(syncOff({ enabled: true, paused: true, paused_since: 1_790_000_000 }))
-    expect(view?.detail).toBe('Paused since September 21, 2026. Nothing of this mailbox is indexed: once sync is resumed, Mailie indexes the last 90 days.')
-  })
-
-  it('a held mailbox reads Turned off, never Paused, and names nobody', async () => {
-    const { view, detail } = await words(syncOff({ held: true, held_since: 1_790_000_000 }))
-    expect(view).toEqual({ tone: 'warn', label: 'Turned off', detail: 'Turned off since September 21, 2026: Mailie keeps no index of this mailbox, and nothing of it syncs until you turn it on again.' })
-    expect(detail).toBe('Connected. Sync is off.')
-    expect(JSON.stringify(view)).not.toMatch(/[Pp]aused|operator|recovered/)
-  })
-
-  it('a mailbox no worker holds yet reads Starting, never Paused', async () => {
-    const { view } = await words(syncing({ running: false, state: 'stopped' }))
-    expect(view).toEqual({ tone: 'off', label: 'Starting', detail: 'Mailie picks this mailbox up again shortly.' })
+    expect(stateDetail(account({ state: 'active', sync: syncing({ running: false, state: 'stopped', paused: true, paused_since: 1_790_000_000 }) }))).toBe('Connected. Sync is paused.')
+    expect(stateDetail(account({ state: 'active', sync: syncOff({ held: true, held_since: 1_790_000_000 }) }))).toBe('Connected. Sync is off.')
   })
 
   it('pauses and resumes a personal mailbox with no text named, taking the sync each answer carries', async () => {

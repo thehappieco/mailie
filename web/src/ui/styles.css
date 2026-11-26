@@ -16,8 +16,8 @@ body {
   margin: 0;
 }
 
-/* The core's own frame (App.vue, through useFixedFrame in ui/frame.ts, which
-   puts .fixed-frame on <html>) owns its scrolling: the document never
+/* The core's own frame (an edition's root, through useFixedFrame in
+   ui/frame.ts, which puts .fixed-frame on <html>) owns its scrolling: the document never
    scrolls, and #app follows the visual viewport, so a phone's keyboard
    shrinks the page instead of covering the field being typed in
    (state/appLifecycle.ts writes --app-height and --app-top). A host that

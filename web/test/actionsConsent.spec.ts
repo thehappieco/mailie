@@ -1,8 +1,8 @@
-// The person's consent to actions on their messages, as the core keeps it:
-// the open console's Account section switches it, and a key that can act is
-// offered only while it stands.
+// The person's consent to actions on their messages, as the core keeps it for
+// an edition that switches it: its standing, a revision the page does not
+// carry, and a withdrawal the server remembers.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ACTIONS_TEXT_VERSION } from '../src/open/versions'
+import { ACTIONS_TEXT_VERSION } from './edition'
 import { freshModules, json, reply, serve, stubPage, type Route } from './support'
 
 const notYet = { consented: false, current_version: ACTIONS_TEXT_VERSION }
@@ -62,7 +62,7 @@ describe('consent to actions', () => {
     expect(bodies(fetch, 'POST')).toEqual([])
   })
 
-  it('keeps when the person took it back, until they give it again, and still asks them in the open console', async () => {
+  it('keeps when the person took it back, until they give it again, and still asks them', async () => {
     let state: object = withdrawn
     const { consent } = await signedIn(({ method }) => {
       if (method === 'POST') state = given
@@ -70,7 +70,7 @@ describe('consent to actions', () => {
     })
     await consent.loadActionsConsent()
     expect(consent.actionsConsent.withdrawnAt).toBe(1_790_000_100)
-    // What the open console does with it is unchanged: it asks again.
+    // The core asks again; an edition may ask only someone who never answered (withdrawnAt).
     expect(consent.needsActionsConsent()).toBe(true)
     expect(await consent.allowActions()).toBe(true)
     expect(consent.actionsConsent.withdrawnAt).toBe(0)

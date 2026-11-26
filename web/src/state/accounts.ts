@@ -281,8 +281,8 @@ watch(identity, () => {
 
 let removedGeneration = 0
 // Another workspace shown: its removed mailboxes are its own, and whether
-// they are asked for at all is for whoever shows them to its owners
-// (RemovedMailboxes): a person who does not own it is never asked about them.
+// they are asked for at all is for the edition that shows them to its owners:
+// a person who does not own it is never asked about them.
 watch(() => workspaces.currentID, id => {
   if (removed.workspace === id && removed.loaded) return
   removedGeneration++

@@ -1,10 +1,11 @@
-// What makes src/ the open console and a core another edition builds on: the
-// core never reaches outside src/ (another edition imports it, never the
-// other way round), the open edition's texts belong to whoever runs the
-// server (no company, no policy link), and its console has the server's
-// sections and nothing to read or send mail with. An edition may draw its own
-// brand and appearance control in the frame (Edition.look); the open one
-// draws the core's.
+// What makes src/ a core the editions build on: the core never reaches
+// outside src/ (an edition imports it, never the other way round), and it
+// names no hosted service, company, policy or hosted text revision anywhere
+// (test/hosted.ts): it is public source, and a self-hosted server serves none
+// of it (platform decision 0063). The core ships no edition and no console of
+// its own: each edition brings its console and its texts, names its frame,
+// and may draw its own brand and appearance control there (Edition.look);
+// the specs run under test/edition.ts.
 import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -12,15 +13,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createSSRApp, defineComponent, h, type Component } from 'vue'
 import { renderToString, type SSRContext } from 'vue/server-renderer'
 import { configureEdition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
-import OpenConsole from '../src/open/OpenConsole.vue'
-import ActionsText from '../src/open/ActionsText.vue'
-import KeyTermsText from '../src/open/KeyTermsText.vue'
-import SyncText from '../src/open/SyncText.vue'
+import { TestConsole, testEdition } from './edition'
 import { accounts } from '../src/state/accounts'
 import { session } from '../src/state/session'
 import { workspaces } from '../src/state/workspaces'
-import { languageOptions, locale } from '../src/ui/i18n'
+import { locale } from '../src/ui/i18n'
 import { hostPreferences, setPreferenceStore } from '../src/ui/preferences'
 import { hostedName } from './hosted'
 import { literalKeys, sourceFiles } from './i18nGuard'
@@ -43,7 +40,7 @@ async function render(component: Component, props: Record<string, unknown> = {})
 }
 
 afterEach(() => {
-  configureEdition(openEdition)
+  configureEdition(testEdition)
   locale.value = 'en'
   Object.assign(session, { phase: 'signed-out', user: null, expiresAt: 0 })
   Object.assign(accounts, { list: [], loaded: false })
@@ -76,8 +73,8 @@ describe('the core and the editions', () => {
     expect(hostedName(`import x from '@thehappieco/kitchen'`)).toBe('happie')
   })
 
-  it('names no hosted service, company, policy or cloud text revision in any source, catalog, icon or the page itself', () => {
-    const files = [...everyFile(src), ...everyFile(join(web, 'public')), join(web, 'index.html')]
+  it('names no hosted service, company, policy or cloud text revision in any source, catalog, stylesheet or icon', () => {
+    const files = [...everyFile(src), ...everyFile(join(web, 'public'))]
     expect(files.length).toBeGreaterThan(50)
     const offenders = files.flatMap(file => {
       const name = hostedName(readFileSync(file, 'utf8'))
@@ -86,13 +83,13 @@ describe('the core and the editions', () => {
     expect(offenders).toEqual([])
   })
 
-  it('words no shared sentence as a console’s: only the open edition calls its frame one, another calls its own an app', () => {
+  it('words no shared sentence as a console’s: each edition names its own frame, a console or an app', () => {
     const catalogs = import.meta.glob<Record<string, string[]>>('../src/ui/locales/*.json', { eager: true, import: 'default' })
     const naming = Object.values(catalogs).flatMap(catalog => Object.entries(catalog))
       .filter(([key, translations]) => /console|consola|konsole/i.test([key, ...translations].join(' '))).map(([key]) => key)
-    expect(naming.sort()).toEqual(['Console', 'Console navigation'])
-    const users = sourceFiles(src).filter(file => literalKeys(readFileSync(file, 'utf8')).some(key => naming.includes(key)))
-    expect(users.map(file => relative(src, file))).toEqual(['open/edition.ts'])
+    expect(naming).toEqual([])
+    const users = sourceFiles(src).filter(file => literalKeys(readFileSync(file, 'utf8')).some(key => /console|consola|konsole/i.test(key)))
+    expect(users.map(file => relative(src, file))).toEqual([])
   })
 
   it('refuses to render a screen before an edition is configured', async () => {
@@ -102,53 +99,29 @@ describe('the core and the editions', () => {
   })
 })
 
-describe('the open edition', () => {
-  it('keeps the theme and the language in the core’s own store, on this host alone: only the edition seam installs another', () => {
-    expect(openEdition.preferences).toBeUndefined()
-    configureEdition(openEdition)
+describe('an edition and the core’s frame', () => {
+  it('keeps the theme and the language in the core’s own store, on this host alone, for an edition that sets none: only the edition seam installs another', () => {
+    expect(testEdition.preferences).toBeUndefined()
+    configureEdition(testEdition)
     expect(setPreferenceStore(null)).toBe(hostPreferences)
     const installing = sourceFiles(src).filter(file => readFileSync(file, 'utf8').includes('setPreferenceStore(')).map(file => relative(src, file)).sort()
     expect(installing).toEqual(['edition.ts', 'ui/preferences.ts'])
   })
 
-  it('words what a person agrees to as this server’s, in every language, linking no policy and naming no company', async () => {
-    for (const { value } of languageOptions) {
-      locale.value = value
-      for (const html of [await render(SyncText), await render(ActionsText), await render(KeyTermsText, { write: true }), await render(KeyTermsText, { write: true, send: true, team: 'Support' })]) {
-        expect(html).not.toMatch(/<a\b/)
-        expect(html, value).not.toMatch(/Happie|thehappie|Mailie/)
-      }
-    }
-  })
-
-  it('shows the server’s sections, and nothing to read or send mail with', async () => {
-    vi.stubGlobal('location', new URL('https://mail.example.org/'))
-    Object.assign(session, { phase: 'ready', user: ana, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
-    Object.assign(accounts, { list: [], loaded: true })
-    const nav = (html: string) => (html.match(/<nav class="console-nav"[^]*?<\/nav>/)?.[0] ?? '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-    // API keys are a workspace's: offered once the person's workspaces say which is shown.
-    expect(nav(await render(OpenConsole))).toBe('Mailboxes 0 Storage Account')
-    Object.assign(workspaces, { list: [{ id: 'wsp_000000000000aaaa', kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: 1_790_000_000 }], loaded: true, supported: true, currentID: 'wsp_000000000000aaaa' })
-    Object.assign(accounts, { list: [], loaded: true, workspace: 'wsp_000000000000aaaa' })
-    const html = await render(OpenConsole)
-    expect(nav(html)).toBe('Mailboxes 0 Members API keys &amp; MCP Storage Account')
-    expect(html).not.toMatch(/Compose|mail-compose|Mail sent|by The Happie Co/)
-    expect(html).not.toContain('lockup-by')
-  })
-
-  it('calls its frame the server’s console, in the person’s language', async () => {
+  it('names its frame as the edition does: the sidebar, the lockup and the breadcrumb', async () => {
     vi.stubGlobal('location', new URL('https://mail.example.org/'))
     Object.assign(session, { phase: 'ready', user: ana, expiresAt: Math.floor(Date.now() / 1000) + 86_400 })
     Object.assign(accounts, { list: [], loaded: true })
     const breadcrumb = (html: string) => (html.match(/<div class="console-breadcrumb"[^>]*>(.*?)<\/div>/)?.[1] ?? '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')
-    const html = await render(OpenConsole)
+    const html = await render(TestConsole)
     expect(html).toMatch(/<aside class="console-sidebar" aria-label="Console navigation"/)
     expect(html).toMatch(/<span class="lockup"[^>]*role="img" aria-label="Mailie · Console"/)
     expect(breadcrumb(html)).toBe('Console / Mailboxes')
-    locale.value = 'pt'
-    const pt = await render(OpenConsole)
-    expect(pt).toMatch(/<aside class="console-sidebar" aria-label="Navegação do console"/)
-    expect(breadcrumb(pt)).toBe('Console / Caixas de email')
+    configureEdition({ ...testEdition, shell: { rootLabel: () => 'Mail app', navLabel: () => 'Mail app navigation' } })
+    const app = await render(TestConsole)
+    expect(app).toMatch(/<aside class="console-sidebar" aria-label="Mail app navigation"/)
+    expect(app).toMatch(/<span class="lockup"[^>]*role="img" aria-label="Mailie · Mail app"/)
+    expect(breadcrumb(app)).toBe('Mail app / Mailboxes')
   })
 })
 
@@ -174,8 +147,8 @@ describe('an edition’s look in the frame', () => {
 
   it('draws the edition’s brand atop the sidebar, told it is in the menu and named as the core names its lockup, and its appearance control in the header', async () => {
     signedIn()
-    configureEdition({ ...openEdition, look: { brand: Brand, appearance: Appearance } })
-    const html = await render(OpenConsole)
+    configureEdition({ ...testEdition, look: { brand: Brand, appearance: Appearance } })
+    const html = await render(TestConsole)
     expect(sidebarBrand(html)).toBe('<span class="edition-brand" role="img" aria-label="Mailie · Console" data-place="menu"></span>')
     expect(header(html)).toMatch(/<\/h1><\/div><div class="edition-appearance"><button type="button">Theme<\/button><\/div><button class="mobile-profile"/)
     for (const core of ['class="lockup"', 'appearance-trigger', 'appearance-dialog']) expect(html).not.toContain(core)
@@ -186,25 +159,25 @@ describe('an edition’s look in the frame', () => {
 
   it('draws only what the edition sets, and the core’s in the other place', async () => {
     signedIn()
-    configureEdition({ ...openEdition, look: { brand: Brand } })
-    let html = await render(OpenConsole)
+    configureEdition({ ...testEdition, look: { brand: Brand } })
+    let html = await render(TestConsole)
     expect(sidebarBrand(html)).toBe('<span class="edition-brand" role="img" aria-label="Mailie · Console" data-place="menu"></span>')
     expect(header(html)).toMatch(/<\/h1><\/div><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><button class="mobile-profile"/)
     expect(html).not.toContain('class="lockup"')
     expect(html).not.toContain('edition-appearance')
-    configureEdition({ ...openEdition, look: { appearance: Appearance } })
-    html = await render(OpenConsole)
+    configureEdition({ ...testEdition, look: { appearance: Appearance } })
+    html = await render(TestConsole)
     expect(sidebarBrand(html)).toMatch(/^<span class="lockup" data-size="34" role="img" aria-label="Mailie · Console"/)
     expect(header(html)).toMatch(/<\/h1><\/div><div class="edition-appearance"><button type="button">Theme<\/button><\/div><button class="mobile-profile"/)
     expect(html).not.toContain('appearance-trigger')
     expect(html).not.toContain('edition-brand')
   })
 
-  it('is the core’s when the edition sets none: the open edition’s lockup and appearance menu, as before', async () => {
+  it('is the core’s when the edition sets none: the core’s lockup and appearance menu', async () => {
     signedIn()
-    for (const edition of [openEdition, { ...openEdition, look: {} }]) {
+    for (const edition of [testEdition, { ...testEdition, look: {} }]) {
       configureEdition(edition)
-      const html = await render(OpenConsole)
+      const html = await render(TestConsole)
       expect(sidebarBrand(html)).toMatch(/^<span class="lockup" data-size="34" role="img" aria-label="Mailie · Console"/)
       expect(header(html)).toMatch(/<\/h1><\/div><button type="button" class="appearance-trigger"[^>]*>[^]*?<\/button><button class="mobile-profile"/)
       expect(html).toContain('appearance-dialog')

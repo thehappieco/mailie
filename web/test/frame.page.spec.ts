@@ -1,25 +1,22 @@
 // The pieces a host draws its own frame with, on a page (test/dom.ts): what
 // keeps the console going while a frame is on screen (useConsoleFrame), the
 // page's life around its phases (useAppLifecycle, AppOverlays), the core's own
-// frame, which alone owns the page's scrolling (useFixedFrame), the row of
-// the person's sessions (SessionsRow), and the core's frame for an edition
-// whose person's settings are elsewhere (ConsoleShell without an account
-// section, with links). The open console builds on the same pieces, and its
-// own specs hold what it shows.
+// frame, which alone owns the page's scrolling (useFixedFrame), and the core's
+// frame for an edition whose person's settings are elsewhere (ConsoleShell
+// without an account section, with links). Each edition's own specs hold what
+// it shows.
 import './dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h } from 'vue'
 import { click, find, flush, page, words } from './dom'
 import { mount, type Mounted } from './mount'
 import type { Workspace } from '../src/api/types'
-import App from '../src/App.vue'
 import AppOverlays from '../src/components/AppOverlays.vue'
 import ConsoleShell, { type ConsoleLinks, type ConsoleSection } from '../src/components/ConsoleShell.vue'
 import RestoringView from '../src/components/RestoringView.vue'
-import SessionsRow from '../src/components/SessionsRow.vue'
 import SignInView from '../src/components/SignInView.vue'
 import { configureEdition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
+import { testEdition } from './edition'
 import { accounts } from '../src/state/accounts'
 import { useAppLifecycle } from '../src/state/appLifecycle'
 import { useConsoleFrame } from '../src/state/consoleFrame'
@@ -27,7 +24,7 @@ import { server } from '../src/state/connection'
 import { adoptSession, session, signOut } from '../src/state/session'
 import { workspaces } from '../src/state/workspaces'
 import { announcement } from '../src/ui/announce'
-import { FIXED_FRAME_CLASS } from '../src/ui/frame'
+import { FIXED_FRAME_CLASS, useFixedFrame } from '../src/ui/frame'
 import { failure, json, reply, stubPage } from './support'
 
 const PERSONAL = 'wsp_000000000000aaaa'
@@ -81,7 +78,7 @@ afterEach(async () => {
   for (const one of mounted) one.unmount()
   mounted = []
   await signOut().catch(() => {})
-  configureEdition(openEdition)
+  configureEdition(testEdition)
   page.documentElement.classList.remove(FIXED_FRAME_CLASS)
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
@@ -105,6 +102,18 @@ const HostRoot = defineComponent({
       session.phase === 'restoring' ? h(RestoringView) : session.phase === 'signed-out' ? h(SignInView, { invitation: null, framed: true }) : finishing.value ? null : h('p', 'Signed in'),
       h(AppOverlays, { finishing: finishing.value }),
     ])
+  },
+})
+
+/** A root that asks for the core's own frame, as an edition's root does when its page must not scroll: the phases, and the sign-in card with the brand above it. */
+const FixedRoot = defineComponent({
+  setup() {
+    const { finishing } = useAppLifecycle()
+    useFixedFrame()
+    return () => [
+      session.phase === 'restoring' ? h(RestoringView) : session.phase === 'signed-out' ? h(SignInView, { invitation: null }) : finishing.value ? null : h('p', 'Signed in'),
+      h(AppOverlays, { finishing: finishing.value }),
+    ]
   },
 })
 
@@ -152,7 +161,7 @@ describe('a frame of a host’s own', () => {
 
 describe('the page’s life around its phases', () => {
   it('the core’s own frame owns the page’s scrolling while it is mounted, and only it', async () => {
-    const app = mount(App)
+    const app = mount(FixedRoot)
     mounted.push(app)
     expect(page.documentElement.classList.contains(FIXED_FRAME_CLASS)).toBe(true)
     // No session remembered: signed out, the card with the brand and the appearance menu above it.
@@ -185,50 +194,6 @@ describe('the page’s life around its phases', () => {
     expect(words(find('.session-notice')!)).toContain('This browser did not let Mailie remember your session.')
     await click(find('.session-notice button'))
     expect(find('.session-notice')).toBeNull()
-  })
-})
-
-describe('the row of the person’s sessions', () => {
-  it('signs out here, and everywhere only once asked again', async () => {
-    await adoptSession(reply())
-    mounted.push(mount(SessionsRow))
-    expect(words(find('.sessions-row')!)).toContain('Sessions')
-    expect(words(find('.sessions-row')!)).toContain('This session lasts until')
-    await click(find('button', 'Sign out everywhere'))
-    // Asked again, nothing sent yet; and taken back.
-    expect(asked('/v1/auth/logout')).toHaveLength(0)
-    await click(find('button', 'Cancel'))
-    await click(find('button', 'Sign out everywhere'))
-    await click(find('button', 'Sign out everywhere now'))
-    await vi.waitFor(() => expect(session.phase).toBe('signed-out'))
-    expect(asked('/v1/auth/logout').map(request => request.body)).toEqual([{ everywhere: true }])
-
-    await adoptSession(reply())
-    await flush()
-    await click(find('.sessions-row button', 'Sign out'))
-    await vi.waitFor(() => expect(session.phase).toBe('signed-out'))
-    expect(asked('/v1/auth/logout').map(request => request.body)).toEqual([{ everywhere: true }, { everywhere: false }])
-  })
-
-  it('says why signing out everywhere did not happen, still signed in', async () => {
-    logout = () => failure('unavailable', 503)
-    await adoptSession(reply())
-    mounted.push(mount(SessionsRow))
-    await click(find('button', 'Sign out everywhere'))
-    await click(find('button', 'Sign out everywhere now'))
-    await vi.waitFor(() => expect(find('.sessions-row [role=alert]')).not.toBeNull())
-    expect(session.phase).toBe('ready')
-    expect(find('button', 'Sign out everywhere now')).toBeNull()
-  })
-
-  it('takes a host’s own words for its title, its line and its button', async () => {
-    await adoptSession(reply())
-    mounted.push(mount(SessionsRow, { title: 'Signed in here', description: 'Until tomorrow.', signOutLabel: 'Leave this page’s session' }))
-    const row = words(find('.sessions-row')!)
-    expect(row).toContain('Signed in here')
-    expect(row).toContain('Until tomorrow.')
-    expect(row).not.toContain('This session lasts until')
-    expect(find('button', 'Leave this page’s session')).not.toBeNull()
   })
 })
 

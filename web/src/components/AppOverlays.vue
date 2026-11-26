@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// What the page draws over its phases, whoever draws them (App.vue, or a
-// host's root beside state/appLifecycle.ts): the invitation to join a team,
+// What the page draws over its phases, whoever draws them (an edition's root,
+// beside state/appLifecycle.ts): the invitation to join a team,
 // accepted signed in where teams are made here; the recovery code a sign-up
 // or a recovery shows once; the step-up a write of a mailbox key or a grant
 // waits for (state/stepUp.ts); the line that says this browser would not

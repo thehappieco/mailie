@@ -2,8 +2,9 @@
 // look is ui/surface.css's, under .console-surface, which ui/styles.css
 // imports first, so every edition that imports styles.css has it; and the
 // core's own frame, the page that never scrolls, is only under
-// html.fixed-frame (ui/frame.ts), which only App.vue asks for, so another
-// host's page scrolls as any page does.
+// html.fixed-frame (ui/frame.ts), which only an edition's own root asks for
+// (useFixedFrame), never a file under src/, so a host's page that does not
+// ask scrolls as any page does.
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -53,13 +54,13 @@ describe('the page that never scrolls', () => {
     expect(framed).toMatchObject({ overflow: 'hidden', position: 'fixed', height: 'var(--app-height, 100dvh)', 'overscroll-behavior': 'none' })
   })
 
-  it('is asked for by the core’s own root, and by nothing else under src/', () => {
+  it('is asked for by no file under src/: only an edition’s own root asks for it', () => {
     const src = fileURLToPath(new URL('../src', import.meta.url))
     const asking = readdirSync(src, { recursive: true, withFileTypes: true })
       .filter(entry => entry.isFile() && /\.(ts|vue)$/.test(entry.name))
       .map(entry => relative(src, join(entry.parentPath, entry.name)))
       .filter(file => /(?<!function )useFixedFrame\(\)(?!\s*:)/.test(read(file)))
-    expect(asking).toEqual(['App.vue'])
+    expect(asking).toEqual([])
     expect(read('ui/frame.ts')).toContain("FIXED_FRAME_CLASS = 'fixed-frame'")
   })
 })

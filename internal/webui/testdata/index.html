@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <!-- The page an edition of the console ships, as far as the daemon's policy
+         goes (webui_test.go): its own copy of the header's policy, which a
+         static server other than the daemon still serves. frame-ancestors is
+         absent, because a browser ignores it in a meta element and warns; only
+         the header carries it, together with X-Frame-Options. An edition that
+         reaches other origins (MAIL_CONNECT_SRC) names them in connect-src. -->
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; worker-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-src 'none'; base-uri 'none'; object-src 'none'; form-action 'self'" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Mailie</title>
+  </head>
+  <body>
+    <div id="app"></div>
+  </body>
+</html>

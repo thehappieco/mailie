@@ -7,7 +7,7 @@
 // (state/session.ts freshStepUp), rather than after a refusal.
 //
 // There is one prompt for the whole page (components/StepUpPrompt.vue,
-// mounted by App.vue over whatever dialog is open): a flow that needs a
+// mounted by AppOverlays.vue over whatever dialog is open): a flow that needs a
 // step-up waits for it, and goes on once it is given, or stops without a
 // word when the person closes it (StepUpCancelled). A sign-out closes it.
 //

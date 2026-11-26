@@ -9,7 +9,7 @@
 // out their protections across the team.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { MailboxAccess, Member, TeamInvite, User, Workspace } from '../src/api/types'
-import { SYNC_TEXT_VERSION } from '../src/open/versions'
+import { SYNC_TEXT_VERSION } from './edition'
 import { memberPermissions } from '../src/ui/access'
 import { account, ana, failure, freshModules, json, memoryStorage, ORIGIN, reply, stubPage } from './support'
 

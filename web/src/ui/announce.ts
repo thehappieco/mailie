@@ -3,8 +3,8 @@
 // A role="status" element created together with its text is often not read:
 // screen readers watch live regions that already exist and announce what
 // changes inside them. So the console keeps one region mounted for its whole
-// life (LiveRegion.vue, in App.vue and inside every modal dialog, since a modal
-// makes everything outside it inert) and changes only its text.
+// life (LiveRegion.vue, in AppOverlays.vue and inside every modal dialog,
+// since a modal makes everything outside it inert) and changes only its text.
 
 import { nextTick, ref } from 'vue'
 

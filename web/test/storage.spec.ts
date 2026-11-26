@@ -1,11 +1,9 @@
-// What the person's mailboxes take up, as the Storage section reads it and
-// shows it: the server's answer, never drawn for another person, and the
-// database's size only when the server tells it.
+// What the person's mailboxes take up, as the core reads it for an edition
+// that shows it (state/storage.ts): the server's answer, read again when asked
+// while a read is in flight, and never kept for another person.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createSSRApp, h } from 'vue'
-import { renderToString } from 'vue/server-renderer'
 import type { Storage } from '../src/api/types'
-import { account, failure, freshModules, json, reply, serve, stubPage, syncOff, syncing, type Route } from './support'
+import { failure, freshModules, json, reply, serve, stubPage, type Route } from './support'
 
 const usage: Storage = {
   mailboxes: [
@@ -31,109 +29,10 @@ async function signedIn(route: Route) {
   return { session, accounts, storage, fetch }
 }
 
-async function render(): Promise<string> {
-  const { default: StoragePanel } = await import('../src/components/StoragePanel.vue')
-  return renderToString(createSSRApp({ render: () => h(StoragePanel) }))
-}
-
-const text = (html: string) => html.replace(/<!--[^]*?-->/g, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
-
 beforeEach(() => { stubPage() })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-describe('the Storage section', () => {
-  it('reads what each mailbox takes up, and says per mailbox and in total what is indexed and how large it is', async () => {
-    const { accounts, storage, fetch } = await signedIn(({ path }) => {
-      if (path === '/v1/me/storage') return json(usage)
-      return json([account({ state: 'active', sync: syncing() }), account({ id: 'acc_0000000000000002', email: 'ana@work.example', state: 'active' })])
-    })
-    await accounts.loadAccounts()
-    await storage.loadStorage()
-    expect(fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/v1/me/storage')).toHaveLength(1)
-    const html = await render()
-    const words = text(html)
-    expect(words).toContain('Mailboxes 2')
-    expect(words).toContain('Messages indexed 1,284')
-    expect(words).toContain('Size on the mail servers 52 MB')
-    expect(words).toContain('ana@gmail.com Messages 1,284 Size 52 MB')
-    // A mailbox that does not sync says why it has nothing, and an address is text.
-    expect(words).toContain('Not synced: nothing from this mailbox is indexed.')
-    expect(html).toContain('&lt;b&gt;ana&lt;/b&gt;@work.example')
-    // Only an owner signed in to the console is told the database's size.
-    expect(words).not.toContain('Database on disk')
-  })
-
-  it('says a mailbox whose account stopped working keeps what was indexed, and only one with sync off has nothing indexed', async () => {
-    // The server stops syncing an account that needs authorizing again and
-    // keeps its index (service.Storage): its figures are what was indexed before.
-    const answer: Storage = {
-      mailboxes: [
-        { account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 1284, bytes: 52_000_000 },
-        { account_id: 'acc_0000000000000002', email: 'ana@outlook.example', messages: 90, bytes: 288_000 },
-        { account_id: 'acc_0000000000000003', email: 'ana@work.example', messages: 0, bytes: 0 },
-      ],
-      total: { messages: 1374, bytes: 52_288_000 },
-    }
-    const { accounts, storage } = await signedIn(({ path }) => {
-      if (path === '/v1/me/storage') return json(answer)
-      return json([
-        account({ state: 'active', email: 'ana@gmail.com', sync: syncing() }),
-        account({ id: 'acc_0000000000000002', email: 'ana@outlook.example', provider: 'microsoft', state: 'needs_reauth', sync: syncOff({ enabled: true }) }),
-        account({ id: 'acc_0000000000000003', email: 'ana@work.example', provider: 'imap', state: 'active' }),
-      ])
-    })
-    await accounts.loadAccounts()
-    await storage.loadStorage()
-    const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
-    expect(rows).toEqual([
-      'ana@gmail.com Messages 1,284 Size 52 MB',
-      'ana@outlook.example Sync waits until the account works again. What was indexed is kept. Messages 90 Size 288 kB',
-      'ana@work.example Not synced: nothing from this mailbox is indexed. Messages 0 Size 0 bytes',
-    ])
-  })
-
-  it('says a paused mailbox keeps what was indexed, a recovered one too, and one paused before its first pass has nothing indexed', async () => {
-    // A recovery comes back paused: its index is kept, counted and read until it is resumed.
-    const answer: Storage = {
-      mailboxes: [
-        { account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 1284, bytes: 52_000_000 },
-        { account_id: 'acc_0000000000000002', email: 'ana@outlook.example', messages: 0, bytes: 0 },
-      ],
-      total: { messages: 1284, bytes: 52_000_000 },
-    }
-    const { accounts, storage } = await signedIn(({ path }) => {
-      if (path === '/v1/me/storage') return json(answer)
-      return json([
-        account({ state: 'active', email: 'ana@gmail.com', sync: syncOff({ enabled: true, state: 'stopped', messages: 1284, paused: true, paused_since: 1_790_000_000 }) }),
-        account({ id: 'acc_0000000000000002', email: 'ana@outlook.example', provider: 'microsoft', state: 'active', sync: syncOff({ enabled: true, paused: true, paused_since: 1_790_000_000 }) }),
-      ])
-    })
-    await accounts.loadAccounts()
-    await storage.loadStorage()
-    const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
-    expect(rows).toEqual([
-      'ana@gmail.com Sync is paused until it is resumed. What was indexed is kept. Messages 1,284 Size 52 MB',
-      'ana@outlook.example Sync is paused until it is resumed. Nothing from this mailbox is indexed. Messages 0 Size 0 bytes',
-    ])
-  })
-
-  it('says a mailbox whose sync the server’s operator turned off is turned off with nothing indexed, never paused nor recovered', async () => {
-    // The operator's turn-off (POST /v1/accounts/{id}/sync/stop) holds a person's mailbox once its index is deleted.
-    const answer: Storage = {
-      mailboxes: [{ account_id: 'acc_0000000000000001', email: 'ana@gmail.com', messages: 0, bytes: 0 }],
-      total: { messages: 0, bytes: 0 },
-    }
-    const { accounts, storage } = await signedIn(({ path }) => {
-      if (path === '/v1/me/storage') return json(answer)
-      return json([account({ state: 'active', email: 'ana@gmail.com', sync: syncOff({ held: true, held_since: 1_790_000_000 }) })])
-    })
-    await accounts.loadAccounts()
-    await storage.loadStorage()
-    const rows = (await render()).match(/<li[^]*?<\/li>/g)!.map(text)
-    expect(rows).toEqual(['ana@gmail.com Sync is turned off until it is turned on again. Nothing from this mailbox is indexed. Messages 0 Size 0 bytes'])
-    expect(rows[0]).not.toContain('paused')
-  })
-
+describe('what the mailboxes take up', () => {
   it('reads once more when asked while a read is in flight, and keeps the later answer', async () => {
     const answers: ((response: Response) => void)[] = []
     const { storage, fetch } = await signedIn(({ path }) => path === '/v1/me/storage' ? new Promise<Response>(done => { answers.push(done) }) : json([]))
@@ -154,17 +53,10 @@ describe('the Storage section', () => {
     expect(reads()).toBe(2)
   })
 
-  it('shows the database’s size when the server tells it', async () => {
-    const { storage } = await signedIn(() => json({ ...usage, database_bytes: 3_400_000 }))
-    await storage.loadStorage()
-    expect(text(await render())).toContain('Database on disk 3.4 MB')
-  })
-
-  it('says it could not read the answer, and offers to try again', async () => {
+  it('says it could not read the answer', async () => {
     const { storage } = await signedIn(() => new Response('<html>502</html>', { status: 502 }))
     await storage.loadStorage()
     expect(storage.storage.failure).toEqual({ op: 'load-storage', code: 'unavailable' })
-    expect(text(await render())).toContain('Could not read what your mailboxes take up. Try again in a moment. Try again')
   })
 
   it('never draws one person’s answer for the next', async () => {

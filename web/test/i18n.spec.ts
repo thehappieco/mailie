@@ -4,7 +4,7 @@ import { renderToString, type SSRContext } from 'vue/server-renderer'
 import { fileURLToPath } from 'node:url'
 import AppearanceMenu from '../src/components/AppearanceMenu.vue'
 import { configureEdition, edition, type Edition } from '../src/edition'
-import { openEdition } from '../src/open/edition'
+import { testEdition } from './edition'
 import { addCatalogs, initializeLocale, languageOptions, locale, offeredLanguages, setLocale, supportedLocale, t, type Locale } from '../src/ui/i18n'
 import { anyOf, count, since, stamp } from '../src/ui/format'
 import { badTranslations, keysOf, managersGivingAccess, repeatedKeys, sourceFiles, usedKeys, type Catalogs } from './i18nGuard'
@@ -12,11 +12,11 @@ import { memoryStorage } from './support'
 
 const catalogs: Catalogs = import.meta.glob<Record<string, string[]>>('../src/ui/locales/*.json', { eager: true, import: 'default' })
 
-/** The core's sources and the open edition's: all of src/. Another edition has its own catalogs and runs the same guard. */
+/** The core's sources: all of src/. An edition has its own catalogs and runs the same guard over its own sources. */
 function coreSources(): string[] {
   return sourceFiles(fileURLToPath(new URL('../src', import.meta.url)))
 }
-afterEach(() => { configureEdition(openEdition); locale.value = 'en'; vi.unstubAllGlobals() })
+afterEach(() => { configureEdition(testEdition); locale.value = 'en'; vi.unstubAllGlobals() })
 
 describe('application languages', () => {
   it('recognizes regional language preferences and rejects unsupported values', () => {
@@ -47,15 +47,15 @@ describe('application languages', () => {
   })
 
   it('reactively changes labels and locale-specific dates and numbers', () => {
-    const label = computed(() => t('Email accounts'))
+    const label = computed(() => t('Workspace'))
     const number = computed(() => count(1234))
-    expect(label.value).toBe('Email accounts')
+    expect(label.value).toBe('Workspace')
     expect(number.value).toBe('1,234')
     locale.value = 'pt'
-    expect(label.value).toBe('Contas de email')
+    expect(label.value).toBe('Espaço de trabalho')
     expect(number.value).toBe('1.234')
     locale.value = 'de'
-    expect(label.value).toBe('E-Mail-Konten')
+    expect(label.value).toBe('Arbeitsbereich')
     expect(stamp(Date.UTC(2026, 8, 8, 12) / 1000)).toContain('2026')
     expect(since(Math.floor(Date.now() / 1000) - 180)).toContain('3')
   })
@@ -142,14 +142,14 @@ describe('application languages', () => {
 
   it('lets an edition add translations without changing the core’s', () => {
     locale.value = 'pt'
-    addCatalogs({ 'A sentence only an edition says': ['Uma frase que só uma edição diz', 'x', 'x', 'x'], 'Email accounts': ['Outra coisa', 'x', 'x', 'x'] })
+    addCatalogs({ 'A sentence only an edition says': ['Uma frase que só uma edição diz', 'x', 'x', 'x'], 'Workspace': ['Outra coisa', 'x', 'x', 'x'] })
     expect(t('A sentence only an edition says')).toBe('Uma frase que só uma edição diz')
-    expect(t('Email accounts')).toBe('Contas de email')
+    expect(t('Workspace')).toBe('Espaço de trabalho')
   })
 })
 
 describe('the languages an edition offers', () => {
-  const three: Edition = { ...openEdition, locales: ['pt', 'en', 'es'] }
+  const three: Edition = { ...testEdition, locales: ['pt', 'en', 'es'] }
 
   /** The language menu's options, as the appearance dialog lists them. */
   async function menuOptions(): Promise<string[]> {
@@ -175,7 +175,7 @@ describe('the languages an edition offers', () => {
   })
 
   it('are only the edition’s, in the core’s order, in the menu and in what a preference or a browser may name', async () => {
-    configureEdition({ ...openEdition, locales: ['es', 'en', 'pt'] })
+    configureEdition({ ...testEdition, locales: ['es', 'en', 'pt'] })
     expect(offeredLanguages().map(option => option.value)).toEqual(['pt', 'en', 'es'])
     expect(await menuOptions()).toEqual(['pt', 'en', 'es'])
     expect(supportedLocale('es-MX')).toBe('es')
@@ -183,9 +183,9 @@ describe('the languages an edition offers', () => {
     expect(supportedLocale('de-DE')).toBeUndefined()
     // The page still carries the French and German translations: an edition only narrows what is offered.
     locale.value = 'fr'
-    expect(t('Email accounts')).toBe('Comptes e-mail')
+    expect(t('Workspace')).toBe('Espace de travail')
     locale.value = 'de'
-    expect(t('Email accounts')).toBe('E-Mail-Konten')
+    expect(t('Workspace')).toBe('Arbeitsbereich')
   })
 
   it('move a page already showing one the edition, set again, no longer offers to the next, saving nothing', () => {
@@ -200,7 +200,7 @@ describe('the languages an edition offers', () => {
     expect(page.cookie).toBe('mailie_locale=fr')
     // One still offered stays, whichever edition comes next.
     setLocale('pt')
-    for (const next of [three, { ...three, byline: 'again' }, openEdition]) {
+    for (const next of [three, { ...three, byline: 'again' }, testEdition]) {
       configureEdition(next)
       expect(locale.value).toBe('pt')
     }
@@ -242,11 +242,11 @@ describe('the languages an edition offers', () => {
   it('always include English, among the core’s languages: any other list is refused, and the edition before stays', () => {
     configureEdition(three)
     for (const locales of [['pt', 'es'], [], ['en', 'it'], ['en', 'pt-BR']] as Locale[][]) {
-      expect(() => configureEdition({ ...openEdition, byline: 'refused', locales })).toThrow(locales.includes('en') ? /not among the core's languages/ : /must include 'en'/)
+      expect(() => configureEdition({ ...testEdition, byline: 'refused', locales })).toThrow(locales.includes('en') ? /not among the core's languages/ : /must include 'en'/)
       expect(edition()).toBe(three)
       expect(offeredLanguages().map(option => option.value)).toEqual(['pt', 'en', 'es'])
     }
-    configureEdition(openEdition)
+    configureEdition(testEdition)
     expect(offeredLanguages()).toHaveLength(5)
   })
 })

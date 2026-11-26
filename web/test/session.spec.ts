@@ -3,7 +3,7 @@ import { ana, failure, freshModules, json, now, reply, serve, settle, stubPage }
 
 // Each test gets fresh modules: the session is module state, and a leftover
 // token from one test must not be the reason another passes. They are
-// configured with the open edition, as the page is before anything runs.
+// configured with the specs' edition, as a page is before anything runs.
 async function load() {
   await freshModules()
   const session = await import('../src/state/session')
