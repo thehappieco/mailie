@@ -404,14 +404,17 @@ func (s *Service) AuthenticateTool(ctx context.Context, raw string, unknownKey a
 	return s.authenticate(ctx, raw, unknownKey, true)
 }
 
-// Errors of Authenticate and AuthenticateTool.
+// Errors of Authenticate and AuthenticateTool. Neither names where a key is
+// made, nor by whom: a self-hosted server may have no console at all, and
+// where an issuer makes the keys (KeyIssuer) they are made outside this
+// server, so any place they named would be wrong somewhere.
 var (
 	errToolNeedsKey = E(CodeUnauthorized,
-		"the MCP server takes an API key, which an owner or an admin of a workspace creates in the console, "+
-			"not a console session", nil)
+		"the MCP server takes an API key of the workspace whose mailboxes the tool uses, never a sign-in "+
+			"session's token", nil)
 	errKeyNotAgreed = E(CodeNotAuthorized,
-		"this key was not created by a person who agreed to the key terms; an owner or an admin of the workspace "+
-			"creates one in the console for a tool to use", nil)
+		"this key was not created by a person who agreed to the key terms, so it reaches no mail; a tool needs "+
+			"a key whose creator agreed to them", nil)
 )
 
 // Recheck re-reads a caller that already authenticated, immediately before a
