@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"strings"
 	"testing"
@@ -15,7 +16,8 @@ import (
 )
 
 // What a link at the provider learns of the account chosen there: the
-// address its ID token names (identity.go).
+// address its ID token names, and the account's subject and tenant for the
+// trial codes (identity.go).
 
 // idToken encodes claims as an ID token the way a provider writes one; its
 // signature is never read.
@@ -29,6 +31,12 @@ func idToken(t *testing.T, claims map[string]any) string {
 }
 
 const (
+	// googleSubject and microsoftSubject are the accounts' identifiers the
+	// claims below carry: Google's a decimal number, Microsoft's v2.0 one
+	// 43 characters of base64url.
+	googleSubject    = "110169484474386276334"
+	microsoftSubject = "AAAAAAAAAAAAAAAAAAAAAIkzqFVrSaSaFHy782bbtaQ"
+
 	googleClient = "google-web.apps.example.test"
 	msClient     = "6731de76-14a6-49ae-97bc-6eba6914391e"
 	workTenant   = "72f988bf-86f1-41af-91ab-2d7cd011db47"
@@ -46,7 +54,7 @@ func googleClaims(email string) map[string]any {
 	now := time.Now()
 	return map[string]any{
 		"iss": "https://accounts.google.com", "aud": googleClient, "azp": googleClient,
-		"sub": "110169484474386276334", "hd": "example.test", "email": email, "email_verified": true,
+		"sub": googleSubject, "hd": "example.test", "email": email, "email_verified": true,
 		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
 	}
 }
@@ -57,7 +65,7 @@ func microsoftClaims(email, tid string) map[string]any {
 	now := time.Now()
 	return map[string]any{
 		"iss": "https://login.microsoftonline.com/" + tid + "/v2.0", "aud": msClient, "tid": tid,
-		"sub": "AAAAAAAAAAAAAAAAAAAAAIkzqFVrSaSaFHy782bbtaQ", "oid": "00000000-0000-0000-66f3-3332eca7ea81",
+		"sub": microsoftSubject, "oid": "00000000-0000-0000-66f3-3332eca7ea81",
 		"email": email, "preferred_username": email, "iat": now.Unix(), "nbf": now.Unix(), "exp": now.Add(time.Hour).Unix(),
 	}
 }
@@ -78,7 +86,8 @@ func with(claims map[string]any, changes map[string]any) map[string]any {
 // identity is the address a token with claims names, under client.
 func identity(t *testing.T, kind provider.Kind, client account.OAuthClient, claims map[string]any) (string, error) {
 	t.Helper()
-	return account.IdentityForTest(kind, client, idToken(t, claims), time.Now())
+	named, err := account.IdentityForTest(kind, client, idToken(t, claims), time.Now())
+	return named.Address, err
 }
 
 // refusedFor checks a refusal is ErrNoAddress for the check named.
@@ -160,7 +169,7 @@ func TestAnIDTokenNamesAnAddressOnlyFromItsIssuerForThisClient(t *testing.T) {
 		{"claims of the wrong types", "format", "a." + base64.RawURLEncoding.EncodeToString([]byte(`{"iss":1,"aud":"x"}`)) + ".c"},
 	} {
 		got, err := account.IdentityForTest(provider.KindGmail, google, c.token, time.Now())
-		refusedFor(t, c.what, c.check, got, err)
+		refusedFor(t, c.what, c.check, got.Address, err)
 	}
 	if _, err := account.IdentityForTest(provider.KindIMAP, google, idToken(t, googleClaims("ana@gmail.com")), time.Now()); errors.Is(err, account.ErrNoAddress) || err == nil {
 		t.Errorf("a generic IMAP mailbox's: %v, want no link at all", err)
@@ -318,6 +327,10 @@ func TestAFailedIDTokenCheckNamesNoClaimValue(t *testing.T) {
 		{provider.KindMicrosoft, microsoft, with(ms, map[string]any{"tid": needle})},
 		{provider.KindMicrosoft, microsoft, with(ms, map[string]any{"iss": "https://login.microsoftonline.com/" + needle + "/v2.0"})},
 		{provider.KindMicrosoft, account.OAuthClient{ClientID: msClient, Tenant: otherTenant}, ms},
+		{provider.KindGmail, google, with(g, map[string]any{"sub": strings.Repeat(needle, 30)})},
+		{provider.KindGmail, google, with(g, map[string]any{"sub": needle + " " + needle})},
+		{provider.KindMicrosoft, microsoft, with(ms, map[string]any{"sub": needle + "ã"})},
+		{provider.KindMicrosoft, microsoft, with(ms, map[string]any{"sub": needle + "\n"})},
 	}
 	for i, c := range cases {
 		got, err := identity(t, c.kind, c.client, c.claims)
@@ -334,5 +347,118 @@ func TestAFailedIDTokenCheckNamesNoClaimValue(t *testing.T) {
 				t.Errorf("case %d: the error %q names the %s claim", i, message, k)
 			}
 		}
+	}
+}
+
+func TestAnIDTokenNamesTheAccountsSubjectAndMicrosoftsTenantBesideTheAddress(t *testing.T) {
+	for _, c := range []struct {
+		what   string
+		kind   provider.Kind
+		client account.OAuthClient
+		claims map[string]any
+		want   account.LinkIdentity
+	}{
+		{"Google's, whose domain is no tenant", provider.KindGmail, google, googleClaims("ana@gmail.com"),
+			account.LinkIdentity{Address: "ana@gmail.com", Subject: googleSubject}},
+		{"Google's, a tid it never writes ignored", provider.KindGmail, google,
+			with(googleClaims("ana@gmail.com"), map[string]any{"tid": workTenant}),
+			account.LinkIdentity{Address: "ana@gmail.com", Subject: googleSubject}},
+		{"Microsoft's, a personal account", provider.KindMicrosoft, microsoft, microsoftClaims("ana@outlook.com", consumers),
+			account.LinkIdentity{Address: "ana@outlook.com", Subject: microsoftSubject, Tenant: consumers}},
+		{"Microsoft's, a work account", provider.KindMicrosoft, microsoft, microsoftClaims("ana@example.test", workTenant),
+			account.LinkIdentity{Address: "ana@example.test", Subject: microsoftSubject, Tenant: workTenant}},
+		{"Microsoft's, its tenant in capitals", provider.KindMicrosoft, microsoft,
+			microsoftClaims("ana@example.test", strings.ToUpper(workTenant)),
+			account.LinkIdentity{Address: "ana@example.test", Subject: microsoftSubject, Tenant: workTenant}},
+		{"a subject as written, its case and punctuation kept", provider.KindGmail, google,
+			with(googleClaims("ana@gmail.com"), map[string]any{"sub": "AbC-_.~!z"}),
+			account.LinkIdentity{Address: "ana@gmail.com", Subject: "AbC-_.~!z"}},
+		{"a subject of 255 bytes", provider.KindMicrosoft, microsoft,
+			with(microsoftClaims("ana@example.test", workTenant), map[string]any{"sub": strings.Repeat("7", 255)}),
+			account.LinkIdentity{Address: "ana@example.test", Subject: strings.Repeat("7", 255), Tenant: workTenant}},
+	} {
+		got, err := account.IdentityForTest(c.kind, c.client, idToken(t, c.claims), time.Now())
+		if err != nil || got != c.want {
+			// A LinkIdentity prints as nothing of itself: its fields say what it holds.
+			t.Errorf("%s: %q, %q, %q, %v, want %q, %q, %q", c.what, got.Address, got.Subject, got.Tenant, err,
+				c.want.Address, c.want.Subject, c.want.Tenant)
+		}
+	}
+}
+
+func TestAnIDTokenWithoutAUsableSubjectNamesNothing(t *testing.T) {
+	for _, base := range []struct {
+		what   string
+		kind   provider.Kind
+		client account.OAuthClient
+		claims map[string]any
+	}{
+		{"Google's", provider.KindGmail, google, googleClaims("ana@gmail.com")},
+		{"Microsoft's", provider.KindMicrosoft, microsoft, microsoftClaims("ana@example.test", workTenant)},
+	} {
+		// A nil value is the claim left out: OpenID Connect requires it.
+		for _, c := range []struct {
+			what string
+			sub  any
+		}{
+			{"no subject", nil},
+			{"an empty one", ""},
+			{"one of 256 bytes", strings.Repeat("7", 256)},
+			{"one far longer", strings.Repeat("7", 4096)},
+			{"spaces alone", "   "},
+			{"one with a space", "1101694 84474386276334"},
+			{"one with a space around it", " " + googleSubject},
+			{"one with a control character", "1101694\t84474386276334"},
+			{"one with a NUL", "1101694\x0084474386276334"},
+			{"one past ASCII", "110169484474386276334ã"},
+		} {
+			got, err := account.IdentityForTest(base.kind, base.client,
+				idToken(t, with(base.claims, map[string]any{"sub": c.sub})), time.Now())
+			refusedFor(t, base.what+", "+c.what, "subject", got.Address, err)
+			if got != (account.LinkIdentity{}) {
+				t.Errorf("%s, %s: a refusal returned %q, %q, %q", base.what, c.what, got.Address, got.Subject, got.Tenant)
+			}
+		}
+		// A subject that is not text is no ID token at all.
+		got, err := account.IdentityForTest(base.kind, base.client,
+			idToken(t, with(base.claims, map[string]any{"sub": json.Number(googleSubject)})), time.Now())
+		refusedFor(t, base.what+", a number for its subject", "format", got.Address, err)
+	}
+}
+
+func TestALinkIdentityPrintedLoggedOrEncodedSaysNothingOfTheAccount(t *testing.T) {
+	named, err := account.IdentityForTest(provider.KindMicrosoft, microsoft,
+		idToken(t, microsoftClaims("ana.lima@example.test", workTenant)), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	for _, verb := range []string{"%v", "%+v", "%#v", "%s", "%q", "%x", "%d", "%T"} {
+		_, _ = fmt.Fprintf(&out, verb+"\n", named)
+		_, _ = fmt.Fprintf(&out, verb+"\n", &named)
+	}
+	_, _ = fmt.Fprintln(&out, named, []account.LinkIdentity{named}, map[string]account.LinkIdentity{"x": named},
+		struct{ Named account.LinkIdentity }{named})
+	_, _ = fmt.Fprintln(&out, fmt.Errorf("linking: %v", named), fmt.Errorf("linking: %+v", &named))
+	encoded, err := json.Marshal(map[string]any{"one": named, "list": []account.LinkIdentity{named}, "pointer": &named})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out.Write(encoded)
+	for _, handler := range []slog.Handler{slog.NewTextHandler(&out, nil), slog.NewJSONHandler(&out, nil)} {
+		slog.New(handler).Info("linked", "identity", named, "pointer", &named, "list", []account.LinkIdentity{named},
+			slog.Group("group", "identity", named))
+	}
+	if !strings.Contains(out.String(), "[link identity]") {
+		t.Fatalf("nothing printed of the identity: %s", out.String())
+	}
+	for _, value := range []string{"ana.lima", "example.test", microsoftSubject, workTenant} {
+		if strings.Contains(out.String(), value) {
+			t.Errorf("printed, logged or encoded, the identity says %q:\n%s", value, out.String())
+		}
+	}
+	// Its fields still say it, to whatever reads them.
+	if named.Address != "ana.lima@example.test" || named.Subject != microsoftSubject || named.Tenant != workTenant {
+		t.Errorf("its fields: %q, %q, %q", named.Address, named.Subject, named.Tenant)
 	}
 }

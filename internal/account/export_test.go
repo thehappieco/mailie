@@ -60,9 +60,12 @@ func authURL(t *testing.T, kind provider.Kind, client OAuthClient, which, redire
 	return flow.AuthURL
 }
 
-// IdentityForTest is the address an ID token names for a link at the
-// provider of kind under client, at now.
-func IdentityForTest(kind provider.Kind, client OAuthClient, idToken any, now time.Time) (string, error) {
+// LinkIdentity is what a link at the provider learns from an ID token.
+type LinkIdentity = linkIdentity
+
+// IdentityForTest is what an ID token names for a link at the provider of
+// kind under client, at now.
+func IdentityForTest(kind provider.Kind, client OAuthClient, idToken any, now time.Time) (LinkIdentity, error) {
 	token := (&oauth2.Token{AccessToken: "access", RefreshToken: "refresh"}).WithExtra(map[string]any{"id_token": idToken})
 	return identityOf(kind, client, token, now)
 }

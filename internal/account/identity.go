@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/mail"
 	"regexp"
 	"slices"
@@ -17,7 +19,8 @@ import (
 )
 
 // Learning the address of a link at the provider (links.go): the account the
-// person chose on the provider's page, as the provider's ID token names it.
+// person chose on the provider's page, as the provider's ID token names it,
+// and the account's identifier there, for the trial codes.
 
 // ErrNoAddress is a link at the provider whose answer named no address to
 // connect: no ID token, one this server cannot take as its own, or one
@@ -38,6 +41,11 @@ const (
 	maxIDToken = 32 << 10
 	// maxAddress is the longest address taken, in bytes.
 	maxAddress = 320
+	// maxSubject is the longest sub taken, in bytes: OpenID Connect's own
+	// bound, 255 ASCII characters (Core 1.0, section 2). Google's is a
+	// decimal number of some twenty digits, Microsoft's v2.0 one 43
+	// characters of base64url.
+	maxSubject = 255
 	// idTokenSkew is how far the token's times may be off this server's
 	// clock.
 	idTokenSkew = 5 * time.Minute
@@ -57,18 +65,57 @@ var googleIssuers = []string{"https://accounts.google.com", "accounts.google.com
 // tenantID is a tenant's id: a GUID.
 var tenantID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// idClaims are the claims of an ID token this server reads: tid only for the
-// checks, never kept. sub, hd and the rest are never read: the address is all
-// a link keeps, and the account's identifier is matched to nothing here.
+// idClaims are the claims of an ID token this server reads. sub, and for
+// Microsoft tid, which its checks read too, are returned beside the address
+// (linkIdentity) for the trial codes the platform's decision keys a
+// mailbox's trial on, and kept nowhere. hd and the rest are never read: the
+// address is all a link keeps.
 type idClaims struct {
 	Issuer        string   `json:"iss"`
 	Audience      audience `json:"aud"`
 	AuthorizedFor string   `json:"azp"`
 	Expires       *float64 `json:"exp"`
 	IssuedAt      *float64 `json:"iat"`
+	Subject       string   `json:"sub"`
 	Tenant        string   `json:"tid"`
 	Email         string   `json:"email"`
 	EmailVerified any      `json:"email_verified"`
+}
+
+// linkIdentity is what a link at the provider learns of the account chosen
+// there from its ID token. Address is the mailbox's address, which the link
+// stores. Subject (the sub) and Tenant (Microsoft's tid, lowercased, a GUID
+// whose case says nothing; empty for Google) identify the account at the
+// provider for the trial codes the platform's decision keys a mailbox's
+// trial on: Google's sub, Microsoft's tid and sub, which are stable for this
+// server's one web client. Neither is stored, logged or put in an error;
+// printed, logged or encoded by mistake, a linkIdentity says none of its
+// three values (Format, LogValue, MarshalJSON): only its fields read them.
+type linkIdentity struct {
+	Address string
+	Subject string
+	Tenant  string
+}
+
+// redactedIdentity is all a linkIdentity says of itself when printed,
+// logged or encoded.
+const redactedIdentity = "[link identity]"
+
+// Format prints a linkIdentity, under every verb, as redactedIdentity alone.
+func (linkIdentity) Format(f fmt.State, _ rune) {
+	_, _ = io.WriteString(f, redactedIdentity)
+}
+
+// LogValue logs a linkIdentity as redactedIdentity alone, under every
+// handler that resolves a value, as slog's own do.
+func (linkIdentity) LogValue() slog.Value {
+	return slog.StringValue(redactedIdentity)
+}
+
+// MarshalJSON encodes a linkIdentity as redactedIdentity alone, as slog's
+// JSON handler does one inside a list, where LogValue is not asked.
+func (linkIdentity) MarshalJSON() ([]byte, error) {
+	return json.Marshal(redactedIdentity)
 }
 
 // audience is the aud claim: one string, or a list of them.
@@ -88,10 +135,11 @@ func (a *audience) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// identityOf is the address an ID token in token names, for a link at the
-// provider of kind, under client, the registration that asked for it (its
-// ClientID, its Tenant for Microsoft, and the Issuer a test sets). now is the
-// wall clock, which the token's times are on.
+// identityOf is what an ID token in token names, for a link at the provider
+// of kind, under client, the registration that asked for it (its ClientID,
+// its Tenant for Microsoft, and the Issuer a test sets): the address, and the
+// account's subject and, for Microsoft, its tenant (linkIdentity). now is
+// the wall clock, which the token's times are on.
 //
 // The signature is not checked. OpenID Connect allows that for an ID token
 // received directly from the token endpoint over TLS, in the answer to this
@@ -100,7 +148,9 @@ func (a *audience) UnmarshalJSON(b []byte) error {
 // claims are checked as that section says: the issuer, this client as its
 // audience (and its authorized party when there are several), and its
 // times; for Google, that the address is verified; for Microsoft, that the
-// tenant is one the registration's tenant admits.
+// tenant is one the registration's tenant admits. The subject OpenID
+// Connect requires of every ID token (Core 1.0, section 2) must be there
+// too, within that section's bound (linkSubject).
 //
 // Microsoft's email claim is not verified by Microsoft, and need not be: the
 // login that proves a new grant (checkGrant) logs in as this address, which
@@ -109,42 +159,44 @@ func (a *audience) UnmarshalJSON(b []byte) error {
 //
 // Every refusal is ErrNoAddress, naming only the check that failed. Nothing
 // of the token is kept: not the token, which an encoded grant leaves out,
-// nor the account's identifier, its tenant or its domain.
-func identityOf(kind provider.Kind, client OAuthClient, token *oauth2.Token, now time.Time) (string, error) {
+// nor the account's subject or tenant, which are read and returned for the
+// trial codes alone and never stored, logged or put in an error, nor its
+// domain, which is never read.
+func identityOf(kind provider.Kind, client OAuthClient, token *oauth2.Token, now time.Time) (linkIdentity, error) {
 	raw, ok := token.Extra("id_token").(string)
 	if !ok || raw == "" {
-		return "", noAddress("absent")
+		return linkIdentity{}, noAddress("absent")
 	}
 	if len(raw) > maxIDToken {
-		return "", noAddress("too long")
+		return linkIdentity{}, noAddress("too long")
 	}
 	parts := strings.Split(raw, ".")
 	if len(parts) != 3 {
-		return "", noAddress("format")
+		return linkIdentity{}, noAddress("format")
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
 	if err != nil {
-		return "", noAddress("format")
+		return linkIdentity{}, noAddress("format")
 	}
 	var claims idClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", noAddress("format")
+		return linkIdentity{}, noAddress("format")
 	}
 
 	if client.ClientID == "" || !slices.Contains(claims.Audience, client.ClientID) {
-		return "", noAddress("audience")
+		return linkIdentity{}, noAddress("audience")
 	}
 	if (len(claims.Audience) > 1 && claims.AuthorizedFor == "") ||
 		(claims.AuthorizedFor != "" && claims.AuthorizedFor != client.ClientID) {
-		return "", noAddress("audience")
+		return linkIdentity{}, noAddress("audience")
 	}
 	if claims.Expires == nil || claims.IssuedAt == nil ||
 		!unixFloat(*claims.Expires).After(now.Add(-idTokenSkew)) ||
 		!unixFloat(*claims.IssuedAt).Before(now.Add(idTokenSkew)) {
-		return "", noAddress("expiry")
+		return linkIdentity{}, noAddress("expiry")
 	}
 
-	var email string
+	var email, tenant string
 	switch kind {
 	case provider.KindGmail:
 		issuers := googleIssuers
@@ -152,31 +204,60 @@ func identityOf(kind provider.Kind, client OAuthClient, token *oauth2.Token, now
 			issuers = []string{client.Issuer}
 		}
 		if !slices.Contains(issuers, claims.Issuer) {
-			return "", noAddress("issuer")
+			return linkIdentity{}, noAddress("issuer")
 		}
 		if claims.Email == "" {
-			return "", noAddress("absent")
+			return linkIdentity{}, noAddress("absent")
 		}
 		if !verified(claims.EmailVerified) {
-			return "", noAddress("verified")
+			return linkIdentity{}, noAddress("verified")
 		}
 		email = claims.Email
 	case provider.KindMicrosoft:
 		if !tenantID.MatchString(claims.Tenant) {
-			return "", noAddress("tenant")
+			return linkIdentity{}, noAddress("tenant")
 		}
 		issuer := orDefault(client.Issuer, microsoftIssuer)
 		if claims.Issuer != strings.ReplaceAll(issuer, "{tenantid}", claims.Tenant) {
-			return "", noAddress("issuer")
+			return linkIdentity{}, noAddress("issuer")
 		}
 		if !tenantAdmits(client.Tenant, claims.Tenant) {
-			return "", noAddress("tenant")
+			return linkIdentity{}, noAddress("tenant")
 		}
-		email = claims.Email
+		email, tenant = claims.Email, strings.ToLower(claims.Tenant)
 	default:
-		return "", fmt.Errorf("%w: %s accounts are not linked at the provider", ErrNotOAuth, kind)
+		return linkIdentity{}, fmt.Errorf("%w: %s accounts are not linked at the provider", ErrNotOAuth, kind)
 	}
-	return linkAddress(email)
+	subject, err := linkSubject(claims.Subject)
+	if err != nil {
+		return linkIdentity{}, err
+	}
+	address, err := linkAddress(email)
+	if err != nil {
+		return linkIdentity{}, err
+	}
+	return linkIdentity{Address: address, Subject: subject, Tenant: tenant}, nil
+}
+
+// linkSubject is an ID token's sub as a link returns it: exactly as the
+// provider wrote it, never trimmed nor folded (OpenID Connect compares it
+// case-sensitively), and refused unless it is there, at most maxSubject
+// bytes, and of visible ASCII alone (0x21 to 0x7e). OpenID Connect bounds
+// it in ASCII characters; Google's and Microsoft's are digits and base64url,
+// so a space, a control character or a byte past ASCII is no sub either
+// writes, and a trial code is never drawn over bytes two normalizations
+// could read apart. One check, "subject", for every refusal: its error
+// names nothing of the value.
+func linkSubject(sub string) (string, error) {
+	if sub == "" || len(sub) > maxSubject {
+		return "", noAddress("subject")
+	}
+	for i := 0; i < len(sub); i++ {
+		if sub[i] < 0x21 || sub[i] > 0x7e {
+			return "", noAddress("subject")
+		}
+	}
+	return sub, nil
 }
 
 // tenantAdmits reports whether a Microsoft registration configured for

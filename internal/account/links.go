@@ -341,11 +341,14 @@ func (r *Registry) finishLink(ctx context.Context, link PendingLink, rd Redirect
 		return Account{}, "", err
 	}
 	// The ID token's times are on the provider's clock, which is the wall
-	// clock, whatever the repository's says.
-	address, err := identityOf(kind, registration, token, time.Now())
+	// clock, whatever the repository's says. Only its address goes further:
+	// the account's subject and tenant are read for the trial codes
+	// (identity.go) and kept nowhere.
+	identity, err := identityOf(kind, registration, token, time.Now())
 	if err != nil {
 		return Account{}, "", err
 	}
+	address := identity.Address
 
 	profile := provider.ProfileFor(kind)
 	a := Account{
