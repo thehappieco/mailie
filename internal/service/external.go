@@ -155,9 +155,14 @@ type ExternalEnrolmentTicket struct {
 //     key (docs/key-scheme.md section 12.10).
 //
 // The causes are what an extension tells refusals apart by (errors.Is),
-// with auth.ErrEmailTaken for an address somebody here has. What an
-// extension of internal/app uses; no transport calls it.
+// with auth.ErrEmailTaken for an address somebody here has. On a server with
+// no people (neither Deps.ExternalSignInOnly nor Deps.PasswordSignIn) it is
+// errNoPeople before anything is read: a session started there would reach
+// nothing. What an extension of internal/app uses; no transport calls it.
 func (s *Service) SignInExternal(ctx context.Context, in ExternalSignIn) (ExternalSignedIn, error) {
+	if !s.hasPeople() {
+		return ExternalSignedIn{}, errNoPeople
+	}
 	return s.signInExternal(ctx, in, nil)
 }
 
@@ -284,8 +289,12 @@ type ExternalEnrolment struct {
 // authentication time) of the sign-in that issued the ticket. Its answer is
 // what POST /v1/auth/login answers.
 //
-// What an extension of internal/app uses; no transport calls it.
+// On a server with no people it is errNoPeople, as SignInExternal is. What
+// an extension of internal/app uses; no transport calls it.
 func (s *Service) EnrolExternal(ctx context.Context, in ExternalEnrolment) (Session, error) {
+	if !s.hasPeople() {
+		return Session{}, errNoPeople
+	}
 	pub, ok := strictBytes(in.PublicKey, publicKeyLen)
 	if !ok {
 		return Session{}, errBadPlatformKeyMaterial

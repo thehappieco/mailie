@@ -584,7 +584,10 @@ calls, in `internal/service/external.go`: `SignInExternal`, `EnrolExternal`, `Pi
 `ResumePerson`, which take the person's id and no principal. Each refusal is one of the fixed codes,
 and the extension tells apart the ones its page acts on by their cause (`errors.Is`):
 `auth.ErrEmailTaken` (an address somebody here has), `auth.ErrAccountKeyNeeded`,
-`auth.ErrNoPlatformWrap` and `auth.ErrProductKeyChanged` (below).
+`auth.ErrNoPlatformWrap` and `auth.ErrProductKeyChanged` (below). On a server with no people
+(neither `Options.ExternalSignInOnly` nor `MAIL_PASSWORD_SIGN_IN`), `SignInExternal` and
+`EnrolExternal` refuse before anything is read, `not_authorized` with the no-people message: a
+session started there would reach nothing.
 
 - **Identities.** The provider names a person by its **issuer**, an origin exactly as a browser
   writes one (`https://host[:port]`, or `http://` on loopback or a name under `.localhost`, with no

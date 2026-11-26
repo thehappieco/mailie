@@ -243,6 +243,30 @@ func TestASessionReachesNothingOnAServerWithNoPeople(t *testing.T) {
 	}
 }
 
+func TestAServerWithNoPeopleSignsNobodyInThroughAnExtension(t *testing.T) {
+	// A session started there would reach nothing: the sign-in and the
+	// enrolment are refused before anything is read or written, and nobody
+	// is created.
+	f := newFixtureWith(t, fixtureOptions{noPeople: true})
+	ctx := t.Context()
+	_, err := f.svc.SignInExternal(ctx, vouched("subject-of-cy", "cy@example.com"))
+	if service.CodeOf(err) != service.CodeNotAuthorized ||
+		!strings.Contains(service.MessageOf(err), "this server has no people") {
+		t.Fatalf("an extension's sign-in on a server with no people: %v", err)
+	}
+	if _, err := f.svc.EnrolExternal(ctx, service.ExternalEnrolment{Ticket: "ticket"}); service.CodeOf(err) !=
+		service.CodeNotAuthorized || !strings.Contains(service.MessageOf(err), "this server has no people") {
+		t.Fatalf("an extension's enrolment on a server with no people: %v", err)
+	}
+	var people int
+	if err := f.db.Reader().QueryRowContext(ctx, `SELECT count(*) FROM users`).Scan(&people); err != nil {
+		t.Fatal(err)
+	}
+	if people != 0 {
+		t.Errorf("%d people created", people)
+	}
+}
+
 func TestAnExternalSessionIsAnsweredAsAPasswordSignInIs(t *testing.T) {
 	f := newFixtureWith(t, fixtureOptions{externalSignInOnly: true})
 	ctx := t.Context()
