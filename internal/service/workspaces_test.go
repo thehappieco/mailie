@@ -1064,6 +1064,7 @@ func TestAPlatformSourcedServerChangesNoWorkspaceLocally(t *testing.T) {
 	svc := service.New(service.Deps{
 		Accounts: f.registry, Keys: f.keys, Users: f.users.WithWorkspaceSource(workspace.Platform()), Store: f.db,
 		Workspaces: workspace.NewRepository(f.db, workspace.Platform()), PublicURL: "http://localhost:5174",
+		PasswordSignIn: true,
 	})
 	ctx := t.Context()
 	_, err := svc.CreateWorkspace(ctx, tm.ana, service.CreateWorkspaceRequest{Name: "Sales"})

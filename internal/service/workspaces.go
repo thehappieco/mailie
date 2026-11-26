@@ -749,8 +749,8 @@ func (s *Service) ListTeamInvites(ctx context.Context, p Principal, id string) (
 // accepts it signed in. Someone without one signs up with it, as an instance
 // member with their personal workspace, only when the operator or an instance
 // owner made it; anyone else's invite needs an invitation to the server first
-// (auth.SignUp). Joining gives no access to any mailbox. Where people sign in
-// only through an extension, nobody invites anyone.
+// (auth.SignUp). Joining gives no access to any mailbox. Where nobody signs in
+// with a password (passwordsInUse), nobody invites anyone.
 func (s *Service) CreateTeamInvite(ctx context.Context, p Principal, id string, req TeamInviteRequest) (TeamInvite, error) {
 	if err := refuseDelegated(p); err != nil {
 		return TeamInvite{}, err
@@ -836,8 +836,9 @@ func (s *Service) RevokeTeamInvite(ctx context.Context, p Principal, id, inviteI
 // AcceptInvite redeems a team invite for the person signed in, who joins the
 // team with the role it names. The invite must be for their address; a
 // refused one is not spent. Joining a team grants access to no mailbox.
-// Refused where people sign in only through an extension, and where teams
-// are withheld, whose invites nobody creates and an older one is not spent.
+// Refused where nobody signs in with a password (passwordsInUse), and where
+// teams are withheld, whose invites nobody creates and an older one is not
+// spent.
 func (s *Service) AcceptInvite(ctx context.Context, p Principal, req AcceptInviteRequest) (Workspace, error) {
 	if err := refuseDelegated(p); err != nil {
 		return Workspace{}, err

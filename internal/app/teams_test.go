@@ -17,8 +17,10 @@ import (
 )
 
 func TestABinaryThatEmbedsTheDaemonWithholdsTeamsThroughItsOptions(t *testing.T) {
-	// A database an edition that offers teams made: Ana owns a team.
+	// A database an edition that offers teams made: Ana owns a team, and
+	// signs in with a password.
 	cfg := localConfig(t)
+	cfg.PasswordSignIn = true
 	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
 	if err != nil {
 		t.Fatal(err)
@@ -127,8 +129,10 @@ func TestAnEditionThatWithholdsTeamsNeverStartsATeamMailboxsSync(t *testing.T) {
 }
 
 func TestABinaryThatEmbedsTheDaemonKeepsKeysToPersonalWorkspacesThroughItsOptions(t *testing.T) {
-	// Ana owns a team, and her personal workspace.
+	// Ana owns a team, and her personal workspace, and signs in with a
+	// password.
 	cfg := localConfig(t)
+	cfg.PasswordSignIn = true
 	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
 	if err != nil {
 		t.Fatal(err)

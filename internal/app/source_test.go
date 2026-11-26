@@ -21,8 +21,9 @@ import (
 func TestThePlatformSourceCreatesNoPersonalWorkspaceAndRefusesEveryChange(t *testing.T) {
 	// A database with Ana, signed in and in a team, and Bea, who has no
 	// personal workspace; then a daemon whose workspaces a directory's
-	// documents send.
+	// documents send, where people sign in with a password.
 	cfg := localConfig(t)
+	cfg.PasswordSignIn = true
 	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
 	if err != nil {
 		t.Fatal(err)

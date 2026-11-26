@@ -30,7 +30,9 @@ func TestARevokedSessionIsRejectedBeforeTheResponseIsWritten(t *testing.T) {
 	registry := account.NewRegistry(t.Context(), account.NewRepository(db, keyring), account.RegistryOptions{})
 	t.Cleanup(func() { _ = registry.Close() })
 	users := auth.NewUsers(db)
-	h := &Handler{Service: service.New(service.Deps{Accounts: registry, Keys: auth.NewKeys(db), Users: users, Store: db})}
+	h := &Handler{Service: service.New(service.Deps{
+		Accounts: registry, Keys: auth.NewKeys(db), Users: users, Store: db, PasswordSignIn: true,
+	})}
 
 	authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
 	token := authtest.SignIn(t, users, "ana@example.com")

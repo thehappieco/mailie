@@ -417,14 +417,32 @@ var errNameFromIdentity = E(CodeConflict,
 var errExternalSignInOnly = E(CodeNotAuthorized,
 	"people sign in to this server another way: passwords and invitations are not used here", nil)
 
-// passwordsInUse refuses, on a daemon whose people sign in only through an
-// extension, what signs in with a password, signs up or accepts an
-// invitation, changes a password or creates an invitation.
+// errNoPeople is every password and invitation route of a server with no
+// people (Deps.PasswordSignIn off): its operator acts with keys made with its
+// command line, and nobody signs in.
+var errNoPeople = E(CodeNotAuthorized,
+	"this server has no people: nobody signs in, signs up or is invited here; use an instance key made with "+
+		"its command line", nil)
+
+// passwordsInUse refuses what signs in with a password, signs up or accepts
+// an invitation, changes, recovers or resets a password or creates an
+// invitation: on a daemon whose people sign in only through an extension
+// first, whatever else is set, and on a server with no people.
 func (s *Service) passwordsInUse() error {
-	if s.externalSignInOnly {
+	switch {
+	case s.externalSignInOnly:
 		return errExternalSignInOnly
+	case !s.passwordSignIn:
+		return errNoPeople
 	}
 	return nil
+}
+
+// hasPeople is whether anybody signs in to this server, and so whether a
+// session can be anyone's: people with a password here, or people who sign
+// in only through an extension.
+func (s *Service) hasPeople() bool {
+	return s.passwordSignIn || s.externalSignInOnly
 }
 
 // fromExternal maps a failure of an external sign-in, an enrolment, a pin or

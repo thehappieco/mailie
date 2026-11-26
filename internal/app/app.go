@@ -75,9 +75,14 @@ type Options struct {
 	// which calls service.SignInExternal: the core refuses, not_authorized,
 	// every route that signs in with a password, signs up or accepts an
 	// invitation, changes a password, or creates an invitation, to the
-	// instance or into a team. The service decides it, for every transport.
-	// Only a binary that embeds the daemon sets it: there is no environment
-	// variable, and `serve` never does.
+	// instance or into a team, and the sessions the extension's sign-in
+	// opens are sessions whatever the configuration says of passwords. The
+	// service decides it, for every transport. Only a binary that embeds the
+	// daemon sets it, and no environment variable does. Without it, whether
+	// anybody signs in at all is the configuration's
+	// (config.Config.PasswordSignIn, MAIL_PASSWORD_SIGN_IN): off by default,
+	// so that `serve` runs a server with no people, whose operator acts with
+	// keys made with its command line, and on, people with a password here.
 	ExternalSignInOnly bool
 	// NameFollowsIdentity says a person's name follows the identity they
 	// sign in with through an extension: every sign-in
@@ -259,10 +264,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 
 	// The salt every address is answered is the address's under this key
 	// (docs/key-scheme.md section 5.3), so it is opened before anyone can
-	// ask; where people sign in only through an extension nobody asks, and
-	// no salt key is made.
+	// ask, where people sign in with a password here. Nobody asks on a
+	// server with no people, nor where people sign in only through an
+	// extension: no salt key is made there, and one a database holds from
+	// before is left as it is, unopened.
 	users := auth.NewUsers(db).WithWorkspaceSource(opts.WorkspaceSource)
-	if !opts.ExternalSignInOnly {
+	passwords := cfg.PasswordSignIn && !opts.ExternalSignInOnly
+	if passwords {
 		saltKey, made, err := openKDFSaltKey(ctx, db, sealer)
 		if err != nil {
 			return err
@@ -387,7 +395,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		Workspaces: workspaces,
 		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
 		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent,
-		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
+		ExternalSignInOnly: opts.ExternalSignInOnly, PasswordSignIn: cfg.PasswordSignIn,
+		KeysMayNotSend:             !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
 		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
 		Freshness:                   opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
@@ -511,21 +520,23 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	}
 	if keyCount == 0 {
 		// --bootstrap refuses to run beside a live daemon, so the hint has to
-		// say so or the operator's first try fails. Only the command line and
-		// other non-browser clients are shut out: a console session needs no
-		// key, so with the console served this is information, not a warning.
-		msg, hint := "no api keys exist yet; nothing can call this daemon",
-			"stop the daemon and run: mailserver apikey create --bootstrap --scope admin --name cli"
-		if cfg.WebDir != "" {
+		// say so or the operator's first try fails. Where a console's people
+		// sign in, only the command line and other non-browser clients are
+		// shut out, so this is information, not a warning; on a server with
+		// no people a key is the only way in.
+		hint := "stop the daemon and run: mailserver apikey create --bootstrap --scope admin --name cli"
+		if cfg.WebDir != "" && (cfg.PasswordSignIn || opts.ExternalSignInOnly) {
 			logger.Info("no api keys exist yet; only console sessions can call this daemon", "hint", hint)
 		} else {
-			logger.Warn(msg, "hint", hint)
+			logger.Warn("no api keys exist yet; nothing can call this daemon", "hint", hint)
 		}
 	}
-	// An invitation is how people arrive, unless they sign in only through
-	// an extension: then no command here brings anyone, and nobody is an
-	// owner by arriving.
-	if (cfg.WebDir != "" || cfg.PublicURL != "") && !opts.ExternalSignInOnly {
+	// An invitation is how people arrive where they sign in with a password
+	// here, through a console. On a server with no people nobody arrives,
+	// and where people sign in only through an extension no command here
+	// brings anyone, and nobody is an owner by arriving: nothing is said of
+	// people then.
+	if passwords && (cfg.WebDir != "" || cfg.PublicURL != "") {
 		userCount, err := users.Count(ctx)
 		if err != nil {
 			return err

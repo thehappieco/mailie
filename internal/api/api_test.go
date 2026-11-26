@@ -57,6 +57,10 @@ type serviceOptions struct {
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
+	// noPeople is a server where nobody signs in with a password, as serve
+	// runs by default (MAIL_PASSWORD_SIGN_IN unset): every other harness
+	// has people who do.
+	noPeople bool
 	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false.
 	keysMayNotSend bool
 	// teamsWithheld is an edition that does not offer team workspaces.
@@ -107,6 +111,7 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		ConsentVersions:    o.consent,
 		KeysMayNotSend:     o.keysMayNotSend,
 		ExternalSignInOnly: o.externalSignInOnly,
+		PasswordSignIn:     !o.noPeople,
 		TeamsWithheld:      o.teamsWithheld,
 		SyncPauseOffered:   !o.pauseWithheld,
 		Workspaces:         workspace.NewRepository(db, o.source),

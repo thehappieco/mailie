@@ -72,12 +72,25 @@ func (f *fixture) signedIn(t *testing.T, in service.ExternalSignIn) service.Sess
 	return session
 }
 
-func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
-	// The same calls on two daemons: one where people sign in only through
-	// an extension, which refuses every one of them with one answer, and one
-	// as `serve` runs it, where none of them gets that answer.
-	for _, only := range []bool{true, false} {
-		f := newFixtureWith(t, fixtureOptions{publicURL: "http://localhost:5174", externalSignInOnly: only})
+func TestEveryPasswordUseCaseIsRefusedWhereNobodySignsInWithAPassword(t *testing.T) {
+	// The same calls on four daemons: one with people who sign in with a
+	// password, where none of them is refused for it; one with no people, as
+	// serve runs by default, and two whose people sign in only through an
+	// extension, whatever MAIL_PASSWORD_SIGN_IN says, which refuse every one
+	// of them with one answer each, and not each other's.
+	const noPeople, anotherWay = "this server has no people", "another way"
+	for _, mode := range []struct {
+		name    string
+		opts    fixtureOptions
+		refusal string
+	}{
+		{"people with passwords", fixtureOptions{}, ""},
+		{"no people", fixtureOptions{noPeople: true}, noPeople},
+		{"an extension, no passwords", fixtureOptions{externalSignInOnly: true, noPeople: true}, anotherWay},
+		{"an extension, passwords asked for", fixtureOptions{externalSignInOnly: true}, anotherWay},
+	} {
+		mode.opts.publicURL = "http://localhost:5174"
+		f := newFixtureWith(t, mode.opts)
 		ctx := t.Context()
 		owner := f.person(t, "owner@example.com", auth.RoleOwner)
 		member := f.person(t, "member@example.com", auth.RoleMember)
@@ -114,6 +127,7 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		calls["finish a recovery"] = f.svc.FinishRecovery(ctx, service.RecoverFinishRequest{})
 		calls["replace the recovery code"] = f.svc.ReplaceRecovery(ctx, owner, service.RecoveryRequest{})
 		_, calls["step up with the password"] = f.svc.StepUp(ctx, owner, service.StepUpRequest{AuthKey: authtest.AuthKey})
+		_, calls["open a reset invitation"] = f.svc.OpenReset(ctx, service.ResetOpenRequest{Email: "owner@example.com"})
 		_, calls["a reset invitation"] = f.svc.CompleteReset(ctx, service.ResetRequest{
 			Email: "owner@example.com", Enrolment: wireEnrolment(t)}, "test")
 		_, calls["invite to the instance, signed in"] = f.svc.CreateInvite(ctx, owner, service.InviteRequest{Email: "x@example.com"})
@@ -122,46 +136,109 @@ func TestExternalSignInOnlyRefusesEveryPasswordUseCase(t *testing.T) {
 		_, calls["invite into a team, with a key"] = f.svc.CreateTeamInvite(ctx, admin(), team.ID, service.TeamInviteRequest{Email: "w@example.com"})
 
 		for name, err := range calls {
-			refused := service.CodeOf(err) == service.CodeNotAuthorized && strings.Contains(service.MessageOf(err), "another way")
-			if only && !refused {
-				t.Errorf("passwords off: %s: %v, want not_authorized", name, err)
+			said := service.MessageOf(err)
+			refusedAs := func(words string) bool {
+				return service.CodeOf(err) == service.CodeNotAuthorized && strings.Contains(said, words)
 			}
-			if !only && refused {
-				t.Errorf("passwords on: %s was refused as if they were off: %v", name, err)
+			switch {
+			case mode.refusal != "" && !refusedAs(mode.refusal):
+				t.Errorf("%s: %s: %v, want not_authorized, %q", mode.name, name, err, mode.refusal)
+			case mode.refusal == "" && (refusedAs(noPeople) || refusedAs(anotherWay)):
+				t.Errorf("%s: %s was refused as if nobody signed in with a password: %v", mode.name, name, err)
+			case mode.refusal == noPeople && strings.Contains(said, anotherWay),
+				mode.refusal == anotherWay && strings.Contains(said, noPeople):
+				t.Errorf("%s: %s says %q", mode.name, name, said)
 			}
 		}
-		if !only {
+		if mode.refusal == "" {
 			continue
 		}
 		// Refused before anything changed.
 		if n := f.count(t, `SELECT count(*) FROM invites`); n != invites {
-			t.Errorf("%d invitations, want the %d there were", n, invites)
+			t.Errorf("%s: %d invitations, want the %d there were", mode.name, n, invites)
 		}
 		if n := f.count(t, `SELECT count(*) FROM invites WHERE used_at <> 0`); n != 0 {
-			t.Errorf("%d invitations were spent", n)
+			t.Errorf("%s: %d invitations were spent", mode.name, n)
 		}
 		if n := f.count(t, `SELECT count(*) FROM users WHERE email = 'new@example.com'`); n != 0 {
-			t.Error("an invitation signed somebody up")
+			t.Errorf("%s: an invitation signed somebody up", mode.name)
 		}
 		if _, err := f.users.Login(ctx, "owner@example.com", authtest.AuthKey, "test"); err != nil {
-			t.Errorf("the owner's password changed: %v", err)
+			t.Errorf("%s: the owner's password changed: %v", mode.name, err)
+		}
+		if mode.refusal == noPeople {
+			continue
 		}
 
 		// What is not about passwords or invitations works as it does
 		// anywhere: the person's own account, and signing in through the
 		// extension.
 		if _, err := f.svc.Me(ctx, owner); err != nil {
-			t.Errorf("Me: %v", err)
+			t.Errorf("%s: Me: %v", mode.name, err)
 		}
 		if _, err := f.svc.UpdateProfile(ctx, owner, service.ProfileRequest{Name: "Owner"}); err != nil {
-			t.Errorf("UpdateProfile: %v", err)
+			t.Errorf("%s: UpdateProfile: %v", mode.name, err)
 		}
 		f.signedIn(t, vouched("subject-of-cy", "cy@example.com"))
 		if _, _, err := f.svc.PinIdentityKey(ctx, identityProvider, "subject-of-cy", "k1", []byte("key")); err != nil {
-			t.Errorf("PinIdentityKey: %v", err)
+			t.Errorf("%s: PinIdentityKey: %v", mode.name, err)
 		}
 		if err := f.svc.SignOut(ctx, owner, service.SignOutRequest{}); err != nil {
-			t.Errorf("SignOut: %v", err)
+			t.Errorf("%s: SignOut: %v", mode.name, err)
+		}
+	}
+}
+
+func TestASessionReachesNothingOnAServerWithNoPeople(t *testing.T) {
+	// A session a database kept from when people signed in here, a console's
+	// say: on a server with no people it is refused as a token nobody issued
+	// is, and rechecked the same way, while a key is a key. Where people sign
+	// in with a password, or only through an extension whatever
+	// MAIL_PASSWORD_SIGN_IN says, it is a session.
+	for _, mode := range []struct {
+		name     string
+		opts     fixtureOptions
+		sessions bool
+	}{
+		{"no people", fixtureOptions{noPeople: true}, false},
+		{"people with passwords", fixtureOptions{}, true},
+		{"an extension, no passwords", fixtureOptions{externalSignInOnly: true, noPeople: true}, true},
+		{"an extension, passwords asked for", fixtureOptions{externalSignInOnly: true}, true},
+	} {
+		f := newFixtureWith(t, mode.opts)
+		ctx := t.Context()
+		authtest.NewUser(t, f.db, "ana@example.com", auth.RoleOwner)
+		token := authtest.SignIn(t, f.users, "ana@example.com")
+		held, err := f.users.AuthenticateSession(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, unknown := f.svc.Authenticate(ctx, strings.Repeat("A", len(token)), nil)
+		if service.CodeOf(unknown) != service.CodeUnauthorized {
+			t.Fatalf("%s: a token nobody issued: %v", mode.name, unknown)
+		}
+		p, err := f.svc.Authenticate(ctx, token, nil)
+		switch {
+		case mode.sessions && (err != nil || p.UserID != held.UserID):
+			t.Errorf("%s: her session: %+v, %v", mode.name, p, err)
+		case !mode.sessions && (service.CodeOf(err) != service.CodeUnauthorized ||
+			service.MessageOf(err) != service.MessageOf(unknown)):
+			t.Errorf("%s: her session answered %v, want %v as for a token nobody issued", mode.name, err, unknown)
+		}
+		err = f.svc.Recheck(ctx, held)
+		switch {
+		case mode.sessions && err != nil:
+			t.Errorf("%s: rechecking her session: %v", mode.name, err)
+		case !mode.sessions && service.CodeOf(err) != service.CodeUnauthorized:
+			t.Errorf("%s: rechecking her session: %v, want unauthorized", mode.name, err)
+		}
+		// The operator's key, whatever the mode.
+		key := authtest.NewKey(t, f.db, auth.ScopeRead)
+		if p, err := f.svc.Authenticate(ctx, key, nil); err != nil || !p.IsInstance() {
+			t.Errorf("%s: an instance key: %+v, %v", mode.name, p, err)
+		} else if err := f.svc.Recheck(ctx, p); err != nil {
+			t.Errorf("%s: rechecking an instance key: %v", mode.name, err)
 		}
 	}
 }

@@ -91,6 +91,10 @@ type Service struct {
 	// extension (external.go): every password and invitation route is
 	// refused.
 	externalSignInOnly bool
+	// passwordSignIn is whether people sign in here with a password
+	// (Deps.PasswordSignIn); without it or externalSignInOnly this server
+	// has no people, and no session.
+	passwordSignIn bool
 	// nameFollowsIdentity is whether a person signed in through an
 	// extension is named as their identity provider names them, at every
 	// sign-in, and never renames themselves here (external.go).
@@ -179,10 +183,19 @@ type Deps struct {
 	// the daemon (SignInExternal): the challenge, signing in with a
 	// password, signing up or accepting an invitation, changing or
 	// recovering a password, the password's step-up, a reset invitation and
-	// creating an invitation are refused, not_authorized.
-	// False, the default, changes nothing. Only internal/app sets it, from
-	// its Options.
+	// creating an invitation are refused, not_authorized, and a session the
+	// extension's sign-in opened is a session as any other, whatever
+	// PasswordSignIn says. Only internal/app sets it, from its Options.
 	ExternalSignInOnly bool
+	// PasswordSignIn says people sign in to this server with a password
+	// (MAIL_PASSWORD_SIGN_IN): the challenge, signing in, signing up,
+	// recovering and resetting a password, and inviting people. False, the
+	// default, and without ExternalSignInOnly, this server has no people:
+	// every one of those routes is refused, not_authorized (errNoPeople),
+	// and a session token is refused as an unknown one is, so that one a
+	// database kept from before reaches nothing. API keys are as they were.
+	// Only internal/app sets it, from the configuration.
+	PasswordSignIn bool
 	// NameFollowsIdentity says a person's name follows their external
 	// identity: every sign-in through an extension (SignInExternal) names
 	// the person as the provider names them then, an empty name leaving
@@ -294,6 +307,7 @@ func New(d Deps) *Service {
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
 		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
 		consent: d.ConsentVersions.OrDefaults(), externalSignInOnly: d.ExternalSignInOnly,
+		passwordSignIn:      d.PasswordSignIn,
 		nameFollowsIdentity: d.NameFollowsIdentity,
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
@@ -318,7 +332,9 @@ type Principal = auth.Principal
 // against the keys it made, and never reaches this server's own keys or
 // sessions; any other is trimmed, and its shape picks the check — a key has
 // a dot, a session token never does — so a session costs a SHA-256, never
-// the Argon2id a key's secret needs.
+// the Argon2id a key's secret needs. On a server with no people (neither
+// PasswordSignIn nor ExternalSignInOnly) a session token is refused as an
+// unknown one is, unread.
 //
 // unknownKey is asked before a key whose prefix or selector matches nothing
 // is checked: the transport's per-address limit on checks that can only
@@ -356,7 +372,7 @@ func (s *Service) authenticate(ctx context.Context, raw string, unknownKey auth.
 			// comparison, as any dead key is.
 			err = auth.ErrInvalidKey
 		}
-	case s.users != nil:
+	case s.users != nil && s.hasPeople():
 		p, err = s.users.AuthenticateSession(ctx, token)
 	default:
 		err = auth.ErrInvalidSession
@@ -420,6 +436,9 @@ func (s *Service) Recheck(ctx context.Context, p Principal) error {
 	}
 	var err error
 	switch {
+	case p.IsSession() && !s.hasPeople():
+		// Never authenticated here; refused as Authenticate refuses it.
+		err = auth.ErrInvalidSession
 	case p.IsSession():
 		err = s.users.RecheckSession(ctx, p)
 	case p.Issuer != "" && s.issuedKeysRefused,

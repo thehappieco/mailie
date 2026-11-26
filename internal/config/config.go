@@ -124,6 +124,17 @@ type Config struct {
 	// itself: only those terms say whether a key may send, so no default
 	// stands for them.
 	KeysMaySend bool
+	// PasswordSignIn is whether people sign in to this server with a
+	// zero-knowledge password (MAIL_PASSWORD_SIGN_IN, docs/key-scheme.md):
+	// the challenge, signing in and signing up, recovering and resetting a
+	// password, and inviting people, to the instance or into a team. Off,
+	// the default, this server has no people: its operator acts with API
+	// keys made with its command line, every one of those routes is refused,
+	// a session token is refused as an unknown one is, and no salt key is
+	// made. A binary whose people sign in only through an extension
+	// (app.Options.ExternalSignInOnly) has people whatever this says, and
+	// never a password.
+	PasswordSignIn bool
 	// KeysActUnderCreatorConsent holds a workspace key's actions to its
 	// creator's own actions consent as well: the key acts only while the
 	// person who created it allows actions at the current revision (and is
@@ -279,6 +290,7 @@ func Load() (Config, error) {
 		AdminKey:                   str("MAIL_ADMIN_KEY", ""),
 		MicrosoftDeviceCode:        boolean("MAIL_MICROSOFT_DEVICE_CODE", false, &errs),
 		KeysMaySend:                boolean("MAIL_KEYS_MAY_SEND", true, &errs),
+		PasswordSignIn:             boolean("MAIL_PASSWORD_SIGN_IN", false, &errs),
 		KeysActUnderCreatorConsent: boolean("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT", false, &errs),
 		Consent:                    consentVersions(&errs),
 		RetiredMCP:                 retiredMCP(),
@@ -740,7 +752,7 @@ func (c Config) String() string {
 	return fmt.Sprintf(
 		"env=%s http=%s metrics=%s data=%s credential_sealer=%s credential_keys=%s google=%s microsoft=%s/%s "+
 			"google_web=%s microsoft_web=%s public_url=%s web=%s account_allow_private=%t "+
-			"microsoft_device_code=%t admin_api=%t keys_may_send=%t "+
+			"microsoft_device_code=%t admin_api=%t password_sign_in=%t keys_may_send=%t "+
 			"consent_versions=sync:%s,actions:%s,send:%s,keys:%s "+
 			"download_spool=%dMiB log=%s/%s",
 		c.Env, c.HTTPAddr, orDefault(c.MetricsAddr, "inline"), c.DataDir,
@@ -748,7 +760,7 @@ func (c Config) String() string {
 		configured(c.Google.Configured()), configured(c.Microsoft.Configured()), c.Microsoft.Tenant,
 		configured(c.GoogleWeb.Configured()), configured(c.MicrosoftWeb.Configured()),
 		orDefault(c.PublicURL, "unset"), orDefault(c.WebDir, "off"), c.AccountAllowPrivate,
-		c.MicrosoftDeviceCode, c.AdminAPI, c.KeysMaySend,
+		c.MicrosoftDeviceCode, c.AdminAPI, c.PasswordSignIn, c.KeysMaySend,
 		c.Consent.Sync, c.Consent.Actions, c.Consent.Send, c.Consent.Keys,
 		c.DownloadSpoolBytes>>20, c.Log.Level, c.Log.Format,
 	) + connectSrcField(c.ConnectSrc)

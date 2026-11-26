@@ -9,6 +9,7 @@ import (
 
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/auth/authtest"
+	"github.com/thehappieco/mailie/internal/workspace"
 )
 
 func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
@@ -16,10 +17,12 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 	// through an extension, where every route that signs in with a password,
 	// signs up or accepts an invitation, changes a password or creates an
 	// invitation, every ceremony of the key scheme's password and recovery
-	// code, answers 403 with the one refusal, whoever asks;
-	// and one as `serve` runs it, where each of them does what it does.
+	// code, answers 403 with the one refusal, whoever asks, with
+	// MAIL_PASSWORD_SIGN_IN unset as a binary that embeds the daemon runs it;
+	// and one as `serve` runs it with MAIL_PASSWORD_SIGN_IN=true, where each
+	// of them does what it does.
 	for _, only := range []bool{true, false} {
-		h := newHarnessWith(t, nil, serviceOptions{publicURL: "http://localhost:5174", externalSignInOnly: only})
+		h := newHarnessWith(t, nil, serviceOptions{publicURL: "http://localhost:5174", externalSignInOnly: only, noPeople: only})
 		owner := h.person(t, "owner@example.com", auth.RoleOwner)
 		member := h.person(t, "member@example.com", auth.RoleMember)
 		key := h.key(t, auth.ScopeAdmin)
@@ -136,6 +139,135 @@ func TestExternalSignInOnlyRefusesEveryPasswordRoute(t *testing.T) {
 			if resp := h.do(t, route.method, route.path, owner, route.body); resp.StatusCode != route.want {
 				t.Errorf("%s %s answered %d, want %d", route.method, route.path, resp.StatusCode, route.want)
 			}
+		}
+	}
+}
+
+func TestAServerWithNoPeopleRefusesEveryPasswordRouteAndEverySession(t *testing.T) {
+	// As serve runs by default: nobody signs in, signs up, recovers or
+	// resets a password, or is invited, whoever asks, and a session a
+	// database kept from when people signed in here is refused as a token
+	// nobody issued is, on every route. The operator's key is a key.
+	const noPeople = "this server has no people"
+	h := newHarnessWith(t, nil, serviceOptions{publicURL: "http://localhost:5174", noPeople: true})
+	ctx := t.Context()
+	owner := h.person(t, "owner@example.com", auth.RoleOwner)
+	member := h.person(t, "member@example.com", auth.RoleMember)
+	key := h.key(t, auth.ScopeAdmin)
+	ownerP, err := h.users.AuthenticateSession(ctx, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := workspace.NewRepository(h.store, nil).CreateTeam(ctx, "Support", ownerP.UserID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signUpCode, _, err := h.users.CreateInvite(ctx, auth.NewInvite{Email: "new@example.com", Role: auth.RoleMember, CreatedBy: "cli"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signUpOpened, err := h.users.OpenSignUp(ctx, signUpCode, "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinCode, _, err := h.users.CreateInvite(ctx, auth.NewInvite{
+		Email: "member@example.com", WorkspaceID: team.ID, WorkspaceRole: "member", CreatedBy: "cli",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := h.users.OpenRecovery(ctx, "owner@example.com", authtest.RecoveryProof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resetCode, _, err := h.users.CreateReset(ctx, ownerP.UserID, false, "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrap := func() string { return base64.RawURLEncoding.EncodeToString(authtest.Wrap(t)) }
+	count := func(query string) int {
+		t.Helper()
+		var n int
+		if err := h.store.Reader().QueryRowContext(ctx, query).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	invites, people := count(`SELECT count(*) FROM invites WHERE used_at = 0`), count(`SELECT count(*) FROM users`)
+
+	for _, route := range []struct{ name, path, token, body string }{
+		{"answer a challenge", "/v1/auth/challenge", "", `{"email":"owner@example.com"}`},
+		{"sign in", "/v1/auth/login", "", jsonOf(t, map[string]any{"email": "owner@example.com", "auth_key": authtest.AuthKey})},
+		{"open an invitation", "/v1/auth/signup/open", "", jsonOf(t, map[string]any{"invite": signUpCode, "email": "new@example.com"})},
+		{"sign up", "/v1/auth/signup", "", jsonOf(t, enrolment(t, authtest.AuthKey, authtest.RecoveryProof,
+			map[string]any{"invite": signUpCode, "email": "new@example.com", "name": "New", "seal_id": signUpOpened.SealID}))},
+		{"open a recovery", "/v1/auth/recover/open", "",
+			jsonOf(t, map[string]any{"email": "owner@example.com", "recovery_proof": authtest.RecoveryProof})},
+		{"finish a recovery", "/v1/auth/recover/finish", "", jsonOf(t, map[string]any{
+			"ticket": opened.Ticket, "current_recovery_proof": authtest.RecoveryProof, "auth_key": secret("recovered"),
+			"kdf": defaultKDF(), "password_wrap": wrap(), "recovery_wrap": wrap(), "recovery_proof": secret("new code"),
+		})},
+		{"open a reset invitation", "/v1/auth/reset/open", "", jsonOf(t, map[string]any{"reset": resetCode, "email": "owner@example.com"})},
+		{"a reset invitation", "/v1/auth/reset", "", jsonOf(t, enrolment(t, secret("reset"),
+			secret("reset code"), map[string]any{"reset": resetCode, "email": "owner@example.com"}))},
+		{"invite to the instance with a key", "/v1/users/invites", key, `{"email":"y@example.com"}`},
+		{"invite into a team with a key", "/v1/workspaces/" + team.ID + "/invites", key, `{"email":"w@example.com"}`},
+	} {
+		resp := h.do(t, http.MethodPost, route.path, route.token, route.body)
+		code, message := decodeError(t, resp)
+		if resp.StatusCode != http.StatusForbidden || code != "not_authorized" || !strings.Contains(message, noPeople) ||
+			strings.Contains(message, "another way") {
+			t.Errorf("%s: POST %s answered %d %s %q, want 403 not_authorized: %s", route.name, route.path, resp.StatusCode,
+				code, message, noPeople)
+		}
+	}
+
+	// A session is a token nobody issued, whatever it asks for.
+	resp := h.do(t, http.MethodGet, "/v1/auth/me", strings.Repeat("A", len(owner)), "")
+	unknownCode, unknown := decodeError(t, resp)
+	if resp.StatusCode != http.StatusUnauthorized || unknownCode != "unauthorized" {
+		t.Fatalf("a token nobody issued: %d %s %q", resp.StatusCode, unknownCode, unknown)
+	}
+	for _, route := range []struct{ method, path, token, body string }{
+		{http.MethodGet, "/v1/auth/me", owner, ""},
+		{http.MethodPut, "/v1/auth/profile", owner, `{"name":"Owner"}`},
+		{http.MethodPost, "/v1/auth/stepup", owner, jsonOf(t, map[string]any{"auth_key": authtest.AuthKey})},
+		{http.MethodPost, "/v1/auth/password/begin", owner, jsonOf(t, map[string]any{"current_auth_key": authtest.AuthKey})},
+		{http.MethodPost, "/v1/auth/invites/accept", member, fmt.Sprintf(`{"invite":%q}`, joinCode)},
+		{http.MethodPost, "/v1/users/invites", owner, `{"email":"x@example.com"}`},
+		{http.MethodGet, "/v1/workspaces", owner, ""},
+		{http.MethodGet, "/v1/accounts", member, ""},
+		{http.MethodGet, "/v1/events/wait?timeout=0", owner, ""},
+		{http.MethodPost, "/v1/auth/logout", owner, ""},
+	} {
+		resp := h.do(t, route.method, route.path, route.token, route.body)
+		code, message := decodeError(t, resp)
+		if resp.StatusCode != http.StatusUnauthorized || code != unknownCode || message != unknown {
+			t.Errorf("%s %s with a session answered %d %s %q, want %q as for a token nobody issued", route.method,
+				route.path, resp.StatusCode, code, message, unknown)
+		}
+	}
+
+	// Nothing changed, and the session is still there, unused: a server
+	// whose operator turns people on again finds it as it was.
+	if n := count(`SELECT count(*) FROM invites WHERE used_at = 0`); n != invites {
+		t.Errorf("%d invitations unspent, want the %d there were", n, invites)
+	}
+	if n := count(`SELECT count(*) FROM users`); n != people {
+		t.Errorf("%d people, want the %d there were", n, people)
+	}
+	if _, err := h.users.AuthenticateSession(ctx, owner); err != nil {
+		t.Errorf("the owner's session: %v", err)
+	}
+	for _, path := range []string{"/v1/accounts", "/v1/workspaces", "/v1/auth/me"} {
+		resp := h.do(t, http.MethodGet, path, key, "")
+		want := http.StatusOK
+		if path == "/v1/auth/me" {
+			// A key reaches no person's route, as ever.
+			want = http.StatusForbidden
+		}
+		if resp.StatusCode != want {
+			t.Errorf("GET %s with the operator's key answered %d, want %d", path, resp.StatusCode, want)
 		}
 	}
 }

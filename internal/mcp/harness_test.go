@@ -83,6 +83,8 @@ func newHarness(t *testing.T) *harness {
 		Accounts: registry, Keys: auth.NewKeys(db), Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		// As serve does.
 		SyncPauseOffered: true,
+		// People who sign in, who create the keys a tool holds.
+		PasswordSignIn: true,
 	})
 	return &harness{
 		t: t, store: db, bus: bus, svc: svc, users: users, engine: engine, logs: logs,

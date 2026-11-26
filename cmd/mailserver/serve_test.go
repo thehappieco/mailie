@@ -164,6 +164,37 @@ func TestServeAnswersMCPWithTheAPIs404AndSaysWhichRetiredVariablesAskForIt(t *te
 	}
 }
 
+func TestServeRunsAServerWithNoPeopleUnlessTheConfigurationAsksForThem(t *testing.T) {
+	// serve sets nothing about people: MAIL_PASSWORD_SIGN_IN decides, and
+	// without it nobody signs in, and a session a database kept reaches
+	// nothing.
+	if opts := serveOptions("test"); opts.ExternalSignInOnly {
+		t.Fatalf("serve runs with %+v", opts)
+	}
+	for _, passwords := range []bool{false, true} {
+		cfg := localConfig(t)
+		cfg.PasswordSignIn = passwords
+		db, release, err := openExclusively(t.Context(), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
+		session := authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
+		release()
+		base, _ := runDaemon(t, cfg)
+
+		status, _, body := callJSON(t, http.MethodPost, base+"/v1/auth/challenge", "", `{"email":"ana@example.com"}`)
+		refused := status == http.StatusForbidden && strings.Contains(body, "this server has no people")
+		if refused == passwords {
+			t.Errorf("passwords %t: the challenge answered %d %s", passwords, status, body)
+		}
+		status, _, body = callJSON(t, http.MethodGet, base+"/v1/auth/me", session, "")
+		if signedIn := status == http.StatusOK; signedIn != passwords {
+			t.Errorf("passwords %t: her session answered %d %s", passwords, status, body)
+		}
+	}
+}
+
 // readKey issues a read key in cfg's database, as apikey create --bootstrap
 // does, before the daemon takes the lock.
 func readKey(t *testing.T, cfg config.Config) string {
@@ -195,8 +226,10 @@ func logLine(t *testing.T, log, want string) string {
 func TestServeNeverWithholdsTeams(t *testing.T) {
 	// Withholding teams is a choice of a binary that embeds the daemon
 	// (app.Options.TeamsWithheld), with no environment variable: the
-	// self-hosted server offers them, whatever its configuration.
+	// self-hosted server offers them, whatever its configuration, here one
+	// whose people sign in with a password.
 	cfg := localConfig(t)
+	cfg.PasswordSignIn = true
 	db, release, err := openExclusively(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -267,8 +300,10 @@ func TestServeNeverKeepsKeysToPersonalWorkspaces(t *testing.T) {
 	// Keeping keys to personal workspaces is a choice of a binary that
 	// embeds the daemon (app.Options.KeysInPersonalWorkspaceOnly), with no
 	// environment variable: a team's owners create its keys on the
-	// self-hosted server, whatever its configuration.
+	// self-hosted server, whatever its configuration, here one whose people
+	// sign in with a password.
 	cfg := localConfig(t)
+	cfg.PasswordSignIn = true
 	db, release, err := openExclusively(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

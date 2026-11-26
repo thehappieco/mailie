@@ -306,8 +306,8 @@ func (s *Service) Challenge(ctx context.Context, req ChallengeRequest) (Challeng
 
 // OpenSignUp checks an invitation as signing up will, before its person
 // chooses a password, and answers what their browser binds and derives
-// under. Refused where people sign in only through an extension, and, for an
-// invitation into a team, where teams are withheld (errTeamsWithheld).
+// under. Refused where nobody signs in with a password (passwordsInUse), and,
+// for an invitation into a team, where teams are withheld (errTeamsWithheld).
 func (s *Service) OpenSignUp(ctx context.Context, req SignUpOpenRequest) (SignUpOpen, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return SignUpOpen{}, err
@@ -323,8 +323,8 @@ func (s *Service) OpenSignUp(ctx context.Context, req SignUpOpenRequest) (SignUp
 }
 
 // SignUp redeems an invite: it creates the account, enrolled in the key
-// scheme, and signs it in. Refused where people sign in only through an
-// extension, and, for an invite into a team, where teams are withheld
+// scheme, and signs it in. Refused where nobody signs in with a password
+// (passwordsInUse), and, for an invite into a team, where teams are withheld
 // (errTeamsWithheld): the invite then stays unspent.
 func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent string) (Session, error) {
 	if err := s.passwordsInUse(); err != nil {
@@ -348,7 +348,7 @@ func (s *Service) SignUp(ctx context.Context, req SignUpRequest, userAgent strin
 // account, a disabled person, a person who has not enrolled (one from before
 // the key scheme, whose way back is a reset invitation) and a person with no
 // password all get the same answer, after the same amount of work. Refused
-// outright where people sign in only through an extension.
+// outright where nobody signs in with a password (passwordsInUse).
 func (s *Service) Login(ctx context.Context, req LoginRequest, userAgent string) (Login, error) {
 	if err := s.passwordsInUse(); err != nil {
 		return Login{}, err
@@ -561,7 +561,7 @@ func (s *Service) CompleteReset(ctx context.Context, req ResetRequest, userAgent
 }
 
 // personalSecrets guards a route about the caller's own secrets: a person
-// signed in, on a daemon where people have passwords here.
+// signed in, on a server where people have passwords here.
 func (s *Service) personalSecrets(p Principal) error {
 	if err := s.passwordsInUse(); err != nil {
 		return err
@@ -647,7 +647,8 @@ func (s *Service) UpdateProfile(ctx context.Context, p Principal, req ProfileReq
 // instance. A team invite, which any person may make into a team of their
 // own, signs a new person up only when an instance owner or the operator made
 // it (auth.SignUp); anyone else's adds an existing account to the team.
-// Where people sign in only through an extension, nobody invites anyone.
+// Where nobody signs in with a password (passwordsInUse), nobody invites
+// anyone.
 func (s *Service) CreateInvite(ctx context.Context, p Principal, req InviteRequest) (Invite, error) {
 	if err := refuseDelegated(p); err != nil {
 		return Invite{}, err

@@ -77,6 +77,10 @@ type fixtureOptions struct {
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
+	// noPeople is a server where nobody signs in with a password, as serve
+	// runs by default (MAIL_PASSWORD_SIGN_IN unset): every other fixture has
+	// people who do, since most of what this package tests is theirs.
+	noPeople bool
 	// nameFollowsIdentity is a daemon whose people's names follow the
 	// identity they sign in with through an extension.
 	nameFollowsIdentity bool
@@ -187,6 +191,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		SendSpoolBytes:              f.opts.sendSpool,
 		ConsentVersions:             f.opts.consent,
 		ExternalSignInOnly:          f.opts.externalSignInOnly,
+		PasswordSignIn:              !f.opts.noPeople,
 		NameFollowsIdentity:         f.opts.nameFollowsIdentity,
 		KeysMayNotSend:              f.opts.keysMayNotSend,
 		KeysActUnderCreatorConsent:  f.opts.keysActUnderCreator,

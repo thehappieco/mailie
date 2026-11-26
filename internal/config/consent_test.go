@@ -114,6 +114,29 @@ func TestTheRetiredMCPVariablesAreNamedOnlyWhereTheyAskForMCP(t *testing.T) {
 	}
 }
 
+func TestPeopleSignInWithAPasswordOnlyWhereTheConfigurationSaysSo(t *testing.T) {
+	// A self-hosted server has no people unless its operator asks for them.
+	setenv(t, minimal(t, nil))
+	cfg, err := config.Load()
+	if err != nil || cfg.PasswordSignIn {
+		t.Fatalf("by default: PasswordSignIn = %t, %v; want false", cfg.PasswordSignIn, err)
+	}
+	if !strings.Contains(cfg.String(), "password_sign_in=false") {
+		t.Errorf("String() = %s", cfg.String())
+	}
+	setenv(t, minimal(t, map[string]string{"MAIL_PASSWORD_SIGN_IN": "true"}))
+	if cfg, err = config.Load(); err != nil || !cfg.PasswordSignIn {
+		t.Fatalf("MAIL_PASSWORD_SIGN_IN=true: PasswordSignIn = %t, %v", cfg.PasswordSignIn, err)
+	}
+	if !strings.Contains(cfg.String(), "password_sign_in=true") {
+		t.Errorf("String() = %s", cfg.String())
+	}
+	setenv(t, minimal(t, map[string]string{"MAIL_PASSWORD_SIGN_IN": "sometimes"}))
+	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_PASSWORD_SIGN_IN") {
+		t.Errorf("MAIL_PASSWORD_SIGN_IN=sometimes: err = %v", err)
+	}
+}
+
 func TestKeysSendByDefaultOnlyUnderTheDefaultKeyTermsAndAnotherEditionSaysWhetherTheyMay(t *testing.T) {
 	// The default key terms (the deleted open console's last, consent.go)
 	// say a key may send. Another edition's may not: a daemon serving them is
