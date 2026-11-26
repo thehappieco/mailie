@@ -4,7 +4,7 @@ go 1.27
 
 toolchain go1.27.4
 
-// The open console (web/) is a Node project, and commercial/, where a
+// The console's core (web/) is a Node project, and commercial/, where a
 // development checkout nests the private cloud, holds another: ./... must
 // never walk their node_modules, where a stray .go file would become part of
 // this module's build and lint. commercial/ is also a module of its own.

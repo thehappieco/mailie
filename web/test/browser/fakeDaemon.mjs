@@ -11,7 +11,7 @@ export const sleep = ms => new Promise(done => setTimeout(done, ms))
 export const PASSWORD = 'synthetic-password-1'
 /** What a person's account public key and wraps are bound to (docs/key-scheme.md section 3.1). Synthetic. */
 export const ANA_SEAL_ID = 'b8cbc8a8-0c90-48ac-9233-fbdace9d7bf4'
-/** A reset link's code, as `user password --bootstrap` prints one. Synthetic. */
+/** A reset link's code, as an earlier release's `user password --bootstrap` printed one. Synthetic. */
 export const RESET = 'SyntheticResetCode_0123456789abcdefghijklmnop'
 /** The shape Apple gives an app-specific password. Synthetic. */
 export const APPLE_APP_PASSWORD = 'abcd-efgh-ijkl-mnop'
