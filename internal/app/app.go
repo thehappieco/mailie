@@ -1,9 +1,10 @@
 // Package app assembles the daemon and runs it until its context ends: the
 // data directory's lock, the store, the sealer and the send-hash root, the
-// account registry and the sync engine, the service, REST, MCP over
-// Streamable HTTP and stdio, the console, metrics, the listeners, the startup
-// hints, the sweeps that enforce retention, and a shutdown that gives the
-// listeners fifteen seconds and waits for the rest.
+// account registry and the sync engine, the service, REST, a console when
+// one is given, metrics, the listeners, the startup hints, the sweeps that
+// enforce retention, and a shutdown that gives the listeners fifteen seconds
+// and waits for the rest. It serves no MCP: internal/mcp is a library no
+// part of this assembly mounts, and /mcp answers the API's 404.
 //
 // `mailserver serve` is a thin caller of Run. Another binary that must run
 // exactly the same server calls Run too, and adds what is its own through
@@ -38,7 +39,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -48,7 +48,6 @@ import (
 	"github.com/thehappieco/mailie/internal/config"
 	"github.com/thehappieco/mailie/internal/events"
 	"github.com/thehappieco/mailie/internal/lockfile"
-	"github.com/thehappieco/mailie/internal/mcp"
 	"github.com/thehappieco/mailie/internal/obs"
 	"github.com/thehappieco/mailie/internal/ratelimit"
 	"github.com/thehappieco/mailie/internal/service"
@@ -61,14 +60,9 @@ import (
 // Options is what the binary that runs the daemon decides beyond the
 // configuration.
 type Options struct {
-	// Version is the build's version: reported by the health probe and by
-	// the MCP server, and logged at start.
+	// Version is the build's version: reported by the health probe, and
+	// logged at start.
 	Version string
-	// MCPStdio also speaks MCP over standard input and output, for a client
-	// that launches the binary (`serve --mcp-stdio`). It needs MAIL_MCP_KEY,
-	// sends every log line to standard error, and ends the daemon when the
-	// client hangs up.
-	MCPStdio bool
 	// Extensions add routes to the daemon's listener, in this order, once
 	// the service is built and before anything listens. See Extension.
 	Extensions []Extension
@@ -177,10 +171,9 @@ type Options struct {
 // reset or a recovery here would be a second account behind them.
 var ErrKeyIssuer = errors.New("app: a key issuer needs people to sign in only through an extension (ExternalSignInOnly)")
 
-// Run runs the daemon until ctx ends, a listener fails, or the stdio client
-// hangs up, and then shuts it down: its listeners within fifteen seconds,
-// then, each waited for, the background work of its extensions, the sync
-// engine, and the database.
+// Run runs the daemon until ctx ends or a listener fails, and then shuts it
+// down: its listeners within fifteen seconds, then, each waited for, the
+// background work of its extensions, the sync engine, and the database.
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Options) error {
 	// What the binary asks of the console's pages is checked before
 	// anything starts: a page it cannot have is its mistake, never the
@@ -190,17 +183,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	}
 	if opts.KeyIssuer != nil && !opts.ExternalSignInOnly {
 		return ErrKeyIssuer
-	}
-	if opts.MCPStdio {
-		// Standard output is the MCP client's: one stray line there and the
-		// client stops understanding the stream. Everything logged goes to
-		// standard error.
-		logger = obs.NewLoggerTo(os.Stderr, cfg.Log.Level, cfg.Log.Format)
-		ctx = obs.WithLogger(ctx, logger)
-		if cfg.MCPKey == "" {
-			return errors.New("serve --mcp-stdio needs MAIL_MCP_KEY: an API key for the client that launches the " +
-				"daemon to act with, which an owner or an admin of a workspace creates in the console, or an instance key")
-		}
 	}
 
 	lock, err := lockfile.Acquire(cfg.LockPath())
@@ -404,7 +386,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		Accounts: accounts, Keys: keys, Users: users, Store: db, Bus: bus, Sync: engine, Log: logger,
 		Workspaces: workspaces,
 		PublicURL:  cfg.PublicURL, DownloadSpoolBytes: cfg.DownloadSpoolBytes, SpoolDir: cfg.SpoolDir(),
-		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent, MCPHTTP: cfg.MCPHTTP,
+		SendHashKey: sendHashKey, ConsentVersions: cfg.Consent,
 		ExternalSignInOnly: opts.ExternalSignInOnly, KeysMayNotSend: !cfg.KeysMaySend,
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
 		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
@@ -438,9 +420,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		warnWorkspaceMailboxes(ctx, db, logger)
 	}
 
-	// One limiter for REST and MCP: a key has one budget whichever way it
-	// comes in. Sign-in has its own, which an extension that signs people in
-	// shares too.
+	// One limiter for bearer traffic, which an extension shares: a key has
+	// one budget whichever way it comes in. Sign-in has its own, which an
+	// extension that signs people in shares too.
 	limits := ratelimit.DefaultAuth(cfg.TrustedProxies)
 	signInLimits := ratelimit.DefaultSignIn(cfg.TrustedProxies)
 	handler := &api.Handler{
@@ -454,19 +436,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		Started:      started,
 	}
 
-	// MCP, for AI assistants and other tools: Streamable HTTP at /mcp, over
-	// the same service, with the same keys and limits as REST — unless the
-	// deployment switched it off, when only --mcp-stdio speaks MCP. The
-	// stdio transport uses the same tools either way.
-	tools := mcp.New(svc, logger, opts.Version)
-	var mcpHTTP http.Handler
-	mcpLog := []any{"mcp_http", "off"}
-	if cfg.MCPHTTP {
-		h := tools.HTTPHandler(mcp.HTTPOptions{Limits: limits, Metrics: metrics, PublicURL: cfg.PublicURL})
-		storeBytes, storeAge := h.EventStore().Bounds()
-		mcpLog = []any{"mcp_event_store_bytes", storeBytes, "mcp_event_store_age", storeAge.String()}
-		mcpHTTP = h
-	}
 	var metricsRoute http.Handler
 	if cfg.MetricsAddr == "" {
 		metricsRoute = metrics.Handler()
@@ -505,7 +474,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	if err != nil {
 		return err
 	}
-	mux, err := routes(handler, mcpHTTP, metricsRoute, console, extra...)
+	mux, err := routes(handler, metricsRoute, console, extra...)
 	if err != nil {
 		return err
 	}
@@ -573,19 +542,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 				"hint", firstInviteHint(cfg.PublicURL != "", keyCount > 0)+" (an address with no account yet)")
 		}
 	}
-	logger.Info("starting", append([]any{"version", opts.Version, "config", cfg.String()}, mcpLog...)...)
-
-	// The stdio client acts with MAIL_MCP_KEY, checked now as a bearer key
-	// would be: a daemon that started without a key that works would only
-	// fail at the client's first call.
-	stdioDone := make(chan error, 1)
-	if opts.MCPStdio {
-		p, err := svc.AuthenticateTool(ctx, cfg.MCPKey, nil)
-		if err != nil {
-			return fmt.Errorf("MAIL_MCP_KEY: %s", service.MessageOf(err))
-		}
-		go func() { stdioDone <- tools.RunStdio(ctx, p) }()
+	if len(cfg.RetiredMCP) > 0 {
+		// Named, never their values: MAIL_MCP_KEY is a key.
+		logger.Warn("this server serves no MCP of its own, at /mcp or over standard input and output: MCP comes "+
+			"through the hosted service once a server is connected to it; these variables ask for MCP and do nothing",
+			"variables", cfg.RetiredMCP)
 	}
+	logger.Info("starting", "version", opts.Version, "config", cfg.String())
 
 	// Abandoned consent attempts hold a usable PKCE verifier, so they are
 	// swept rather than left to age out of nobody's attention — and each one
@@ -634,14 +597,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		return err
 	case <-ctx.Done():
 		logger.Info("shutting down")
-	case err := <-stdioDone:
-		// The client that launched the daemon is gone, and it is what the
-		// daemon was launched for.
-		if err != nil {
-			logger.Warn("the MCP client's session ended with an error; shutting down", "err", err)
-		} else {
-			logger.Info("the MCP client hung up; shutting down")
-		}
 	}
 
 	// A bounded shutdown: an IDLE connection that will not close politely must
@@ -663,9 +618,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 // routes is everything the daemon's listener answers: the core's routes (see
 // coreRoutes), then the routes extensions added, which may take nothing a
 // core route answers (see Extension), and last the console when there is one.
-func routes(rest *api.Handler, mcpHTTP, metrics, console http.Handler, extra ...route) (*http.ServeMux, error) {
+func routes(rest *api.Handler, metrics, console http.Handler, extra ...route) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
-	coreRoutes(mux, rest, mcpHTTP, metrics)
+	coreRoutes(mux, rest, metrics)
 	if err := mountExtensions(mux, extra); err != nil {
 		return nil, err
 	}
@@ -688,21 +643,17 @@ func catchAll(console http.Handler) http.Handler {
 	return console
 }
 
-// coreRoutes mounts the REST API, MCP over Streamable HTTP when mcpHTTP is
-// not nil, and /metrics when metrics is not nil (it has no listener of its
-// own).
+// coreRoutes mounts the REST API, /mcp and everything under it, and /metrics
+// when metrics is not nil (it has no listener of its own).
 //
-// With MCP over HTTP switched off, /mcp and everything under it answer the
-// API's own 404, as an endpoint that does not exist does, whether or not a
-// console is served behind it.
-func coreRoutes(mux *http.ServeMux, rest *api.Handler, mcpHTTP, metrics http.Handler) {
+// This server serves no MCP of its own: /mcp and everything under it answer
+// the API's own 404, as an endpoint that does not exist does, for every
+// method, whether or not a console is served behind it, so that a client
+// still configured for an earlier release's learns nothing else.
+func coreRoutes(mux *http.ServeMux, rest *api.Handler, metrics http.Handler) {
 	rest.Mount(mux)
-	if mcpHTTP != nil {
-		mux.Handle("/mcp", mcpHTTP)
-	} else {
-		mux.Handle("/mcp", webui.NotFound())
-		mux.Handle("/mcp/", webui.NotFound())
-	}
+	mux.Handle("/mcp", webui.NotFound())
+	mux.Handle("/mcp/", webui.NotFound())
 	if metrics != nil {
 		mux.Handle("GET /metrics", metrics)
 	}

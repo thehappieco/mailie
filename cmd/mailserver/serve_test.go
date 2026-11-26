@@ -20,29 +20,17 @@ import (
 	"github.com/thehappieco/mailie/internal/workspace"
 )
 
-func TestServeWithMCPStdioRefusesToStartWithoutAKeyThatWorks(t *testing.T) {
-	// A client that launches the daemon has no header to send its key in;
-	// a daemon that started without one would fail only at its first call,
-	// after the client had already shown the person a working server.
+func TestServeTakesNoFlagToSpeakMCPOverStandardInputAndOutput(t *testing.T) {
+	// This server serves no MCP of its own: a unit still launching it with
+	// --mcp-stdio stops at once, having opened nothing.
 	logger := obs.NewLoggerTo(io.Discard, "error", "text")
-	keyless := localConfig(t)
-	err := serve(t.Context(), keyless, logger, []string{"--mcp-stdio"})
-	if err == nil || !strings.Contains(err.Error(), "MAIL_MCP_KEY") {
-		t.Fatalf("serve --mcp-stdio without a key: %v", err)
-	}
-	if _, err := os.Stat(keyless.DatabasePath()); err == nil {
-		t.Error("the daemon opened its database before refusing to start without a key")
-	}
-
 	cfg := localConfig(t)
-	cfg.HTTPAddr = "127.0.0.1:0"
-	cfg.MCPKey = "deadbeef.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-	err = serve(t.Context(), cfg, logger, []string{"--mcp-stdio"})
-	if err == nil || !strings.Contains(err.Error(), "MAIL_MCP_KEY") {
-		t.Fatalf("serve --mcp-stdio with a key that matches nothing: %v", err)
+	if err := serve(t.Context(), cfg, logger, []string{"--mcp-stdio"}); err == nil ||
+		!strings.Contains(err.Error(), "mcp-stdio") {
+		t.Fatalf("serve --mcp-stdio: %v", err)
 	}
-	if strings.Contains(err.Error(), "AAAAAAAAAAAA") {
-		t.Errorf("the refusal repeats the key: %v", err)
+	if _, err := os.Stat(cfg.DatabasePath()); err == nil {
+		t.Error("the daemon opened its database before refusing a flag it does not take")
 	}
 }
 
@@ -114,64 +102,65 @@ func runDaemon(t *testing.T, cfg config.Config) (string, *lockedBuffer) {
 	}
 }
 
-func call(t *testing.T, method, url string) (int, string, string) {
+// call sends what an MCP client's first request is, with token as its
+// bearer when it is not empty, and returns the status, the content type and
+// the body of the answer.
+func call(t *testing.T, method, url, token string) (int, string, string) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), method, url, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+	return callJSON(t, method, url, token, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+}
+
+// callJSON sends body as JSON, with token as its bearer when it is not empty.
+func callJSON(t *testing.T, method, url, token, body string) (int, string, string) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return resp.StatusCode, resp.Header.Get("Content-Type"), string(body)
+	return resp.StatusCode, resp.Header.Get("Content-Type"), string(raw)
 }
 
-func TestADaemonWithMCPOverHTTPOffSaysSoAndAnswersMCPWithTheAPIs404(t *testing.T) {
+func TestServeAnswersMCPWithTheAPIs404AndSaysWhichRetiredVariablesAskForIt(t *testing.T) {
+	// A host whose environment still asks for the MCP server an earlier
+	// release served: the daemon starts, says once which variables ask for
+	// it, and /mcp is an endpoint that does not exist, for a key too, as is
+	// GET /v1/me/mcp, which said whether it was served.
 	cfg := localConfig(t)
-	cfg.MCPHTTP = false
+	cfg.RetiredMCP = []string{"MAIL_MCP_HTTP", "MAIL_MCP_KEY"}
 	key := readKey(t, cfg)
 	base, logs := runDaemon(t, cfg)
-	if served := mcpReported(t, base, key); served {
-		t.Error("GET /v1/me/mcp says MCP is served over HTTP, and the console would show an address that answers 404")
-	}
 	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
-		if status, kind, body := call(t, method, base+"/mcp"); status != http.StatusNotFound ||
+		if status, kind, body := call(t, method, base+"/mcp", key); status != http.StatusNotFound ||
 			kind != "application/json" || body != apiNotFound {
 			t.Errorf("%s /mcp answered %d %q %q", method, status, kind, body)
 		}
 	}
-	starting := logLine(t, logs.String(), "msg=starting")
-	if !strings.Contains(starting, "mcp_http=off") {
-		t.Errorf("the startup log does not say MCP over HTTP is off:\n%s", starting)
+	if status, _, body := call(t, http.MethodGet, base+"/v1/me/mcp", key); status != http.StatusNotFound {
+		t.Errorf("GET /v1/me/mcp answered %d %q", status, body)
 	}
-	if strings.Contains(logs.String(), "mcp_event_store") {
-		t.Errorf("the log reports the bounds of an event store nothing uses:\n%s", logs)
+	said := logLine(t, logs.String(), "serves no MCP of its own")
+	if !strings.Contains(said, "level=WARN") || !strings.Contains(said, "MAIL_MCP_HTTP MAIL_MCP_KEY") {
+		t.Errorf("the start says %s", said)
 	}
-}
-
-func TestADaemonWithMCPOverHTTPOnServesItAsBefore(t *testing.T) {
-	cfg := localConfig(t)
-	cfg.MCPHTTP = true
-	key := readKey(t, cfg)
-	base, logs := runDaemon(t, cfg)
-	if served := mcpReported(t, base, key); !served {
-		t.Error("GET /v1/me/mcp says MCP is not served over HTTP")
+	if strings.Count(logs.String(), "serves no MCP of its own") != 1 {
+		t.Errorf("the start says it more than once:\n%s", logs)
 	}
-	// The MCP handler is there: it asks for a key rather than not existing.
-	if status, _, body := call(t, http.MethodPost, base+"/mcp"); status != http.StatusUnauthorized {
-		t.Errorf("POST /mcp without a key answered %d %q, want the MCP endpoint's 401", status, body)
-	}
-	starting := logLine(t, logs.String(), "msg=starting")
-	if !strings.Contains(starting, "mcp_event_store_bytes=") || strings.Contains(starting, "mcp_http=off") {
-		t.Errorf("the startup log = %s", starting)
+	if starting := logLine(t, logs.String(), "msg=starting"); strings.Contains(starting, "mcp") {
+		t.Errorf("the start line names MCP: %s", starting)
 	}
 }
 
@@ -189,28 +178,6 @@ func readKey(t *testing.T, cfg config.Config) string {
 		t.Fatal(err)
 	}
 	return secret
-}
-
-// mcpReported is what GET /v1/me/mcp says about MCP over HTTP.
-func mcpReported(t *testing.T, base, key string) bool {
-	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, base+"/v1/me/mcp", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Authorization", "Bearer "+key)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	var body struct {
-		HTTP *bool `json:"http"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || resp.StatusCode != http.StatusOK || body.HTTP == nil {
-		t.Fatalf("GET /v1/me/mcp answered %d, %+v, %v", resp.StatusCode, body, err)
-	}
-	return *body.HTTP
 }
 
 // logLine is the first line of the log that contains want.
@@ -389,10 +356,7 @@ func TestTheDaemonSaysNothingOfClosedTeamsWhereNoneIs(t *testing.T) {
 func TestServeOffersPausingOneMailboxsSync(t *testing.T) {
 	// The open edition's sync text promises nothing a pause breaks; another
 	// binary opts in only once its own does.
-	for _, stdio := range []bool{false, true} {
-		opts := serveOptions("test", stdio)
-		if !opts.SyncPauseOffered || opts.MCPStdio != stdio || opts.Version != "test" {
-			t.Errorf("serve runs with %+v", opts)
-		}
+	if opts := serveOptions("test"); !opts.SyncPauseOffered || opts.Version != "test" {
+		t.Errorf("serve runs with %+v", opts)
 	}
 }

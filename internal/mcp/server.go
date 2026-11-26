@@ -14,6 +14,10 @@
 // The log records which tool ran, for which key, how it ended and the ids it
 // touched — never an argument or a result: no search text, no subject, no
 // address, no body.
+//
+// Nothing in this repository mounts it: a self-hosted server serves no MCP of
+// its own, and /mcp answers the API's 404 there. It is kept, with its tests,
+// for a binary that serves MCP over the same service (HTTPHandler, RunStdio).
 package mcp
 
 import (
@@ -161,7 +165,7 @@ func (s *Server) NewSession(p service.Principal) *sdk.Server {
 }
 
 // RunStdio serves one session over stdin and stdout, for a client that
-// launches the daemon itself, until the client hangs up or ctx ends.
+// launches the binary that serves it, until the client hangs up or ctx ends.
 func (s *Server) RunStdio(ctx context.Context, p service.Principal) error {
 	err := s.NewSession(p).Run(ctx, &sdk.StdioTransport{})
 	if errors.Is(err, context.Canceled) {

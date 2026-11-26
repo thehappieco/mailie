@@ -54,14 +54,10 @@ type serviceOptions struct {
 	// consent is the revisions of the texts people agree to, as
 	// MAIL_CONSENT_VERSION_* configure them; empty ones are the defaults.
 	consent config.ConsentVersions
-	// mcpHTTP is whether the daemon serves MCP over HTTP at /mcp, which
-	// GET /v1/me/mcp reports.
-	mcpHTTP bool
 	// externalSignInOnly is a daemon whose people sign in only through an
 	// extension: passwords and invitations are off.
 	externalSignInOnly bool
-	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false, which GET /v1/me/mcp
-	// reports.
+	// keysMayNotSend is MAIL_KEYS_MAY_SEND=false.
 	keysMayNotSend bool
 	// teamsWithheld is an edition that does not offer team workspaces.
 	teamsWithheld bool
@@ -109,7 +105,6 @@ func newService(t *testing.T, db *store.Store, bus *events.Bus, o serviceOptions
 		DownloadsPerCaller: o.downloadsPerCaller,
 		SpoolDir:           opts.SpoolDir,
 		ConsentVersions:    o.consent,
-		MCPHTTP:            o.mcpHTTP,
 		KeysMayNotSend:     o.keysMayNotSend,
 		ExternalSignInOnly: o.externalSignInOnly,
 		TeamsWithheld:      o.teamsWithheld,

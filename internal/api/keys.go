@@ -122,16 +122,3 @@ func (h *Handler) revokeMyAPIKey(q *request) {
 	}
 	q.finish(http.StatusNoContent, nil)
 }
-
-func (h *Handler) mcpAccess(q *request) {
-	if _, err := q.query(); err != nil {
-		q.fail(err)
-		return
-	}
-	access, err := h.Service.MCPAccess(q.ctx(), q.principal)
-	if err != nil {
-		q.fail(err)
-		return
-	}
-	q.finish(http.StatusOK, access)
-}

@@ -26,7 +26,6 @@ import (
 func mcpDaemon(t *testing.T, on bool) (string, string, *lockedBuffer) {
 	t.Helper()
 	cfg := localConfig(t)
-	cfg.MCPHTTP = on
 	key := readKey(t, cfg)
 	base, logs := runDaemon(t, cfg)
 	return base, key, logs

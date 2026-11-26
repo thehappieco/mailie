@@ -105,12 +105,13 @@ func testConsole(t *testing.T) http.Handler {
 	return web
 }
 
-func TestWithMCPOverHTTPOffEveryRequestToMCPIsTheAPIs404(t *testing.T) {
-	// Switched off, /mcp is an endpoint that does not exist: the same JSON
-	// whether a console is served behind it or not, and for every method
-	// and path under it — a client probing it learns nothing else.
+func TestEveryRequestToMCPIsTheAPIs404(t *testing.T) {
+	// This server serves no MCP of its own: /mcp is an endpoint that does
+	// not exist, the same JSON whether a console is served behind it or
+	// not, and for every method and path under it — a client still
+	// configured for an earlier release's learns nothing else.
 	for name, console := range map[string]http.Handler{"without a console": nil, "with a console": testConsole(t)} {
-		mux, err := routes(&api.Handler{}, nil, nil, console)
+		mux, err := routes(&api.Handler{}, nil, console)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,8 +126,8 @@ func TestWithMCPOverHTTPOffEveryRequestToMCPIsTheAPIs404(t *testing.T) {
 				}
 			}
 		}
-		// The rest of the API is untouched, and the OAuth discovery
-		// documents an MCP client probes for are still missing.
+		// The rest of the API is untouched, and no OAuth discovery document
+		// is served.
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/v1/healthz", nil))
 		if rec.Code != http.StatusOK {
@@ -137,23 +138,6 @@ func TestWithMCPOverHTTPOffEveryRequestToMCPIsTheAPIs404(t *testing.T) {
 			mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, path, nil))
 			if rec.Code != http.StatusNotFound {
 				t.Errorf("%s: GET %s answered %d", name, path, rec.Code)
-			}
-		}
-	}
-}
-
-func TestWithMCPOverHTTPOnTheEndpointIsTheMCPHandler(t *testing.T) {
-	mcpHTTP := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
-	for name, console := range map[string]http.Handler{"without a console": nil, "with a console": testConsole(t)} {
-		mux, err := routes(&api.Handler{}, mcpHTTP, nil, console)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, "/mcp", nil))
-			if rec.Code != http.StatusTeapot {
-				t.Errorf("%s: %s /mcp answered %d, not from the MCP handler", name, method, rec.Code)
 			}
 		}
 	}

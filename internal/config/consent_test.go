@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -80,28 +81,36 @@ func TestAConsentVersionIsPrintableASCIIWithoutSpacesAndAtMost64Bytes(t *testing
 	}
 }
 
-func TestTheMCPHTTPEndpointIsOnUnlessSwitchedOff(t *testing.T) {
-	setenv(t, minimal(t, nil))
-	cfg, err := config.Load()
-	if err != nil || !cfg.MCPHTTP {
-		t.Fatalf("by default: MCPHTTP = %t, %v", cfg.MCPHTTP, err)
-	}
-	if !strings.Contains(cfg.String(), "mcp_http=true") {
-		t.Errorf("String() = %s", cfg.String())
-	}
-
-	setenv(t, minimal(t, map[string]string{"MAIL_MCP_HTTP": "false"}))
-	cfg, err = config.Load()
-	if err != nil || cfg.MCPHTTP {
-		t.Fatalf("MAIL_MCP_HTTP=false: MCPHTTP = %t, %v", cfg.MCPHTTP, err)
-	}
-	if !strings.Contains(cfg.String(), "mcp_http=false") {
-		t.Errorf("String() = %s", cfg.String())
-	}
-
-	setenv(t, minimal(t, map[string]string{"MAIL_MCP_HTTP": "sometimes"}))
-	if _, err := config.Load(); err == nil || !strings.Contains(err.Error(), "MAIL_MCP_HTTP") {
-		t.Errorf("MAIL_MCP_HTTP=sometimes: err = %v", err)
+func TestTheRetiredMCPVariablesAreNamedOnlyWhereTheyAskForMCP(t *testing.T) {
+	// This server serves no MCP of its own: what an earlier release read
+	// to serve it refuses nothing now, and is named only where it would
+	// have asked for MCP, so that the daemon can say so.
+	for env, want := range map[string]struct {
+		vars  map[string]string
+		named []string
+	}{
+		"none set":            {nil, nil},
+		"MCP over HTTP off":   {map[string]string{"MAIL_MCP_HTTP": "false"}, nil},
+		"every one false":     {map[string]string{"MAIL_MCP_HTTP": "0", "MAIL_MCP_ELICIT_SEND": "FALSE"}, nil},
+		"every one empty":     {map[string]string{"MAIL_MCP_HTTP": "", "MAIL_MCP_KEY": "", "MAIL_MCP_ELICIT_SEND": ""}, nil},
+		"MCP over HTTP on":    {map[string]string{"MAIL_MCP_HTTP": "true"}, []string{"MAIL_MCP_HTTP"}},
+		"no boolean":          {map[string]string{"MAIL_MCP_HTTP": "sometimes"}, []string{"MAIL_MCP_HTTP"}},
+		"a key for stdio":     {map[string]string{"MAIL_MCP_KEY": "feedf00d.secret"}, []string{"MAIL_MCP_KEY"}},
+		"elicitation":         {map[string]string{"MAIL_MCP_ELICIT_SEND": "1"}, []string{"MAIL_MCP_ELICIT_SEND"}},
+		"all three, in order": {map[string]string{"MAIL_MCP_ELICIT_SEND": "true", "MAIL_MCP_KEY": "k", "MAIL_MCP_HTTP": "t"}, []string{"MAIL_MCP_HTTP", "MAIL_MCP_KEY", "MAIL_MCP_ELICIT_SEND"}},
+	} {
+		setenv(t, minimal(t, want.vars))
+		cfg, err := config.Load()
+		if err != nil {
+			t.Errorf("%s: Load refused it: %v", env, err)
+			continue
+		}
+		if !slices.Equal(cfg.RetiredMCP, want.named) {
+			t.Errorf("%s: RetiredMCP = %v, want %v", env, cfg.RetiredMCP, want.named)
+		}
+		if strings.Contains(cfg.String(), "mcp") || strings.Contains(cfg.String(), "secret") {
+			t.Errorf("%s: String() = %s", env, cfg.String())
+		}
 	}
 }
 

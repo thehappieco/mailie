@@ -37,7 +37,7 @@ func (e Env) IsProd() bool { return e == EnvProd }
 type Config struct {
 	Env Env
 
-	// HTTPAddr carries the REST API, the SSE stream and the MCP endpoint.
+	// HTTPAddr carries the REST API and the SSE stream.
 	// It defaults to loopback: this daemon can read every message in several
 	// mailboxes and send mail as their owner, so binding it to the world is a
 	// decision someone has to make on purpose.
@@ -109,21 +109,11 @@ type Config struct {
 	// client because only the daemon holds the sync workers, the token sources
 	// and the OAuth callback listener.
 	AdminKey string
-	// MCPKey is the API key `serve --mcp-stdio` acts with: an MCP client
-	// that launches the daemon has no Authorization header to send, so the
-	// key it would have sent comes from here. Verified at start like any
-	// bearer key, and never printed.
-	MCPKey string
 
 	// MicrosoftDeviceCode offers the device-code flow for Microsoft accounts.
 	// Off by default because Entra security defaults block it outright, and a
 	// flow that fails for most tenants is worse than no flow at all.
 	MicrosoftDeviceCode bool
-	// MCPHTTP serves MCP over Streamable HTTP at /mcp, beside the REST API.
-	// On by default. Off, nothing is mounted there and /mcp answers the
-	// API's JSON 404: MCP is then only `serve --mcp-stdio`, for a deployment
-	// whose MCP clients must not reach it over the network with a key.
-	MCPHTTP bool
 	// KeysMaySend lets a workspace's API keys send email, where the key
 	// holds the send flag on the mailbox and has the send scope. On by
 	// default under the open console's key terms, which say a key may send.
@@ -146,10 +136,16 @@ type Config struct {
 	// Consent names the revisions of the texts a person agrees to in the
 	// console (see ConsentVersions).
 	Consent ConsentVersions
-	// MCPElicitSend asks MCP clients that support elicitation to confirm a
-	// send interactively. Off by default: it blocks non-interactive runs, and
-	// confirm=true is already the gate.
-	MCPElicitSend bool
+	// RetiredMCP names the variables of an earlier release's MCP server that
+	// this environment sets to something that asks for MCP: MAIL_MCP_HTTP
+	// or MAIL_MCP_ELICIT_SEND set to anything but a false value, and
+	// MAIL_MCP_KEY set at all. This server serves no MCP of its own, neither
+	// at /mcp nor over standard input and output: MCP comes through the
+	// hosted service, once a server is connected to it. Nothing refuses
+	// them; the daemon says once at start which are set, by name, never by
+	// value. A false one asks for nothing: MAIL_MCP_HTTP=false says what
+	// this server does anyway.
+	RetiredMCP []string
 	// IMAPDebug tees the raw IMAP protocol to the log. It carries the XOAUTH2
 	// line, which contains a bearer token, so Load refuses it in prod.
 	IMAPDebug bool
@@ -281,13 +277,11 @@ func Load() (Config, error) {
 		Log:                        Log{Level: str("MAIL_LOG_LEVEL", "info"), Format: str("MAIL_LOG_FORMAT", defaultLogFormat(env))},
 		AdminAPI:                   boolean("MAIL_ADMIN_API", false, &errs),
 		AdminKey:                   str("MAIL_ADMIN_KEY", ""),
-		MCPKey:                     str("MAIL_MCP_KEY", ""),
 		MicrosoftDeviceCode:        boolean("MAIL_MICROSOFT_DEVICE_CODE", false, &errs),
-		MCPHTTP:                    boolean("MAIL_MCP_HTTP", true, &errs),
 		KeysMaySend:                boolean("MAIL_KEYS_MAY_SEND", true, &errs),
 		KeysActUnderCreatorConsent: boolean("MAIL_KEYS_ACT_UNDER_CREATOR_CONSENT", false, &errs),
 		Consent:                    consentVersions(&errs),
-		MCPElicitSend:              boolean("MAIL_MCP_ELICIT_SEND", false, &errs),
+		RetiredMCP:                 retiredMCP(),
 		IMAPDebug:                  boolean("MAIL_IMAP_DEBUG", false, &errs),
 	}
 
@@ -349,6 +343,37 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("config: %w", errors.Join(errs...))
 	}
 	return cfg, nil
+}
+
+// retiredVariables are the variables of an earlier release's MCP server, in
+// the order RetiredMCP names them, each with whether a value of it asks for
+// MCP.
+var retiredVariables = []struct {
+	name string
+	asks func(string) bool
+}{
+	{"MAIL_MCP_HTTP", notFalse},
+	{"MAIL_MCP_KEY", func(string) bool { return true }},
+	{"MAIL_MCP_ELICIT_SEND", notFalse},
+}
+
+// retiredMCP names the retired MCP variables set to something that asks for
+// MCP. An empty one is unset, as every variable here is.
+func retiredMCP() []string {
+	var out []string
+	for _, v := range retiredVariables {
+		if value := os.Getenv(v.name); value != "" && v.asks(value) {
+			out = append(out, v.name)
+		}
+	}
+	return out
+}
+
+// notFalse is a value that is not one strconv.ParseBool reads as false: true,
+// or something that is no boolean at all.
+func notFalse(v string) bool {
+	b, err := strconv.ParseBool(v)
+	return err != nil || b
 }
 
 // webDir resolves the built console's directory. Whether it holds a console is
@@ -715,7 +740,7 @@ func (c Config) String() string {
 	return fmt.Sprintf(
 		"env=%s http=%s metrics=%s data=%s credential_sealer=%s credential_keys=%s google=%s microsoft=%s/%s "+
 			"google_web=%s microsoft_web=%s public_url=%s web=%s account_allow_private=%t "+
-			"microsoft_device_code=%t admin_api=%t mcp_http=%t mcp_key=%s keys_may_send=%t "+
+			"microsoft_device_code=%t admin_api=%t keys_may_send=%t "+
 			"consent_versions=sync:%s,actions:%s,send:%s,keys:%s "+
 			"download_spool=%dMiB log=%s/%s",
 		c.Env, c.HTTPAddr, orDefault(c.MetricsAddr, "inline"), c.DataDir,
@@ -723,7 +748,7 @@ func (c Config) String() string {
 		configured(c.Google.Configured()), configured(c.Microsoft.Configured()), c.Microsoft.Tenant,
 		configured(c.GoogleWeb.Configured()), configured(c.MicrosoftWeb.Configured()),
 		orDefault(c.PublicURL, "unset"), orDefault(c.WebDir, "off"), c.AccountAllowPrivate,
-		c.MicrosoftDeviceCode, c.AdminAPI, c.MCPHTTP, configured(c.MCPKey != ""), c.KeysMaySend,
+		c.MicrosoftDeviceCode, c.AdminAPI, c.KeysMaySend,
 		c.Consent.Sync, c.Consent.Actions, c.Consent.Send, c.Consent.Keys,
 		c.DownloadSpoolBytes>>20, c.Log.Level, c.Log.Format,
 	) + connectSrcField(c.ConnectSrc)

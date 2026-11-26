@@ -39,12 +39,12 @@ import (
 // root ("/", "/{$}", with or without a method), which is the console's, and
 // when it names a host. The mux tries a pattern with a host before every
 // pattern without one and never reports the two as a conflict, so
-// "example.com/{path...}" would take the whole API and MCP for that Host; the
-// core serves every host alike, and so do its extensions. The core's routes
-// are judged as the daemon serves them with everything switched on (MCP over
-// HTTP and the 404 it answers under /mcp/ when off, the instance-key routes,
-// /metrics), so whether a route is accepted never depends on MAIL_MCP_HTTP,
-// MAIL_ADMIN_API, MAIL_METRICS_ADDR or MAIL_WEB_DIR.
+// "example.com/{path...}" would take the whole API for that Host; the core
+// serves every host alike, and so do its extensions. The core's routes are
+// judged as the daemon serves them with everything switched on (the
+// instance-key routes, /metrics, beside the 404 it answers at /mcp and under
+// it), so whether a route is accepted never depends on MAIL_ADMIN_API,
+// MAIL_METRICS_ADDR or MAIL_WEB_DIR.
 //
 // An extension's handlers are its own: nothing of the core's middleware (the
 // route timeouts, the body limits, the authentication, the metrics) wraps
@@ -65,10 +65,10 @@ type Deps struct {
 	Config config.Config
 	// Service is the use cases and all authorization.
 	Service *service.Service
-	// Log is the daemon's logger (standard error under MCPStdio).
+	// Log is the daemon's logger.
 	Log *slog.Logger
-	// Limits meters bearer traffic, the same buckets REST and MCP spend
-	// from: a credential has one budget whichever way it comes in.
+	// Limits meters bearer traffic, the same buckets REST spends from: a
+	// credential has one budget whichever way it comes in.
 	Limits *ratelimit.Auth
 	// SignInLimits meters sign-in, sign-up and password changes, the same
 	// buckets the core's spend from: another way to sign in is not another
@@ -342,8 +342,7 @@ const consoleCatchAll = "/"
 func everyCoreRoute() *http.ServeMux {
 	mux := http.NewServeMux()
 	never := http.NotFoundHandler()
-	// MCP switched off covers /mcp and /mcp/; switched on is /mcp alone.
-	coreRoutes(mux, &api.Handler{AdminAPI: true}, nil, never)
+	coreRoutes(mux, &api.Handler{AdminAPI: true}, never)
 	mux.Handle(consoleCatchAll, never)
 	return mux
 }

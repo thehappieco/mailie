@@ -51,7 +51,6 @@ func localConfig(t *testing.T) config.Config {
 		Credentials: config.Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{1: key}},
 		HTTPAddr:    addr,
 		WebDir:      web,
-		MCPHTTP:     true,
 	}
 }
 
@@ -222,17 +221,14 @@ func TestAnExtensionRouteIsServedBesideTheCoreRoutesWhichAnswerAsBefore(t *testi
 	}
 
 	// The core answers as it does without the extension: the health probe,
-	// MCP asking for a key, the API's 404 for an endpoint that does not
-	// exist, and the console for everything else, including a path beside
-	// the extension's that it did not claim.
+	// the API's 404 for an endpoint that does not exist, /mcp among them,
+	// and the console for everything else, including a path beside the
+	// extension's that it did not claim.
 	if a := fetch(t, http.MethodGet, base+"/v1/healthz"); a.status != http.StatusOK ||
 		!strings.Contains(a.body, `"status":"ok"`) || !strings.Contains(a.body, `"version":"test-version"`) {
 		t.Errorf("GET /v1/healthz answered %d %q", a.status, a.body)
 	}
-	if a := fetch(t, http.MethodPost, base+"/mcp"); a.status != http.StatusUnauthorized {
-		t.Errorf("POST /mcp without a key answered %d %q, want the MCP endpoint's 401", a.status, a.body)
-	}
-	for _, p := range []string{"/v1/no-such-endpoint", "/v1/auth/no-such-way", "/mcp/extension"} {
+	for _, p := range []string{"/v1/no-such-endpoint", "/v1/auth/no-such-way", "/mcp", "/mcp/extension"} {
 		if a := fetch(t, http.MethodGet, base+p); a.status != http.StatusNotFound || a.body != apiNotFound {
 			t.Errorf("GET %s answered %d %q, want the API's 404", p, a.status, a.body)
 		}
@@ -331,7 +327,6 @@ var coreRequests = []string{
 	"GET /v1/messages/m_1/attachments/1.2", "PATCH /v1/messages/m_1", "POST /v1/messages/send",
 	"GET /v1/sends/k", "GET /v1/me/apikeys", "GET /v1/events", "GET /v1/events/wait", "GET /v1/apikeys",
 	"GET /mcp", "POST /mcp", "DELETE /mcp", "GET /mcp/sessions/1", "GET /metrics",
-	"GET /.well-known/oauth-protected-resource", "GET /.well-known/oauth-authorization-server",
 	"GET /", "GET /oauth/return", "GET /assets/main.js", "GET /v1/no-such-endpoint",
 }
 
@@ -351,17 +346,17 @@ func TestTheCoreRoutesAnswerTheSameRequestsWithAnExtensionMounted(t *testing.T) 
 		{"/.well-known/extension", says("extension")},
 	}
 	for name, deployment := range map[string]struct {
-		rest             *api.Handler
-		mcpHTTP, metrics http.Handler
+		rest    *api.Handler
+		metrics http.Handler
 	}{
-		"everything on":            {&api.Handler{AdminAPI: true}, never, never},
-		"MCP and admin routes off": {&api.Handler{}, nil, nil},
+		"everything on":                 {&api.Handler{AdminAPI: true}, never},
+		"admin routes and /metrics off": {&api.Handler{}, nil},
 	} {
-		without, err := routes(deployment.rest, deployment.mcpHTTP, deployment.metrics, never)
+		without, err := routes(deployment.rest, deployment.metrics, never)
 		if err != nil {
 			t.Fatal(err)
 		}
-		with, err := routes(deployment.rest, deployment.mcpHTTP, deployment.metrics, never, extra...)
+		with, err := routes(deployment.rest, deployment.metrics, never, extra...)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -383,20 +378,18 @@ func TestTheCoreRoutesAnswerTheSameRequestsWithAnExtensionMounted(t *testing.T) 
 }
 
 func TestAnExtensionCannotTakeARouteFromTheCoreWhateverIsSwitchedOn(t *testing.T) {
-	// MCP over HTTP on, and the instance-key routes, /metrics and the console
-	// off: every refusal below holds all the same, so a deployment that
-	// switches one on never finds an extension's route refused, or worse,
-	// taking requests from it.
-	never := http.NotFoundHandler()
+	// The instance-key routes, /metrics and the console off: every refusal
+	// below holds all the same, so a deployment that switches one on never
+	// finds an extension's route refused, or worse, taking requests from it.
 	for pattern, why := range map[string]string{
 		"GET /v1/healthz":           "the same pattern as a core route",
 		"GET /v1/accounts/{name}":   "a core route's pattern with another wildcard name",
-		"/mcp":                      "the MCP endpoint",
+		"/mcp":                      "/mcp, which answers the API's 404",
 		"GET /v1/apikeys":           "an instance-key route, though they are off here",
 		"GET /metrics":              "the metrics route, though it is off here",
 		"GET /v1/accounts/mine":     "a path a core route's wildcard answers",
-		"GET /mcp":                  "a method of the MCP endpoint",
-		"/mcp/extension":            "under /mcp/, which answers the API's 404 when MCP is off",
+		"GET /mcp":                  "a method of /mcp",
+		"/mcp/extension":            "under /mcp/, which answers the API's 404",
 		"/v1/accounts/x":            "a pattern that conflicts with a core route",
 		"example.com/v1/healthz":    "a core route, on one host",
 		"example.com/v1/":           "the whole API, on one host",
@@ -413,7 +406,7 @@ func TestAnExtensionCannotTakeARouteFromTheCoreWhateverIsSwitchedOn(t *testing.T
 		"GET /extension/{a}/{a}":    "a pattern the mux refuses",
 		"GET /extension/{bad name}": "a wildcard the mux refuses",
 	} {
-		_, err := routes(&api.Handler{}, never, nil, nil, route{pattern, says("extension")})
+		_, err := routes(&api.Handler{}, nil, nil, route{pattern, says("extension")})
 		if !errors.Is(err, ErrRoute) {
 			t.Errorf("%q (%s) was not refused: %v", pattern, why, err)
 		}
@@ -423,11 +416,11 @@ func TestAnExtensionCannotTakeARouteFromTheCoreWhateverIsSwitchedOn(t *testing.T
 	// pattern, are refused too.
 	var r Router
 	r.HandleFunc("GET /extension/nil", nil)
-	if _, err := routes(&api.Handler{}, never, nil, nil, r.routes...); !errors.Is(err, ErrRoute) {
+	if _, err := routes(&api.Handler{}, nil, nil, r.routes...); !errors.Is(err, ErrRoute) {
 		t.Errorf("a nil handler was not refused: %v", err)
 	}
 	twice := []route{{"GET /extension/x", says("one")}, {"GET /extension/x", says("other")}}
-	if _, err := routes(&api.Handler{}, never, nil, nil, twice...); !errors.Is(err, ErrRoute) {
+	if _, err := routes(&api.Handler{}, nil, nil, twice...); !errors.Is(err, ErrRoute) {
 		t.Errorf("the same pattern from two extensions was not refused: %v", err)
 	}
 }
@@ -438,18 +431,18 @@ func TestAnExtensionRouteCannotNameAHostWhichWouldOutrankEveryCoreRoute(t *testi
 	// answer /v1/..., /mcp, /metrics and /.well-known/... for that Host.
 	never := http.NotFoundHandler()
 	for name, deployment := range map[string]struct {
-		rest             *api.Handler
-		mcpHTTP, metrics http.Handler
+		rest    *api.Handler
+		metrics http.Handler
 	}{
-		"everything on":            {&api.Handler{AdminAPI: true}, never, never},
-		"MCP and admin routes off": {&api.Handler{}, nil, nil},
+		"everything on":                 {&api.Handler{AdminAPI: true}, never},
+		"admin routes and /metrics off": {&api.Handler{}, nil},
 	} {
 		for _, pattern := range []string{
 			"example.com/v1/", "example.com/{path...}", "GET example.com/{path...}",
 			"example.com/.well-known/", "GET example.com/v1/{rest...}", "POST example.com/mcp",
 			"example.com/extension/{name}", "GET 127.0.0.1/extension",
 		} {
-			_, err := routes(deployment.rest, deployment.mcpHTTP, deployment.metrics, never, route{pattern, says("extension")})
+			_, err := routes(deployment.rest, deployment.metrics, never, route{pattern, says("extension")})
 			if !errors.Is(err, ErrRoute) || !strings.Contains(err.Error(), "host") {
 				t.Errorf("%s: %q was not refused for its host: %v", name, pattern, err)
 			}

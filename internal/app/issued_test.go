@@ -32,7 +32,7 @@ func TestAKeyIssuerNeedsExternalSignInOnly(t *testing.T) {
 	}
 }
 
-func TestRESTAndMCPTakeTheSameIssuedKeys(t *testing.T) {
+func TestTheDaemonTakesAnIssuedKeyAndRefusesARevokedOneAndAnOwnWorkspaceKey(t *testing.T) {
 	cfg := localConfig(t)
 	db, err := store.Open(t.Context(), cfg.DatabasePath(), store.Options{})
 	if err != nil {
@@ -59,37 +59,14 @@ func TestRESTAndMCPTakeTheSameIssuedKeys(t *testing.T) {
 
 	base, logs := runDaemonLogged(t, cfg, Options{ExternalSignInOnly: true, KeyIssuer: issuertest.New(),
 		KeysIssuedElsewhere: true})
-	mcp := func(token string) int {
-		req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, base+"/mcp", strings.NewReader(
-			`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25",`+
-				`"capabilities":{},"clientInfo":{"name":"test","version":"1"}}}`))
-		if err != nil {
-			t.Fatal(err)
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json, text/event-stream")
-		req.Header.Set("Authorization", "Bearer "+token)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = resp.Body.Close()
-		return resp.StatusCode
-	}
 	if a := request(t, http.MethodGet, base+"/v1/accounts", good, ""); a.status != http.StatusOK ||
 		!strings.Contains(a.body, box) {
 		t.Errorf("REST with the issued key: %d %s", a.status, a.body)
-	}
-	if status := mcp(good); status != http.StatusOK {
-		t.Errorf("MCP with the issued key: %d", status)
 	}
 	for what, token := range map[string]string{"the revoked issued key": revoked, "her own key": own} {
 		if a := request(t, http.MethodGet, base+"/v1/accounts", token, ""); a.status != http.StatusUnauthorized ||
 			!strings.Contains(a.body, "invalid or expired api key") {
 			t.Errorf("REST with %s: %d %s", what, a.status, a.body)
-		}
-		if status := mcp(token); status != http.StatusUnauthorized {
-			t.Errorf("MCP with %s: %d", what, status)
 		}
 	}
 	if a := request(t, http.MethodGet, base+"/v1/apikeys", operator, ""); a.status == http.StatusUnauthorized {

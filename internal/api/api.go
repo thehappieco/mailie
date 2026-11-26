@@ -228,10 +228,6 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	// What the caller's mailboxes take up in the index, a database read;
 	// the size of the whole database only for an owner signed in.
 	mux.Handle("GET /v1/me/storage", h.authenticated(auth.ScopeRead, opts(), h.storage))
-	// Whether this server answers MCP over HTTP at /mcp, for a console that
-	// shows how to connect a tool with a key: it never shows an address that
-	// answers 404.
-	mux.Handle("GET /v1/me/mcp", h.authenticated(auth.ScopeRead, opts(), h.mcpAccess))
 	// The person's notices: a mailbox they read removed, or a team mailbox's
 	// sync turned off, until they dismiss them, a recovery withdraws them or
 	// the journal's 90 days are over. The scope admits any
@@ -281,12 +277,6 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		mux.Handle("POST /v1/apikeys", h.authenticated(auth.ScopeAdmin, opts(), h.createAPIKey))
 		mux.Handle("DELETE /v1/apikeys/{prefix}", h.authenticated(auth.ScopeAdmin, opts(), h.revokeAPIKey))
 	}
-
-	// MCP clients probe these before falling back to the header they were
-	// configured with. A 404 keeps them on the static bearer token; anything
-	// else starts an OAuth discovery they cannot complete.
-	mux.Handle("GET /.well-known/oauth-protected-resource", http.NotFoundHandler())
-	mux.Handle("GET /.well-known/oauth-authorization-server", http.NotFoundHandler())
 }
 
 type healthResponse struct {

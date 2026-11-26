@@ -52,7 +52,6 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		publicURL: "http://localhost:5174",
 		now:       func() time.Time { return epoch },
 		sync:      sync,
-		mcpHTTP:   true,
 		registry: account.RegistryOptions{
 			Google:    account.OAuthClient{ClientID: "google-installed-client"},
 			Microsoft: account.OAuthClient{ClientID: "microsoft-installed-client", Tenant: "common"},
@@ -102,7 +101,6 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 		fmt.Sprintf(`{"email":"ana@example.com","recovery_proof":%q}`, authtest.RecoveryProof))
 	capture("user", http.StatusOK, http.MethodPut, "/v1/auth/profile", token, `{"name":"Ana Lima"}`)
 	capture("providers", http.StatusOK, http.MethodGet, "/v1/providers", token, "")
-	capture("mcp", http.StatusOK, http.MethodGet, "/v1/me/mcp", token, "")
 	capture("invite", http.StatusCreated, http.MethodPost, "/v1/users/invites", token, `{"email":"bea@example.com"}`)
 
 	// A person links a mailbox with its first key, which their browser made

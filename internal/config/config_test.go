@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -148,8 +149,9 @@ func TestStringNeverPrintsKeyMaterial(t *testing.T) {
 	if !strings.Contains(out, "credential_keys=1*") {
 		t.Errorf("String() should say which key is active, got:\n%s", out)
 	}
-	if !strings.Contains(out, "mcp_key=set") {
-		t.Errorf("String() should say whether an MCP key is set, got:\n%s", out)
+	// A retired MCP key is named among what asks for MCP, never by value.
+	if strings.Contains(out, "mcp") || !slices.Equal(cfg.RetiredMCP, []string{"MAIL_MCP_KEY"}) {
+		t.Errorf("String() = %s, RetiredMCP = %v", out, cfg.RetiredMCP)
 	}
 }
 

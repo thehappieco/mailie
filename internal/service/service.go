@@ -81,8 +81,6 @@ type Service struct {
 	// consent names the revisions of the texts a person agrees to, every
 	// one set.
 	consent config.ConsentVersions
-	// mcpHTTP is whether this server answers MCP over HTTP at /mcp.
-	mcpHTTP bool
 	// keysMayNotSend refuses the send scope to a new workspace key and every
 	// send by one (MAIL_KEYS_MAY_SEND=false).
 	keysMayNotSend bool
@@ -169,10 +167,6 @@ type Deps struct {
 	// ConsentVersions are the revisions of the texts a person agrees to
 	// (MAIL_CONSENT_VERSION_*); an empty one is its default.
 	ConsentVersions config.ConsentVersions
-	// MCPHTTP is whether the daemon serves MCP over Streamable HTTP at /mcp
-	// (MAIL_MCP_HTTP), which the service only reports (MCPAccess): the
-	// transport decides what it mounts.
-	MCPHTTP bool
 	// KeysMayNotSend is MAIL_KEYS_MAY_SEND=false: an edition whose key terms
 	// do not cover sending. A workspace key is then never created with the
 	// send scope, and every send by one is refused. False, the default, lets
@@ -299,7 +293,7 @@ func New(d Deps) *Service {
 		downloads: newDownloadBudget(d.DownloadSpoolBytes, d.DownloadsPerCaller),
 		spoolDir:  d.SpoolDir, sendSpool: newSendBudget(d.SendSpoolBytes),
 		sendRetry: defaultSendRetry, pacer: newSendPacer(), sendHashKey: hashKey,
-		consent: d.ConsentVersions.OrDefaults(), mcpHTTP: d.MCPHTTP, externalSignInOnly: d.ExternalSignInOnly,
+		consent: d.ConsentVersions.OrDefaults(), externalSignInOnly: d.ExternalSignInOnly,
 		nameFollowsIdentity: d.NameFollowsIdentity,
 		keysMayNotSend:      d.KeysMayNotSend,
 		keysActUnderCreator: d.KeysActUnderCreatorConsent,
