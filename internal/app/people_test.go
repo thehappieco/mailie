@@ -61,7 +61,7 @@ func TestADaemonWithNoPeopleRefusesPasswordsAndSessionsAndMakesNoSaltKey(t *test
 	// Nothing about people at start, a console served or not: no first
 	// invitation, no owner missing, and a key is the only way in.
 	out := logs.String()
-	for _, never := range []string{"nobody can sign in", "nobody administers", "user invite", "console sessions"} {
+	for _, never := range []string{"nobody can sign in", "nobody administers", "/v1/users/invites", "console sessions"} {
 		if strings.Contains(out, never) {
 			t.Errorf("the start says %q:\n%s", never, out)
 		}
@@ -94,7 +94,7 @@ func TestOnlyADaemonWhosePeopleSignInWithAPasswordMakesASaltKeyOrHintsAtAnInvita
 		cfg := localConfig(t)
 		cfg.PasswordSignIn = c.passwords
 		said, logs := startLines(t, cfg, c.opts, "nobody can sign in to the console yet")
-		if hinted := len(said) == 1 && strings.Contains(said[0], "user invite"); hinted != c.people {
+		if hinted := len(said) == 1 && strings.Contains(said[0], "/v1/users/invites"); hinted != c.people {
 			t.Errorf("%s: hinted at the first invitation %t, want %t:\n%s", c.name, hinted, c.people, logs)
 		}
 		if kept := saltKeyKept(t, cfg.DatabasePath()); kept != c.people {

@@ -680,21 +680,21 @@ func (w debugWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// firstInviteHint is the command that can actually invite the first person on
-// this daemon. The REST form needs an admin key to call it with and
-// MAIL_PUBLIC_URL to build the link from, and answers 409 without the latter;
-// the bootstrap form needs neither, but refuses to run beside a live daemon.
+// firstInviteHint is what can actually invite the first person on this
+// daemon. The command line invites nobody: the one way is the REST route,
+// with the owner role, called with an unrestricted instance admin key, and it
+// answers 409 without MAIL_PUBLIC_URL to build the link from. The command line
+// makes that key with --bootstrap, which refuses to run beside a live daemon.
 func firstInviteHint(publicURL, anyKey bool) string {
-	switch {
-	case !publicURL:
-		return "set MAIL_PUBLIC_URL (invite links are built from it), then stop the daemon and run: " +
-			"mailserver user invite --bootstrap --role owner --email ADDRESS"
-	case !anyKey:
-		return "stop the daemon and run: mailserver user invite --bootstrap --role owner --email ADDRESS"
-	default:
-		return "mailserver user invite --role owner --email ADDRESS (needs MAIL_ADMIN_KEY), " +
-			"or with the daemon stopped: mailserver user invite --bootstrap --role owner --email ADDRESS"
+	var steps []string
+	if !publicURL {
+		steps = append(steps, "set MAIL_PUBLIC_URL (invite links are built from it)")
 	}
+	if !anyKey {
+		steps = append(steps, "stop the daemon and run: mailserver apikey create --bootstrap --scope admin --name cli")
+	}
+	steps = append(steps, `call POST /v1/users/invites with {"email":"ADDRESS","role":"owner"} and an unrestricted admin key`)
+	return strings.Join(steps, ", then ")
 }
 
 // personalReplacementHint says at start, under a source that mirrors a

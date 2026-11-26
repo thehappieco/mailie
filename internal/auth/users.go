@@ -47,7 +47,8 @@ type Role string
 const (
 	// RoleOwner administers the instance: invites people to it, and
 	// disables and deletes them. The first one comes from an invite the
-	// operator makes with the owner role (`user invite --bootstrap`).
+	// operator makes with the owner role (POST /v1/users/invites with an
+	// instance admin key, where people sign in with a password).
 	RoleOwner Role = "owner"
 	// RoleMember is everybody else.
 	RoleMember Role = "member"

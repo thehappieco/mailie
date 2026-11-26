@@ -29,32 +29,37 @@ func noMailboxes(context.Context, time.Duration) (int, int, error) { return 0, 0
 // apiNotFound is the API's own 404 body.
 const apiNotFound = `{"code":"not_found","message":"no such endpoint"}`
 
-func TestTheFirstInviteHintOnlySuggestsACommandThatCanWork(t *testing.T) {
-	// The REST form needs an admin key and MAIL_PUBLIC_URL, and answers 409
-	// without the latter; the bootstrap form refuses to run beside the daemon
-	// that is printing the hint, so it must always say to stop it first.
+func TestTheFirstInviteHintOnlySuggestsWhatCanWork(t *testing.T) {
+	// The command line invites nobody: the REST route does, with an admin
+	// key, and answers 409 without MAIL_PUBLIC_URL; the bootstrap form of
+	// the key refuses to run beside the daemon that is printing the hint, so
+	// it must always say to stop it first.
 	for _, c := range []struct {
 		name              string
 		publicURL, anyKey bool
 		want, never       string
 	}{
-		{"no public url", false, true, "set MAIL_PUBLIC_URL", "(needs MAIL_ADMIN_KEY)"},
-		{"no key to call it with", true, false, "stop the daemon and run: mailserver user invite --bootstrap", "(needs MAIL_ADMIN_KEY)"},
-		{"both", true, true, "mailserver user invite --role owner --email ADDRESS (needs MAIL_ADMIN_KEY)", ""},
+		{"no public url", false, true, "set MAIL_PUBLIC_URL", "apikey create"},
+		{"no key to call it with", true, false, "stop the daemon and run: mailserver apikey create --bootstrap", "MAIL_PUBLIC_URL"},
+		{"neither", false, false, "set MAIL_PUBLIC_URL (invite links are built from it), then stop the daemon", ""},
+		{"both", true, true, "call POST /v1/users/invites", "--bootstrap"},
 	} {
+		hint := firstInviteHint(c.publicURL, c.anyKey)
 		// Nobody becomes an owner by signing up first: the invite has to
 		// say so.
-		if hint := firstInviteHint(c.publicURL, c.anyKey); strings.Count(hint, "--role owner") != strings.Count(hint, "user invite") {
-			t.Errorf("%s: hint %q invites the first person without the owner role", c.name, hint)
+		if !strings.Contains(hint, `POST /v1/users/invites with {"email":"ADDRESS","role":"owner"}`) {
+			t.Errorf("%s: hint %q does not invite the first person with the owner role", c.name, hint)
 		}
-		hint := firstInviteHint(c.publicURL, c.anyKey)
 		if !strings.Contains(hint, c.want) {
 			t.Errorf("%s: hint %q does not say %q", c.name, hint, c.want)
 		}
 		if c.never != "" && strings.Contains(hint, c.never) {
-			t.Errorf("%s: hint %q suggests a command that cannot work here", c.name, hint)
+			t.Errorf("%s: hint %q suggests what is not needed here", c.name, hint)
 		}
-		if strings.Contains(hint, "--bootstrap") && !strings.Contains(hint, "stop") && !strings.Contains(hint, "stopped") {
+		if strings.Contains(hint, "user invite") {
+			t.Errorf("%s: hint %q names a command the command line no longer has", c.name, hint)
+		}
+		if strings.Contains(hint, "--bootstrap") && !strings.Contains(hint, "stop the daemon") {
 			t.Errorf("%s: hint %q offers --bootstrap without saying the daemon must be stopped", c.name, hint)
 		}
 	}
