@@ -130,8 +130,14 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 		Mailboxes:   make([]MailboxStorage, 0, len(all)+len(removed)),
 		Workspaces:  []WorkspaceStorage{},
 	}
+	// The two lists are two reads: a mailbox removed between them is in
+	// both, and is counted once, as removed.
+	removedIDs := make(map[string]bool, len(removed))
+	for _, a := range removed {
+		removedIDs[a.ID] = true
+	}
 	for _, a := range all {
-		if p.MayAccess(a.ID) {
+		if p.MayAccess(a.ID) && !removedIDs[a.ID] {
 			ids = append(ids, a.ID)
 			out.Mailboxes = append(out.Mailboxes, MailboxStorage{AccountID: a.ID, WorkspaceID: a.WorkspaceID, Email: a.Email})
 		}
