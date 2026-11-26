@@ -89,7 +89,8 @@ func (sec sealedSecret) open(ctx context.Context, s *Store, sealer secrets.Seale
 // resealTx seals the secret again with sealer's active sealer when its
 // envelope is not what that writes now, opening it with whichever sealer
 // knows it, and reports whether it did. A database without one has nothing to
-// re-seal: its daemon's next start makes one.
+// re-seal: its daemon's next start makes one where it needs one (the salt
+// key only where people sign in with a password).
 //
 // One that is current is opened all the same, and one that does not open is
 // an error, never "already sealed": under a key service the header names

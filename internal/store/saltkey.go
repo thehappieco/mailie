@@ -63,7 +63,8 @@ func (s *Store) KDFSaltKey(ctx context.Context, sealer secrets.Sealer) ([]byte, 
 
 // ResealKDFSaltKeyTx seals the salt key again with sealer's active sealer
 // when its envelope is not what that writes now, and reports whether it did,
-// as ResealSendHashRootTx does the root.
+// as ResealSendHashRootTx does the root. A database without one, as on a
+// server whose people never signed in with a password, has none to re-seal.
 func ResealKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) (bool, error) {
 	return kdfSaltKey.resealTx(ctx, tx, sealer)
 }
