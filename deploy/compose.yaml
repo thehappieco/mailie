@@ -1,4 +1,4 @@
-# Mailie with Docker Compose: the daemon, REST and MCP with no web console, in
+# Mailie with Docker Compose: the daemon, REST with no web console and no MCP, in
 # one container, built from this checkout with deploy/Dockerfile. From the
 # checkout's root:
 #

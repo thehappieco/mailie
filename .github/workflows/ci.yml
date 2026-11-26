@@ -78,8 +78,9 @@ jobs:
 
   # The self-hosting image (deploy/Dockerfile), built and started the way
   # deploy/compose.yaml runs it: read-only, without capabilities, with a
-  # throwaway credential key. It must answer /v1/healthz, serve the API and
-  # MCP with no console, and stop cleanly on SIGTERM.
+  # throwaway credential key. It must answer /v1/healthz, serve the API with
+  # no MCP of its own (/mcp is the API's 404) and no console, and stop cleanly
+  # on SIGTERM.
   image:
     runs-on: ubuntu-latest
     env:
@@ -107,10 +108,10 @@ jobs:
           done
           echo "no healthy answer within 60 s"
           exit 1
-      - name: The API and MCP answer, and no console
+      - name: The API answers, and neither MCP nor a console
         run: |
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/v1/no-such-route)" = 404
-          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)" = 401
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/mcp)" = 404
           test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/)" = 404
       - name: Stop it cleanly
         run: |

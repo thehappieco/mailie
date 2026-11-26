@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.27.1@sha256:4edf897a3ffa55b89f906fc8cc78afdb3f1834cc9c7083565e611a8a7d5fe99e
 
-# The self-hosting image: the daemon, serving REST and MCP with no web console
-# (platform decision 0063), built from a checkout of this repository. The
-# build context is the checkout's root (.dockerignore there lets in only
-# go.mod, go.sum, cmd/ and internal/):
+# The self-hosting image: the daemon, serving REST with no web console and no
+# MCP of its own (platform decisions 0063 and 0065), built from a checkout of
+# this repository. The build context is the checkout's root (.dockerignore
+# there lets in only go.mod, go.sum, cmd/ and internal/):
 #
 #   docker build -f deploy/Dockerfile --build-arg VERSION="$(git describe --always --dirty)" -t mailie:local .
 #
@@ -14,8 +14,8 @@
 # distroless's static image, run as its nonroot user: no shell and no package
 # manager, only CA certificates, time zones and the passwd entries beside the
 # binary. The build stage runs on the builder's own platform, and Go
-# cross-compiles for the target. The daemon is used through its API, its MCP
-# and the binary's own command line; the image holds no console and sets no
+# cross-compiles for the target. The daemon is used through its API and the
+# binary's own command line; the image holds no console and sets no
 # MAIL_WEB_DIR.
 #
 # Every base image is pinned by digest, the tag beside it saying what the
@@ -51,7 +51,7 @@ RUN mkdir -p -m 0700 /out/data
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 ARG VERSION
 LABEL org.opencontainers.image.title="Mailie" \
-      org.opencontainers.image.description="REST and MCP over your mailboxes" \
+      org.opencontainers.image.description="A REST API over your mailboxes" \
       org.opencontainers.image.source="https://github.com/thehappieco/mailie" \
       org.opencontainers.image.licenses="Apache-2.0" \
       org.opencontainers.image.version="${VERSION}"

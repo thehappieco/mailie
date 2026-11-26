@@ -82,7 +82,7 @@ backup-tool: ## Build dist/mailserver-linux-amd64 for a restore on another machi
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath \
 	  -ldflags "-s -w -X main.version=$$(git describe --always --dirty)" -o dist/mailserver-linux-amd64 ./cmd/mailserver
 
-# The self-hosting image: the daemon alone, REST and MCP with no web console,
+# The self-hosting image: the daemon alone, REST with no web console and no MCP,
 # built by Docker from this checkout (deploy/Dockerfile; docs/self-hosting.md).
 # It needs no Go here.
 image: ## Build the self-hosting image mailie:local with Docker
