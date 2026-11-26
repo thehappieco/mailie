@@ -1153,7 +1153,8 @@ through REST and MCP with keys.
   until they are deleted for good) and a hint naming the README's section
   [Moving from the open console](../README.md#moving-from-the-open-console), which says how to link
   each address again into the operator workspace and then delete the people. It logs nothing when
-  there are none. A mailbox linked through a web client refreshes only with it: keep its variables,
+  there are none, nor while `MAIL_PASSWORD_SIGN_IN` lets people sign in, whose workspaces those
+  are. A mailbox linked through a web client refreshes only with it: keep its variables,
   and `MAIL_PUBLIC_URL`, until it is linked again, and remove them after.
 - **The command line.** `account add --password` takes only `-`: the password is typed at a prompt
   that does not show it, or is the first line of standard input (its line ending alone taken off,

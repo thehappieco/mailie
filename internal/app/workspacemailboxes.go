@@ -25,9 +25,11 @@ const workspaceMailboxesHint = "to reach them with an instance key, link each ad
 // the operator's. Counts only, never an address, a label or an id; nothing
 // when there is none.
 //
-// The daemon calls it unless people sign in only through an extension
-// (Options.ExternalSignInOnly), where personal and team workspaces are what
-// the edition is made of. A count that fails is logged and the start goes
+// The daemon calls it only where nobody signs in: never where people sign in
+// only through an extension (Options.ExternalSignInOnly), where personal and
+// team workspaces are what the edition is made of, nor where they sign in
+// with a password (MAIL_PASSWORD_SIGN_IN), where those workspaces are theirs
+// to use. A count that fails is logged and the start goes
 // on: this changes nothing and decides nothing, and a server that stopped
 // for want of a hint would be down for advice.
 func warnWorkspaceMailboxes(ctx context.Context, db *store.Store, logger *slog.Logger) {

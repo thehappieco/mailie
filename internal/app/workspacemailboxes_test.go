@@ -145,6 +145,15 @@ func TestADaemonWherePeopleSignInOnlyThroughAnExtensionNeverWarnsOfWorkspaceMail
 	}
 }
 
+func TestADaemonWherePeopleSignInWithAPasswordNeverWarnsOfWorkspaceMailboxes(t *testing.T) {
+	// There a person's workspace and a team's are theirs to use.
+	cfg, _ := consoleDatabase(t)
+	cfg.PasswordSignIn = true
+	if said, logs := startLines(t, cfg, Options{}, "operator workspace"); len(said) != 0 {
+		t.Errorf("a daemon whose people sign in with a password:\n%s", logs)
+	}
+}
+
 func TestAFailureToCountWorkspaceMailboxesIsLoggedAndDecidesNothing(t *testing.T) {
 	// The check returns nothing for the start to stop on: a database it
 	// cannot read is said, at warn, and the start goes on.

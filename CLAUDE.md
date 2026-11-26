@@ -106,8 +106,8 @@ the long form of this file.
   key reaches (`warnWorkspaceMailboxes`, `workspacemailboxes.go`: one line at warn with
   `personal_live`, `personal_removed`, `team_live` and `team_removed`, and a hint naming the
   README's "Moving from the open console"; counts only, never an address, a label or an id;
-  nothing when there are none, and never under `ExternalSignInOnly`; a count that fails is logged
-  and never stops the start).
+  nothing when there are none, and never where people sign in, under `ExternalSignInOnly` or
+  `MAIL_PASSWORD_SIGN_IN`; a count that fails is logged and never stops the start).
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
   `PasswordSignIn` (`MAIL_PASSWORD_SIGN_IN`, default false, beside `KeysMaySend`; `password_sign_in`

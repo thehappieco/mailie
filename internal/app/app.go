@@ -422,10 +422,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err
 	}
-	// At every start, console or none: mailboxes people linked into their
-	// own workspaces or a team's, which no instance key reaches. Where people
-	// sign in only through an extension, those workspaces are the edition.
-	if !opts.ExternalSignInOnly {
+	// At every start of a server with no people: mailboxes people linked
+	// into their own workspaces or a team's under an earlier release, which
+	// no instance key reaches. Where people sign in, through an extension or
+	// with a password, those workspaces are theirs to use.
+	if !opts.ExternalSignInOnly && !cfg.PasswordSignIn {
 		warnWorkspaceMailboxes(ctx, db, logger)
 	}
 

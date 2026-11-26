@@ -239,8 +239,8 @@ environment still sets to ask for MCP. Everything else is in [`docs/mcp.md`](doc
 Earlier releases served a web console where the people you invited signed in and linked their own
 mailboxes, into their personal workspace or a team. A mailbox belongs to the workspace it was
 linked into and never changes workspace, so an instance key does not reach those mailboxes. At
-every start, while the database holds any, the daemon logs one warning with their counts, never an
-address or an id:
+every start, while the database holds any and nobody signs in (`MAIL_PASSWORD_SIGN_IN` off, the
+default), the daemon logs one warning with their counts, never an address or an id:
 
 ```
 time=… level=WARN msg="mailboxes outside the operator workspace, in personal or team workspaces: no instance key reaches them" personal_live=2 personal_removed=0 team_live=1 team_removed=1 hint="to reach them with an instance key, link each address again into the operator workspace: see \"Moving from the open console\" in the README"
