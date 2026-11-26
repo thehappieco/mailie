@@ -82,9 +82,7 @@ export const testEdition: Edition = {
     mailboxesIntro: () => 'Connect a mailbox.',
     indexHint: () => 'The index keeps only each message’s details.',
     actionsOff: () => 'Nothing more is changed.',
-    keysSection: () => 'API keys',
   },
-  mcp: true,
   // The core's own team screens (invitations into a team, signed in) and their flows.
   teams: true,
   syncPause: true,

@@ -15,7 +15,8 @@ own, in a project of its own, which builds and serves the page; nothing here imp
 points.
 
 There is no edition here and nothing to build or serve. A self-hosted server has no web console
-(platform decision 0063): it is run from the command line and used through REST and MCP with keys.
+(platform decision 0063), no people and no MCP of its own (platform decision 0065): it is run from
+the command line and used through its REST API with instance keys made there.
 The open console that this project used to build (`src/main.ts`, `src/open`, `index.html`, its
 `App.vue` and the settings panels only it drew) was deleted; the git history keeps it.
 
@@ -75,8 +76,7 @@ edition's browser QA: the core's routes (users and sessions, the key scheme's ce
 people it seeds enrolled under their password, or never enrolled with `notEnrolled`, their
 enrolment made by `test/browser/keyScheme.mjs`, mailboxes and their OAuth flows, links at the
 provider (`gmailFlows` offers Gmail the web flow), sync and the event stream, actions consent, a
-workspace's API keys and the ones a person created, `GET /v1/me/mcp`, storage) and the helpers the
-QA scripts share. An edition's QA imports it and adds its own routes and state through `extend`,
+workspace's API keys and the ones a person created, storage) and the helpers the QA scripts share. An edition's QA imports it and adds its own routes and state through `extend`,
 so a change to the core's contract is made once. Unless asked to list each person's personal
 workspace (`personal`), it answers `GET /v1/workspaces` with `404`, as a server older than them
 would, and every list is the person's whole.

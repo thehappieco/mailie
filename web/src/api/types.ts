@@ -526,14 +526,6 @@ export interface Storage {
   total: { messages: number; bytes: number }
   database_bytes?: number
 }
-/**
- * GET /v1/me/mcp: whether this server answers MCP over HTTP at /mcp
- * (MAIL_MCP_HTTP), and whether its API keys may send email
- * (MAIL_KEYS_MAY_SEND). Off, the console shows no MCP address: /mcp answers
- * 404; keys_send false (or absent, from a server older than it), it offers
- * neither the send scope nor Send on a key's mailbox.
- */
-export interface McpAccess { http: boolean; keys_send?: boolean }
 /** What a key is given on one mailbox when it is created. */
 export interface KeyMailboxRequest extends KeyFlags { account_id: string }
 /** The body of POST /v1/workspaces/{id}/apikeys. mailboxes is left out for a key that reaches nothing yet. */
@@ -1217,12 +1209,6 @@ export function isStorage(v: unknown, strict = false): v is Storage {
     && (strict ? workspaces(v.workspaces) : optional(v.workspaces, workspaces))
     && record(v.total) && known(v.total, ['messages', 'bytes'], strict) && counter(v.total.messages) && counter(v.total.bytes)
     && optional(v.database_bytes, counter)
-}
-
-export function isMcpAccess(v: unknown, strict = false): v is McpAccess {
-  return record(v) && known(v, ['http', 'keys_send'], strict) && flag(v.http)
-    // The daemon that writes the fixtures always says; an older one may not.
-    && (strict ? flag(v.keys_send) : optional(v.keys_send, flag))
 }
 
 /** The one answer that carries a secret: "<prefix>.<secret>", under the prefix it is listed by. */

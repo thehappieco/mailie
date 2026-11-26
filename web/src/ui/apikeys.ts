@@ -1,11 +1,9 @@
-// What API keys and the MCP server look like to a person: the words for a
-// key's scope, lifetime, standing and what it holds on each mailbox; what an
-// owner or an admin may give a key there, said before anyone tries
-// (docs/workspaces.md, "API keys"); where the MCP server is, and the command
-// that connects Claude Code to it. These only decide what is offered and how
-// it is said: the server decides, in the transaction that would make the
-// change, and refuses whatever these get wrong. Pure functions, so each rule
-// is a test.
+// What API keys look like to a person: the words for a key's scope,
+// lifetime, standing and what it holds on each mailbox; what an owner or an
+// admin may give a key there, said before anyone tries (docs/workspaces.md,
+// "API keys"). These only decide what is offered and how it is said: the
+// server decides, in the transaction that would make the change, and refuses
+// whatever these get wrong. Pure functions, so each rule is a test.
 
 import type { KeyFlags, KeyLifetime, KeySend, WorkspaceKey } from '../api/types'
 import { edition } from '../edition'
@@ -21,29 +19,6 @@ export const keyFlagNames = ['read', 'act', 'send'] as const
 export type KeyFlag = typeof keyFlagNames[number]
 
 export const NO_KEY_ACCESS: KeyFlags = { read: false, act: false, send: false }
-
-/**
- * Where the MCP server answers, as a tool is given it: the daemon serves the
- * console, the API and /mcp on one origin. In development the Vite proxy
- * forwards /mcp too.
- */
-export function mcpEndpoint(origin: string): string {
-  return `${new URL(origin).origin}/mcp`
-}
-
-/**
- * The command that connects Claude Code to this server. The key is the
- * placeholder everywhere it is shown; only a key just created, copied at the
- * person's request, ever goes in its place, and then only to the clipboard.
- */
-export function claudeCommand(endpoint: string, key: string): string {
-  return `claude mcp add --transport http mailie ${endpoint} --header "Authorization: Bearer ${key}"`
-}
-
-/** The placeholder a shown command carries where the key goes. */
-export function keyPlaceholder(): string {
-  return `<${t('your key')}>`
-}
 
 export function scopeLabel(scope: string): string {
   switch (scope) {
@@ -161,12 +136,10 @@ export function toggleKeyFlag(flags: KeyFlags, flag: KeyFlag, on: boolean): KeyF
 export type KeyFacts = Pick<WorkspaceKey, 'scope' | 'sends' | 'carried_over' | 'origin'> & { live: boolean }
 
 export interface KeyAccessContext {
-  /** The key, or what one being created will be. */
+  /** The key, as the server lists it: its sends already says whether this server's keys may send at all. */
   key: KeyFacts
   /** The caller reads the mailbox now: only then may they give a key Read on it. */
   viewerReads: boolean
-  /** This server's keys may send (GET /v1/me/mcp keys_send). */
-  keysSend: boolean
 }
 
 export interface KeyAccessRules {
@@ -180,19 +153,20 @@ export interface KeyAccessRules {
  * What an owner or an admin of a workspace may give a key on one of its
  * mailboxes (docs/workspaces.md, "API keys"): Read only where they read the
  * mailbox themselves; Act where the key reads, with a scope that acts; Send
- * with the send scope, on a server whose keys may send, under the current
- * key terms (sends). A key carried over from before keys belonged to
- * workspaces gains nothing, and one that no longer works changes no more.
- * Anything may be taken away from a key that works.
+ * where the key sends at all (sends: the send scope, on a server whose keys
+ * may send, under the current key terms, as the server lists the key). A
+ * key carried over from before keys belonged to workspaces gains nothing,
+ * and one that no longer works changes no more. Anything may be taken away
+ * from a key that works.
  */
 export function keyAccessRules(context: KeyAccessContext): KeyAccessRules {
-  const { key, viewerReads, keysSend } = context
+  const { key, viewerReads } = context
   const open = key.live && !key.carried_over
   return {
     canAdd: {
       read: open && viewerReads,
       act: open && scopeActs(key.scope),
-      send: open && key.sends && keysSend,
+      send: open && key.sends,
     },
     canRemove: { read: key.live, act: key.live, send: key.live },
   }

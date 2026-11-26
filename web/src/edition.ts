@@ -19,7 +19,6 @@
 // server names another, the page offers a reload instead of an agreement.
 
 import type { Component } from 'vue'
-import type { Account } from './api/types'
 import { addCatalogs, setOfferedLocales, type Catalog, type Locale } from './ui/i18n'
 import { setPreferenceStore, type PreferenceStore } from './ui/preferences'
 
@@ -80,7 +79,7 @@ export interface Edition {
   }
   /** Sentences of core screens whose words depend on the edition. */
   copy: {
-    /** The section with the person's own settings and permissions, as other sentences name it. */
+    /** The section with the person's own settings and permissions, as other sentences name it. Read by no screen of the core. */
     accountSection(): string
     /** Under an empty list of mailboxes: what connecting one does. Read by no screen of the core. */
     mailboxesIntro(): string
@@ -88,12 +87,6 @@ export interface Edition {
     indexHint(): string
     /** In the dialog that turns actions off: what stops. Read by no screen of the core. */
     actionsOff(): string
-    /**
-     * The section where a workspace's API keys, and what each holds on its
-     * mailboxes, are changed, as a team mailbox's access names it: "… is
-     * changed in {section}". Read by no screen of the core.
-     */
-    keysSection?(): string
     /**
      * Beside a write that needs a step-up (giving Read with a grant, a
      * mailbox's key): when the person is asked to prove themselves again.
@@ -111,11 +104,12 @@ export interface Edition {
     accountRecovered?(mine: boolean): string
   }
   /**
-   * Whether the edition shows how to reach the MCP server at this page's
-   * origin + /mcp, where the server also says it answers there
-   * (GET /v1/me/mcp). Read by no screen of the core.
+   * Whether the edition shows how to reach an MCP server. Read by no screen
+   * of the core, and answered by no route: a server serves no MCP of its own
+   * (platform decision 0065), and nothing says where one is. Kept only while
+   * an edition still sets it.
    */
-  mcp: boolean
+  mcp?: boolean
   /**
    * Whether this server's API keys belong to personal workspaces alone, as
    * its key terms say (the server's app.Options.KeysInPersonalWorkspaceOnly,
@@ -243,17 +237,6 @@ export interface Edition {
     signInFooter?: Component
     /** In the form that connects a mailbox, before any access is granted. */
     accountAccess?: Component
-  }
-  /**
-   * Where who uses a mailbox, and what each may do, is managed, for an
-   * edition that links there (a team's owners and admins manage it). Read by
-   * no screen of the core.
-   */
-  mailboxAccess?: {
-    /** The link's target for this mailbox: a path of this origin. */
-    href(account: Account): string
-    /** The link's words. Translated. */
-    label(): string
   }
   /** Translations beyond the core's, for the edition's own sources. */
   catalogs?: Catalog[]

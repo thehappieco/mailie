@@ -13,7 +13,7 @@ import { configureEdition } from '../src/edition'
 import { testEdition } from './edition'
 import { KEY_TERMS_VERSION } from './edition'
 import {
-  MAX_LIVE_KEYS, claudeCommand, keyAccessRules, keyFlagEditable, keyOriginNote, keyPerson, keyStanding, mcpEndpoint, scopeLabel, stopReasonLabel,
+  MAX_LIVE_KEYS, keyAccessRules, keyFlagEditable, keyOriginNote, keyPerson, keyStanding, scopeLabel, stopReasonLabel,
   toggleKeyFlag, type KeyFacts,
 } from '../src/ui/apikeys'
 import { describe as say } from '../src/ui/errors'
@@ -408,35 +408,34 @@ describe('what an owner or an admin may give a key', () => {
   const key = (fields: Partial<KeyFacts> = {}): KeyFacts => ({ scope: 'send', sends: true, live: true, ...fields })
 
   it('gives Read only on a mailbox the giver reads, whatever their role', () => {
-    expect(keyAccessRules({ key: key(), viewerReads: true, keysSend: true }).canAdd.read).toBe(true)
-    expect(keyAccessRules({ key: key(), viewerReads: false, keysSend: true }).canAdd.read).toBe(false)
+    expect(keyAccessRules({ key: key(), viewerReads: true }).canAdd.read).toBe(true)
+    expect(keyAccessRules({ key: key(), viewerReads: false }).canAdd.read).toBe(false)
   })
 
-  it('gives Act only to a key whose scope acts, and Send only to one that sends on a server whose keys may send', () => {
-    expect(keyAccessRules({ key: key({ scope: 'read', sends: false }), viewerReads: true, keysSend: true }).canAdd).toEqual({ read: true, act: false, send: false })
-    expect(keyAccessRules({ key: key({ scope: 'write', sends: false }), viewerReads: true, keysSend: true }).canAdd).toEqual({ read: true, act: true, send: false })
-    expect(keyAccessRules({ key: key(), viewerReads: false, keysSend: true }).canAdd).toEqual({ read: false, act: true, send: true })
-    expect(keyAccessRules({ key: key(), viewerReads: true, keysSend: false }).canAdd.send).toBe(false)
-    // A key of the send scope made under terms that never sent.
-    expect(keyAccessRules({ key: key({ sends: false }), viewerReads: true, keysSend: true }).canAdd.send).toBe(false)
+  it('gives Act only to a key whose scope acts, and Send only to one the server lists as sending', () => {
+    expect(keyAccessRules({ key: key({ scope: 'read', sends: false }), viewerReads: true }).canAdd).toEqual({ read: true, act: false, send: false })
+    expect(keyAccessRules({ key: key({ scope: 'write', sends: false }), viewerReads: true }).canAdd).toEqual({ read: true, act: true, send: false })
+    expect(keyAccessRules({ key: key(), viewerReads: false }).canAdd).toEqual({ read: false, act: true, send: true })
+    // A key of the send scope on a server whose keys may not send, or made under terms that never sent: the server lists it as not sending.
+    expect(keyAccessRules({ key: key({ sends: false }), viewerReads: true }).canAdd.send).toBe(false)
   })
 
   it('gives a key carried over from before nothing, and lets anything be taken from it', () => {
-    const rules = keyAccessRules({ key: key({ carried_over: true }), viewerReads: true, keysSend: true })
+    const rules = keyAccessRules({ key: key({ carried_over: true }), viewerReads: true })
     expect(rules.canAdd).toEqual({ read: false, act: false, send: false })
     expect(rules.canRemove).toEqual({ read: true, act: true, send: true })
   })
 
   it('changes nothing on a key that no longer works', () => {
-    const rules = keyAccessRules({ key: key({ live: false }), viewerReads: true, keysSend: true })
+    const rules = keyAccessRules({ key: key({ live: false }), viewerReads: true })
     expect(rules.canAdd).toEqual({ read: false, act: false, send: false })
     expect(rules.canRemove).toEqual({ read: false, act: false, send: false })
   })
 
   it('offers Act only where the Read it needs is there or the giver’s to give, and ticks them together', () => {
     const none = { read: false, act: false, send: false }
-    const reader = keyAccessRules({ key: key(), viewerReads: true, keysSend: true })
-    const stranger = keyAccessRules({ key: key(), viewerReads: false, keysSend: true })
+    const reader = keyAccessRules({ key: key(), viewerReads: true })
+    const stranger = keyAccessRules({ key: key(), viewerReads: false })
     expect(keyFlagEditable(reader, none, none, 'act')).toBe(true)
     expect(keyFlagEditable(stranger, none, none, 'act')).toBe(false)
     expect(keyFlagEditable(stranger, { ...none, read: true }, { ...none, read: true }, 'act')).toBe(true)
@@ -448,17 +447,6 @@ describe('what an owner or an admin may give a key', () => {
 })
 
 describe('what the console says about keys', () => {
-  it('names the MCP server at the page’s own origin, which serves the console, the API and /mcp', () => {
-    expect(mcpEndpoint('http://localhost:5174')).toBe('http://localhost:5174/mcp')
-    expect(mcpEndpoint('https://mail.example.org')).toBe('https://mail.example.org/mcp')
-    expect(mcpEndpoint('https://mail.example.org:8443/oauth/return?x=1')).toBe('https://mail.example.org:8443/mcp')
-  })
-
-  it('writes the Claude Code command with the key in the Authorization header only', () => {
-    expect(claudeCommand('https://mail.example.org/mcp', '<your key>'))
-      .toBe('claude mcp add --transport http mailie https://mail.example.org/mcp --header "Authorization: Bearer <your key>"')
-  })
-
   it('calls a key live until it is revoked or reaches its expiry', () => {
     const at = Date.UTC(2026, 8, 27) / 1000
     expect(keyStanding({ expires_at: at + 1 }, at * 1000)).toBe('live')

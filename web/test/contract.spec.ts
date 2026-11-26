@@ -21,13 +21,13 @@ import {
   isChallenge, isLoginReply, isOpening, isPasswordBegin, isRecoverOpen, isStepUpReply, enrolled,
   type Challenge, type LoginReply, type Opening, type RecoverOpen,
   isAccount, isAccountSync, isAddAccountResult, isAuthFlow, isCreatedKey, isErrorBody, isFolder, isGrant, isInvite, isKeyMailbox, isKeySendList,
-  isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isMcpAccess, isProviderList, isServerEvent, isSessionReply, isStorage,
+  isMailboxAccessList, isMe, isMember, isMemberList, isMessageNew, isProviderList, isServerEvent, isSessionReply, isStorage,
   isActionsConsent, isSyncConsent, isTeamInvite, isTeamInviteList, isToken, isUser, isWaitResult, isWorkspace, isWorkspaceKeyList, isWorkspaceList, hasPassword,
   isGrantText, isMailboxKeyPair, isMailboxKeyState, isSealedGrant, isSealIDText, readsNow,
   isPersonNoticeList, isRemoval, isRemovedMailboxList, type PersonNotice, type Removal, type RemovedMailbox,
   isLink, isLinkStarted, type Link, type LinkStarted,
   type Account, type AccountSync, type ActionsConsent, type AddAccountResult, type AuthFlow, type CreatedKey, type Folder, type Grant, type Invite,
-  type KeyMailbox, type KeySend, type MailboxAccess, type MailboxKeyPair, type MailboxKeyState, type McpAccess, type Me, type Member, type Provider,
+  type KeyMailbox, type KeySend, type MailboxAccess, type MailboxKeyPair, type MailboxKeyState, type Me, type Member, type Provider,
   type SealedGrant, type ServerEvent, type SessionReply, type Storage, type SyncConsent, type TeamInvite, type User, type WaitResult, type Workspace,
   type WorkspaceKey,
 } from '../src/api/types'
@@ -92,7 +92,6 @@ const shapes: [string, (value: unknown) => boolean][] = [
   ['send_consent_given', value => isActionsConsent(value, true)],
   ['send_consent_withdrawn', value => isActionsConsent(value, true)],
   ['storage', value => isStorage(value, true)],
-  ['mcp', value => isMcpAccess(value, true)],
   ['workspaces', value => isWorkspaceList(value, true)],
   ['workspaces_withheld', value => isWorkspaceList(value, true)],
   ['workspace_created', value => isWorkspace(value, true)],
@@ -459,14 +458,6 @@ describe('the HTTP contract the Go handlers answer with', () => {
       expect(Object.keys(send).sort()).toEqual(['account_id', 'attempts', 'created_at', 'idempotency_key', 'message_id', 'recipients', 'sent_at', 'sent_copy', 'state', 'updated_at'])
       expect(send.recipients).toBeGreaterThan(0)
     }
-  })
-
-  it('says whether this server’s keys may send, beside whether it serves MCP over HTTP', () => {
-    const access = fixture('mcp') as McpAccess
-    expect(access).toEqual({ http: true, keys_send: true })
-    // An older server says only the first: the running console reads that as keys that do not send.
-    expect(isMcpAccess({ http: true })).toBe(true)
-    expect(isMcpAccess({ http: true }, true)).toBe(false)
   })
 
   it('lists each mailbox’s live keys in the access directory, and never counts them as readers', () => {

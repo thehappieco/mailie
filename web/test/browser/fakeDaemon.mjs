@@ -73,7 +73,7 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
 /**
  * The daemon, as far as the console's core can tell: users, sessions,
  * accounts and their OAuth flows, sync and its consent, the event stream,
- * actions consent, API keys, whether MCP is served over HTTP, and storage.
+ * actions consent, API keys, and storage.
  *
  * origin: where the console runs, which the Microsoft web flow returns to.
  * versions: { sync, actions, keys }, the revisions of the edition's texts the
@@ -83,23 +83,24 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * consented: Ana turned sync on a day ago. actionsAgreed: the revision of the
  * actions text Ana agreed to three days ago; '' for none. allMailHidden: Show
  * in IMAP is off for All Mail in the Gmail account's settings, so its IMAP
- * lists no All Mail. mcpHTTP and keysSend: what GET /v1/me/mcp says
- * (MAIL_MCP_HTTP, MAIL_KEYS_MAY_SEND). personal: the server lists each
- * person's personal workspace (GET /v1/workspaces), as every server with
- * workspaces does, and its owner keeps that workspace's API keys; left out,
- * it answers 404, as a server older than workspaces would. notEnrolled: the
- * people seeded with a password signed up before the key scheme and never
- * enrolled: nothing signs them in, a sign-in failing as a wrong password's,
- * and a reset link enrols them (the upgrade, docs/key-scheme.md section 12.7,
- * left after the release that brought the scheme); otherwise they enrolled
- * with that password, and the daemon holds only what their browser would
- * have sent (an auth key, wraps it cannot open), made the first time
- * anything asks. gmailFlows: the flows the server offers for Gmail
- * (GET /v1/providers); with web, a Gmail mailbox is linked at the provider,
- * as a Microsoft one always is here, its address named by the account chosen
- * on the provider's page (providerChooser): a link's routes, its return
- * through the callback, and a mailbox its workspace holds refused under any
- * spelling the daemon takes as one, live or removed and kept.
+ * lists no All Mail. keysSend: the server's keys may send
+ * (MAIL_KEYS_MAY_SEND), which each key's sends says. personal: the server
+ * lists each person's personal workspace (GET /v1/workspaces), as every
+ * server with workspaces does, and its owner keeps that workspace's API
+ * keys; left out, it answers 404, as a server older than workspaces would.
+ * notEnrolled: the people seeded with a password signed up before the key
+ * scheme and never enrolled: nothing signs them in, a sign-in failing as a
+ * wrong password's, and a reset link enrols them (the upgrade,
+ * docs/key-scheme.md section 12.7, left after the release that brought the
+ * scheme); otherwise they enrolled with that password, and the daemon holds
+ * only what their browser would have sent (an auth key, wraps it cannot
+ * open), made the first time anything asks. gmailFlows: the flows the
+ * server offers for Gmail (GET /v1/providers); with web, a Gmail mailbox is
+ * linked at the provider, as a Microsoft one always is here, its address
+ * named by the account chosen on the provider's page (providerChooser): a
+ * link's routes, its return through the callback, and a mailbox its
+ * workspace holds refused under any spelling the daemon takes as one, live
+ * or removed and kept.
  *
  * extend(core): an edition's own state and routes, called once with the
  * core's state and helpers. It may return methods (added to the daemon),
@@ -113,7 +114,7 @@ export const GMAIL_ACCOUNT = 'acc_0000000000000001'
  * provider: { held, add(account), present?(account) } (held: its mailboxes,
  * live and removed and kept), or null.
  */
-export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, mcpHTTP = true, keysSend = true, personal = false, notEnrolled = false, gmailFlows = ['loopback'], extend } = {}) {
+export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 600, consented = false, actionsAgreed = '', allMailHidden = false, keysSend = true, personal = false, notEnrolled = false, gmailFlows = ['loopback'], extend } = {}) {
   if (!origin || !versions?.sync || !versions.actions || !versions.keys) throw new Error('fakeDaemon: origin and versions { sync, actions, keys } are required')
   const users = new Map([['ana@example.test', { id: 'usr_00000000000000a1', seal_id: ANA_SEAL_ID, email: 'ana@example.test', name: 'Ana Souza', role: 'owner', created_at: now() - 86400 * 30, password: PASSWORD, consent: consented ? now() - 86400 : 0, ...(consented ? { consentVersion: versions.sync } : {}), actions: actionsAgreed ? now() - 3 * 86400 : 0, actionsVersion: actionsAgreed }]])
   /** The ceremonies' single-use tickets, and the reset links waiting: { purpose, user, token?, salt }. */
@@ -127,7 +128,7 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
   // Account ids have their own counter, past the fixtures below: sharing the
   // tokens' counter gave a new account the id of an existing one.
   let accountSerial = 100
-  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], callbackBodies: [], links: [], linkReads: 0, removed: [], created: [], renamed: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0, mcp: 0 }
+  const calls = { login: 0, challenge: 0, stepUp: 0, recovery: 0, auth: [], me: 0, polls: 0, callback: [], callbackBodies: [], links: [], linkReads: 0, removed: [], created: [], renamed: [], streams: [], consent: [], actionsConsent: [], syncNow: [], keys: [], mailboxKeys: [], storage: 0 }
   /**
    * The links at the provider (service.Link), by id: waiting for the
    * provider's return, finishing, connected or failed, each its starter's.
@@ -447,8 +448,6 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
         return json([{ id: personalOf(user), kind: 'personal', source: 'local', name: '', role: 'owner', status: 'active', created_at: user.created_at }])
       }
       if (path === '/v1/me/apikeys' || path.startsWith('/v1/me/apikeys/') || /^\/v1\/workspaces\/[^/]+\/apikeys(\/|$)/.test(path)) return apiKeys()
-      // GET /v1/me/mcp (service.MCPAccess): whether /mcp is served, and whether keys may send, the same for every caller.
-      if (path === '/v1/me/mcp' && method === 'GET') { calls.mcp++; return json({ http: mcpHTTP, keys_send: keysSend }) }
       // GET /v1/me/storage (service.Storage): the caller's mailboxes by address, what the index holds
       // for each, and the database's size for an owner. The index is the owner's to keep while sync
       // is on, whether or not the account works now: zeros only once sync is off, which deletes it.
