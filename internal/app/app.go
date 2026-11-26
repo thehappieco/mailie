@@ -629,7 +629,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 
 // routes is everything the daemon's listener answers: the core's routes (see
 // coreRoutes), then the routes extensions added, which may take nothing a
-// core route answers (see Extension), and last the console when there is one.
+// core route answers (see Extension), and last the catch-all: the console
+// when there is one, the API's fallback otherwise.
 func routes(rest *api.Handler, metrics, console http.Handler, extra ...route) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	coreRoutes(mux, rest, metrics)
@@ -637,20 +638,19 @@ func routes(rest *api.Handler, metrics, console http.Handler, extra ...route) (*
 		return nil, err
 	}
 	// Last, and only as a catch-all: the mux prefers every more specific
-	// pattern above, so the console can never shadow an endpoint.
-	if console != nil {
-		mux.Handle("/", console)
-	}
+	// pattern above, so the catch-all can never shadow an endpoint.
+	mux.Handle("/", catchAll(console))
 	return mux, nil
 }
 
 // catchAll is what answers a request routes leaves to its catch-all: the
-// console, or, without one, the mux's own answer to a path no route takes.
-// An extension hands back to it what it does not answer below a prefix it
-// takes (Deps.Console).
+// console, or, without one, webui.Fallback, the API's JSON 404 for a path
+// under /v1, /mcp or /.well-known and a plain 404 for anything else. An
+// extension hands back to it what it does not answer below a prefix it takes
+// (Deps.Console).
 func catchAll(console http.Handler) http.Handler {
 	if console == nil {
-		return http.NotFoundHandler()
+		return webui.Fallback()
 	}
 	return console
 }

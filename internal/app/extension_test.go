@@ -301,8 +301,8 @@ func TestWithoutAConsoleWhatAnExtensionHandsBackIsAnsweredAsAPathNoRouteTakes(t 
 				t.Errorf("GET /screens/one answered %d %q, want the extension's", a.status, a.body)
 			}
 			// The daemon's answer to a path no route takes, with no console
-			// behind it, is the mux's own 404; what the extension hands back
-			// gets exactly that.
+			// behind it, is the API's fallback, a plain 404 outside the API's
+			// paths; what the extension hands back gets exactly that.
 			nobody := fetch(t, http.MethodGet, base+"/elsewhere/one")
 			if nobody.status != http.StatusNotFound {
 				t.Fatalf("GET /elsewhere/one answered %d %q, want a 404 with no console", nobody.status, nobody.body)

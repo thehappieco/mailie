@@ -451,8 +451,8 @@ func adminDo(ctx context.Context, cfg config.Config, method, path string, body [
 			failure.Code, failure.Message = wire.Code, wire.Message
 		}
 		// Without MAIL_ADMIN_API the key routes are not mounted: the
-		// router answers its plain-text 404, or, where an edition serves a
-		// console, the console its JSON not_found.
+		// daemon answers the API's JSON not_found, or, an earlier release
+		// with no console, the router's plain-text 404.
 		if strings.Contains(path, "/v1/apikeys") && (failure.Code == "not_found" ||
 			(failure.Code == "" && resp.StatusCode == http.StatusNotFound)) {
 			return nil, fmt.Errorf("%w (is MAIL_ADMIN_API=true set on the daemon?)", failure)

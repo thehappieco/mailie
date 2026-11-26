@@ -12,8 +12,8 @@ import (
 )
 
 func TestTheKeyCommandsNameMailAdminAPIWhenTheDaemonHasNoKeyRoutes(t *testing.T) {
-	// Without MAIL_ADMIN_API the daemon mounts no /v1/apikeys: with the
-	// console it answers the console's JSON not_found, without one the
+	// Without MAIL_ADMIN_API the daemon mounts no /v1/apikeys: it answers
+	// the API's JSON not_found, and an earlier release with no console the
 	// router's plain-text 404. Either way the operator is told why.
 	for name, reply := range map[string]func(http.ResponseWriter){
 		"with the console": func(w http.ResponseWriter) {

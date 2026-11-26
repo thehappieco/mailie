@@ -51,8 +51,9 @@ the long form of this file.
   `secrets.ExtensionSecret(ref)`), register its metrics beside the core's (`Metrics`), keep its
   own small state in the database it describes (`State(name)`, `extension_state`: restored with it,
   never ahead of it) and hand back what a route of its takes below a prefix and does not answer
-  (`Console`: what the core mounts at `/`, the console with `Options.Pages`, or without one the
-  mux's own 404, never nil). `Options.Freshness` (never set by `serve`) is asked, outside every write,
+  (`Console`: what the core mounts at `/`, the console with `Options.Pages`, or without one
+  `webui.Fallback`, the API's JSON 404 under `/v1`, `/mcp` and `/.well-known` and a plain 404
+  elsewhere, never nil). `Options.Freshness` (never set by `serve`) is asked, outside every write,
   before a person's act that widens access or touches a team's shared data
   (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
   the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
@@ -552,8 +553,9 @@ the long form of this file.
   See `docs/mcp.md`.
 - `internal/webui` — serves an edition's built page from `MAIL_WEB_DIR` (via `os.Root`), mounted
   last (a self-hosted server sets none: the API only, `GET /` a 404);
-  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths (`NotFound`, which the core
-  also mounts at `/mcp` itself, a console or none); what an embedding binary adds
+  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths, any method, with a page or
+  without one (`Fallback`, the core's catch-all where no page is served; `NotFound`, which the core
+  also mounts at `/mcp` itself); what an embedding binary adds
   to its page documents and beside them is `Pages` (`pages.go`, `NewWith`), which never weakens
   the page's own headers. It is also a transport for depguard.
 - `web/` — the console's **core**: Vue 3 + TS, with no router, Pinia or UI library, which an

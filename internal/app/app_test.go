@@ -148,6 +148,39 @@ func TestEveryRequestToMCPIsTheAPIs404(t *testing.T) {
 	}
 }
 
+func TestAnUnknownAPIPathIsTheAPIs404WithOrWithoutAConsole(t *testing.T) {
+	// A client of the API reads the API's shape for an endpoint that does
+	// not exist — the route an earlier release had among them — whether or
+	// not a page is served; outside the API's paths a server with no page
+	// answers a plain 404.
+	for name, console := range map[string]http.Handler{"without a console": nil, "with a console": testConsole(t)} {
+		mux, err := routes(&api.Handler{}, nil, console)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, req := range []string{
+			"GET /v1/no-such-endpoint", "GET /v1/me/mcp", "POST /v1/no-such-endpoint", "DELETE /v1/healthz",
+			"GET /.well-known/oauth-protected-resource", "GET /.well-known/oauth-authorization-server", "GET /v1",
+		} {
+			method, path, _ := strings.Cut(req, " ")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), method, path, nil))
+			if rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") != "application/json" ||
+				rec.Body.String() != apiNotFound {
+				t.Errorf("%s: %s answered %d %q %q", name, req, rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+			}
+		}
+		if console != nil {
+			continue
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/", nil))
+		if rec.Code != http.StatusNotFound || rec.Header().Get("Content-Type") == "application/json" {
+			t.Errorf("%s: GET / answered %d %q", name, rec.Code, rec.Header().Get("Content-Type"))
+		}
+	}
+}
+
 func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testing.T) {
 	var mu sync.Mutex
 	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)

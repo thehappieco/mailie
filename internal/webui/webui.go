@@ -241,6 +241,23 @@ func isAPIPath(clean string) bool {
 	return false
 }
 
+// Fallback is what a daemon that serves no page answers a request no route
+// takes: the API's own 404 for a path under /v1, /mcp or /.well-known, with
+// any method, as the console answers one, so that a client of the API reads
+// the API's shape whether or not a page is served; and a plain 404 for
+// anything else.
+func Fallback() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		if isAPIPath(path.Clean("/" + r.URL.Path)) {
+			notFoundJSON(w)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-store")
+		http.NotFound(w, r)
+	})
+}
+
 // NotFound answers every request with the API's own 404, the one an unknown
 // path under /v1, /mcp or /.well-known gets here: for a route the daemon
 // leaves unmounted, so it answers the same with or without a console behind

@@ -80,8 +80,9 @@ type Deps struct {
 	// Console is what the core mounts at "/", the console's catch-all: the
 	// built console, its page documents with Options.Pages, or, when the
 	// daemon serves none (MAIL_WEB_DIR unset, or a directory that holds no
-	// console), the mux's own 404 for a path no route takes
-	// (http.NotFoundHandler). An extension whose route takes a prefix and
+	// console), the API's fallback for a path no route takes
+	// (webui.Fallback: the API's JSON 404 under /v1, /mcp and /.well-known,
+	// a plain 404 elsewhere). An extension whose route takes a prefix and
 	// answers only part of what lies below it hands the rest back here,
 	// unchanged, and it is answered as the catch-all answers it. Never nil in
 	// Deps that Run made.
