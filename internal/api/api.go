@@ -226,7 +226,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.Handle("POST /v1/me/apikeys", h.authenticated(auth.ScopeRead, opts(), h.createMyAPIKey))
 	mux.Handle("DELETE /v1/me/apikeys/{prefix}", h.authenticated(auth.ScopeRead, opts(), h.revokeMyAPIKey))
 	// What the caller's mailboxes take up in the index, a database read;
-	// the size of the whole database only for an owner signed in.
+	// the size of the whole database only for the operator (an unrestricted
+	// instance key with the admin scope).
 	mux.Handle("GET /v1/me/storage", h.authenticated(auth.ScopeRead, opts(), h.storage))
 	// The person's notices: a mailbox they read removed, or a team mailbox's
 	// sync turned off, until they dismiss them, a recovery withdraws them or

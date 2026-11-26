@@ -1136,7 +1136,7 @@ An ordinary migration: one table added, `oauth_links`, and no row of a schema-25
 
 No migration: the schema does not change, and going back is the binary (and its console) you kept.
 The self-hosted server has no web console any more: it is run from its command line and used
-through REST and MCP with keys.
+through REST with keys.
 
 - **Nobody signs in.** The image has no console and sets no `MAIL_WEB_DIR`, `compose.yaml` keeps
   it empty, and `deploy/mailie.service` no longer sets it: the daemon serves the API only, and
@@ -1169,8 +1169,8 @@ through REST and MCP with keys.
   summed the mail server's sizes, which are now `provider_bytes`; it lists a removed mailbox
   (`removed: true`) to whoever lists it on the removed mailboxes' own paths, until it is deleted for
   good; and it answers `database_bytes` only to the operator (an instance key with the admin scope,
-  restricted to no mailbox), no longer to an owner signed in. The refusals of a sign-in session's
-  token at `/mcp` and of a key nobody agreed to the key terms through name no console.
+  restricted to no mailbox), no longer to an owner signed in. The refusal of a key nobody agreed to
+  the key terms through names no console.
 
 ### No people and no MCP of its own
 
@@ -1267,10 +1267,11 @@ signs people in with a password again, as that release did.
 
 Going back from the release that brings the key scheme (migration 0013) puts back the old password
 hashes and drops every enrolment made since. When you upgrade again, to a release after the one that
-brought the scheme, which has no upgrade, each of those people needs a reset invitation
+brought the scheme, which has no upgrade, those people sign in no more: the releases that had people
+needed a reset invitation for each, and on this release nobody signs in
 ([No people, and no passwords](#no-people-and-no-passwords)); upgrading again to that release itself, the
 browsers of the people who signed in on it remembered that they enrolled and refused the upgrade,
-with the same remedy, or clearing the site's data in their browser.
+with that release's remedy, a reset invitation, or clearing the site's data in their browser.
 
 ## No people, and no passwords
 

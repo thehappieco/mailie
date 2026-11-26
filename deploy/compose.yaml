@@ -7,7 +7,7 @@
 #
 # deploy/.env holds the credential key: Git ignores it, keep it 0600 and keep a
 # copy with your other secrets. docs/self-hosting.md covers the rest: the
-# reverse proxy, the first owner, OAuth clients, backups and upgrades.
+# reverse proxy, the first key, OAuth clients, backups and upgrades.
 name: mailie
 
 services:

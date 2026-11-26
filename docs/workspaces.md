@@ -2877,7 +2877,7 @@ Test names state the guarantee. At least:
   `TestAPersonsKeyCarriedOverActsOnlyWhileItsCreatorAllowsActionsAndNeverSends`;
   `TestAKeySendsOnlyWithTheSendFlagTheSendScopeAndConfirmAndUnderTheAddressAlone`;
   `TestAKeysSendThatMayHaveBeenDeliveredIsNeverRetried`; `TestNoKeySendsWhereTheServersKeysMayNotSend`
-  (and `TestKeysSendByDefaultOnlyUnderTheOpenKeyTermsAndAnotherEditionSaysWhetherTheyMay` in
+  (and `TestKeysSendByDefaultOnlyUnderTheDefaultKeyTermsAndAnotherEditionSaysWhetherTheyMay` in
   `internal/config`); `TestTwoKeysSendingTheSameMessageWithoutAKeyInOneMinuteEachSendTheirs`;
   `TestAKeySendsAtMostItsDailyLimit`; `TestAKeyNeverReachesAnotherWorkspace`;
   `TestRemovingDisablingOrDeletingTheCreatorRevokesTheirKeysButADemotionDoesNot` (and in
@@ -3154,7 +3154,7 @@ Test names state the guarantee. At least:
   `TestAnIssuedKeyNeverWritesItsLastUse`, `TestASessionTokenThatBeginsLikeAnIssuedKeyStillAuthenticates`,
   `TestTheRateLimitChargesAnIssuedKeysFailuresToItsSelector`,
   `TestARefusedHeaderCarryingAnIssuedKeyAnswersTheOneUnauthorizedBody` (`internal/api`) and
-  `TestRESTAndMCPTakeTheSameIssuedKeys` (`internal/app`); what it reaches,
+  `TestTheDaemonTakesAnIssuedKeyAndRefusesARevokedOneAndAnOwnWorkspaceKey` (`internal/app`); what it reaches,
   `TestAnIssuedKeyReachesOnlyWhatItsIssuerGranted`, `TestAnIssuedKeyNeverHoldsSendAndNeverSends`,
   `TestAnIssuedKeyActsOnlyWhileItsCreatorAllowsActions`,
   `TestAnIssuedKeyActsOnlyUnderItsCreatorsConsentWhateverTheSwitch`,
