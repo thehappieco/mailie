@@ -104,13 +104,6 @@ export interface Edition {
     accountRecovered?(mine: boolean): string
   }
   /**
-   * Whether the edition shows how to reach an MCP server. Read by no screen
-   * of the core, and answered by no route: a server serves no MCP of its own
-   * (platform decision 0065), and nothing says where one is. Kept only while
-   * an edition still sets it.
-   */
-  mcp?: boolean
-  /**
    * Whether this server's API keys belong to personal workspaces alone, as
    * its key terms say (the server's app.Options.KeysInPersonalWorkspaceOnly,
    * which refuses a team's keys and lets none reach a team's mailbox). Read

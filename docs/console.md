@@ -105,9 +105,8 @@ sentences of the mailboxes, a mailbox's sheet and the dialog that turned actions
 `personalKeysOnly` (the server's `app.Options.KeysInPersonalWorkspaceOnly`), `syncPause` (an
 opt-in, as the server's `app.Options.SyncPauseOffered`; a paused mailbox, a recovered one included,
 and its Resume are shown either way) and `serverRole` (whether the person's role on this server is
-named). `mcp`, optional, is answered by no route since the server serves no MCP of its own
-([`mcp.md`](mcp.md)): it stays only while an edition still sets it. `copy.keysSection` and
-`mailboxAccess`, which nothing read, are gone.
+named). `mcp`, `copy.keysSection` and `mailboxAccess`, which nothing read once the server served
+no MCP of its own ([`mcp.md`](mcp.md)), are gone.
 
 The core's specs run under an edition of their own (`web/test/edition.ts`, configured by
 `web/test/setup.ts`), which nothing under `web/src` imports: placeholder texts nobody agrees to,
