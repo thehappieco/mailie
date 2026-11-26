@@ -84,7 +84,7 @@ export function useAppLifecycle(): AppLifecycle {
 
   // An invitation is spent by signing up; a later sign-out shows the plain
   // sign-in form. Where teams are made here, a sign-in keeps it, to be
-  // accepted in the console (the sign-up drops it, having spent it).
+  // accepted signed in (the sign-up drops it, having spent it).
   watch(() => session.phase, phase => { if (phase === 'ready' && !teams) dropInvitation() })
 
   /** A page back from the back/forward cache may be signed in with a login another tab has since cleared. */

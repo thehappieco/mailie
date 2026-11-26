@@ -2,13 +2,13 @@
 //
 // Changing a mailbox is a new use of it, so it is asked for on its own,
 // apart from sync: until the person allows actions, the server refuses every
-// one they ask for from a console, and every one a key they made before keys
+// one they ask for signed in, and every one a key they made before keys
 // belonged to workspaces asks for. A workspace's key acts under the key terms
 // its creator agreed to, where it is given Act, never under this consent.
 // "Not now" is remembered in memory only, like sync's.
 //
 // What an edition does with actions (one that shows messages may make them
-// from the console) is its own; it hears of every answer here through
+// on its own screens) is its own; it hears of every answer here through
 // onActionsConsent, to let go of what no longer stands.
 
 import { reactive, watch } from 'vue'

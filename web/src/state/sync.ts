@@ -1,7 +1,7 @@
 // Consent to sync, and asking an account for a pass.
 //
-// Nothing from a person's mail is kept until they agree in the console, and
-// turning sync off deletes what was kept: the edition's sync text says so.
+// Nothing from a person's mail is kept until they agree to the edition's sync
+// text, and turning sync off deletes what was kept: that text says so.
 // This is the person's own agreement, for the mailboxes of their personal
 // workspace; a team's mailbox syncs under the team's (state/team.ts).
 // The daemon enforces both; this store asks the person, shows their answer,

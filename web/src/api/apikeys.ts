@@ -1,7 +1,7 @@
 // API keys (docs/workspaces.md, "API keys"): a workspace's, which its owners
 // and admins list, create, revoke and give mailboxes to
 // (/v1/workspaces/{id}/apikeys), and the ones a person created, in every
-// workspace, which they list and revoke (/v1/me/apikeys). Only a console
+// workspace, which they list and revoke (/v1/me/apikeys). Only a person's
 // session reaches these routes; a key can never list, create or change keys.
 // Who may give a key what, how many a workspace may hold and which text the
 // creator must have agreed to are decided by the server (internal/service);
