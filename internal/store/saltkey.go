@@ -65,7 +65,8 @@ func (s *Store) KDFSaltKey(ctx context.Context, sealer secrets.Sealer) ([]byte, 
 // ResealKDFSaltKeyTx seals the salt key again with sealer's active sealer
 // when its envelope is not what that writes now, and reports whether it did,
 // as ResealSendHashRootTx does the root. A database without one, as on a
-// server whose people never signed in with a password, has none to re-seal.
+// server that never started with password sign-in on (MAIL_PASSWORD_SIGN_IN),
+// has none to re-seal.
 func ResealKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) (bool, error) {
 	return kdfSaltKey.resealTx(ctx, tx, sealer)
 }
@@ -73,8 +74,8 @@ func ResealKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) 
 // ReplaceKDFSaltKeyTx puts a new salt key in place of one the configured keys
 // do not open (ErrKDFSaltKey), under the rules of ReplaceSendHashRootTx, and
 // reports whether there was one to replace: a database that holds none, a
-// server where nobody ever signed in with a password, gets none, since only a
-// start where people sign in with a password makes one.
+// server that never started with password sign-in on (MAIL_PASSWORD_SIGN_IN),
+// gets none, since only such a start makes one.
 //
 // Nothing stops working: every account keeps the salt it derives with, and is
 // moved to its address's salt under the new key at the person's next sign-in

@@ -145,9 +145,9 @@ func openKDFSaltKey(ctx context.Context, db *store.Store, sealer secrets.Sealer)
 // salt key that still opens and makes none where the database holds none.
 func ExplainSealed(err error, sealer secrets.Sealer) error {
 	salt := errors.Is(err, store.ErrKDFSaltKey)
-	replace, after := "--new-send-hash-root --new-salt-key", "replaces the root and the salt key (leave out "+
-		"--new-salt-key if the salt key still opens: it is never replaced then), and every mailbox has to be "+
-		"authorized again"
+	replace, after := "--new-send-hash-root --new-salt-key", "replaces the root and, where the database holds "+
+		"one, the salt key (leave out --new-salt-key if the salt key still opens: it is never replaced then), and "+
+		"every mailbox has to be authorized again"
 	if salt {
 		replace, after = "--new-salt-key", "replaces it, and each account moves to its new salt at its next sign-in"
 	}
