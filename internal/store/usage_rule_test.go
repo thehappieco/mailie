@@ -26,11 +26,16 @@ func TestTheUsageRuleCoversEveryColumnOfTheTablesItCounts(t *testing.T) {
 	if len(usageTables) != 4 {
 		t.Fatalf("the rule counts %d tables; rule 1 counts messages, parts, folders and drafts", len(usageTables))
 	}
-	for _, table := range usageTables {
-		rows, err := s.Reader().QueryContext(ctx, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table.name)
+	columns := func(table string) []string {
+		rows, err := s.Reader().QueryContext(ctx, `SELECT name FROM pragma_table_info(?) ORDER BY cid`, table)
 		if err != nil {
 			t.Fatal(err)
 		}
+		defer func() {
+			if err := rows.Close(); err != nil {
+				t.Error(err)
+			}
+		}()
 		var schema []string
 		for rows.Next() {
 			var name string
@@ -42,10 +47,10 @@ func TestTheUsageRuleCoversEveryColumnOfTheTablesItCounts(t *testing.T) {
 		if err := rows.Err(); err != nil {
 			t.Fatal(err)
 		}
-		if err := rows.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if !slices.Equal(schema, table.columns) {
+		return schema
+	}
+	for _, table := range usageTables {
+		if schema := columns(table.name); !slices.Equal(schema, table.columns) {
 			t.Errorf("%s has the columns %v, and the usage rule counts %v: list every column the "+
 				"migrations leave, and decide whether the figure needs a new RuleVersion", table.name, schema, table.columns)
 		}

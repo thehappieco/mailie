@@ -104,6 +104,8 @@ func (t usageTable) rowBytesSQL(alias string) string {
 // the rule counts, its live message rows, the sum of their RFC822.SIZE and
 // its bytes under the rule. One statement, so one snapshot: the figure never
 // mixes rows from before and after a write.
+//
+//nolint:gosec // G202: what is joined in is the rule's own column lists, fixed in this file, never input
 var usageSQL = `WITH ids(id) AS (SELECT DISTINCT value FROM json_each(?1)),
 	um AS (SELECT m.account_id AS id, count(*) AS n, sum(m.size) AS provider, sum(` + usageMessages.rowBytesSQL("m") + `) AS bytes
 	       FROM messages m WHERE m.account_id IN (SELECT id FROM ids) AND m.vanished_at = 0 GROUP BY m.account_id),

@@ -181,7 +181,7 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 // owner of, the operator's of the operator workspace. A team's is left out
 // where teams are withheld, as its live ones are.
 func (s *Service) removedToCount(ctx context.Context, p Principal, workspaceID string) ([]account.RemovedAccount, error) {
-	if s.authorize(p, auth.ScopeAdmin) != nil {
+	if !p.Scope.Covers(auth.ScopeAdmin) {
 		return nil, nil
 	}
 	var scope account.RemovedScope

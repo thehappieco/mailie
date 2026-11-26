@@ -103,7 +103,8 @@ const redactedIdentity = "[link identity]"
 
 // Format prints a linkIdentity, under every verb, as redactedIdentity alone.
 func (linkIdentity) Format(f fmt.State, _ rune) {
-	_, _ = io.WriteString(f, redactedIdentity)
+	//nolint:errcheck,gosec // fmt's State buffers what is written and never fails a write
+	io.WriteString(f, redactedIdentity)
 }
 
 // LogValue logs a linkIdentity as redactedIdentity alone, under every
