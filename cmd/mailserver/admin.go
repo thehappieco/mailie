@@ -307,7 +307,8 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 	defer release()
 
 	if *newRoot || *newSaltKey {
-		if err := replaceSealedSecrets(ctx, db, sealer, *newRoot, *newSaltKey, *kmsKeyLost); err != nil {
+		saltReplaced, err := replaceSealedSecrets(ctx, db, sealer, *newRoot, *newSaltKey, *kmsKeyLost)
+		if err != nil {
 			return app.ExplainSealed(err, sealer)
 		}
 		if *newRoot {
@@ -316,7 +317,11 @@ func rewrapCommand(ctx context.Context, cfg config.Config, args []string) error 
 				"an idempotency key is sent again. Credentials no configured key opens stay as they are: "+
 				"authorize their mailboxes again.")
 		}
-		if *newSaltKey {
+		switch {
+		case *newSaltKey && !saltReplaced:
+			fmt.Println("the database holds no salt key: nothing to replace (one is made only where people " +
+				"sign in with a password)")
+		case *newSaltKey:
 			fmt.Println("replaced the salt key, sealed with", sealer.Describe())
 			fmt.Fprintln(os.Stderr, "Every account keeps signing in with the salt it has, and moves to its salt "+
 				"under the new key at its next sign-in.")

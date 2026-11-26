@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 
 	"github.com/thehappieco/mailie/internal/secrets"
 )
@@ -70,12 +71,22 @@ func ResealKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) 
 }
 
 // ReplaceKDFSaltKeyTx puts a new salt key in place of one the configured keys
-// do not open (ErrKDFSaltKey), under the rules of ReplaceSendHashRootTx.
+// do not open (ErrKDFSaltKey), under the rules of ReplaceSendHashRootTx, and
+// reports whether there was one to replace: a database that holds none, a
+// server where nobody ever signed in with a password, gets none, since only a
+// start where people sign in with a password makes one.
 //
 // Nothing stops working: every account keeps the salt it derives with, and is
 // moved to its address's salt under the new key at the person's next sign-in
 // (docs/key-scheme.md section 5.3). Until then a challenge tells such an
 // account from an address that has none (the threat model's section 5.9).
-func ReplaceKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer, kmsKeyLost bool) error {
-	return kdfSaltKey.replaceTx(ctx, tx, sealer, kmsKeyLost)
+func ReplaceKDFSaltKeyTx(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer, kmsKeyLost bool) (bool, error) {
+	var held int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM meta WHERE key = ?`, kdfSaltKey.key).Scan(&held); err != nil {
+		return false, fmt.Errorf("store: read the %s: %w", kdfSaltKey.what, err)
+	}
+	if held == 0 {
+		return false, nil
+	}
+	return true, kdfSaltKey.replaceTx(ctx, tx, sealer, kmsKeyLost)
 }

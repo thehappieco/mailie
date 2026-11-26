@@ -119,19 +119,26 @@ func staleCredentials(ctx context.Context, tx *sql.Tx, sealer secrets.Sealer) ([
 // one transaction, and touches nothing else: a credential sealed under a
 // lost key stays as it is until its mailbox is authorized again. One of the
 // configured KMS key's own kind that it does not unwrap is replaced only with
-// kmsKeyLost (store.ReplaceSendHashRootTx, store.ReplaceKDFSaltKeyTx).
-func replaceSealedSecrets(ctx context.Context, db *store.Store, sealer secrets.Sealer, root, saltKey, kmsKeyLost bool) error {
-	return db.Write(ctx, func(tx *sql.Tx) error {
+// kmsKeyLost (store.ReplaceSendHashRootTx, store.ReplaceKDFSaltKeyTx). It
+// reports whether a salt key was replaced: a database that holds none gets
+// none.
+func replaceSealedSecrets(ctx context.Context, db *store.Store, sealer secrets.Sealer, root, saltKey, kmsKeyLost bool) (bool, error) {
+	var saltReplaced bool
+	err := db.Write(ctx, func(tx *sql.Tx) error {
+		saltReplaced = false
 		if root {
 			if err := store.ReplaceSendHashRootTx(ctx, tx, sealer, kmsKeyLost); err != nil {
 				return fmt.Errorf("rewrap: %w", err)
 			}
 		}
 		if saltKey {
-			if err := store.ReplaceKDFSaltKeyTx(ctx, tx, sealer, kmsKeyLost); err != nil {
+			replaced, err := store.ReplaceKDFSaltKeyTx(ctx, tx, sealer, kmsKeyLost)
+			if err != nil {
 				return fmt.Errorf("rewrap: %w", err)
 			}
+			saltReplaced = replaced
 		}
 		return nil
 	})
+	return saltReplaced, err
 }

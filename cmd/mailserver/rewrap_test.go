@@ -267,6 +267,44 @@ func TestANewSaltKeyReplacesOnlyASaltKeyNoConfiguredKeyOpens(t *testing.T) {
 	}
 }
 
+func TestTheLostRootsAdviceMakesNoSaltKeyWhereTheDatabaseHoldsNone(t *testing.T) {
+	// A server where nobody signs in with a password holds no salt key: the
+	// root's advice, followed as written, replaces the root and makes none.
+	cfg := localConfig(t)
+	cfg.Credentials = config.Credentials{ActiveKeyID: 1, Keys: map[uint8][]byte{1: keyOf(0xA1)}}
+	lost, err := secrets.NewKeyring(1, map[uint8][]byte{1: keyOf(0xA1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := newSealedDatabase(t, cfg, lost)
+	if _, err := d.db.Writer().ExecContext(t.Context(), `DELETE FROM meta WHERE key IN (?, ?)`,
+		store.MetaKDFSaltKey, store.MetaKDFSaltKeySealedWith); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = config.Credentials{ActiveKeyID: 2, Keys: map[uint8][]byte{2: keyOf(0xD4)}}
+	if err := rewrapCommand(t.Context(), cfg, []string{"--new-send-hash-root", "--new-salt-key"}); err != nil {
+		t.Fatalf("rewrap-credentials --new-send-hash-root --new-salt-key: %v", err)
+	}
+	for _, key := range []string{store.MetaKDFSaltKey, store.MetaKDFSaltKeySealedWith} {
+		var held int
+		if err := d.db.Reader().QueryRowContext(t.Context(), `SELECT count(*) FROM meta WHERE key = ?`, key).
+			Scan(&held); err != nil {
+			t.Fatal(err)
+		}
+		if held != 0 {
+			t.Errorf("%s written on a database that held no salt key", key)
+		}
+	}
+	sealer, err := secrets.NewKeyring(2, map[uint8][]byte{2: keyOf(0xD4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root, created, err := d.db.SendHashRoot(context.Background(), sealer); err != nil || created ||
+		bytes.Equal(root, d.root) {
+		t.Fatalf("the root after the advice: created %v, the old root %v, %v", created, bytes.Equal(root, d.root), err)
+	}
+}
+
 func TestADatabaseWhoseKeyIsLostStartsAfterTheOneCommandItsRefusalNames(t *testing.T) {
 	// A backup put into service without its credential key: the root and the
 	// salt key, sealed by the same key, open with neither. What the refusal

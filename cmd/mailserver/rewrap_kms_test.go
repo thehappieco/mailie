@@ -102,7 +102,7 @@ func TestAKMSThatCannotAnswerNeverHasTheRootReplaced(t *testing.T) {
 	denied := errors.New("operation error KMS: Decrypt, AccessDeniedException: not authorized to perform kms:Decrypt")
 	wrapper.FailDecrypts(denied)
 	for _, lost := range []bool{false, true} {
-		if err := replaceSealedSecrets(t.Context(), d.db, sealer, true, false, lost); !errors.Is(err, denied) ||
+		if _, err := replaceSealedSecrets(t.Context(), d.db, sealer, true, false, lost); !errors.Is(err, denied) ||
 			errors.Is(err, store.ErrSendHashRoot) || secrets.DoesNotOpen(err) {
 			t.Fatalf("--new-send-hash-root (--kms-key-lost %v) while KMS refuses: %v", lost, err)
 		}
@@ -186,7 +186,7 @@ func TestUnderKMSAChangedMAIL_ENVIsNeitherAlreadySealedNorALostKey(t *testing.T)
 		t.Errorf("the advice asks for a key to be given beside the KMS key: %s", advice)
 	}
 
-	err = replaceSealedSecrets(t.Context(), d.db, prodSealer, true, false, false)
+	_, err = replaceSealedSecrets(t.Context(), d.db, prodSealer, true, false, false)
 	if !errors.Is(err, store.ErrSendHashRootMayOpen) {
 		t.Fatalf("--new-send-hash-root under prod, without --kms-key-lost: %v", err)
 	}

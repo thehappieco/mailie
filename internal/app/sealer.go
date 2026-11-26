@@ -138,10 +138,11 @@ func openKDFSaltKey(ctx context.Context, db *store.Store, sealer secrets.Sealer)
 // key lost for good is a reason to replace it. Any other value that does not
 // open needs the key that sealed it given as well.
 //
-// The daemon opens the send-hash root first and the salt key after it, both
-// sealed by the same sealer: a root whose key is lost leaves, as a rule, a
-// salt key that does not open either, so the root's advice replaces both in
-// one run, which refuses to replace a salt key that still opens.
+// The daemon opens the send-hash root first and, where people sign in with a
+// password, the salt key after it, both sealed by the same sealer: a root
+// whose key is lost leaves, as a rule, a salt key that does not open either,
+// so the root's advice replaces both in one run, which refuses to replace a
+// salt key that still opens and makes none where the database holds none.
 func ExplainSealed(err error, sealer secrets.Sealer) error {
 	salt := errors.Is(err, store.ErrKDFSaltKey)
 	replace, after := "--new-send-hash-root --new-salt-key", "replaces the root and the salt key (leave out "+
