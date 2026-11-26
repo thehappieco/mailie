@@ -1,10 +1,11 @@
 # Self-hosting
 
 Mailie runs as one process: a static binary and one SQLite database in a data directory. It has
-no web screen: you run it from its command line, and your tools use its REST API and its MCP server
-with keys you make there. This page is how to run it on a server of your own, from a binary under
-systemd or in a container, behind a reverse proxy that terminates TLS. The packaging is in
-[`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml` and example systemd units.
+no web screen and no people: you run it from its command line, and your tools use its REST API
+with keys you make there. It serves no MCP of its own ([No MCP](#no-mcp)). This page is how to run
+it on a server of your own, from a binary under systemd or in a container, behind a reverse proxy
+that terminates TLS. The packaging is in [`deploy/`](../deploy): a `Dockerfile`, a `compose.yaml`
+and example systemd units.
 
 - [Requirements](#requirements)
 - [The configuration a server needs](#the-configuration-a-server-needs)
@@ -14,19 +15,19 @@ systemd or in a container, behind a reverse proxy that terminates TLS. The packa
 - [TLS through a reverse proxy](#tls-through-a-reverse-proxy)
 - [The first key](#the-first-key)
 - [Mailboxes and OAuth clients](#mailboxes-and-oauth-clients)
-- [MCP clients](#mcp-clients)
+- [No MCP](#no-mcp)
 - [Health, metrics and logs](#health-metrics-and-logs)
 - [Backups](#backups)
 - [Credentials under AWS KMS](#credentials-under-aws-kms)
 - [Upgrades](#upgrades)
-- [A forgotten password](#a-forgotten-password)
+- [No people, and no passwords](#no-people-and-no-passwords)
 
 ## Requirements
 
 - **A Linux machine** (amd64 or arm64) that can reach your mail providers: IMAP on 993, SMTP on
   465 or 587, and their OAuth endpoints on 443. From outside, only the reverse proxy's 443 (and 80)
   need to be open, and only for tools on other machines.
-- **A name and a certificate**, for MCP clients and scripts on other machines: they reach the
+- **A name and a certificate**, for scripts and tools on other machines: they reach the
   daemon through a reverse proxy that terminates TLS (Caddy, nginx); the daemon itself only speaks
   plain HTTP on loopback. Tools on the server's own machine reach it there.
 - **To build it:** Docker with BuildKit (any current Docker Engine or Docker Desktop) builds the
@@ -48,7 +49,7 @@ A server needs at least these:
 
 | Variable | On a server |
 |---|---|
-| `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, the send-hash root and the salt key. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
+| `MAIL_CREDENTIAL_KEY_HEX` | Required, unless an AWS KMS key seals the credentials instead ([below](#credentials-under-aws-kms)). `openssl rand -hex 32`. It encrypts every stored refresh token and password, and the send-hash root. **Keep a copy with your other secrets: losing it means authorizing every mailbox again** ([below](#the-send-hash-root-is-kept-in-the-database)). |
 | `MAIL_ENV` | `prod`: logs in JSON, and refuses the settings that would leak a token. |
 | `MAIL_TRUSTED_PROXIES` | The address the daemon sees your reverse proxy connect from (see [below](#the-proxys-address)). Without it every client shares one rate limit. |
 | `MAIL_GOOGLE_CLIENT_ID`, `_SECRET`; `MAIL_MICROSOFT_CLIENT_ID` | The installed OAuth clients, for Gmail and Microsoft mailboxes ([below](#mailboxes-and-oauth-clients)). iCloud and IMAP mailboxes need none. |
@@ -56,9 +57,11 @@ A server needs at least these:
 `MAIL_PUBLIC_URL`, the web OAuth clients (`MAIL_GOOGLE_WEB_CLIENT_*`,
 `MAIL_MICROSOFT_WEB_CLIENT_*`) and `MAIL_WEB_DIR` are for an edition that serves a web page: a
 self-hosted server leaves them unset (["The open console leaves"](#the-open-console-leaves), under
-Upgrades, says what to do with the ones an older release needed). Two more say where things are:
-`MAIL_DATA_DIR` (the database) and `MAIL_HTTP_ADDR` (what the daemon listens on). The image and the
-systemd unit set them; leave them out of your environment file.
+Upgrades, says what to do with the ones an older release needed), and so it leaves
+`MAIL_PASSWORD_SIGN_IN`: off, the default, the server has no people
+([below](#no-people-and-no-passwords)). Two more say where things are: `MAIL_DATA_DIR` (the
+database) and `MAIL_HTTP_ADDR` (what the daemon listens on). The image and the systemd unit set
+them; leave them out of your environment file.
 
 ## With Docker Compose
 
@@ -126,8 +129,8 @@ What the image is:
 - **Two stages.** Go 1.27 builds a static binary (`CGO_ENABLED=0`, `-trimpath`, the version
   stamped in), and it is copied onto distroless's `static-debian13` image, which holds CA
   certificates, time zones and little else: no shell, no package manager. Every base image is
-  pinned by digest. The image is the daemon alone: REST and MCP, with no web console and no
-  `MAIL_WEB_DIR`; `GET /` answers 404.
+  pinned by digest. The image is the daemon alone: REST, with no MCP, no web console and no
+  `MAIL_WEB_DIR`; `GET /` and `/mcp` answer 404.
 - **It runs as `nonroot` (65532:65532)**, and the binary belongs to root. `/data` is the only place
   it writes, besides `/tmp`; it is `0700` and the daemon's, and a new named volume takes that owner
   and mode. A bind mount needs the same: `chown 65532:65532` and `chmod 700` on the host
@@ -217,11 +220,11 @@ with the daemon stopped. With `--pty` a command can ask for a password at your t
 
 The daemon speaks plain HTTP. **Never expose port 8080:** put a reverse proxy on the same machine
 in front of it, and publish only 443 (and 80, for the redirect and certificate issuance). Tools on
-other machines then reach REST and MCP at `https://mail.example.org`.
+other machines then reach REST at `https://mail.example.org`.
 
 What the proxy must do:
 
-- **Pass streams through.** `/v1/events` (Server-Sent Events) and `/mcp` stream; a buffered response
+- **Pass streams through.** `/v1/events` (Server-Sent Events) streams; a buffered response
   arrives late or never. Turn response buffering off, and request buffering too, so that a message
   or an attachment on its way through is never written to the proxy's temporary files.
 - **Allow large bodies.** A send with attachments is up to about 40 MiB.
@@ -366,18 +369,13 @@ server: the [README](../README.md#mailboxes-and-providers) walks through both pr
   through one refreshes only with it: keep them until such mailboxes are linked again
   ([Moving from the open console](../README.md#moving-from-the-open-console)).
 
-## MCP clients
+## No MCP
 
-MCP is served at `https://mail.example.org/mcp` through the same proxy (or at
-`http://localhost:8080/mcp` on the server itself), with an instance key made for the tool
-([above](#the-first-key)). From the machine an MCP client runs on:
-
-```sh
-mailserver mcp install --client claude-desktop --url https://mail.example.org
-```
-
-[`docs/mcp.md`](mcp.md#connect-a-client) covers every client, `mcp connect`, and what each one
-writes where.
+The daemon serves no MCP of its own: `/mcp` answers the API's JSON 404, and the command line has no
+`mcp` command and `serve` no `--mcp-stdio`. A tool uses REST with an instance key made for it
+([above](#the-first-key)), through the same proxy. MCP is to come through the hosted service, for a
+server connected to it. [`docs/mcp.md`](mcp.md) says what went, the warning a retired `MAIL_MCP_*`
+variable brings at start, and what to remove from a client configured for an earlier release.
 
 ## Health, metrics and logs
 
@@ -409,8 +407,9 @@ or delete them. [`docs/backup.md`](backup.md) says what it needs in AWS and how 
 
 Without AWS, stop the daemon and copy the data directory (`mail.db`, and `mail.db-wal` and
 `mail.db-shm` if they exist), as for an upgrade below; a copy of a running daemon's files can be
-inconsistent. Either way, a backup holds the people, the index and the credentials encrypted under
-`MAIL_CREDENTIAL_KEY_HEX`, which is not in it: keep the key apart, and the copy as private as the
+inconsistent. Either way, a backup holds the index, the keys' hashes, any people an earlier
+release's console made, and the credentials encrypted under `MAIL_CREDENTIAL_KEY_HEX`, which is not
+in it: keep the key apart, and the copy as private as the
 data directory. Under a KMS key ([below](#credentials-under-aws-kms)) the credentials of a backup
 open only where that key's policy lets the daemon decrypt, with the same `MAIL_ENV`.
 
@@ -423,9 +422,10 @@ key wraps (a `THCSEAL` envelope), and the key never leaves KMS: the database, it
 server's environment open nothing without a call to KMS that the key policy allows and CloudTrail
 records. Every call carries the encryption context `{service: mailie, env: <MAIL_ENV>, purpose,
 ref}`: the purpose is `credential/oauth-token`, `credential/password`, `send/hash-root` or
-`auth/kdf-salt-key` (the salt key, the key of the salts passwords are derived under), and the ref
-is the mailbox's id (random, never derived from an address) or the meta row of the root or of the
-salt key. An envelope opens only for its own context, so one moved to another mailbox, field or env
+`auth/kdf-salt-key` (the salt key, the key of the salts passwords are derived under, which a server
+with no people never makes, and `rewrap-credentials` re-seals where a database from an earlier
+release holds one), and the ref is the mailbox's id (random, never derived from an address) or the
+meta row of the root or of the salt key. An envelope opens only for its own context, so one moved to another mailbox, field or env
 does not. A fifth purpose, `extension/secret`, is only for a binary that embeds the daemon with an
 extension that keeps a secret of its own outside the database: `mailserver serve` never asks KMS
 for it, and the policy below need not allow it.
@@ -546,6 +546,14 @@ while it sealed is kept.
 
 ## Upgrades
 
+Each entry below says what its release changed, in that release's words and with its commands; the
+newest is last. What a later release took away is in the entry of the release that took it: the
+web console in [The open console leaves](#the-open-console-leaves), and people, passwords,
+invitations and MCP in [No people and no MCP of its own](#no-people-and-no-mcp-of-its-own). On a
+server past those, an older entry's step that signs someone in, invites or resets someone, or uses
+a console or an MCP client applies to nobody: the people a database still holds are moved as
+[Moving from the open console](../README.md#moving-from-the-open-console) says.
+
 The daemon applies pending schema migrations when it starts (`mailserver migrate --dry-run` lists
 them). An older binary does not know a newer schema, so **copy the data directory before every
 upgrade**, with the daemon stopped, and keep the version you are leaving: going back is that copy
@@ -559,8 +567,9 @@ personal workspace and logs a warning.
 That release also changes who becomes the server's first owner: the invite decides
 (`user invite --bootstrap --role owner`), never the order of sign-ups. A server upgraded with
 invites waiting and nobody signed up yet gets its oldest invite turned into an owner's, the one the
-quick start of earlier releases had you make for yourself. If the daemon logs at start that nobody
-administers the server, invite an owner, with an address that has no account yet.
+quick start of earlier releases had you make for yourself. A daemon of that release that logged at
+start that nobody administered the server wanted an owner's invite, for an address with no account
+yet; a server with no people says nothing of owners.
 
 ### Team mailboxes belong to their team (migration 0011)
 
@@ -733,7 +742,7 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   starts. A daemon whose people sign in only through an extension makes none.
 - **A forgotten password** is the recovery code's to replace, in the console. A person who lost
   both now gets a **reset invitation** rather than a password set for them: see
-  [A forgotten password](#a-forgotten-password).
+  [No people, and no passwords](#no-people-and-no-passwords).
 - **Sessions open at the upgrade stay open,** with no step-up time. The person enrols at their next
   sign-in; until then the console asks them to sign in again for what needs their account key
   (changing the password or the recovery code, each of which asks for the password again). The
@@ -743,7 +752,7 @@ signs in. **Back up first**, as above: going back is that copy, and the version 
   someone remembers it, and never sends that person's password in clear again. If you go back
   (below) and later upgrade again, the restored database asks everyone who signed in on this
   version for the upgrade once more, and their browsers refuse, telling them to ask you: give each
-  a reset invitation ([A forgotten password](#a-forgotten-password)), or have them clear the site's
+  a reset invitation ([No people, and no passwords](#no-people-and-no-passwords)), or have them clear the site's
   data in their browser. Restoring a backup from before this version onto it does the same.
   Upgrading again to a later release, which has no upgrade, each of them needs a reset invitation.
 - **The API.** `POST /v1/auth/login` takes `{email, auth_key}`; `POST /v1/auth/signup` an
@@ -803,12 +812,12 @@ clear. No migration runs and the schema does not change; **back up first**, as a
 - **Accounts that never signed in during the release that brought the key scheme sign in no
   more.** A person who signed up before the key scheme and did not sign in on that release has not
   enrolled: the console sends their old password nowhere, and a sign-in of theirs fails as a wrong
-  password does. Give each a **reset invitation**, with the daemon stopped
-  (`mailserver user password --bootstrap --email ADDRESS`,
-  [A forgotten password](#a-forgotten-password)): with it they choose a new password and get a
-  recovery code and their account key, and their old password hash is cleared. If your server goes
-  straight from a release before the key scheme to this one or a later one, that is everyone who
-  has a password: plan a reset invitation for each, and send each link to its person only.
+  password does. That release's way back for each was a **reset invitation**, printed with the
+  daemon stopped (`mailserver user password --bootstrap --email ADDRESS`, a command a later release
+  removed: [No people, and no passwords](#no-people-and-no-passwords)): with it they chose a new
+  password and got a recovery code and their account key, and their old password hash was cleared.
+  A server that went straight from a release before the key scheme to that one or a later one
+  needed one for everyone who had a password.
 - **Someone still signed in from before the key scheme** keeps that session until it ends (14 days
   at most from its sign-in); the console tells them, in their account, that their password no
   longer signs them in and to ask you for a reset link. They cannot link a mailbox or change their
@@ -852,7 +861,7 @@ Migration 0017 adds `api_keys.stop_reason` and changes no row.
 - **A recovery or a reset now stops the API keys the person created**, in every workspace, saying
   `account_recovered`, where it ended their sessions only: recovering an account with its recovery
   code in the console, and completing a reset invitation
-  ([A forgotten password](#a-forgotten-password)). Whoever held the person's password, their
+  ([No people, and no passwords](#no-people-and-no-passwords)). Whoever held the person's password, their
   recovery code or a session of theirs may have created a key, and a key outlives a session. The
   console's recovery and reset forms say so before the person confirms, and
   `mailserver user password --bootstrap` when it prints the link, with how many of their keys are
@@ -1162,6 +1171,50 @@ through REST and MCP with keys.
   restricted to no mailbox), no longer to an owner signed in. The refusals of a sign-in session's
   token at `/mcp` and of a key nobody agreed to the key terms through name no console.
 
+### No people and no MCP of its own
+
+No migration: the schema does not change, and going back is the binary you kept. A self-hosted
+server has no people and serves no MCP of its own (platform decision 0065): its operator acts with
+instance keys made on its command line, and tools use REST with them, as before.
+
+- **No people.** `MAIL_PASSWORD_SIGN_IN` (default `false`) says whether people sign in with a
+  password here, and a self-hosted server leaves it unset. Off, the routes that sign in, sign up,
+  recover or reset a password and create an invitation answer `403` (`this server has no people:
+  nobody signs in, signs up or is invited here; use an instance key made with its command line`),
+  to an admin key too; a session token is refused as an unknown one is (`401`), so a person still
+  signed in from the open console is signed out at their next request; the daemon makes and opens
+  no salt key (one a database holds is left as it is, and `rewrap-credentials` still re-seals it);
+  and the start says nothing of people: no `nobody can sign in to the console yet`, no `nobody
+  administers this server`. Without any key it warns `no api keys exist yet; nothing can call this
+  daemon`, with the `apikey create --bootstrap` hint. The workspace keys made in the open console
+  work as before, until they expire or are revoked ([No people, and no
+  passwords](#no-people-and-no-passwords)).
+- **The command line invites nobody.** `user invite` and `user password` are refused, with no
+  database opened and nothing asked of the daemon: `user invite: the command line invites nobody
+  and resets no password: the operator acts with instance keys, which apikey create makes` (`user
+  password: …` for the other). `workspace create`, `member role` and `access grant` are gone (the
+  usage, exit 2). What stays lists and takes away, for a database the open console left:
+  `user disable|delete [--force] [--bootstrap]`, `workspace list|rename|close|reopen`, `member
+  list|remove` and `access list|revoke`.
+- **`account authorize` of a mailbox that works** (`active`) opens the consent page and returns,
+  saying that the mailbox keeps the grant it has until a new one logs in and that the browser's
+  page says how the consent ends: nothing tells the command line how a consent for a working
+  mailbox ends. `--device` on such a mailbox is refused before anything starts; `--paste` waits for
+  the outcome, as before. A mailbox that failed or waits for its authorization is waited for as
+  before.
+- **No MCP.** Every method on `/mcp` and below answers the API's JSON `404`; `serve` takes no flag,
+  so a unit or a client that runs `serve --mcp-stdio` stops at once (`flag provided but not
+  defined: -mcp-stdio`); `mailserver mcp connect|install` exits 1 saying the server serves no MCP of
+  its own; `GET /v1/me/mcp` is gone, and so are the API's own `/.well-known/oauth-*` mounts (both
+  still `404`). `MAIL_MCP_HTTP`, `MAIL_MCP_KEY` and `MAIL_MCP_ELICIT_SEND` are read by nothing, and
+  one that still asks for MCP is named once at start, at warn
+  ([`mcp.md`](mcp.md#the-warning-at-start)). Remove them, remove this server from every MCP client
+  configured for it, and revoke the keys only those clients held. The proxy needs no change.
+- **For scripts:** codes do not change. Some refusals now say who may change something, never
+  where: `actions are off: the person who asks, or who created this key, has not allowed them, and
+  only that person can`, `sending is off: you have not allowed it, and only you can` and `sync is
+  off: its person has not turned it on, and only they can`.
+
 ```sh
 # Compose, from deploy/:
 docker tag mailie:local mailie:previous    # the image running now, to go back to
@@ -1207,44 +1260,31 @@ sudo systemctl start mailie
 The copy is the database in clear apart from the credentials: delete it, and the kept version, once
 the new version has proved itself. Going back from the release without the open console to one with
 it puts back that release's unit as well (`deploy/mailie.service` at the commit you upgraded from),
-which names the console's files, and those files if you removed them.
+which names the console's files, and those files if you removed them. Going back from the release
+with no people and no MCP to one before it serves `/mcp` again unless `MAIL_MCP_HTTP=false`, and
+signs people in with a password again, as that release did.
 
 Going back from the release that brings the key scheme (migration 0013) puts back the old password
 hashes and drops every enrolment made since. When you upgrade again, to a release after the one that
 brought the scheme, which has no upgrade, each of those people needs a reset invitation
-([A forgotten password](#a-forgotten-password)); upgrading again to that release itself, the
+([No people, and no passwords](#no-people-and-no-passwords)); upgrading again to that release itself, the
 browsers of the people who signed in on it remembered that they enrolled and refused the upgrade,
 with the same remedy, or clearing the site's data in their browser.
 
-## A forgotten password
+## No people, and no passwords
 
-A self-hosted server has no web screen, so nobody signs in to it and no password of anyone's is
-used there: the command line and every tool authenticate with keys. A database made through the
-open console of an earlier release still holds its people, their account keys and their recovery
-codes, which the people commands administer (`user`, `workspace`, `member`, `access`).
+A self-hosted server has no people: nobody signs in to it, and the command line and every tool
+authenticate with keys. No password of anyone's is used there, and nothing on it, the command line
+included, invites a person or prints a reset invitation (platform decision 0065). With
+`MAIL_PASSWORD_SIGN_IN` unset, the routes that would answer `403` (`this server has no people: …`)
+and a session token `401`, as [the release that took them away](#no-people-and-no-mcp-of-its-own)
+says. `MAIL_PASSWORD_SIGN_IN=true` is for an edition that serves a page where people sign in with a
+password ([`key-scheme.md`](key-scheme.md)); a self-hosted server serves none, so it changes nothing
+a person could use there.
 
-`mailserver user password --bootstrap --email ADDRESS [--force]`, with the daemon stopped, still
-prints a **reset invitation** for such a person: a link, valid seven days and once, whose page a
-web console serves, so nothing on a self-hosted server opens it. It changes nothing until it is
-used. Nobody can set a password, through the API or the command line: the server never knows one.
-To reach a person's mailboxes from the command line, link them again into the operator workspace
-([Moving from the open console](../README.md#moving-from-the-open-console)).
-
-It refuses, naming the mailboxes, while the person is the last who can read a team mailbox that
-has a key, even in a team they are alone in: nobody could give them its key again. On a team
-mailbox without a key the reset takes nothing, and they keep reading it. Pass `--force` when the
-old key is truly lost.
-
-```sh
-# Compose, from deploy/:
-docker compose stop mailie
-docker compose run --rm mailie user password --bootstrap --email you@example.com
-docker compose start mailie
-
-# systemd, with the helper above:
-sudo systemctl stop mailie
-mailie-admin user password --bootstrap --email you@example.com
-sudo systemctl start mailie
-```
-
-Send the link to that person only: it is a credential until it is used.
+A database made through the open console of an earlier release still holds its people, their
+account keys and their recovery codes, and its mailboxes in their workspaces, which no instance key
+reaches. A forgotten password is nothing to recover there: to reach a person's mailboxes, link
+them again into the operator workspace, then delete the people
+([Moving from the open console](../README.md#moving-from-the-open-console)). A reset invitation an
+earlier release printed opens nothing here.

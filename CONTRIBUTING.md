@@ -14,8 +14,9 @@ we will ask you to agree to the terms under which we accept it; until then, open
 ## What belongs here
 
 This repository is the self-hosted server: the daemon, the command line, the core of the web
-console in `web/` (which an edition compiles; a self-hosted server serves no web screen) and their
-documentation. The hosted service's web app and its operations (deployment, hosting, billing) live
+console in `web/` (which an edition compiles; a self-hosted server serves no web screen), the MCP
+tools in `internal/mcp` (a library nothing here mounts: the server serves no MCP of its own) and
+their documentation. The hosted service's web app and its operations (deployment, hosting, billing) live
 in a private repository. A change here must not depend on them, and the core of the console
 (`web/src`) must not import from outside it.
 

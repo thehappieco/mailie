@@ -16,19 +16,23 @@ password, database or message: describe them instead.
 - One OAuth refresh token or password per mailbox, encrypted at rest with AES-256-GCM under
   `MAIL_CREDENTIAL_KEY_HEX`, with additional data that binds each value to its account and field.
 - The send-hash root, the random key of the hashes a send record keeps of the message it sent,
-  sealed the same way: without it the database cannot confirm a guess of a message. And the salt
-  key, the random key of the salt every address is answered for its password, sealed the same way.
+  sealed the same way: without it the database cannot confirm a guess of a message. Where people
+  sign in with a password here (`MAIL_PASSWORD_SIGN_IN`), the salt key, the random key of the salt
+  every address is answered for its password, sealed the same way; a self-hosted server has no
+  people by default and makes none.
 - For synced mailboxes, an index of metadata: senders and recipients, subjects, dates, sizes,
   folders, flags and the names and types of parts. Message bodies and attachments are fetched on
   request and never stored.
-- For each person, never their password: their browser derives an auth key from it (Argon2id,
+- A self-hosted server has no people: nobody signs in, and its operator acts with API keys. A
+  server whose people sign in with a password, or a database an earlier release's console made,
+  holds for each person, never their password: their browser derives an auth key from it (Argon2id,
   64 MiB), and the server keeps an Argon2id hash of the auth key, the person's account public key,
   their account key wrapped under the password and under a recovery code (which only their browser
   opens), and a hash of the recovery code's proof ([`docs/key-scheme.md`](docs/key-scheme.md)).
   People who signed up before the key scheme and never enrolled keep the Argon2id hash of their
   old password, which nothing checks any more, until a reset invitation enrols them and clears it.
-- Argon2id hashes of API keys, and SHA-256 hashes of session tokens, of the single-use tickets of
-  the sign-in ceremonies, and of invitation and reset codes.
+- Argon2id hashes of API keys; and, where people exist, SHA-256 hashes of session tokens, of the
+  single-use tickets of the sign-in ceremonies, and of invitation and reset codes.
 
 Whoever has both the database file and `MAIL_CREDENTIAL_KEY_HEX` can reach every connected mailbox.
 Whoever runs the server can read the index: the account keys of this release protect no mail yet
@@ -50,13 +54,16 @@ verifier is the same offline oracle.
 - A person's mailbox is invisible to other people, owners included. Changing it or sending from it
   needs that person's own consent, checked again before every command that changes the mailbox and
   before every connection to the submission server. Instance keys belong to the operator and reach
-  only the operator workspace's mailboxes, over REST and MCP alike, never a person's or a team's.
+  only the operator workspace's mailboxes, never a person's or a team's. The server serves no MCP of
+  its own: `/mcp` answers `404`.
 - Mail servers are reached over TLS only, and an account host that resolves to a loopback, private,
   link-local or CGNAT address is refused at dial time unless the operator allows it.
 - Logs redact addresses and credentials and carry ids rather than subjects or content.
-- A console session is a bearer token, never a cookie. Signing in proves an auth key, never a
-  password; a password wrap is answered only to an auth key verified in the same request and a
-  recovery wrap only to a recovery proof, never to a session alone. Every way a sign-in can fail
+- A server with no people (`MAIL_PASSWORD_SIGN_IN` off, the default) refuses every sign-in,
+  sign-up, reset and invitation route (`403`) and every session token, as an unknown one (`401`).
+  Where people sign in, a console session is a bearer token, never a cookie. Signing in proves an
+  auth key, never a password; a password wrap is answered only to an auth key verified in the same
+  request and a recovery wrap only to a recovery proof, never to a session alone. Every way a sign-in can fail
   costs the same work and gets the same answer. Changing the password and replacing the recovery
   code each need the current auth key in the same request: a session alone, however recent its
   sign-in, sets neither. Writing a mailbox's key, giving "read" with a grant to someone else and
@@ -67,7 +74,8 @@ verifier is the same offline oracle.
 - No password reaches the server in any request. The release that brought the key scheme let a
   person who signed up before it send theirs in clear one last time, to enrol; the next release
   removed that upgrade. A person who never enrolled is answered and refused as an address without
-  an account, and a reset invitation from the operator is their way back. Enrolment is one way.
+  an account; a reset invitation an earlier release printed is their way back, and nothing prints
+  one now. Enrolment is one way.
 
 [`docs/architecture.md`](docs/architecture.md) lists the rules that keep these properties, and
 [`docs/backup.md`](docs/backup.md) the threat model of backups.

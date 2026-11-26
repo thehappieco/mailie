@@ -2,34 +2,37 @@
 
 This document is Mailie's REST API, the one the command line, every script and tool, and a web
 console use, and the core of a web console (`web/src`) that an edition with a web page compiles.
-A self-hosted server has no web console: it is run from its command line and used through REST and
-MCP with keys ([README](../README.md)). The open console that earlier releases served was deleted
-(its edition, `web/src/open`, and the panels only it drew); the core it was built on stays, for an
-edition of its own, such as the hosted service's app. Where this document says "the console", it
-means such an edition's page, built on the core, where a person signs in to **their** account and
-connects their own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their
-personal workspace or in a team.
+A self-hosted server has no web console and no people: it is run from its command line and used
+through REST with instance keys ([README](../README.md)), and it serves no MCP of its own
+([`mcp.md`](mcp.md)). The open console that earlier releases served was deleted (its edition,
+`web/src/open`, and the panels only it drew); the core it was built on stays, for an edition of its
+own, such as the hosted service's app. Where this document says "the console", it means such an
+edition's page, built on the core, where a person signs in to **their** account and connects their
+own mailboxes: Gmail, Microsoft 365/Outlook, iCloud Mail and generic IMAP, in their personal
+workspace or in a team. The routes for people ([People and credentials](#people-and-credentials))
+answer only where people exist: a server with `MAIL_PASSWORD_SIGN_IN` on, or a binary whose people
+sign in through an extension.
 
-The MCP server is in [`mcp.md`](mcp.md), backups in [`backup.md`](backup.md), and how to register
-the OAuth clients in the [README](../README.md#mailboxes-and-providers).
+Backups are in [`backup.md`](backup.md), and how to register the OAuth clients in the
+[README](../README.md#mailboxes-and-providers).
 
 ## How it is served
 
 ```
 client ──► mailserver
             /v1/...        → internal/api   (REST)
-            /mcp           → internal/mcp   (unless MAIL_MCP_HTTP=false)
+            /mcp           → the API's JSON 404: no MCP is served (mcp.md)
             /              → internal/webui (an edition's build in MAIL_WEB_DIR), or 404 without one
             /oauth/return  → that edition's page (a page route, not a server one)
 ```
 
 - **API only, on a self-hosted server.** `MAIL_WEB_DIR` is empty there (the image, `compose.yaml`
-  and the systemd unit leave it so): the daemon answers REST and MCP, and `GET /` and every other
-  path outside them `404`.
+  and the systemd unit leave it so): the daemon answers REST, and `GET /`, `/mcp` and every other
+  path outside it `404`.
 - **One origin**, for an edition's page. The page and the API are served by the same process on
   the same origin (`MAIL_PUBLIC_URL`): no CORS, no cookie, and the CSP can say `connect-src
-  'self'`. An edition's development server proxies `/v1` and `/mcp` to the daemon
-  (`127.0.0.1:8080`) for the same effect.
+  'self'`. An edition's development server proxies `/v1` to the daemon (`127.0.0.1:8080`) for the
+  same effect.
 - **`internal/webui`** serves a build from `MAIL_WEB_DIR`, never through `go:embed`, so `go build`
   and `make check` never need Node. Empty (the default) is an API-only daemon. It is mounted last,
   as a catch-all: an unknown path under `/v1/`, `/mcp` or `/.well-known/` answers a **JSON 404**,
@@ -96,14 +99,15 @@ page". Other extension points are `onLiveEvent()`/`onLiveLagged()`/`onLiveAccess
 
 A few of an edition's fields are read by no screen of the core since the panels that read them went
 with the open console: the edition's own pages read them, or its specs set them. They are
-`console` (which the edition's root draws), `copy.mailboxesIntro`, `copy.indexHint`,
-`copy.actionsOff` and `copy.keysSection` (sentences of the mailboxes, a mailbox's sheet, the
-dialog that turned actions off, and a team mailbox's access), `mcp` (whether to show how to connect
-over MCP, where `GET /v1/me/mcp` says the server answers there), `personalKeysOnly` (the server's
-`app.Options.KeysInPersonalWorkspaceOnly`), `syncPause` (an opt-in, as the server's
-`app.Options.SyncPauseOffered`; a paused mailbox, a recovered one included, and its Resume are
-shown either way), `serverRole` (whether the person's role on this server is named) and
-`mailboxAccess` (below).
+`console` (which the edition's root draws), `copy.accountSection`, `copy.mailboxesIntro`,
+`copy.indexHint` and `copy.actionsOff` (the person's own section as other sentences name it, and
+sentences of the mailboxes, a mailbox's sheet and the dialog that turned actions off),
+`personalKeysOnly` (the server's `app.Options.KeysInPersonalWorkspaceOnly`), `syncPause` (an
+opt-in, as the server's `app.Options.SyncPauseOffered`; a paused mailbox, a recovered one included,
+and its Resume are shown either way) and `serverRole` (whether the person's role on this server is
+named). `mcp`, optional, is answered by no route since the server serves no MCP of its own
+([`mcp.md`](mcp.md)): it stays only while an edition still sets it. `copy.keysSection` and
+`mailboxAccess`, which nothing read, are gone.
 
 The core's specs run under an edition of their own (`web/test/edition.ts`, configured by
 `web/test/setup.ts`), which nothing under `web/src` imports: placeholder texts nobody agrees to,
@@ -267,10 +271,6 @@ that draws `ConsoleShell` is built on the same pieces:
   from remembering the workspace for the person's next visit, for a page that should write nothing
   of one: the one remembered before is still read, to choose one when nothing else does. A host
   keeps its address in step with `currentID`, which the core may still change by itself.
-- **Who uses a mailbox, elsewhere.** `mailboxAccess` (`{ href(account), label() }`) says where an
-  edition manages who uses a mailbox and what each may do (a path of this origin, and the link's
-  words): the mailbox's sheet that drew that link went with the open console, and an edition's own
-  pages read it.
 - **Acting on one mailbox, on a page of the edition's own.** A page that acts on one person's
   access to one mailbox, drawn by an edition from the core's state (`state/team.ts`,
   `state/mailboxKeys.ts`) rather than from its panels, gives Read with `giveRead(accountID,
@@ -303,6 +303,28 @@ import). Keep both in mind when you change the core: an edition you cannot see b
 
 ## People and credentials
 
+A self-hosted server has **no people** (platform decision 0065): this section applies where they
+exist, on a server with `MAIL_PASSWORD_SIGN_IN=true` (`config.Config.PasswordSignIn`), whose
+people sign in with a password here, or in a binary whose people sign in only through an extension
+(`app.Options.ExternalSignInOnly`, [below](#signing-in-through-an-extension)), whatever
+`MAIL_PASSWORD_SIGN_IN` says. Neither is set by default, and then:
+
+- `POST /v1/auth/challenge`, `/v1/auth/login`, `/v1/auth/signup/open`, `/v1/auth/signup`,
+  `/v1/auth/reset/open`, `/v1/auth/reset`, `/v1/auth/recover/open` and `/v1/auth/recover/finish`,
+  `POST /v1/users/invites` and `POST /v1/workspaces/{id}/invites` answer `403` `not_authorized`,
+  `this server has no people: nobody signs in, signs up or is invited here; use an instance key
+  made with its command line`, to every caller, an unrestricted instance admin key included; so
+  would changing a password, replacing a recovery code, a step-up and accepting an invitation, at
+  the service, which no session reaches (next);
+- a session token is refused at authentication and at every re-check exactly as an unknown one is,
+  `401` `unauthorized`, `the session has ended; sign in again`, never looked up: every route for a
+  person signed in answers that first. Sessions a database holds stay there, unread;
+- no salt key is made or opened ([Passwords and sign-in](#passwords-and-sign-in)), and the start
+  logs no invitation hint;
+- API keys and every other route are unaffected, the operator's on people and teams included
+  (`POST /v1/users/disable` and `/delete`, `POST /v1/workspaces`, a workspace's members and
+  grants), though the command line calls them only to list, rename, close, reopen and take away.
+
 ### Sessions
 
 A session is an opaque **bearer token, never a cookie**: 32 random bytes in base64url (43
@@ -333,9 +355,11 @@ presented has no minimum.
   enrolled person's own, and for any other address (unknown, disabled, a person with no password,
   a person from before the key scheme who never enrolled) the address's salt under the server's
   salt key and the default parameters, which is also what an account at its target stores, so the
-  answer does not say whether an address has an account. The salt key
-  is made at the daemon's first start and kept in the database sealed like a credential
-  (`meta.kdf_salt_key`, under `MAIL_CREDENTIAL_KEY_HEX` or the KMS key). The browser refuses
+  answer does not say whether an address has an account. The salt key is made at the first start
+  of a daemon whose people sign in with a password (`MAIL_PASSWORD_SIGN_IN`, and no
+  `ExternalSignInOnly`), opened at every start of one, and kept in the database sealed like a
+  credential (`meta.kdf_salt_key`, under `MAIL_CREDENTIAL_KEY_HEX` or the KMS key); any other daemon
+  makes none and leaves one a database holds unopened. The browser refuses
   parameters or a salt outside the platform's bounds before it derives anything.
 - **Signing in.** `POST /v1/auth/login {email, auth_key}` answers the session (its step-up time
   now), and the password wrap, which the browser opens with its wrap key: a wrap that does not
@@ -413,29 +437,31 @@ presented has no minimum.
   checks no password in clear. A person who did not sign in during that release has not enrolled:
   their challenge answers their address's target, and every sign-in of theirs fails as a wrong
   password does, after the same work. Their old hash stays in the database (no migration), and no
-  sign-in reads it, until a reset invitation, below, enrols them and clears it: that is their way
-  back.
-- **A lost password and recovery code.** The operator prints a **reset invitation** with the
-  daemon stopped: `mailserver user password --bootstrap --email X [--force]`. It sets no password:
-  it prints a single-use link, `<MAIL_PUBLIC_URL>/#reset=…&email=…`, valid seven days (the code in
-  the fragment, stored as SHA-256), and changes nothing until it is used. The person's browser asks
-  `POST /v1/auth/reset/open {reset, email}` what the new password is derived under and the wraps
-  bound to, `{salt, kdf, seal_id}`: the account's target, which the reset stores (not what a
-  challenge answers an account off its target), and the person's seal id. It then makes a new
-  account key, password and recovery code and sends `POST /v1/auth/reset {reset, email, auth_key,
-  kdf, public_key, password_wrap, recovery_wrap, recovery_proof}`; in one transaction the server replaces the public key (the one replacement of a
-  key written once), deletes every grant sealed to the old one, ends every session, stops every
-  API key the person created (`account_recovered`) and signs this browser in. The form says so
-  above its button, and the command when it prints the link, with how many keys are live then. A reset takes "read" from the person on every mailbox that has a key, so the command
-  refuses, naming the mailboxes, while the person is the last reader of a team mailbox, a team they
-  are alone in included (closing a person leaves that team out, since it goes with them; a reset
-  leaves it), unless `--force`, which the invitation records; one issued without force checks
-  again when it is opened and when it is used (`409`).
-  A disabled person's link works only once they are enabled again; disabling a person deletes
-  their invitations and tickets. There is no route that makes one, by design. `--email -` reads
-  the address from standard input. It is also how a person who signs in through an extension, and
-  has no password, is given one, and how a person from before the key scheme who never enrolled
-  signs in again: completing it enrols them.
+  sign-in reads it, until a reset invitation, below, enrols them and clears it: that was their way
+  back, and nothing in this release makes one.
+- **A lost password and recovery code.** A **reset invitation** is how a person who lost both gets
+  a new password, a new recovery code and a new account key. **Nothing in this release makes one**:
+  the command that printed it, `mailserver user password --bootstrap`, left with the self-hosted
+  server's people, and there is no route that makes one, by design (`auth.Users.CreateReset` stays,
+  called by nothing). One an earlier release printed is opened and completed by these routes while
+  it is valid, where people sign in with a password: a single-use link,
+  `<MAIL_PUBLIC_URL>/#reset=…&email=…`, valid seven days (the code in the fragment, stored as
+  SHA-256), which changed nothing until it was used. The person's browser asks `POST
+  /v1/auth/reset/open {reset, email}` what the new password is derived under and the wraps bound
+  to, `{salt, kdf, seal_id}`: the account's target, which the reset stores (not what a challenge
+  answers an account off its target), and the person's seal id. It then makes a new account key,
+  password and recovery code and sends `POST /v1/auth/reset {reset, email, auth_key, kdf,
+  public_key, password_wrap, recovery_wrap, recovery_proof}`; in one transaction the server
+  replaces the public key (the one replacement of a key written once), deletes every grant sealed
+  to the old one, ends every session, stops every API key the person created
+  (`account_recovered`) and signs this browser in. The form says so above its button. A reset takes
+  "read" from the person on every mailbox that has a key, so an invitation issued without
+  `--force`, which it records, refuses, when it is opened and when it is used (`409`), while the
+  person is the last reader of a team mailbox, a team they are alone in included (closing a person
+  leaves that team out, since it goes with them; a reset leaves it). A disabled person's link
+  works only once they are enabled again; disabling a person deletes their invitations and
+  tickets. Completing one enrols a person from before the key scheme who never enrolled, and gives
+  a person who signs in through an extension, and has no password, one.
 
 ### The console's half
 
@@ -504,28 +530,26 @@ recovery code, over `web/src/crypto/mailie.ts`), and the order of its requests a
 ### Invitations
 
 Nobody signs up uninvited. An invitation is single-use, valid only for its address, for 7 days, and
-records the role asked for. Its link opens the sign-up of an edition's page: a self-hosted server
-serves none, so nothing there opens it.
+records the role asked for. Its link opens the sign-up of an edition's page. **The command line
+makes none**: `mailserver user invite` answers that it invites nobody and resets no password, and a
+server with no people refuses the routes that make one ([People and credentials](#people-and-credentials)).
+Where people sign in with a password here (`MAIL_PASSWORD_SIGN_IN=true`), they are made through the
+API:
 
-- `mailserver user invite --email X [--role owner|member]` calls `POST /v1/users/invites` with
-  `MAIL_ADMIN_KEY` (an unrestricted instance admin key; a signed-in owner may call the route too)
-  and prints the link, `<MAIL_PUBLIC_URL>/#invite=…&email=…`. The code travels in the fragment,
-  which the browser never sends to a server, and the page removes it as soon as it reads it.
-- `mailserver user invite --email X --workspace ID [--role owner|admin|member]` is a **team
-  invite** (`POST /v1/workspaces/{id}/invites`): a person who already has an account accepts it
-  signed in (`POST /v1/auth/invites/accept`). A new address signs up with it, and joins the team,
-  only when the operator or an instance owner (still active) made it: any person may create a team
-  and invite into it, and that must not be a way to create an account for someone else's address.
-  Anyone else's team invite offered at sign-up is `403` ("sign in with that address and accept
-  it"), whether or not the address has an account, and is not spent. Joining a team gives access to
-  no mailbox. See [Workspaces](#workspaces).
-- `--bootstrap` writes to the database directly, for the first person, while no daemon runs.
-  Without `MAIL_PUBLIC_URL` its link points at `http://localhost:5174` and the command says so.
-  Without `MAIL_PUBLIC_URL` the route answers `409`: a link is never built from a request's `Host`.
+- `POST /v1/users/invites {email, role?}`, by an instance owner signed in or with an unrestricted
+  instance admin key, answers the link, `<MAIL_PUBLIC_URL>/#invite=…&email=…`. The code travels in
+  the fragment, which the browser never sends to a server, and the page removes it as soon as it
+  reads it. Without `MAIL_PUBLIC_URL` this route and the team's answer `409`: a link is never
+  built from a request's `Host`.
+- `POST /v1/workspaces/{id}/invites {email, role?}` is a **team invite**: a person who already has
+  an account accepts it signed in (`POST /v1/auth/invites/accept`). A new address signs up with it,
+  and joins the team, only when the operator or an instance owner (still active) made it: any
+  person may create a team and invite into it, and that must not be a way to create an account for
+  someone else's address. Anyone else's team invite offered at sign-up is `403` ("sign in with that
+  address and accept it"), whether or not the address has an account, and is not spent. Joining a
+  team gives access to no mailbox. See [Workspaces](#workspaces).
 - The invitation decides the role, when it is made; signing up first or last changes nothing. The
-  first owner comes from `user invite --bootstrap --role owner`. Without `--role`, `--bootstrap`
-  makes an `owner` invitation while the server has no active owner and no owner invitation waiting,
-  and a `member` one otherwise; the route's default is `member`.
+  route's default is `member`, so a first owner is invited with `role: owner`.
 - Unused invitations are deleted within 30 days of expiring; a used one stays with the person and
   goes when they are deleted.
 
@@ -595,8 +619,9 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
 - **No password.** Such a person's `password_hash` is empty, they have not enrolled in the key
   scheme's password, and `password_changed_at` is 0. No auth key signs them in (it is checked
   against a dummy verifier, as an unknown address is), and `user.has_password` is `false`. A reset
-  invitation (`user password --bootstrap`) gives them one, and a new account key: it deletes every
-  platform wrap of the old one.
+  invitation gave them one, and a new account key, deleting every platform wrap of the old one, in
+  the releases whose command line printed one; nothing makes one now
+  ([Passwords and sign-in](#passwords-and-sign-in)).
 - **The account key** ([`key-scheme.md`](key-scheme.md) sections 6, 12.8 and 12.10). A provider may
   deliver a product key to the person's page alone, whose public half the extension pins
   (`PinIdentityKey`); the page keeps the person's account key wrapped under it, a platform wrap the
@@ -667,9 +692,11 @@ and the extension tells apart the ones its page acts on by their cause (`errors.
   `/v1/auth/reset/open`, `/v1/auth/reset`,
   `/v1/auth/invites/accept`, `/v1/auth/password/begin` and `/finish`, `/v1/auth/recover/open` and
   `/finish`, `/v1/auth/recovery`, `/v1/auth/stepup`, `/v1/users/invites` and
-  `/v1/workspaces/{id}/invites`. No salt key is made there. The command line's `--bootstrap`
-  commands still write to the database, but an invitation they print signs nobody up there. Left at
-  its zero value nothing changes.
+  `/v1/workspaces/{id}/invites`, with `people sign in to this server another way: passwords and
+  invitations are not used here`, whatever `MAIL_PASSWORD_SIGN_IN` says. Its people's sessions are
+  sessions, though `MAIL_PASSWORD_SIGN_IN` is off. No salt key is made there. Left at its zero
+  value, `MAIL_PASSWORD_SIGN_IN` decides whether anybody signs in at all
+  ([People and credentials](#people-and-credentials)).
 - **`NameFollowsIdentity`** (`app.Options`, `service.Deps`; set only by a binary that embeds the
   daemon, never by `serve`) is a server whose people's names are their identity provider's. Every
   sign-in (`SignInExternal`) names the person its pair signs in as `ExternalSignIn.Name` says then,
@@ -690,15 +717,15 @@ Argon2id hash is stored; the prefix names it in lists and logs. Scopes are order
 `read < write < send < admin`. There are two kinds:
 
 - **Instance keys**, the operator's: any scope, optionally restricted to some of the operator
-  workspace's mailboxes (`--accounts`), at most 365 days. Over REST and MCP alike they reach the
-  operator workspace's mailboxes and nothing else: never a person's. They are managed through the `/v1/apikeys` routes,
+  workspace's mailboxes (`--accounts`), at most 365 days. They reach the operator workspace's
+  mailboxes and nothing else: never a person's. They are managed through the `/v1/apikeys` routes,
   which the daemon mounts only with `MAIL_ADMIN_API=true` (off by default; otherwise they answer
   404). `mailserver apikey create --scope SCOPE --name NAME`, `apikey list` and
   `apikey revoke PREFIX` are clients of those routes, so they need it too. Without it the only way
   to issue one is `mailserver apikey create --bootstrap`, which writes to the database with the
   daemon stopped.
-- **Workspace keys**, which an owner or an admin of a workspace creates signed in (see
-  [API keys](#api-keys) below), scope `read`, `write` or `send`. They act as nobody and reach the
+- **Workspace keys**, which an owner or an admin of a workspace creates signed in, where people
+  exist (see [API keys](#api-keys) below), scope `read`, `write` or `send`. They act as nobody and reach the
   mailboxes of their workspace they hold something on; they are the only way a tool reaches a
   mailbox outside the operator workspace.
 
@@ -935,7 +962,6 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET/POST/DELETE /v1/me/actions-consent` | see [Actions](#actions) | the person's consent to actions |
 | `GET/POST/DELETE /v1/me/send-consent` | see [Sending](#sending) | the person's consent to sending |
 | `GET /v1/me/storage` | read | what the database holds for the mailboxes the caller may read, and the removed ones they list, by usage rule 1; `?workspace=` narrows ([Storage](#storage)) |
-| `GET /v1/me/mcp` | read | `{http, keys_send}`: whether this server answers MCP over HTTP at `/mcp`, and whether its API keys may send (`MAIL_KEYS_MAY_SEND`) |
 | `GET /v1/me/notices`, `DELETE /v1/me/notices/{id}` | session (a key: `403`) | `[PersonNotice]`, the person's notices, the newest first; dismissing one → 204, one they do not have `404` |
 | `GET /v1/me/apikeys`, `DELETE /v1/me/apikeys/{prefix}` | session | the keys the person created, in every workspace; `POST` answers `400` |
 | `GET/POST /v1/workspaces/{id}/apikeys`, `DELETE …/apikeys/{prefix}` | session, owner or admin | the workspace's keys |
@@ -953,9 +979,12 @@ checked by `web/test/contract.spec.ts`: when one side changes, a test breaks.
 | `GET/POST /v1/apikeys`, `DELETE /v1/apikeys/{prefix}` | admin, only with `MAIL_ADMIN_API=true` | every key, with its `workspace_id`; issues instance keys; `mailserver apikey create\|list\|revoke` without `--bootstrap` call these |
 
 `/v1/users/disable` and `/v1/users/delete` carry the address in the body, never in the URL. A
-server whose people sign in only through an extension answers `403 not_authorized` to the routes
-that sign in with a password, sign up or accept an invitation, change a password or create an
-invitation ([Signing in through an extension](#signing-in-through-an-extension)).
+server with no people (`MAIL_PASSWORD_SIGN_IN` off, the default) answers `403 not_authorized` to the
+routes that sign in with a password, sign up, recover or reset a password or create an invitation,
+and `401` to every session ([People and credentials](#people-and-credentials)); a server whose people
+sign in only through an extension answers `403 not_authorized` to the routes that sign in with a
+password, sign up or accept an invitation, change a password or create an invitation
+([Signing in through an extension](#signing-in-through-an-extension)).
 
 There is no current workspace on the server: a session reaches the person's mailboxes in every
 workspace they belong to (a key, only what it holds in its own), and every account (and every storage entry) carries its
@@ -972,7 +1001,7 @@ one rule); `send.reason` `not_granted` is a mailbox the caller may not send from
 signed in it also carries `mailbox_key`, `{epoch, public_key, namespace}`, the mailbox's key pair at
 its current epoch (absent for a mailbox without a key), and `access.waiting_key: true` when they
 hold `read` on a mailbox that has a key without a grant at its current epoch. An API key sees
-neither, over REST or MCP.
+neither.
 
 ## Mailboxes
 
@@ -1494,8 +1523,8 @@ revisions than the daemon's sees every agreement refused, and offers only a relo
 
 `MAIL_KEYS_MAY_SEND` goes with the key terms: `false` is for a console whose key terms do not say a
 key may send. The `send` scope and the `send` flag are then refused when a key is created or given
-a mailbox, every send by a workspace key is refused, and `sends` is `false` on every key, and
-`GET /v1/me/mcp` says `keys_send: false`, so a console offers neither. It defaults to `true` only
+a mailbox, every send by a workspace key is refused, and `sends` is `false` on every key, so a
+console offers neither. It defaults to `true` only
 under the default key terms; a server whose `MAIL_CONSENT_VERSION_KEYS` names other terms
 must set it, or the daemon refuses to start, since only those terms say whether a key may send.
 Those terms are also what a key's actions answer to: a key acts where it is given Act whatever
@@ -1774,7 +1803,7 @@ Each account has `actions: {archive, trash}` in its JSON: whether there is somew
 **Destinations.** `archive` on Gmail moves inbox copies to All Mail; elsewhere, to the synced
 `archive` folder (`409` without one). `inbox` is the inbox. A folder id must be of the same account,
 selectable, synced and not Sent, Drafts, Starred or Important; the trash is refused there (`400`,
-"use the trash action"), because it has a route of its own that an MCP client can hold for
+"use the trash action"), because it has a route of its own that a client can hold for
 confirmation. `trash` without a trash folder, or of a message already in it, is `409`.
 
 ### On the server and in the index
@@ -1923,7 +1952,7 @@ asked. **No subject, address or text.**
 ## API keys
 
 A workspace's keys are its owners' and admins' (in a personal workspace, its person's), for a tool —
-an assistant over MCP, a script over REST — to read the mailboxes they give it and, with `write`,
+an assistant or a script, over REST — to read the mailboxes they give it and, with `write`,
 act on them, with `send`, send from them. Creating a key is its creator's agreement to the key
 terms, which say what a tool holding it can do. Only an owner or an admin **signed in** lists,
 creates and revokes the workspace's keys and changes what they hold: any key, the new one included,
@@ -1997,8 +2026,9 @@ revoking and taking away stay ([`workspaces.md`](workspaces.md#api-keys)).
   `confirm: true`, at most 100 a day; the message goes out under the address alone; its record is
   the key's own, and its owners and admins list its sends.
 
-`GET /v1/me/mcp` says whether the server answers MCP over HTTP at `<origin>/mcp` (`http`) and
-whether its keys may send (`keys_send`), for an edition that shows how to connect a tool.
+Whether a key may send is each key's `sends`: the `send` scope, on a server whose keys may send
+(`MAIL_KEYS_MAY_SEND`). No route says where MCP is: the server serves none of its own
+([`mcp.md`](mcp.md)).
 
 The operator's own keys, instance keys, are `/v1/apikeys` (`mailserver apikey create|list|revoke`),
 mounted only with `MAIL_ADMIN_API=true` ([Keys and scopes](#keys-and-scopes)).
@@ -2013,16 +2043,15 @@ dependencies and runs its typecheck and unit tests (Node 24), under the specs' o
 
 ## Not implemented
 
-- Drafts kept on the server, composing HTML, the MCP tools that send, and webhooks. Permanent
-  deletion does not exist and will not.
+- Drafts kept on the server, composing HTML and webhooks. Permanent deletion does not exist and
+  will not.
 - Searching message bodies.
 - Self-service sign-up, email verification, password recovery by email (the recovery code
-  recovers a forgotten password, and the operator's reset invitation a lost recovery code too:
-  [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
-- A web screen of any kind on a self-hosted server: the people commands and routes exist
-  (`mailserver user|workspace|member|access`, `POST /v1/users/*`), with no page of this repository
-  behind them.
-- OAuth for MCP clients: `/mcp` takes a key as a bearer.
+  recovers a forgotten password: [Passwords and sign-in](#passwords-and-sign-in)), passkeys.
+- People, a web screen of any kind and MCP on a self-hosted server: it has no people unless
+  `MAIL_PASSWORD_SIGN_IN` says so, no page of this repository is behind the people routes, the
+  people commands left (`mailserver user|workspace|member|access`) only list and take away, and
+  `/mcp` answers `404` ([`mcp.md`](mcp.md)).
 - Replacing the stored password of a password mailbox.
 - Periodic cleanup of expired sessions (they stay with the account; unused invitations are swept).
 - The device-code flow on a web page.

@@ -68,15 +68,17 @@ nor destroy the backups it made:
   `Decrypt` with the backup's `ref`.
 - **Retention is the bucket's.** A lifecycle rule on `db/` expires backups. With no versioning,
   Object Lock or replication, nothing keeps a copy after that.
-- **The credentials inside stay encrypted**, with the send-hash root and the salt key, under the
+- **The credentials inside stay encrypted**, with the send-hash root and any salt key, under the
   credential key in use when the backup was taken (`MAIL_CREDENTIAL_KEY_HEX`, or a key of
   `MAIL_CREDENTIAL_PREVIOUS_KEYS` whose rows had not been rewrapped yet), which is not in the
   backup. Keep those keys apart, and keep a key retired by a rotation for as long as any backup
   sealed under it is kept: `rewrap-credentials` re-seals the live database, never a backup. Without
-  the key a restored database has the people and the index, but the daemon refuses to start until
-  `mailserver rewrap-credentials --new-send-hash-root --new-salt-key` has replaced the root and the
-  salt key (add `--kms-key-lost` for a KMS key lost for good), and every mailbox has to be
-  authorized again; each person moves to their new salt at their next sign-in. Under `MAIL_CREDENTIAL_KMS_KEY_ARN` they are sealed under data keys of
+  the key a restored database has the index (and any people an earlier release's console made),
+  but the daemon refuses to start until `mailserver rewrap-credentials --new-send-hash-root` has
+  replaced the root, with `--new-salt-key` beside it when the database holds a salt key (one is made
+  only where people sign in with a password, `MAIL_PASSWORD_SIGN_IN`, whose daemon opens it too; add
+  `--kms-key-lost` for a KMS key lost for good), and every mailbox has to be authorized again; each
+  person then moves to their new salt at their next sign-in. Under `MAIL_CREDENTIAL_KMS_KEY_ARN` they are sealed under data keys of
   the credentials' own KMS key instead, which open only on a server that key's policy lets decrypt,
   with the same `MAIL_ENV` ([`self-hosting.md`](self-hosting.md#credentials-under-aws-kms)).
 

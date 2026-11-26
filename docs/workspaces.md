@@ -19,6 +19,17 @@ screens. Where this document had to choose between readings of the plan, or foun
 conflicts with the code or with another rule, it says so in
 [Conflicts and resolutions](#conflicts-and-resolutions).
 
+**On a self-hosted server** (platform decision 0065) there are no people: its operator acts with
+instance keys on the operator workspace's mailboxes, nobody signs in (`MAIL_PASSWORD_SIGN_IN` off,
+the default: the password and invitation routes are `not_authorized` and every session
+`unauthorized`), and the command line creates and widens nothing of people and teams
+([Command line](#command-line)). Personal and team workspaces, their members, grants and keys are
+the core's all the same: the hosted service, built on it, signs its people in through an extension,
+and a database the open console of earlier releases made still holds them, which the README's
+"Moving from the open console" empties. Where this document says MCP, it means `internal/mcp`, the
+tools kept as a library that nothing in this repository mounts ([`mcp.md`](mcp.md)): the rules
+they follow are the service's, as REST's are.
+
 ## In short
 
 - Every mailbox belongs to a **workspace**: a person's **personal** workspace, a **team**
@@ -64,8 +75,9 @@ conflicts with the code or with another rule, it says so in
 - The same address may be linked in several workspaces; each link is an independent mailbox with
   its own credentials, worker and index. Within one workspace an address is linked at most once,
   and a Gmail account once under every spelling of its address.
-- `users.role` (`owner`, `member`) is purely the **instance role** of a self-hosted server. It
-  gives no mailbox visibility. The first owner comes only from `user invite --bootstrap`.
+- `users.role` (`owner`, `member`) is purely the **instance role** of a server whose people sign
+  in with a password here. It gives no mailbox visibility. The first owner comes only from an
+  owner's invitation (`POST /v1/users/invites` with `role: owner`).
 - Migration 0008 created the workspaces and rebuilt `accounts`; 0009 set right what 0008 could not
   change; **0011** makes team mailboxes their team's (see [Migration 0011](#migration-0011));
   **0012** moves every key into its workspace (see [Migration 0012](#migration-0012)).
@@ -324,9 +336,12 @@ keeps syncing meanwhile under their consent.
 - It gives **no mailbox visibility**. Mailboxes nobody's are the operator workspace's, reached only
   by instance keys and the command line. No person ever gets operator powers through the operator
   workspace.
-- The first owner comes only from `mailserver user invite --bootstrap --role owner`. The rule
-  "whoever signs up first becomes an owner, whatever the invite says" (`auth.SignUp`) is gone (see
-  [conflict 6](#conflicts-and-resolutions) for the bootstrap default).
+- The first owner comes only from an owner's invitation: `POST /v1/users/invites` with
+  `role: owner`, by an unrestricted instance admin key, where people sign in with a password here
+  (`MAIL_PASSWORD_SIGN_IN`). The command line's `user invite --bootstrap --role owner`, which made
+  it until the self-hosted server lost its people, is gone. The rule "whoever signs up first becomes
+  an owner, whatever the invite says" (`auth.SignUp`) is gone too (see
+  [conflict 6](#conflicts-and-resolutions) for the bootstrap default it had).
 
 A person who is not active is either **disabled here** or **suspended** (migration 0018).
 `users.status` is `active` or `disabled`, and a disabled person whose `users.suspended_at` is set
@@ -925,7 +940,8 @@ at least one reader is never left with none. A reader is an active member, activ
 holding `read`, and on a mailbox that has a key a grant at its current epoch; keys, disabled
 members, people disabled or suspended on the instance, a member waiting for the key and a role on
 its own never count ("ownership is not a recovery path"), and taking a waiting member's flag leaves the readers as they were. The reset of a
-person's account key (`mailserver user password --bootstrap`) deletes their grants and keeps their
+person's account key (a reset invitation, which an earlier release's `mailserver user password
+--bootstrap` printed and nothing prints now) deletes their grants and keeps their
 flags, so it refuses, without `--force`, only where they are the last reader of a team mailbox
 **that has a key**; on one without, they keep reading by the flag. After a forced reset, a team
 mailbox left with no reader stops syncing. Removing the mailbox is not guarded, nor is a role
@@ -951,8 +967,9 @@ removed (closing the linker stops the consent and deletes the index the removed 
 recovery). A team whose source is not local has no
 last owner here: its owners are decided where it comes from, so no count of its members here marks
 one (`last_owner`) or holds back closing one. The instance's own last-owner rule stays as
-it is. With `force`, a team can be left without an owner (the operator assigns one with `mailserver
-member role`), a team mailbox without a reader, which then syncs nothing and is marked
+it is. With `force`, a team can be left without an owner (the operator assigns one with
+`PATCH /v1/workspaces/{id}/members/{user}`, the route the command line's `member role` called
+before it went), a team mailbox without a reader, which then syncs nothing and is marked
 `no_reader`, and a bound mailbox stopped with its index deleted.
 A suspension (see [People on the instance](#people-on-the-instance)) is refused by none of these,
 and while suspended a person counts in none of them: not as another owner, another reader, or the
@@ -1144,8 +1161,8 @@ expired stops at the next re-check, before every answer. `ErrKeyNarrowed` (`409`
 an operator key whose restriction lost a mailbox.
 
 **MCP.** Tools and resources call the same service methods and see exactly what the key holds;
-`AuthenticateTool` keeps refusing sessions on `/mcp`, and a key nobody agreed to the key terms
-through, which migration 0012 revoked, everywhere.
+`AuthenticateTool` keeps refusing a session as a tool's credential, and a key nobody agreed to the
+key terms through, which migration 0012 revoked, everywhere.
 
 ### Keys an issuer makes
 
@@ -1677,22 +1694,22 @@ console's types and `web/test/contract.spec.ts` hold them to the new fields.
 ## Command line
 
 The command line stays a client of the daemon with `MAIL_ADMIN_KEY`, the operator. Addresses take
-`--email -` as elsewhere.
+`--email -` as elsewhere. It invites nobody and sets no password, and it creates and widens nothing
+of people and teams (platform decision 0065): the people commands left list, rename, close, reopen
+and take away, for a database that holds people, one the open console of earlier releases made
+(the README's "Moving from the open console").
 
 ```sh
 mailserver workspace list
-mailserver workspace create --name NAME --owner EMAIL
 mailserver workspace rename --workspace ID --name NAME
 mailserver workspace close  --workspace ID     # a local team: nothing in it is used until it reopens
 mailserver workspace reopen --workspace ID
 mailserver member list   --workspace ID
-mailserver member role   --workspace ID --email EMAIL --role owner|admin|member
 mailserver member remove --workspace ID --email EMAIL
 mailserver access list   --workspace ID
-mailserver access grant  --account ID --email EMAIL --manage
 mailserver access revoke --account ID --email EMAIL [--read] [--act] [--send] [--manage]   # none: every flag
-mailserver user invite --email EMAIL [--role owner|member]                      # an instance invite
-mailserver user invite --email EMAIL --workspace ID [--role owner|admin|member] # a team invite
+mailserver user disable  --email EMAIL [--force] [--bootstrap]
+mailserver user delete   --email EMAIL [--force] [--bootstrap]
 mailserver account rename  ID NAME             # an operator mailbox's name; "" clears it
 mailserver account remove  ID [--yes]           # an operator mailbox: kept 30 days, recoverable
 mailserver account removed [--workspace ID]     # the operator workspace's by default; any workspace's
@@ -1704,32 +1721,35 @@ mailserver apikey hold     SELECTOR             # a key an extension's issuer ma
 mailserver apikey release  SELECTOR             # that hold lifted, and nothing else
 ```
 
+- **Gone:** `workspace create`, `member role` and `access grant` (each the usage, exit 2), and
+  `user invite` and `user password`, which answer, with no database opened and nothing asked of the
+  daemon, `user invite: the command line invites nobody and resets no password: the operator acts
+  with instance keys, which apikey create makes` (`user password: …` for the other). The routes
+  behind the first three stay, for the operator's key (`POST /v1/workspaces` with `owner_email`,
+  `PATCH /v1/workspaces/{id}/members/{user}`, `PUT /v1/accounts/{id}/access/{user}`); the
+  invitation routes are refused where nobody signs in with a password
+  ([`console.md`](console.md#people-and-credentials)).
 - `workspace close` and `reopen` take a local team only; `workspace list` notes a closed one
-  (`closed since …`). See [Closed teams](#closed-teams).
-- `access grant` grants `manage` only, to a member: `read` passes from an owner or an admin who
-  reads the mailbox, and `act` and `send` from an owner or an admin, in the console
-  ([conflict 7](#conflicts-and-resolutions)). `access list` shows each mailbox's own consent to sync
-  and marks one nobody can read.
+  (`closed since …`). See [Closed teams](#closed-teams). `workspace rename` renames a team.
+- `access list` shows each mailbox's own consent to sync and marks one nobody can read;
+  `access revoke` takes flags away from a member's grant, every flag when none is named.
 - `account add|list|authorize|folders|remove|sync` and `apikey` keep working, on the operator
   workspace. `account list` no longer lists people's mailboxes; `account remove` repeats the id
   (`?confirm=`). `apikey create` issues operator keys; `apikey list` lists every key with its
   workspace (`several` for a carried-over one) and, for a workspace key, the mailboxes it holds
-  (`none` when it holds none); `apikey revoke` revokes any key. A workspace's keys are created in
-  the console only.
+  (`none` when it holds none); `apikey revoke` revokes any key. A workspace's keys are created by
+  its owners and admins signed in, which nobody is on a self-hosted server.
 - `account remove` says until when the mailbox is kept, or that one that never connected was
   deleted at once. `account removed` lists a workspace's removed mailboxes (the operator workspace's
   without `--workspace`), with who removed each, until when it is kept, whether its index is kept
   and how many people would read it again; `account recover` recovers an operator mailbox only (a
-  person's or a team's is its owners' to recover, in the console), and says what its sync came
+  person's or a team's is its owners' to recover, signed in), and says what its sync came
   back as: paused until `account sync ID resume`, or off until `account sync ID on`;
   `account purge` deletes a removed mailbox of any workspace for good, after
   asking (`--yes` does not), to erase one when its person asks. `account sync ID off` turns any
   workspace's mailbox's sync off and deletes its index, after asking, removed ones too: a team's
   owners or admins, or a personal mailbox's person, turn it on again ([Consents](#consents)). See
   [Removed mailboxes](#removed-mailboxes).
-- `user invite --bootstrap` takes `--workspace` too. Without `--role`, `--bootstrap` makes an
-  `owner` invite while the instance has no active owner and no live owner invite, and a `member`
-  invite otherwise ([conflict 6](#conflicts-and-resolutions)).
 - `user disable|delete` take `--force` for the protections (the last owner of a team, the last
   reader of a team mailbox) as for the last instance owner; without it the daemon's refusal, which
   the command prints, names the teams and mailboxes it is about. With `--bootstrap` they run the
@@ -3236,11 +3256,14 @@ Test names state the guarantee. At least:
    The docs say `--role owner` explicitly. An invite an earlier release made, still waiting when the
    server is upgraded with nobody on it, is the owner's it was meant to be:
    [0009](#migration-0009) makes the oldest one an owner invite. And the daemon warns at start when
-   people exist and nobody administers the server.
+   people exist and nobody administers the server. (Since platform decision 0065 the command line
+   invites nobody, and the warning is said only where people sign in with a password and a page is
+   served.)
 7. **`access grant` from the command line.** The operator holds no flag on anyone's mailbox and
    reads none, so it cannot grant `read`; letting it grant `act` or `send` would hand the operator
    people's mail by proxy, which the plan's own instance-key rule forbids. *Resolution:* the command
-   grants `manage` only, to members, and revokes anything.
+   grants `manage` only, to members, and revokes anything. (Since platform decision 0065 the
+   command line grants nothing: `access grant` is gone, `access revoke` stays.)
 8. **Withdrawing sync consent reached team mailboxes.** Phase 2's consequence of syncing under the
    linker's consent, warned about in the console. *Resolution (2026-10-06):* reversed: a person's
    withdrawal deletes their personal mailboxes' index only. A team mailbox's index goes when an owner
@@ -3465,7 +3488,8 @@ Test names state the guarantee. At least:
 
 ## Not in this phase
 
-- A send tool over MCP (the planned draft and confirmed send); keys send over REST.
+- MCP on a self-hosted server, which serves none of its own (platform decision 0065; the tools are
+  kept as a library, with no send tool); keys send over REST.
 - Deleting a team workspace but with its last member; moving a mailbox between workspaces (link it
   again instead).
 - Closing a team from the console, or by its owners: the operator closes a local team, and a

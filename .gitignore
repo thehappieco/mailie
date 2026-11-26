@@ -6,7 +6,9 @@
 *.test
 *.out
 
-# The open console's dependencies and build, which `make web-build` recreates
+# The console core's dependencies (make web-install). web/ builds nothing now;
+# /web/dist/ is the build an earlier release's `make web-build` left behind,
+# kept ignored so that a checkout updated past it stays clean.
 node_modules/
 /web/dist/
 

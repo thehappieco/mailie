@@ -5,6 +5,10 @@
 - Status: written with the specification, before any server or console code that runs it, for the
   external review. It says what each party can and cannot do, and what remains possible; where a
   defence holds only against part of an actor, it says which part.
+- Where it applies: "self-hosted" names a server whose people sign in with a password, which the
+  core does only where `MAIL_PASSWORD_SIGN_IN` is on. A self-hosted server has no people by default
+  (platform decision 0065): nobody signs in, its operator mailboxes have no key (spec §12.15), and
+  only section 4.10 (an API key) applies to it.
 
 ## 1. In one paragraph
 
@@ -376,8 +380,10 @@ whether taking "read" re-keys it and seals again for the others (Wappie has not 
 
 A self-hosted person who loses both their password and their recovery code, and a hosted person
 who loses both id.'s password and its recovery code, lose their account key. The operator's reset
-(spec §12.6) gives a new key and deletes the old grants: the person's personal mailboxes are
-re-keyed, and a reader supplies them the key of a team's again. The reset is refused without force
+(spec §12.6), where one is issued, gives a new key and deletes the old grants; nothing in the core
+issues one now (spec Appendix C, 2026-11-25), so such a person is closed and comes back as a new
+one, as a hosted person always did. Where a reset is completed, the person's personal mailboxes
+are re-keyed, and a reader supplies them the key of a team's again. The reset is refused without force
 while the person is the last reader of a team mailbox, since deleting their grant would leave it
 with no reader, and a team mailbox is never re-keyed; with force (the key is truly lost, and the
 grant opens nothing anyway), such a mailbox can only be removed, deleted for good and linked

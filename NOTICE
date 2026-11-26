@@ -20,8 +20,9 @@ Each dependency carries its own licence; go.mod and go.sum, and the console's
 web/package-lock.json, record the versions used. The IMAP, MIME and SASL
 layers build on the emersion projects (go-imap, go-message, go-sasl, go-smtp;
 MIT), SMTP submission on github.com/wneessen/go-mail (MIT), the Model Context
-Protocol server on github.com/modelcontextprotocol/go-sdk (Apache-2.0, with
-earlier contributions under MIT), storage on modernc.org/sqlite
+Protocol tools kept as a library (internal/mcp, which the binary no longer
+builds in) on github.com/modelcontextprotocol/go-sdk (Apache-2.0, with earlier
+contributions under MIT), storage on modernc.org/sqlite
 (BSD-3-Clause), which embeds SQLite (public domain), backups and the
 credentials under AWS KMS on the AWS SDK for Go v2 (Apache-2.0), and the
 envelope of those credentials on The Happie Co kit (Apache-2.0). The

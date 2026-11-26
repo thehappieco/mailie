@@ -1,33 +1,41 @@
 # Mailie
 
-A Go server that exposes REST and MCP over several mail accounts (Gmail, Microsoft 365, iCloud,
-generic IMAP). A local SQLite index; bodies and attachments on demand; IMAP IDLE for new mail;
-sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this file.
+A Go server that exposes REST over several mail accounts (Gmail, Microsoft 365, iCloud, generic
+IMAP). A local SQLite index; bodies and attachments on demand; IMAP IDLE for new mail; sending over
+SMTP with XOAUTH2. A self-hosted server has no people and serves no MCP of its own (platform
+decision 0065): an operator, instance keys made with the CLI, and REST. `docs/architecture.md` is
+the long form of this file.
 
 ## Layout
 
-- `cmd/mailserver` — one binary: `serve`, `account`, `apikey`, `user`, `migrate`,
-  `rewrap-credentials`, `backup`, `mcp connect|install`; `apikey hold|release SELECTOR`, beside
+- `cmd/mailserver` — one binary: `serve` (no flag), `account`, `apikey`, `user disable|delete`,
+  `workspace list|rename|close|reopen`, `member list|remove`, `access list|revoke`, `migrate`,
+  `rewrap-credentials`, `backup`; `apikey hold|release SELECTOR`, beside
   `apikey create|list|revoke`, holds and releases a key an extension's issuer made (the operator's
   stop, `PUT|DELETE /v1/issued-keys/{selector}/hold`, outside `MAIL_ADMIN_API`). The CLI is a REST client of the daemon; only
-  `apikey create --bootstrap`, `user invite|disable|delete|password --bootstrap` (`password` prints a
-  reset invitation, never sets one), `migrate` and
+  `apikey create --bootstrap`, `user disable|delete --bootstrap`, `migrate` and
   `rewrap-credentials` open the database directly, and they refuse to run while the daemon is up.
   The one exception to the lock is `backup`: it reads the database with the daemon up, through a
   `mode=ro` connection that writes nothing, and takes no lock. `backup` and `backup restore` load
   their own configuration (`config.LoadBackup`/`LoadRestore`) before `config.Load`; a restore runs
   wherever the backups may be decrypted, with none of the daemon's variables (`make backup-tool`
-  builds a Linux binary for it). `mcp connect` and `mcp install` run beside an MCP client, on any
-  machine, before `.env` and `config.Load`: they need no `MAIL_*` variable and touch no database.
-  `connect` is a stdio MCP server relaying to a server's `/mcp` with the key from `MAILIE_API_KEY`;
-  `install` writes Claude Desktop's or Cursor's configuration (atomic, 0600, one `.bak-mailie`, empty
-  when there was no file, never from `--uninstall`; no symbolic link below the home on the way) after
-  checking the key, and for Claude Code only prints the command. The key is never an argument.
-  Nor is a mailbox's password: `account add --password` takes only `-` (typed at a prompt that does
+  builds a Linux binary for it). The CLI invites nobody and sets no password (platform decision
+  0065): `user invite` and `user password` are named only to refuse, a plain error before anything
+  is opened or asked; `workspace create`, `member role` and `access grant` are gone (usage); the
+  people commands left list, rename, close, reopen and take away, for a database the open console
+  left (the README's "Moving from the open console"). `mcp`, whatever follows, is `errNoMCP`
+  (exit 1), answered before `.env` and `config.Load`; `mcp connect|install` and
+  `internal/mcpbridge` are gone. A mailbox's password is never an argument: `account add
+  --password` takes only `-` (typed at a prompt that does
   not show it, or the first line of standard input, its line ending alone taken off, at most 4096
-  bytes; any other value refused before anything is sent, `errPasswordArgument`), and `account
+  bytes; any other value refused before anything is sent, `errPasswordArgument`; `hidden.go`, the
+  portable hidden entry), and `account
   add` and `account authorize` say where the mailbox's sync stands, as the daemon answered it
-  (`mailboxSyncNote`: held, paused, on, else off until `account sync ID on`).
+  (`mailboxSyncNote`: held, paused, on, else off until `account sync ID on`). `account authorize`
+  of a mailbox that is `active` never says authorised: a working mailbox's new grant changes no
+  state the daemon exposes, so loopback opens the consent page and returns (`showConsentPage`) and
+  `--device` is refused before anything starts; `--paste` and a failed or pending mailbox wait as
+  before.
 - `internal/app` — the daemon's assembly (`app.Run`), which `serve` calls and another binary may
   too; `Options.Extensions` mounts routes before the console's catch-all, refused at start if one
   names a host, duplicates or would take a request from a core route. An extension signs people in
@@ -49,8 +57,12 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
   the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
   `Options.ExternalSignInOnly` (never set by `serve`) has the service
-  refuse every password and invitation route, and `Options.TeamsWithheld` (never set by `serve`,
-  an edition's choice, not a workspace source) every use of a team, by a person or a key: teams
+  refuse every password and invitation route (`errExternalSignInOnly`) and take its extension's
+  sessions whatever `MAIL_PASSWORD_SIGN_IN` says; without it, `cfg.PasswordSignIn` decides whether
+  anybody signs in (`Deps.PasswordSignIn`), and the salt key is made and opened only where it is on
+  and `ExternalSignInOnly` is not (`openKDFSaltKey`; anywhere else none is made, one a database holds
+  left unopened). `Options.TeamsWithheld` (never set by `serve`,
+  an edition's choice, not a workspace source) refuses every use of a team, by a person or a key: teams
   listed `withheld`, their mailboxes listed nowhere and synced by none (the store's rule), nothing
   of them deleted. `Options.KeysInPersonalWorkspaceOnly` (never set by `serve`, an edition's
   choice too) keeps API keys to personal workspaces: creating a key in a team and raising what a
@@ -83,8 +95,14 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   `serve`) refuses every issued key, at authentication and every re-check, while their records
   still apply, and reports each live one stopped (`withdrawn`). The hourly housekeeping, at start
   too, records the end of the issued keys that expired and deletes what is no longer kept of them
-  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`). At every start, a page or none, `--mcp-stdio`
-  included, the daemon warns of the mailboxes outside the operator workspace, which no instance
+  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`). It serves no MCP (no `Options.MCPStdio`, no
+  `mcp.New`): `coreRoutes` mounts `/mcp` and `/mcp/` as `webui.NotFound()`, the API's JSON 404 for
+  every method, with a console or without, and the start says once at warn which retired
+  variables still ask for MCP (`cfg.RetiredMCP`, names only, `variables`). With no key it warns
+  `no api keys exist yet; nothing can call this daemon`, or says at info that only console sessions
+  can where a page is served and people sign in; the invitation hints (`firstInviteHint`) only where
+  people sign in with a password and `MAIL_WEB_DIR` or `MAIL_PUBLIC_URL` is set. At every start, a
+  page or none, the daemon warns of the mailboxes outside the operator workspace, which no instance
   key reaches (`warnWorkspaceMailboxes`, `workspacemailboxes.go`: one line at warn with
   `personal_live`, `personal_removed`, `team_live` and `team_removed`, and a hint naming the
   README's "Moving from the open console"; counts only, never an address, a label or an id;
@@ -92,6 +110,11 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   and never stops the start).
 - `internal/config` — env only (`MAIL_*`) plus `.env`; `Load()` returns every error at once;
   `String()` redacts secrets, and names the credentials' sealer, never a KMS key's ARN.
+  `PasswordSignIn` (`MAIL_PASSWORD_SIGN_IN`, default false, beside `KeysMaySend`; `password_sign_in`
+  in `String()`): whether people sign in with a password here; off, the server has no people.
+  `RetiredMCP` names, in order, `MAIL_MCP_HTTP`, `MAIL_MCP_KEY` and `MAIL_MCP_ELICIT_SEND` where the
+  environment sets one to ask for MCP (the key when non-empty, the two booleans unless
+  `strconv.ParseBool` reads false; empty is unset): read by nothing else, refused by nothing.
 - `internal/obs` — `log/slog` with redaction of addresses and credentials (an own key's secret
   after its prefix, and the generic shape of an issued key's after its selector), Prometheus
   metrics.
@@ -244,7 +267,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   revocations (`endWaysInTx`, `RevokeCreatedBefore`) read `issuer = ''`: a disable here gives the
   person's issued keys the `creator` stop instead (`stopIssuedKeysOfTx`, never revoked here),
   `Suspend` (an extension's, outside a directory's documents) too, and `ResumeTx` lifts it once they
-  are active. Also the console's people: users (instance
+  are active. Also the console's people, where a server has any (a self-hosted one has none unless
+  `MAIL_PASSWORD_SIGN_IN` is on): users (instance
   roles `owner`/`member`; active, disabled here, or suspended by an extension (`Suspend`/`Resume`,
   `suspended_at`, migration 0018: `status = 'disabled'` with the grants kept, unusable, until a
   resume; a disable here clears it and stands over it); a password the server never receives: the
@@ -253,7 +277,8 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   never enrolled is checked by nothing, and a reset invitation clears it), sessions (a 43-character opaque token stored as SHA-256, 14 days at most,
   never extended, with a step-up time; signing out everywhere, `EndAllSessions`, records its moment
   in the same write, `users.signed_out_everywhere_at`, which nothing else that ends sessions does),
-  the ceremonies' single-use tickets and reset invitations,
+  the ceremonies' single-use tickets and reset invitations (`CreateReset`, which nothing calls since
+  the CLI's `user password` went: the routes complete one an earlier release issued),
   and single-use invites, to the instance or into a team.
   External identities (issuer + subject, linked only to the new person a first sign-in with a
   verified address creates; an existing address is a conflict, never a link) and their key pins
@@ -390,7 +415,15 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   between calls as a worker's is (`store.PausedAccounts`). Every sync login records what the
   server is when it changed (`account.Repository.SetServerKind`).
 - `internal/service` — the use cases and all authorization, access to mailboxes included; a
-  concrete struct, not an interface. `issuedkeys.go`: keys an issuer makes (`KeyIssuer`: `Claim`,
+  concrete struct, not an interface. Whether anybody signs in is decided here (`external.go`):
+  `passwordsInUse` refuses every route that signs in with a password, signs up, recovers or resets
+  a password, changes a password or a recovery code, steps up, or creates or accepts an invitation,
+  `errExternalSignInOnly` first under `Deps.ExternalSignInOnly`, else `errNoPeople`
+  (`not_authorized`, "this server has no people: …") without `Deps.PasswordSignIn`; `hasPeople`
+  (either one) is what lets `Authenticate` look a session up at all, and `Recheck` keep one: on a
+  server with no people a session is `auth.ErrInvalidSession`, the `401` of an unknown token, never
+  looked up. API keys are untouched by either. No route says where MCP is (`GET /v1/me/mcp` and
+  `MCPAccess` went); a listed key's `sends` folds in `MAIL_KEYS_MAY_SEND`. `issuedkeys.go`: keys an issuer makes (`KeyIssuer`: `Claim`,
   `Verify`, `Used`, never blocking), the bearer read in one place for every transport (`Bearer`:
   one value, `Bearer` in any case, one space, at most 4096 bytes, never trimmed), a credential the
   issuer claims checked first and never reaching own keys or sessions, a session's shape never
@@ -507,21 +540,20 @@ sending over SMTP with XOAUTH2. `docs/architecture.md` is the long form of this 
   issued key (`PUT|DELETE /v1/issued-keys/{selector}/hold`); a link at the provider's routes sit beside
   `POST /v1/accounts/oauth/callback` (`/v1/accounts/oauth/links[/{id}]`, never under
   `/v1/accounts/{id}`, whose GETs one would overlap), and the callback waits 70 s, a link's checks,
-  its take and its finish. `internal/mcp` — tools, resources and the
-  transports (stateful Streamable HTTP at `/mcp` unless `MAIL_MCP_HTTP=false`, stdio); one
-  `sdk.Server` per session, for the key that opened it, with the same tool definitions for the whole
-  process (the SDK's `SchemaCache` keeps each schema by pointer, forever), and an event store of its
-  own bounded in bytes and age. Both are thin adapters over `internal/service`
-  (`AuthenticateTool` decides what a tool reaches). See `docs/mcp.md`.
-- `internal/mcpbridge` — the relay behind `mcp connect`: the go-sdk's stdio transport towards the
-  client and its Streamable HTTP client towards the server, copying JSON-RPC messages unread. It adds
-  what that client does only inside the SDK's own session (the `MCP-Protocol-Version` header, the
-  standalone GET stream), opens a session the server ended again with the client's own `initialize`
-  and subscriptions, never follows a redirect, and sends the key only to the endpoint. `Check` opens
-  and closes a session with a key. See `docs/mcp.md`, "Connect a client".
+  its take and its finish. The API's own `/.well-known/oauth-*` mounts went with MCP (both a 404).
+  `internal/mcp` — tools, resources and the transports (stateful Streamable HTTP, `HTTPHandler`;
+  stdio, `RunStdio`), kept with its tests as a library **nothing in this repository mounts**: a
+  self-hosted server serves no MCP of its own (platform decision 0065), and no binary built here
+  links it or the go-sdk. It stays for a later binary that serves MCP over the same service (MCP
+  through the hosted service, for a connected server). One `sdk.Server` per session, for the key
+  that opened it, with the same tool definitions for the whole process (the SDK's `SchemaCache`
+  keeps each schema by pointer, forever), and an event store of its own bounded in bytes and age.
+  Both are thin adapters over `internal/service` (`AuthenticateTool` decides what a tool reaches).
+  See `docs/mcp.md`.
 - `internal/webui` — serves an edition's built page from `MAIL_WEB_DIR` (via `os.Root`), mounted
   last (a self-hosted server sets none: the API only, `GET /` a 404);
-  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths; what an embedding binary adds
+  a JSON 404 for unknown `/v1/`, `/mcp` and `/.well-known/` paths (`NotFound`, which the core
+  also mounts at `/mcp` itself, a console or none); what an embedding binary adds
   to its page documents and beside them is `Pages` (`pages.go`, `NewWith`), which never weakens
   the page's own headers. It is also a transport for depguard.
 - `web/` — the console's **core**: Vue 3 + TS, with no router, Pinia or UI library, which an
@@ -564,21 +596,26 @@ cp .env.example .env            # fill MAIL_CREDENTIAL_KEY_HEX (openssl rand -he
 make build
 ./bin/mailserver apikey create --bootstrap --scope admin --name cli   # no daemon, like every --bootstrap
 export MAIL_ADMIN_KEY=<the printed key>
-./bin/mailserver serve          # 127.0.0.1:8080, MCP at /mcp, stdio with --mcp-stdio
+./bin/mailserver serve          # 127.0.0.1:8080, REST only: no people, no MCP
 ```
 
 Then, beside the daemon: `./bin/mailserver account add --email you@icloud.com --password -` (the
 password typed at a prompt, or piped), or `--email you@gmail.com` through the installed OAuth
 client (`--paste` without a browser on this machine), and `./bin/mailserver account sync ID on`:
-nothing is indexed before. There is no console to run: a self-hosted server has none. Details, and
-registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the REST reference is
-`docs/console.md`.
+nothing is indexed before. Tools use REST with an instance key (`apikey create --scope read --name
+tool [--accounts IDS]`, through the daemon with `MAIL_ADMIN_API=true`, or `--bootstrap` with it
+stopped). There is no console to run, nobody to invite and no MCP to connect: a self-hosted server
+has none (`MAIL_PASSWORD_SIGN_IN` stays unset; it is for an edition with a page where people sign in,
+such as the hosted service's `make cloud-run`). Details, and registering the OAuth clients, in
+`README.md` and `docs/self-hosting.md`; the REST reference is `docs/console.md`.
 
 ## How to test
 
 - `make check` = fmt + vet + lint-layout + `go test -race ./...`. All offline: an in-process IMAP
   server, a fake `go-smtp` server, `httptest` for OAuth, SQLite in `t.TempDir()`, MCP transports in
-  memory. `make lint` runs golangci-lint with the integration tag.
+  memory (`internal/mcp`'s own tests: nothing else mounts it). A test that signs people in with a
+  password turns `PasswordSignIn` on (the service fixture and the API harness default to people;
+  `noPeople` turns them off). `make lint` runs golangci-lint with the integration tag.
 - `make it` starts `it/compose.yml` (Dovecot 2.4.5, Mailpit) and runs `go test -tags integration`.
   It is the only place CONDSTORE, SPECIAL-USE and a real XOAUTH2 run; CI runs it, it is not
   optional.
@@ -589,7 +626,7 @@ registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the RE
 - `make public-source` exports the public snapshot; run it before a pull request.
 - `make image` builds the self-hosting image (Docker, outside `make check`); CI's `image` job builds
   it through `deploy/compose.yaml`, starts it with a throwaway key and checks `/v1/healthz`, a 404
-  under `/v1`, `POST /mcp`'s 401, `GET /`'s 404 (no console) and a clean stop.
+  under `/v1`, `POST /mcp`'s 404 (no MCP), `GET /`'s 404 (no console) and a clean stop.
 - Tests that connect to the in-process IMAP server (on `127.0.0.1`) turn `AllowPrivate` on, as the
   integration tier does; the ones that prove the private-host refusal leave it off.
 
@@ -602,7 +639,8 @@ registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the RE
 - **Zero duplicated logic between REST and MCP.** Handlers and tools are thin adapters over
   `internal/service`; all authorization lives there. `depguard` stops a transport from importing
   `store`, `sync`, `provider`, `account` or `workspace` (access is decided in the service). If a rule
-  appears on both sides, it is in the wrong place.
+  appears on both sides, it is in the wrong place. It holds for `internal/mcp` though nothing mounts
+  it: the library stays a transport, so a binary that serves it later serves the service's rules.
 - **Sending needs confirmation.** `confirm: true` is required on every send, a person's or a
   key's; the two-step draft → send path is the planned alternative for MCP. Never relax this in a
   test or behind a flag. A workspace key sends through the same path, only from a mailbox it holds
@@ -645,12 +683,15 @@ registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the RE
   opened again goes through a `secrets.Sealer`, with its binding and the caller's context: the
   credentials, the send-hash root (`meta.send_hash_root`, random, made at the first start, never
   derived from a key) and the salt key (`meta.kdf_salt_key`, K_salt of the key scheme, the same way,
-  made only where people have passwords here), which the daemon refuses to start without opening. The sealer is the keyring
+  made and opened only where people sign in with a password here: `MAIL_PASSWORD_SIGN_IN` on and no
+  `ExternalSignInOnly`), which the daemon refuses to start without opening (the salt key there
+  only; elsewhere one a database holds is left unopened, and `rewrap-credentials` re-seals it when
+  present). The sealer is the keyring
   (`MAIL_CREDENTIAL_KEY_HEX`) or AWS KMS (`MAIL_CREDENTIAL_KMS_KEY_ARN`, a key's full ARN, never an
   alias, with `MAIL_ENV` set; the keyring's keys then only open, and `MAIL_CREDENTIAL_SEALER=keyring`
   beside it is the way back, the KMS key only opening). The KMS provider takes the EC2 instance
   role's credentials through IMDSv2 only, unlike the backup's SDK default chain, and checks the key
-  with `DescribeKey` before anything opens. `rewrap-credentials` opens the root and the salt key and
+  with `DescribeKey` before anything opens. `rewrap-credentials` opens the root and any salt key and
   re-seals them with the credentials under the active sealer; `--new-send-hash-root` and
   `--new-salt-key` replace one under another KMS key or `MAIL_ENV` only with `--kms-key-lost`. Only an envelope that does not open (`secrets.DoesNotOpen`)
   is a lost key: nothing replaces, or tells the operator to replace, what a sealer could not try. TLS
@@ -658,9 +699,15 @@ registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the RE
 - **Console session = bearer, never a cookie.** The token goes only in `Authorization`, read by
   `service.Bearer` alone, never trimmed there; a credential an issuer claims (`service.KeyIssuer`)
   is checked first, against its keys only; any other is trimmed, and sessions and API keys are told
-  apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API keys.
+  apart by their shape (a key has a dot). Person routes (`/v1/auth/*`) refuse API keys. A session
+  exists only where people do (`MAIL_PASSWORD_SIGN_IN`, or an extension's sign-in): on a server with
+  no people every session token is the `401` of an unknown one, at authentication and every
+  re-check, never looked up.
 - **The server never receives a password** (`docs/key-scheme.md`, normative; its vectors are never
-  edited by hand). A sign-in proves an auth key the browser derived under the salt and parameters
+  edited by hand). Its password half is the core's code, used only where `MAIL_PASSWORD_SIGN_IN` is
+  on (a self-hosted server has no people by default, platform decision 0065; the hosted service
+  signs people in through id.); taking it out of the scheme is a new spec version, under 0034's
+  review, never an edit. A sign-in proves an auth key the browser derived under the salt and parameters
   the challenge answers (the address's target for every address without an enrolled account, so it
   says nothing of who has one); every way of failing costs one derivation against a dummy and gets
   one answer. A wrap is answered only to the secret verified in the same request, never to a
@@ -685,7 +732,7 @@ registering the OAuth clients, in `README.md` and `docs/self-hosting.md`; the RE
   they are alone in included (closing a person leaves that team out: it goes with them). The upgrade's
   password in clear (`/v1/auth/upgrade/*`, the challenge's `upgrade`) existed in the release that
   brought the scheme only and is gone: a person who never enrolled signs in again only through a
-  reset invitation. New passwords have at least twelve code points. The console's half
+  reset invitation, which nothing issues now (an earlier release's is still completed). New passwords have at least twelve code points. The console's half
   (`web/src/crypto/account.ts`, `web/src/state/account.ts`) derives in the kit's worker, sends no
   password in any request, and keeps the account key only in
   the browser vault (`web/src/state/accountVault.ts`), wiped at sign-out and whenever no session is

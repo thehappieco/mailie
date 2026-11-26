@@ -8,6 +8,11 @@
   the contract fixtures name them. The server serves those of sections 12.1 to 12.6 under
   `/v1/auth/` (Appendix C); the upgrade of section 12.7 it served in the release that brought this
   scheme only.
+- Where it runs: the password half (sections 5 and 12.1 to 12.7) is the core's code, used only
+  where `MAIL_PASSWORD_SIGN_IN` is on. A self-hosted server has no people by default (platform
+  decision 0065), and the hosted service signs people in through id. (section 6), refusing the
+  password routes; the rest of the scheme is the same wherever people exist (Appendix C,
+  2026-11-25).
 - Built on: The Happie Co's kit, `github.com/thehappieco/kit` v0.7.0 in Go and
   `@thehappieco/kit` 0.7.0 in TypeScript. Its `SPEC.md` is cited as "kit §n". This document is
   Mailie's profile of it (kit §3): labels, headers, magic, kinds and additional data, and the
@@ -152,7 +157,10 @@ Every browser that receives the person's wraps compares the key it opens with th
 
 ## 5. The self-hosted password
 
-A self-hosted server never receives the password. The browser stretches it with Argon2id and
+"Self-hosted" here, and in section 12, names a server whose people sign in with a password, which
+the core does only where `MAIL_PASSWORD_SIGN_IN` is on: a self-hosted server has no people by
+default (platform decision 0065), and none of this runs there. A self-hosted server never receives
+the password. The browser stretches it with Argon2id and
 splits the result in two: the **auth key**, sent and stored only as a hash, proves who the person
 is; the **wrap key**, which never leaves the browser, wraps the account key. This is the kit's
 account scheme (kit §6) under Mailie's account profile, `keyscheme.Account()` and `mailieAccount`.
@@ -893,8 +901,11 @@ one transaction. "Shape" is the server's check of section 5.7, 6.3 or 9.3.
 
 ### 12.6 The reset invitation, and a lost key
 
-`mailserver user password --bootstrap` becomes a **reset invitation**: a single-use link for the
-person, like an invitation (7 days, the code in the fragment, stored as SHA-256). Nothing remote
+The operator's reset is a **reset invitation**: a single-use link for the person, like an
+invitation (7 days, the code in the fragment, stored as SHA-256). `mailserver user password
+--bootstrap` issued it until the release that took the self-hosted server's people away (platform
+decision 0065); nothing issues one now (`auth.Users.CreateReset` is called by nothing), and the
+server opens and completes one an earlier release issued, where `MAIL_PASSWORD_SIGN_IN` is on. Nothing remote
 sets someone's password, as today. Opening it is section 12.1 with the reset code instead of an
 invitation, step 4 included, but for its step 1: the browser asks `reset/open {reset, email}` →
 `{salt, kdf, seal_id}`, the account's target (section 5.3) and the person's seal id, which does
@@ -904,8 +915,8 @@ again. It gives the person a **new** password, recovery code and account key. In
 the server replaces `users.public_key` (the one replacement of a written-once key), the verifiers
 and wraps, **deletes every grant sealed to the old key** and every platform wrap of the person,
 ends their sessions and stops every API key they created, in every workspace, saying
-`account_recovered`, before it opens the session the reset answers; the command that prints the
-link and the browser's form say so first. Their personal mailboxes then open
+`account_recovered`, before it opens the session the reset answers; the browser's form says so
+first, as the command that printed the link did. Their personal mailboxes then open
 only once they write them a new key (section 12.12); a team's mailboxes, on which they keep the
 flag, once a reader supplies them the key (section 12.13). The reset is also the way back for a
 person from before this scheme who never enrolled (section 12.7): it enrols them, under the seal
@@ -914,7 +925,8 @@ id they always had, and clears their old password hash.
 **The last reader.** Deleting a person's grants takes "read" from them on every mailbox that has a
 key (section 12.13), and a team mailbox left with no reader can never be given a key again
 (section 12.12). So the reset holds the core's last-reader rule (`docs/workspaces.md`):
-`mailserver user password --bootstrap` refuses, naming the mailboxes, when the person is the last
+issuing one (`mailserver user password --bootstrap`, while it existed) refuses, naming the
+mailboxes, when the person is the last
 reader (the flag and a grant at the current epoch) of any team mailbox, unless it is given
 `--force`, which the invitation records. Any team mailbox: the test closing a person uses leaves
 out a team whose only member is the person, since that team goes with them, but a reset leaves the
@@ -969,10 +981,10 @@ still admits the purpose `enrol`, stay as migration 0013 wrote them. Nothing iss
 ticket now and no ceremony takes one, so one left from the release before finishes nothing and goes
 with its ten minutes. Such a person is answered and refused exactly as an address without an
 account: the challenge answers the address's target (section 5.3), and every sign-in fails as a
-wrong one does, after one derivation against the dummy verifier (section 5.7). Their way back is
+wrong one does, after one derivation against the dummy verifier (section 5.7). Their way back was
 the operator's reset invitation (section 12.6, `mailserver user password --bootstrap --email
 ADDRESS`), which enrols a person who was not and clears the old hash; the release notes
-(`docs/self-hosting.md`) say so. With no password sent anywhere, the residuals the upgrade left
+(`docs/self-hosting.md`) said so. Nothing issues one now (section 12.6). With no password sent anywhere, the residuals the upgrade left
 (threat model, sections 5.5 and 5.12) ended with it.
 
 ### 12.8 Signing in on the hosted service
@@ -1248,7 +1260,8 @@ The kit modules underneath: Go `account`, `seal`, `hpke`, `platformwrap`, `profi
 brought this scheme) is migration 0013
 (`internal/store/migrations/0013_account_keys.sql`), `internal/auth/accountkeys.go` (the
 ceremonies), `internal/service/users.go` and `internal/api/users.go` (the routes), the salt key in
-`internal/store/saltkey.go`, and the reset invitation of `mailserver user password --bootstrap`.
+`internal/store/saltkey.go`, and the reset invitation (`auth.Users.CreateReset`, which
+`mailserver user password --bootstrap` called until it went, and nothing calls now).
 The console's half is `web/src/crypto/account.ts` (the derivations and wraps of each ceremony),
 `web/src/state/account.ts` (its requests, in order), `web/src/state/accountVault.ts` (the browser
 vault, section 7) and the sign-in screens
@@ -1797,3 +1810,24 @@ one rule of the kit itself, the platform wrap's `user_id` (section 6.1):
   - **The console asks with time to spare.** It asks for the step-up with five minutes left before
     it leaves for the provider, and again at the return when it is no longer fresh, before taking
     the return from where it kept it, so a step-up that sends the whole tab away loses nothing.
+- Version 1, a self-hosted server with no people (2026-11-25). No byte changed. A self-hosted server
+  has no people (platform decision 0065): its operator acts with API keys made on its command line,
+  and nobody signs in. Sections 5 and 12.1 to 12.7 stay as they are, the core's code, used only
+  where people sign in with a password. What the code had to choose, recorded here:
+  - **A switch, off by default.** `MAIL_PASSWORD_SIGN_IN` (`config.Config.PasswordSignIn`,
+    `service.Deps.PasswordSignIn`). Off, every route of sections 12.1 to 12.6 that takes no session
+    (`challenge`, `login`, `signup/open`, `signup`, `reset/open`, `reset`, `recover/open`,
+    `recover/finish`) and creating an invitation are `not_authorized` with an error of their own
+    (`this server has no people: …`), never the extension's; and a session, whoever opened it, is
+    refused at authentication and at every re-check as an unknown token, never looked up, so the
+    routes on a session answer `unauthorized` first. Under `app.Options.ExternalSignInOnly` the
+    extension's refusal comes first and its sessions are sessions, whatever the switch says.
+  - **`K_salt` only where it is used.** The daemon makes and opens the salt key only where the
+    switch is on and no extension signs people in; anywhere else none is made, one a database holds
+    is left unopened, and `rewrap-credentials` still re-seals one it finds.
+  - **No reset is issued.** The command that issued section 12.6's invitation went with the
+    server's people, and nothing else issues one: `reset/open` and `reset` open and complete one an
+    earlier release issued, while it is valid, where the switch is on.
+  - **Not yet.** Taking the password half out of the scheme is a new version of this document,
+    under the external review (platform decision 0034), with `auth/kdf-salt-key` dropped from the
+    purposes a key service's policy allows; migration 0013 and the frozen vectors stay.

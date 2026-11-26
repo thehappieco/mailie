@@ -2,39 +2,38 @@
 
 Mailie is a mail server for your own tools: one Go binary that connects several mailboxes at once
 (Gmail and Microsoft 365 over OAuth2, iCloud Mail and any IMAP/SMTP server with a password) and
-gives them a single **REST API** and an **MCP server**, so a script or an AI assistant can search,
-read, act on and send mail with a key you control.
+gives them a single **REST API**, so a script or an AI assistant's tool can search, read, act on
+and send mail with a key you control.
 
 - **A local index, not a copy of your mail.** Once you turn a mailbox's sync on, the server indexes
   its metadata (senders, recipients, subjects, dates, sizes, folders, flags) into SQLite, with
   full-text search over subject, sender and recipients. Message bodies, attachments and originals
   are fetched from the mail server when someone asks for them and are never stored.
-- **New mail in real time.** IMAP IDLE feeds an event journal, served as Server-Sent Events, a
-  long poll and the MCP tool `wait_for_new_mail`.
+- **New mail in real time.** IMAP IDLE feeds an event journal, served as Server-Sent Events and a
+  long poll.
 - **Actions on the real mailbox.** Mark read or unread, star, archive, move and trash, on the mail
   server itself, with a key allowed to act. Nothing is ever deleted for good, and reading a message
   never marks it as read.
 - **Sending.** Plain-text messages, replies and forwards with attachments, through each mailbox's
   own SMTP server. Every send needs an explicit `confirm: true`, an idempotency key is reserved
   before the server is dialed, and a send whose outcome is unknown is never retried.
-- **One service, two transports.** REST and MCP are thin adapters over the same service layer, so
-  the same rules decide who sees what, whichever way a tool comes in.
-- **Run from its command line.** No web screen: you add mailboxes, switch their sync and make keys
-  with `mailserver`, and your tools use REST and MCP with those keys.
+- **One service decides.** The REST API is a thin adapter over the service layer, where every rule
+  about who sees what lives.
+- **Run from its command line, with keys.** No web screen and no people: you add mailboxes, switch
+  their sync and make keys with `mailserver`, and your tools use REST with those keys. Nobody signs
+  in ([No people, no MCP](#no-people-no-mcp)).
 - **Small to run.** No cgo: one static binary, one SQLite file, one data directory.
 
 ## Status
 
-Mailie is under active development and has no stable release yet; the REST API and the MCP tools
-may still change.
+Mailie is under active development and has no stable release yet; the REST API may still change.
 
 | Works today | Not yet |
 |---|---|
 | Gmail, Microsoft 365 and Outlook.com (OAuth2), iCloud Mail, generic IMAP | Drafts kept on the server |
 | Sync switched on per mailbox, search, reading on demand | Search in message bodies |
 | Read/unread, star, archive, move, trash, undo | Composing HTML |
-| Sending over REST, with attachments, replies and forwards | MCP tools that send |
-| MCP over Streamable HTTP and stdio, with read and action tools | OAuth for MCP clients (claude.ai web connectors) |
+| Sending over REST, with attachments, replies and forwards | MCP, through the hosted service, for a server connected to it |
 | The command line: mailboxes, sync, keys, backups | Webhooks |
 | Encrypted database backups to S3 | Replacing a mailbox's stored password |
 | A Docker image, Compose and a hardened systemd unit for self-hosting | |
@@ -90,7 +89,7 @@ Give each tool a key of its own, with the scope it needs, rather than the admin 
 `mailserver apikey create --scope read --name assistant [--accounts IDS]`. It calls the daemon's
 `/v1/apikeys` routes, which exist only with `MAIL_ADMIN_API=true` in the daemon's environment;
 without them, `apikey create --bootstrap` issues a key with the daemon stopped. A tool then speaks
-REST ([The API](#the-api)) or MCP ([MCP](#mcp)) with it.
+REST with it ([The API](#the-api)).
 
 ## Mailboxes and providers
 
@@ -199,10 +198,41 @@ reach. As the operator, with `MAIL_ADMIN_KEY`:
   versioned rule (`rule_version`), its removed ones included until they are deleted for good, and
   to the operator the database's own size ([`docs/console.md`](docs/console.md#storage)).
 
-The daemon also keeps people, personal workspaces and teams, which the people commands (`user`,
-`workspace`, `member`, `access`) administer: a database made through the open console of earlier
-releases holds them ([Moving from the open console](#moving-from-the-open-console)). Nobody signs
-in to a self-hosted server: it has no web screen.
+## No people, no MCP
+
+A self-hosted server has **no people** (platform decision 0065): its operator acts with instance
+keys made on its command line, and nobody signs in, signs up or is invited. With
+`MAIL_PASSWORD_SIGN_IN` unset (or `false`, the default):
+
+- the routes that sign in with a password, sign up, recover or reset a password, and create an
+  invitation (`POST /v1/auth/challenge`, `login`, `signup/open`, `signup`, `reset/open`, `reset`,
+  `recover/open` and `recover/finish`, `POST /v1/users/invites` and
+  `POST /v1/workspaces/{id}/invites`) answer `403` `not_authorized`, "this server has no people:
+  nobody signs in, signs up or is invited here; use an instance key made with its command line", to
+  every caller, an admin key included;
+- a session token, one an earlier release opened included, is refused as an unknown one is: `401`
+  `unauthorized`, "the session has ended; sign in again", so every route for a person signed in
+  (changing a password or a recovery code, a step-up, accepting an invitation) answers that first.
+  Sessions stay in the database, unread;
+- no salt key (the key of the salts passwords are derived under) is made, and one a database holds
+  from an earlier release is left as it is, unopened.
+
+API keys are unaffected. `MAIL_PASSWORD_SIGN_IN=true` brings people with a password back, for an
+edition that serves a page where they sign in ([`docs/key-scheme.md`](docs/key-scheme.md)); a
+self-hosted server has none, and leaves it unset.
+
+The server keeps the code of people, personal workspaces and teams: the hosted service, built on
+it, signs its people in another way and uses it. A database made through the open console of
+earlier releases holds them, and the commands left for them list them and take away, creating and
+widening nothing ([Moving from the open console](#moving-from-the-open-console)): `user
+disable|delete`, `workspace list|rename|close|reopen`, `member list|remove` and `access
+list|revoke`. `user invite` and `user password` answer that the command line invites nobody and
+resets no password; `workspace create`, `member role` and `access grant` are gone.
+
+It also serves **no MCP of its own**: `/mcp` answers the API's JSON `404`, `serve --mcp-stdio` and
+`mailserver mcp connect|install` are gone, and MCP is to come through the hosted service, for a
+server connected to it. At start the daemon names, at warn, the retired `MAIL_MCP_*` variables an
+environment still sets to ask for MCP. Everything else is in [`docs/mcp.md`](docs/mcp.md).
 
 ## Moving from the open console
 
@@ -303,8 +333,8 @@ There are two kinds of key:
 
 - **Instance keys**, for the operator: `mailserver apikey create --scope SCOPE --name NAME
   [--accounts IDS] [--days N]`, at most a year, optionally restricted to some of the operator
-  workspace's mailboxes. Over REST and MCP alike they reach only those, the operator workspace's,
-  never a person's or a team's.
+  workspace's mailboxes. They reach only those, the operator workspace's, never a person's or a
+  team's.
 
   `apikey create`, `apikey list` and `apikey revoke PREFIX` call the daemon's `/v1/apikeys` routes,
   which exist only while it runs with `MAIL_ADMIN_API=true` (off by default; otherwise the daemon
@@ -312,46 +342,15 @@ There are two kinds of key:
   with the daemon stopped, as for the first key above; listing and revoking need the routes.
 - **Workspace keys** belong to a person's or a team's workspace, and reach exactly the mailboxes of
   it they were given, each with `read`, `act` or `send`: `read`, `write` or `send`, for 30, 90 or
-  365 days, at most 20 alive per workspace. Its owners and admins create them signed in, which a
-  self-hosted server, with no web screen, no longer offers; a database from the open console keeps
-  the ones it holds until they expire or are revoked (`mailserver apikey revoke PREFIX` revokes any
-  key). See [`docs/workspaces.md`](docs/workspaces.md#api-keys).
+  365 days, at most 20 alive per workspace. Its owners and admins create them signed in, which
+  nobody is on a self-hosted server; a database from the open console keeps the ones it holds until
+  they expire or are revoked (`mailserver apikey revoke PREFIX` revokes any key). See
+  [`docs/workspaces.md`](docs/workspaces.md#api-keys).
 
 Keys are stored only as Argon2id hashes and shown once. Revoked keys stay listed, because they
 answer "what could have read this mailbox". An instance key restricted to mailboxes that have all
 been removed is revoked rather than widened to every operator mailbox; a workspace key left with no
 mailbox reaches nothing.
-
-## MCP
-
-The daemon is an MCP server: Streamable HTTP at `/mcp` and stdio. Tools to read (`list_accounts`,
-`list_folders`, `search_messages`, `get_message`, `get_attachment`, `wait_for_new_mail`) and to act
-(`mark_read`, `flag_message`, `move_message`, `trash_message`), and `mail://` resources. MCP takes
-API keys only, never a sign-in session's token: on a self-hosted server, an instance key from
-`mailserver apikey create`, which `--accounts` restricts to the mailboxes the tool may use.
-
-Connecting a client, from the machine it runs on (the same binary, which needs nothing of the
-daemon's there):
-
-```sh
-# Claude Code speaks HTTP with a header itself:
-claude mcp add --transport http --scope user mailie https://mail.example.com/mcp \
-  --header "Authorization: Bearer <your key>"
-
-# Claude Desktop, through a local bridge; Cursor, over HTTP. The key is typed (not shown) or piped,
-# checked against the server, and written only into the client's file, mode 0600:
-mailserver mcp install --client claude-desktop --url https://mail.example.com
-mailserver mcp install --client cursor --url https://mail.example.com
-
-# Any client that launches a local server: a stdio bridge to the server's /mcp.
-MAILIE_API_KEY=<your key> mailserver mcp connect --url https://mail.example.com
-```
-
-Addresses are `https://`, or `http://` only to the same machine (`http://localhost:8080`).
-`MAIL_MCP_HTTP=false` switches the HTTP endpoint off (`/mcp` then answers 404, and the bridge says
-so), and `mailserver serve --mcp-stdio` with `MAIL_MCP_KEY` speaks MCP on standard input and output
-for a client that launches the whole daemon itself. Everything else — what `mcp install` writes where,
-taking a key back, limits and what is logged — is in [`docs/mcp.md`](docs/mcp.md).
 
 ## Running it for real
 
@@ -362,9 +361,9 @@ with the first key, OAuth clients, backups and upgrades. In short:
 - The daemon listens on `127.0.0.1:8080` and speaks plain HTTP. To reach it from elsewhere, put a
   reverse proxy that terminates TLS in front, set `MAIL_TRUSTED_PROXIES` to the proxy's address
   (otherwise every client shares one rate limit) and `MAIL_ENV=prod`. Turn response buffering off
-  for `/v1/events` and `/mcp`, which stream.
+  for `/v1/events`, which streams.
 - With `MAIL_WEB_DIR` empty, as the image and the systemd unit leave it, it serves the API only:
-  REST, MCP and `/metrics`, and `GET /` answers 404.
+  REST and `/metrics`, and `GET /` answers 404.
 - `/metrics` (Prometheus) is served on the main listener unless `MAIL_METRICS_ADDR` gives it one
   of its own; keep it off the public proxy.
 - One daemon per data directory: a lock refuses a second one. `mailserver migrate` applies schema
@@ -372,8 +371,8 @@ with the first key, OAuth clients, backups and upgrades. In short:
 - To rotate `MAIL_CREDENTIAL_KEY_HEX`, set the new key with a new `MAIL_CREDENTIAL_KEY_ID`, keep the
   old one in `MAIL_CREDENTIAL_PREVIOUS_KEYS` (`<id>:<hex>`), and run
   `mailserver rewrap-credentials` with the daemon stopped: it re-seals the credentials, the
-  send-hash root (the key of a send record's hashes) and the salt key (the key of the salts
-  passwords are derived under) under the new key. The daemon then no longer
+  send-hash root (the key of a send record's hashes) and, in a database that holds one, the salt key
+  (the key of the salts passwords are derived under) under the new key. The daemon then no longer
   needs the old key (it refuses to start while the root needs one it is not given), but do not
   destroy it: `rewrap-credentials` re-seals the live database only, so every backup
   taken before the rotation still holds credentials sealed under the old key. Keep each retired
@@ -393,9 +392,11 @@ optional, and designed so that the host can create backups but never read or del
 
 - **What the server holds.** One OAuth refresh token or password per mailbox, encrypted with
   AES-256-GCM under `MAIL_CREDENTIAL_KEY_HEX` and bound to its account and field, and the send-hash
-  root, sealed the same way; the index of metadata of synced mailboxes; Argon2id hashes of keys;
-  SHA-256 hashes of session tokens. Message bodies and attachments are never stored: while one is
-  being served it sits in a `0600` temporary file that is removed when the response ends.
+  root, sealed the same way; the index of metadata of synced mailboxes; Argon2id hashes of keys.
+  A database an earlier release's open console made also holds its people and SHA-256 hashes of
+  their session tokens, which this server no longer accepts. Message bodies and attachments are
+  never stored: while one is being served it sits in a `0600` temporary file that is removed when
+  the response ends.
 - **Who can read it.** Whoever has both the database and `MAIL_CREDENTIAL_KEY_HEX` can reach the
   mailboxes; whoever runs the server can read the index. The key lives in the environment, which
   protects copies and backups of the database, not against code running as the daemon's user. On
@@ -403,13 +404,14 @@ optional, and designed so that the host can create backups but never read or del
   per credential): no key is then in the environment, and every unwrapping is a call KMS's policy
   allows and CloudTrail records ([`docs/self-hosting.md`](docs/self-hosting.md#credentials-under-aws-kms)).
 - **Who sees what.** Instance keys belong to the operator and reach only the operator workspace's
-  mailboxes (with `--accounts`, only some of them), over REST and MCP alike. A mailbox of a
+  mailboxes (with `--accounts`, only some of them). A mailbox of a
   person's or a team's workspace is `not_found` to them, never `forbidden`, and so it is to
   everyone who holds nothing on it. Acting needs the `write` scope and sending the `send` scope,
   every send with `confirm: true`, and who may is asked again before every command that changes
   the mailbox and before every connection to the submission server.
-- **No local exception.** A process on the same machine still needs a key. Rate limits apply per
-  address and to failed attempts per key prefix; failures never lock out a whole address.
+- **No local exception, and no sign-in.** A process on the same machine still needs a key, and a
+  key is the only credential: nobody signs in. Rate limits apply per address and to failed
+  attempts per key prefix; failures never lock out a whole address.
 - **Logs** carry ids, never subjects, addresses, bodies, tokens or passwords.
 
 Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
@@ -417,8 +419,8 @@ Report vulnerabilities as described in [`SECURITY.md`](SECURITY.md).
 ## Editions
 
 This repository is the **self-hosted edition**, under Apache-2.0: the server and its command line,
-used through REST and MCP, with no web screen; and, in [`web/`](web), the core of a web console
-that an edition with a web page compiles. Running it needs no account or subscription, and it
+used through REST, with no web screen, no people and no MCP of its own; and, in [`web/`](web), the
+core of a web console that an edition with a web page compiles. Running it needs no account or subscription, and it
 talks to nobody but your mail providers (and AWS, if you configure backups).
 
 The Happie Co also runs a **hosted Mailie** at [mailie.thehappie.co](https://mailie.thehappie.co),
