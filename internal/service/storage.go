@@ -116,11 +116,13 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 	}
 	v := s.readable(p)
 	v.Workspace = workspaceID
-	all, err := s.accounts.Repo().ListVisible(ctx, v)
+	// Both lists in one read: a mailbox removed or recovered meanwhile is in
+	// exactly one of them.
+	all, listed, err := s.accounts.Repo().ListVisibleAndRemoved(ctx, v, removedScope(p, workspaceID))
 	if err != nil {
 		return Storage{}, E(CodeInternal, "listing accounts failed", err)
 	}
-	removed, err := s.removedToCount(ctx, p, workspaceID)
+	removed, err := s.removedToCount(ctx, listed)
 	if err != nil {
 		return Storage{}, err
 	}
@@ -130,14 +132,8 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 		Mailboxes:   make([]MailboxStorage, 0, len(all)+len(removed)),
 		Workspaces:  []WorkspaceStorage{},
 	}
-	// The two lists are two reads: a mailbox removed between them is in
-	// both, and is counted once, as removed.
-	removedIDs := make(map[string]bool, len(removed))
-	for _, a := range removed {
-		removedIDs[a.ID] = true
-	}
 	for _, a := range all {
-		if p.MayAccess(a.ID) && !removedIDs[a.ID] {
+		if p.MayAccess(a.ID) {
 			ids = append(ids, a.ID)
 			out.Mailboxes = append(out.Mailboxes, MailboxStorage{AccountID: a.ID, WorkspaceID: a.WorkspaceID, Email: a.Email})
 		}
@@ -180,30 +176,14 @@ func (s *Service) Storage(ctx context.Context, p Principal, workspaceID string) 
 	return out, nil
 }
 
-// removedToCount is the removed mailboxes Storage counts for the caller, in
-// workspaceID when it names one (inWorkspace has checked the caller reaches
-// it): the ones ListRemovedMailboxes lists them, with its scope (admin, which
-// a session holds), a person's of the open workspaces they are an active
-// owner of, the operator's of the operator workspace. A team's is left out
-// where teams are withheld, as its live ones are.
-func (s *Service) removedToCount(ctx context.Context, p Principal, workspaceID string) ([]account.RemovedAccount, error) {
-	if !p.Scope.Covers(auth.ScopeAdmin) {
-		return nil, nil
-	}
-	var scope account.RemovedScope
-	switch {
-	case isOperator(p):
-		scope = account.RemovedScope{Operator: true, Workspace: workspace.OperatorID}
-	case p.IsSession():
-		scope = account.RemovedScope{UserID: p.UserID, Workspace: workspaceID}
-	default:
-		// A key of a workspace never lists its removed mailboxes.
-		return nil, nil
-	}
-	listed, err := s.accounts.Repo().ListRemoved(ctx, scope)
-	if err != nil {
-		return nil, E(CodeInternal, "listing the removed mailboxes failed", err)
-	}
+// removedToCount is, of the removed mailboxes listed under removedScope, the
+// ones Storage counts for the caller, in workspaceID when it names one
+// (inWorkspace has checked the caller reaches it): the ones
+// ListRemovedMailboxes lists them, with its scope (admin, which a session
+// holds), a person's of the open workspaces they are an active owner of, the
+// operator's of the operator workspace. A team's is left out where teams are
+// withheld, as its live ones are.
+func (s *Service) removedToCount(ctx context.Context, listed []account.RemovedAccount) ([]account.RemovedAccount, error) {
 	out := listed[:0]
 	for _, a := range listed {
 		err := s.mailboxWithheld(ctx, a.Account)
@@ -216,6 +196,23 @@ func (s *Service) removedToCount(ctx context.Context, p Principal, workspaceID s
 		out = append(out, a)
 	}
 	return out, nil
+}
+
+// removedScope is whose removed mailboxes p counts (see removedToCount): the
+// operator's of the operator workspace, a person's of the open workspaces
+// they own (workspaceID narrowing it), and nobody's for a key of a workspace
+// or a scope below admin, which never list removed mailboxes.
+func removedScope(p Principal, workspaceID string) account.RemovedScope {
+	switch {
+	case !p.Scope.Covers(auth.ScopeAdmin):
+		return account.RemovedScope{}
+	case isOperator(p):
+		return account.RemovedScope{Operator: true, Workspace: workspace.OperatorID}
+	case p.IsSession():
+		return account.RemovedScope{UserID: p.UserID, Workspace: workspaceID}
+	default:
+		return account.RemovedScope{}
+	}
 }
 
 // perWorkspace sums mailboxes per workspace, in the order each workspace

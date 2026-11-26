@@ -728,8 +728,18 @@ func (r *Repository) OwnedBy(ctx context.Context, userID string) ([]Account, err
 // SQL rather than over every row in Go, so a member's listing never holds
 // other people's accounts even briefly.
 func (r *Repository) ListVisible(ctx context.Context, v Visibility) ([]Account, error) {
+	return listVisible(ctx, r.store.Reader(), v)
+}
+
+// queryer is what a read runs on: the reader pool, or a read transaction.
+type queryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// listVisible is ListVisible on q.
+func listVisible(ctx context.Context, q queryer, v Visibility) ([]Account, error) {
 	where, args := v.clause()
-	rows, err := r.store.Reader().QueryContext(ctx,
+	rows, err := q.QueryContext(ctx,
 		`SELECT `+accountColumns+` FROM accounts WHERE `+where+` ORDER BY created_at, id`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("account: list: %w", err)

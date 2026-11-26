@@ -392,6 +392,43 @@ type RemovedAccount struct {
 // ListRemoved lists the removed mailboxes scope may see, the oldest removal
 // first. A scope naming nobody sees nothing.
 func (r *Repository) ListRemoved(ctx context.Context, scope RemovedScope) ([]RemovedAccount, error) {
+	return listRemoved(ctx, r.store.Reader(), scope)
+}
+
+// ListVisibleAndRemoved is ListVisible and ListRemoved read in one read
+// transaction: a mailbox removed or recovered meanwhile is in exactly one of
+// the two lists, never in both and never in neither.
+func (r *Repository) ListVisibleAndRemoved(ctx context.Context, v Visibility, scope RemovedScope) ([]Account, []RemovedAccount, error) {
+	return r.listVisibleAndRemoved(ctx, v, scope, nil)
+}
+
+// listVisibleAndRemoved is ListVisibleAndRemoved, with meanwhile, when set,
+// run between the two reads: only a test of what a write there does sets it.
+func (r *Repository) listVisibleAndRemoved(ctx context.Context, v Visibility, scope RemovedScope,
+	meanwhile func(),
+) ([]Account, []RemovedAccount, error) {
+	tx, err := r.store.ReadTx(ctx)
+	if err != nil {
+		return nil, nil, fmt.Errorf("account: list: %w", err)
+	}
+	//nolint:errcheck // a read transaction: nothing to keep
+	defer func() { _ = tx.Rollback() }()
+	live, err := listVisible(ctx, tx, v)
+	if err != nil {
+		return nil, nil, err
+	}
+	if meanwhile != nil {
+		meanwhile()
+	}
+	removed, err := listRemoved(ctx, tx, scope)
+	if err != nil {
+		return nil, nil, err
+	}
+	return live, removed, nil
+}
+
+// listRemoved is ListRemoved on q.
+func listRemoved(ctx context.Context, q queryer, scope RemovedScope) ([]RemovedAccount, error) {
 	where, args := "accounts.removed_at <> 0", []any(nil)
 	switch {
 	case scope.Operator:
@@ -408,7 +445,7 @@ func (r *Repository) ListRemoved(ctx context.Context, scope RemovedScope) ([]Rem
 		args = append(args, scope.Workspace)
 	}
 	//nolint:gosec // G202: built from constants and the rule's fragments; every value is bound
-	rows, err := r.store.Reader().QueryContext(ctx, `SELECT `+accountColumns+`,
+	rows, err := q.QueryContext(ctx, `SELECT `+accountColumns+`,
 		  EXISTS (SELECT 1 FROM folders f WHERE f.account_id = accounts.id),
 		  (SELECT count(*) FROM mailbox_access g WHERE g.account_id = accounts.id AND `+store.KeptReaderSQL("g")+`),
 		  EXISTS (SELECT 1 FROM workspaces w WHERE w.id = accounts.workspace_id AND w.kind = 'team')

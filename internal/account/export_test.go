@@ -121,3 +121,11 @@ func scopeCheck(t *testing.T, kind provider.Kind, extra map[string]any, identify
 	}
 	return failureReason(err), err
 }
+
+// ListVisibleAndRemovedMeanwhileForTest is ListVisibleAndRemoved with
+// meanwhile run between its two reads.
+func ListVisibleAndRemovedMeanwhileForTest(ctx context.Context, r *Repository, v Visibility, scope RemovedScope,
+	meanwhile func(),
+) ([]Account, []RemovedAccount, error) {
+	return r.listVisibleAndRemoved(ctx, v, scope, meanwhile)
+}
