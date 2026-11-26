@@ -431,6 +431,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	if err := personalReplacementHint(ctx, svc, workspaces.Source(), logger); err != nil {
 		return err
 	}
+	// At every start, console or none: mailboxes people linked into their
+	// own workspaces or a team's, which no instance key reaches. Where people
+	// sign in only through an extension, those workspaces are the edition.
+	if !opts.ExternalSignInOnly {
+		warnWorkspaceMailboxes(ctx, db, logger)
+	}
 
 	// One limiter for REST and MCP: a key has one budget whichever way it
 	// comes in. Sign-in has its own, which an extension that signs people in
