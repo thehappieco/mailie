@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -284,6 +285,88 @@ func TestAPastedAuthorisationSaysWhereSyncStandsAsTheDaemonAnswered(t *testing.T
 	sent := d.sent()
 	if len(sent) != 2 || sent[1].body["redirect_url"] != "http://127.0.0.1:53682/oauth/callback?code=c&state=s" {
 		t.Errorf("the daemon was asked %v", sent)
+	}
+}
+
+// noBrowser stands in for this machine's browser, and keeps every page it
+// was asked to open.
+func noBrowser(t *testing.T) *[]string {
+	t.Helper()
+	var opened []string
+	previous := openBrowser
+	openBrowser = func(_ context.Context, target string) { opened = append(opened, target) }
+	t.Cleanup(func() { openBrowser = previous })
+	return &opened
+}
+
+// consentStarted is POST /v1/accounts/{id}/oauth/start's answer for a
+// browser's consent.
+const consentStarted = `{"auth_url":"https://accounts.example/auth?state=s","state":"s","expires_at":1790000600}`
+
+func TestReauthorisingAMailboxThatWorksNeverSaysAuthorisedBeforeItsConsentEnds(t *testing.T) {
+	// A mailbox that works stays active whichever way a new consent ends:
+	// its state cannot say this one ended, so nothing waits on it, and the
+	// browser's page, which the daemon's listener answers, says how it
+	// ended.
+	d := newCLIDaemon(t, map[string]string{
+		"GET /v1/accounts/acc_9":              `{"id":"acc_9","email":"ops@gmail.example","state":"active","sync":{"enabled":true}}`,
+		"POST /v1/accounts/acc_9/oauth/start": consentStarted,
+	})
+	opened := noBrowser(t)
+	_, stderr, err := captureOutput(t, func() error { return accountAuthorize(t.Context(), d.cfg, []string{"acc_9"}) })
+	if err != nil {
+		t.Fatalf("account authorize: %v", err)
+	}
+	if strings.Contains(stderr, "authorised") || !strings.Contains(stderr, "the browser's page says how this consent ends") {
+		t.Errorf("account authorize said %q", stderr)
+	}
+	if len(*opened) != 1 || (*opened)[0] != "https://accounts.example/auth?state=s" {
+		t.Errorf("the browser was sent to %v", *opened)
+	}
+	var routes []string
+	for _, r := range d.sent() {
+		routes = append(routes, r.route)
+	}
+	if want := "GET /v1/accounts/acc_9, POST /v1/accounts/acc_9/oauth/start"; strings.Join(routes, ", ") != want {
+		t.Errorf("the daemon was asked %v, want %s and no poll", routes, want)
+	}
+}
+
+func TestADeviceCodeForAMailboxThatWorksIsRefusedBeforeAnythingStarts(t *testing.T) {
+	// Nothing would say how a device code ended for a mailbox that works:
+	// --paste waits for the outcome itself.
+	d := newCLIDaemon(t, map[string]string{
+		"GET /v1/accounts/acc_9": `{"id":"acc_9","email":"ops@outlook.example","state":"active"}`,
+	})
+	err := accountAuthorize(t.Context(), d.cfg, []string{"acc_9", "--device"})
+	if err == nil || !strings.Contains(err.Error(), "--paste") || !strings.Contains(err.Error(), "nothing was started") {
+		t.Fatalf("account authorize --device on a mailbox that works: %v", err)
+	}
+	if sent := d.sent(); len(sent) != 1 || sent[0].route != "GET /v1/accounts/acc_9" {
+		t.Errorf("the daemon was asked %v, want only the mailbox read", sent)
+	}
+}
+
+func TestReauthorisingAMailboxThatFailedWaitsUntilItWorksAgain(t *testing.T) {
+	// The attempt moves a failed mailbox to pending_auth, and a new grant
+	// makes it active: that is the consent's end, and only then is it
+	// authorised.
+	cfg, polls := fakeDaemon(t,
+		state("needs_reauth", "the grant was revoked"),
+		func(w http.ResponseWriter) { _, _ = w.Write([]byte(consentStarted)) },
+		state("active", ""),
+	)
+	opened := noBrowser(t)
+	_, stderr, err := captureOutput(t, func() error { return accountAuthorize(t.Context(), cfg, []string{"acc_1"}) })
+	if err != nil {
+		t.Fatalf("account authorize: %v", err)
+	}
+	if !strings.Contains(stderr, "authorised; its sync is off until `mailserver account sync acc_1 on`") {
+		t.Errorf("account authorize said %q", stderr)
+	}
+	if polls.Load() != 3 || len(*opened) != 1 {
+		t.Errorf("%d requests and %d pages opened, want the read, the start and one poll, and one page",
+			polls.Load(), len(*opened))
 	}
 }
 

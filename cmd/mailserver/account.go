@@ -313,13 +313,20 @@ func authorize(ctx context.Context, cfg config.Config, accountID string, flow *a
 		return authorised, nil
 
 	default:
-		fmt.Fprintln(os.Stderr, "\nOpening a browser to authorise this account. If nothing opens, visit:")
-		fmt.Fprintf(os.Stderr, "\n  %s\n\n", flow.AuthURL)
-		openBrowser(ctx, flow.AuthURL)
+		showConsentPage(ctx, flow)
 		// The daemon is listening on the loopback port it advertised; it
 		// completes the flow itself, and the account leaves pending_auth.
 		return waitForState(ctx, cfg, accountID, "active", 10*time.Minute)
 	}
+}
+
+// showConsentPage sends the person to the provider's consent page, in a
+// browser on this machine where one opens: the redirect comes back to the
+// daemon's loopback listener, whose page then says how the attempt ended.
+func showConsentPage(ctx context.Context, flow *authFlowJSON) {
+	fmt.Fprintln(os.Stderr, "\nOpening a browser to authorise this account. If nothing opens, visit:")
+	fmt.Fprintf(os.Stderr, "\n  %s\n\n", flow.AuthURL)
+	openBrowser(ctx, flow.AuthURL)
 }
 
 // pollInterval is how often the CLI asks whether consent has finished. Two
@@ -404,6 +411,27 @@ func accountAuthorize(ctx context.Context, cfg config.Config, args []string) err
 		kind = "pasted"
 	}
 
+	// A mailbox that works stays active through a new consent: the daemon
+	// replaces its grant only once a login with the new one worked, and a
+	// consent declined, refused or run out leaves it as it was, recording
+	// nothing on it. Its state then says nothing of how this attempt ends,
+	// and waiting for it to be active would say "authorised" at once. The
+	// pasted flow is answered with its own outcome; the others are not, so
+	// they are told apart here, before anything starts.
+	works := false
+	if kind != "pasted" {
+		var now accountJSON
+		if err := adminJSON(ctx, cfg, http.MethodGet, "/v1/accounts/"+url.PathEscape(accountID), nil, &now); err != nil {
+			return err
+		}
+		works = now.State == "active"
+	}
+	if works && kind == "device" {
+		return fmt.Errorf("account authorize: %s works, and stays as it is whichever way a new consent ends, so "+
+			"nothing here could say how a device code ended: authorise it with --paste, which waits for the "+
+			"outcome, or in a browser on the daemon's machine, whose page shows it; nothing was started", accountID)
+	}
+
 	raw, err := adminPost(ctx, cfg, "/v1/accounts/"+url.PathEscape(accountID)+"/oauth/start",
 		map[string]any{"flow": kind})
 	if err != nil {
@@ -412,6 +440,12 @@ func accountAuthorize(ctx context.Context, cfg config.Config, args []string) err
 	var flow authFlowJSON
 	if err := json.Unmarshal(raw, &flow); err != nil {
 		return fmt.Errorf("account authorize: unexpected response: %w", err)
+	}
+	if works {
+		showConsentPage(ctx, &flow)
+		fmt.Fprintf(os.Stderr, "%s keeps working with the grant it has until a new one logs in: the browser's "+
+			"page says how this consent ends, and nothing here waits for it\n", accountID)
+		return nil
 	}
 	return finishAuthorization(ctx, cfg, accountID, &flow, kind)
 }
@@ -827,9 +861,13 @@ func accountSync(ctx context.Context, cfg config.Config, args []string) error {
 	return nil
 }
 
-// openBrowser is best effort: the URL is printed first, so a failure here
+// openBrowser opens a page in this machine's browser: startBrowser, or what
+// a test puts in its place, since a test opens no browser.
+var openBrowser = startBrowser
+
+// startBrowser is best effort: the URL is printed first, so a failure here
 // costs a copy and paste rather than the flow.
-func openBrowser(ctx context.Context, target string) {
+func startBrowser(ctx context.Context, target string) {
 	// The URL is one this process built from the provider's own endpoint and
 	// then printed; it is passed as a single argument to a fixed command, not
 	// through a shell.
