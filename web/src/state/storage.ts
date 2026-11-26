@@ -1,8 +1,9 @@
-// What the mailboxes the signed-in person may read take up in this server's
-// index, in the workspace the console shows (?workspace=), as the Storage
-// section shows it. Read when the section is first shown, on Refresh, and
-// when what it counts changed; it resets when the person changes, and is read
-// again for another workspace. A slow answer for one person, or one
+// What the signed-in person's mailboxes hold in this server's database (the
+// ones they may read, and the removed ones they may list), in the workspace
+// the console shows (?workspace=), as GET /v1/me/storage counts it. Read when
+// an edition first asks (loadStorage), and again when it asks and when what it
+// counts changed (state/live.ts); it resets when the person changes, and is
+// read again for another workspace. A slow answer for one person, or one
 // workspace, is never drawn in front of the next. Asked again while a read is
 // in flight, it reads once more when that one ends: the answer in flight may
 // predate the change.

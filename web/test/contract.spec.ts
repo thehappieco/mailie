@@ -486,19 +486,56 @@ describe('the HTTP contract the Go handlers answer with', () => {
     expect(new Set([SEND_TEXT_VERSION, ACTIONS_TEXT_VERSION, CONSENT_TEXT_VERSION, KEY_TERMS_VERSION]).size).toBe(4)
   })
 
-  it('counts what each of the caller’s mailboxes takes up, sums it, and tells an owner the database’s size', () => {
+  it('counts what each of the caller’s mailboxes holds by one versioned rule, and sums it per workspace and in all', () => {
     const storage = fixture('storage') as Storage
+    expect(storage.rule_version).toBe(1)
     expect(storage.mailboxes.length).toBeGreaterThan(0)
-    expect(storage.total.messages).toBe(storage.mailboxes.reduce((sum, item) => sum + item.messages, 0))
-    expect(storage.total.bytes).toBe(storage.mailboxes.reduce((sum, item) => sum + item.bytes, 0))
-    // Captured for an owner signed in to the console.
-    expect(storage.database_bytes).toBeGreaterThan(0)
-    // By address, as the section lists them.
+    // The total is every mailbox listed, a removed one included.
+    const sum = (items: { messages: number; bytes: number; provider_bytes?: number }[]) => ({
+      messages: items.reduce((total, item) => total + item.messages, 0),
+      bytes: items.reduce((total, item) => total + item.bytes, 0),
+      provider_bytes: items.reduce((total, item) => total + item.provider_bytes!, 0),
+    })
+    expect(storage.total).toEqual(sum(storage.mailboxes))
+    // Something was indexed, and what the index keeps is not the mail's size on the server.
+    expect(storage.total.bytes).toBeGreaterThan(0)
+    expect(storage.total.provider_bytes).toBeGreaterThan(0)
+    // By address.
     const emails = storage.mailboxes.map(item => item.email)
     expect(emails).toEqual([...emails].sort())
-    // Summed per workspace, over the same mailboxes and nothing else.
-    expect(storage.workspaces?.reduce((sum, item) => sum + item.mailboxes, 0)).toBe(storage.mailboxes.length)
-    expect(storage.workspaces?.reduce((sum, item) => sum + item.bytes, 0)).toBe(storage.total.bytes)
+    // Summed per workspace, over the same mailboxes and nothing else, so the workspaces sum to the total.
+    const workspaces = storage.workspaces!
+    expect(workspaces.length).toBeGreaterThan(1)
+    for (const item of workspaces) {
+      const own = storage.mailboxes.filter(mailbox => mailbox.workspace_id === item.workspace_id)
+      expect(item.mailboxes, item.workspace_id).toBe(own.length)
+      expect({ messages: item.messages, bytes: item.bytes, provider_bytes: item.provider_bytes }, item.workspace_id).toEqual(sum(own))
+    }
+    expect(workspaces.reduce((total, item) => total + item.mailboxes, 0)).toBe(storage.mailboxes.length)
+    expect(sum(workspaces)).toEqual(storage.total)
+  })
+
+  it('counts a removed mailbox, marked so, until it is deleted for good, and tells a session nothing of the database’s size', () => {
+    const storage = fixture('storage') as Storage
+    // Captured while ana, signed in, owns a removed team mailbox: listed, marked, and in its workspace's count.
+    const removed = storage.mailboxes.filter(item => item.removed)
+    expect(removed).toHaveLength(1)
+    expect(storage.mailboxes.filter(item => item.removed === false).length).toBe(storage.mailboxes.length - 1)
+    const team = storage.workspaces!.find(item => item.workspace_id === removed[0]!.workspace_id)!
+    expect(team.mailboxes).toBe(storage.mailboxes.filter(item => item.workspace_id === team.workspace_id).length)
+    // The database's size is the operator's alone, never a person's session.
+    expect(storage).not.toHaveProperty('database_bytes')
+    expect(isStorage({ ...storage, database_bytes: 4096 }, true)).toBe(true)
+    // A daemon older than the rule says neither the rule nor what the mail server reports: the running
+    // console reads its answer, and the contract does not.
+    const older = {
+      mailboxes: storage.mailboxes.filter(item => !item.removed).map(({ removed: _, provider_bytes: __, ...item }) => item),
+      workspaces: storage.workspaces!.map(({ provider_bytes: _, ...item }) => item),
+      total: { messages: storage.total.messages, bytes: storage.total.bytes },
+    }
+    expect(isStorage(older)).toBe(true)
+    expect(isStorage(older, true)).toBe(false)
+    expect(isStorage({ ...storage, rule_version: 0 }, true)).toBe(false)
   })
 
   it('lists the person’s workspaces with their role in each, their own personal one among them', () => {

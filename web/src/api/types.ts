@@ -499,31 +499,53 @@ export interface KeySend {
  */
 export type SendState = 'sending' | 'sent' | 'failed' | 'unknown'
 /**
- * What one of the caller's mailboxes takes up in the index, as GET
- * /v1/me/storage reports it: the messages indexed (a copy in each folder it
- * is in counts once in each) and their size on the mail server, not what the
- * index keeps of them. Zeros for a mailbox that does not sync.
+ * What one of the caller's mailboxes holds in this server's database, as GET
+ * /v1/me/storage reports it, under the answer's rule_version.
+ *
+ * messages: the copies indexed, one in each folder a message is in. bytes:
+ * what the database holds for the mailbox, counted by the rule (its live
+ * messages' rows, their parts, its folders and its open drafts, each value
+ * by its bytes; never the full-text index). provider_bytes: those copies'
+ * sizes as the mail server reports them, not what the index keeps of them.
+ * Zeros, but for its folders' bytes, for a mailbox whose index is gone or
+ * was never made. removed: a mailbox removed and kept until it is deleted for
+ * good, which still counts until then (docs/workspaces.md, "Removed
+ * mailboxes"); listed only to whoever lists it on the removed mailboxes' own
+ * paths. A daemon older than the rule says neither provider_bytes nor
+ * removed, and lists no removed mailbox.
  */
 export interface MailboxStorage {
   account_id: string
   /** The workspace the mailbox belongs to. Absent from a daemon older than workspaces. */
   workspace_id?: string
   email: string
+  removed?: boolean
   messages: number
   bytes: number
+  provider_bytes?: number
 }
-/** The caller's readable mailboxes of one workspace, summed: never a workspace's whole usage. */
-export interface WorkspaceStorage { workspace_id: string; mailboxes: number; messages: number; bytes: number }
 /**
- * GET /v1/me/storage: the caller's own mailboxes and their sum, and the size
- * of the database file on disk (everyone's, the write-ahead log included),
- * which only an owner signed in to the console is told.
+ * The caller's mailboxes of one workspace, summed, the removed ones among
+ * them (mailboxes counts them too): never a workspace's whole usage.
+ */
+export interface WorkspaceStorage { workspace_id: string; mailboxes: number; messages: number; bytes: number; provider_bytes?: number }
+/** What the caller's mailboxes hold, summed: every one listed, the removed ones included. */
+export interface StorageTotal { messages: number; bytes: number; provider_bytes?: number }
+/**
+ * GET /v1/me/storage: the caller's mailboxes and their sums, per workspace
+ * and in all, every bytes counted by one rule (rule_version: compare figures
+ * only under one version; absent from a daemon older than the rule).
+ *
+ * database_bytes, the size of the database file and its write-ahead log on
+ * disk (everyone's), is told to the operator alone: an unrestricted instance
+ * key with the admin scope. A person's session is never told it.
  */
 export interface Storage {
+  rule_version?: number
   mailboxes: MailboxStorage[]
   /** mailboxes summed per workspace. Absent from a daemon older than workspaces. */
   workspaces?: WorkspaceStorage[]
-  total: { messages: number; bytes: number }
+  total: StorageTotal
   database_bytes?: number
 }
 /** What a key is given on one mailbox when it is created. */
@@ -1190,24 +1212,34 @@ export function isKeySendList(v: unknown, strict = false): v is KeySend[] {
   return Array.isArray(v) && v.every(item => isKeySend(item, strict))
 }
 
+/** A field the daemon that writes the fixtures always says, and an older one may leave out: required in strict mode alone. */
+const requiredWhenStrict = (v: unknown, check: (v: unknown) => boolean, strict: boolean): boolean => strict ? check(v) : optional(v, check)
+
 export function isMailboxStorage(v: unknown, strict = false): v is MailboxStorage {
-  return record(v) && known(v, ['account_id', 'workspace_id', 'email', 'messages', 'bytes'], strict)
+  return record(v) && known(v, ['account_id', 'workspace_id', 'email', 'removed', 'messages', 'bytes', 'provider_bytes'], strict)
     && filled(v.account_id, 64) && filled(v.email, 320) && counter(v.messages) && counter(v.bytes)
-    // The daemon that writes the fixtures always says; an older one may not.
-    && (strict ? filled(v.workspace_id, 64) : optional(v.workspace_id, x => filled(x, 64)))
+    && requiredWhenStrict(v.workspace_id, x => filled(x, 64), strict)
+    && requiredWhenStrict(v.removed, flag, strict) && requiredWhenStrict(v.provider_bytes, counter, strict)
 }
 
 export function isWorkspaceStorage(v: unknown, strict = false): v is WorkspaceStorage {
-  return record(v) && known(v, ['workspace_id', 'mailboxes', 'messages', 'bytes'], strict)
+  return record(v) && known(v, ['workspace_id', 'mailboxes', 'messages', 'bytes', 'provider_bytes'], strict)
     && filled(v.workspace_id, 64) && counter(v.mailboxes) && counter(v.messages) && counter(v.bytes)
+    && requiredWhenStrict(v.provider_bytes, counter, strict)
+}
+
+export function isStorageTotal(v: unknown, strict = false): v is StorageTotal {
+  return record(v) && known(v, ['messages', 'bytes', 'provider_bytes'], strict)
+    && counter(v.messages) && counter(v.bytes) && requiredWhenStrict(v.provider_bytes, counter, strict)
 }
 
 export function isStorage(v: unknown, strict = false): v is Storage {
   const workspaces = (x: unknown) => Array.isArray(x) && x.every(item => isWorkspaceStorage(item, strict))
-  return record(v) && known(v, ['mailboxes', 'workspaces', 'total', 'database_bytes'], strict)
+  return record(v) && known(v, ['rule_version', 'mailboxes', 'workspaces', 'total', 'database_bytes'], strict)
+    && requiredWhenStrict(v.rule_version, rowID, strict)
     && Array.isArray(v.mailboxes) && v.mailboxes.every(item => isMailboxStorage(item, strict))
-    && (strict ? workspaces(v.workspaces) : optional(v.workspaces, workspaces))
-    && record(v.total) && known(v.total, ['messages', 'bytes'], strict) && counter(v.total.messages) && counter(v.total.bytes)
+    && requiredWhenStrict(v.workspaces, workspaces, strict)
+    && isStorageTotal(v.total, strict)
     && optional(v.database_bytes, counter)
 }
 

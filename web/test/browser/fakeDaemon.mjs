@@ -449,16 +449,18 @@ export function fakeDaemon({ origin, versions, refuseFolders = [], progressMS = 
       }
       if (path === '/v1/me/apikeys' || path.startsWith('/v1/me/apikeys/') || /^\/v1\/workspaces\/[^/]+\/apikeys(\/|$)/.test(path)) return apiKeys()
       // GET /v1/me/storage (service.Storage): the caller's mailboxes by address, what the index holds
-      // for each, and the database's size for an owner. The index is the owner's to keep while sync
-      // is on, whether or not the account works now: zeros only once sync is off, which deletes it.
+      // for each under usage rule 1 and their size on the mail server, summed per workspace and in all.
+      // The index is the owner's to keep while sync is on, whether or not the account works now: zeros
+      // only once sync is off, which deletes it. A session is never told the database's size.
       if (path === '/v1/me/storage' && method === 'GET') {
         calls.storage++
         const mailboxes = mine.map(account => {
           const messages = user.consent ? account.sync.messages : 0
-          return { account_id: account.id, email: account.email, messages, bytes: messages * 3200 }
+          return { account_id: account.id, workspace_id: personalOf(user), email: account.email, removed: false, messages, bytes: messages * 1600, provider_bytes: messages * 3200 }
         }).sort((a, b) => a.email < b.email ? -1 : a.email > b.email ? 1 : 0)
-        const total = mailboxes.reduce((sum, item) => ({ messages: sum.messages + item.messages, bytes: sum.bytes + item.bytes }), { messages: 0, bytes: 0 })
-        return json({ mailboxes, total, ...(user.role === 'owner' ? { database_bytes: 48_234_496 } : {}) })
+        const total = mailboxes.reduce((sum, item) => ({ messages: sum.messages + item.messages, bytes: sum.bytes + item.bytes, provider_bytes: sum.provider_bytes + item.provider_bytes }), { messages: 0, bytes: 0, provider_bytes: 0 })
+        const workspaces = mailboxes.length ? [{ workspace_id: personalOf(user), mailboxes: mailboxes.length, ...total }] : []
+        return json({ rule_version: 1, mailboxes, workspaces, total })
       }
       if (path === '/v1/me/actions-consent') {
         if (method === 'POST') {
