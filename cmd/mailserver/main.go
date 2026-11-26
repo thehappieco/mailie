@@ -3,21 +3,25 @@
 // One binary, several subcommands. `serve` is the daemon: it holds the sync
 // workers, the OAuth token sources and the loopback listener that completes a
 // consent flow, so it is the only process that can add an account and have it
-// start syncing. The other subcommands are therefore thin REST clients of a
-// running daemon — with a few exceptions that have to touch the database
-// directly, because they run when no daemon is up or no key exists yet:
-// `apikey create --bootstrap`, `user invite|disable|delete --bootstrap`,
-// `user password --bootstrap` (which has no REST form at all), `migrate` and
-// `rewrap-credentials`. Those refuse to run while the daemon holds its lock.
+// start syncing. It serves a REST API, and no MCP of its own. The other
+// subcommands are therefore thin REST clients of a running daemon — with a
+// few exceptions that have to touch the database directly, because they run
+// when no daemon is up or no key exists yet: `apikey create --bootstrap`,
+// `user disable|delete --bootstrap`, `migrate` and `rewrap-credentials`.
+// Those refuse to run while the daemon holds its lock.
+//
+// By default the server has no people (MAIL_PASSWORD_SIGN_IN): its operator
+// acts with the keys `apikey create` makes, and nothing here invites anyone
+// or sets a password. People, teams and what they hold on a mailbox exist
+// where a database already holds them, one the open console left for one:
+// `user`, `workspace`, `member` and `access` list them, rename, close and
+// reopen a team, and take people and what they hold away; none of them
+// creates or widens anything.
 //
 // `backup` is the one exception to the lock. It reads the database while the
 // daemon runs — that is the point of it — through a read-only connection,
 // and takes no lock; `backup restore` runs wherever the backups may be
 // decrypted and needs none of the daemon's configuration (docs/backup.md).
-//
-// `mcp connect` and `mcp install` are not administration at all: they run on
-// the machine of a person whose MCP client should reach a Mailie server, and
-// talk to that server's /mcp with the person's own key (docs/mcp.md).
 package main
 
 import (
@@ -49,6 +53,12 @@ func main() {
 
 var errUsage = errors.New("usage")
 
+// errNoMCP answers what was the mcp command. The server serves no MCP of its
+// own, so nothing on a client's machine relays to it or configures a client
+// for it.
+var errNoMCP = errors.New("mcp: this server serves no MCP of its own, so there is nothing to connect a client " +
+	"to: its REST API stays, and MCP comes through the hosted service once a server is connected to it")
+
 func run(argv []string) error {
 	if len(argv) < 1 {
 		return errUsage
@@ -64,15 +74,16 @@ func run(argv []string) error {
 		return nil
 	}
 
+	// Before the .env and the configuration: `mcp connect` and `mcp install`
+	// ran on a person's machine, beside an MCP client, with none of the
+	// daemon's variables, and a client's configuration there may still
+	// launch them.
+	if command == "mcp" {
+		return errNoMCP
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-
-	// Before the .env and the configuration: mcp runs on a person's machine,
-	// beside an MCP client, often in a directory nobody chose, and needs none
-	// of the daemon's variables.
-	if command == "mcp" {
-		return mcpCommand(ctx, args)
-	}
 
 	// A .env file is read before the configuration, and never overrides a
 	// variable the environment already carries.
@@ -119,8 +130,8 @@ func run(argv []string) error {
 
 // commandLogger is the logger a command logs through. The daemon's goes to
 // standard output, where its service manager collects it. Every other
-// command's standard output is its answer — a key, a link, a table — which a
-// script reads, or a person copies whole, so its log goes to standard error:
+// command's standard output is its answer — a key, a table — which a script
+// reads, or a person copies whole, so its log goes to standard error:
 // a log line among them would be read as part of the answer.
 func commandLogger(command string, cfg config.Config) *slog.Logger {
 	if command == "serve" {
@@ -133,11 +144,14 @@ func usage(w *os.File) {
 	// Writing usage to a closed stream is not something to report on the
 	// way out.
 	//nolint:errcheck // usage text
-	fmt.Fprint(w, `mailserver — REST and MCP access to several mailboxes
+	fmt.Fprint(w, `mailserver — a REST API over several mailboxes
 
 Usage:
-  mailserver serve [--mcp-stdio]          Run the daemon (REST, SSE and MCP)
-  mailserver account add --email ADDR      Register a mailbox and authorise it
+  mailserver serve                        Run the daemon (REST and SSE)
+  mailserver account add --email ADDR [--password -]
+                                          Register a mailbox and authorise it with its provider, or, with
+                                          --password -, sign in to it with the password read from standard
+                                          input (typed at a prompt that does not show it, or piped)
   mailserver account list                 List accounts and their state
   mailserver account rename ID NAME       Name a mailbox of the operator workspace ("" clears it)
   mailserver account folders ID           List an account's folders
@@ -163,15 +177,11 @@ Usage:
   mailserver apikey revoke PREFIX         Revoke any key (the same)
   mailserver apikey hold SELECTOR         Hold a key an extension's issuer made, refused here until released
   mailserver apikey release SELECTOR      Lift that hold, and nothing else
-  mailserver user invite --email ADDR [--role owner|member]
-                                          Invite a person to this server and its web console
-  mailserver user invite --email ADDR --workspace ID [--role owner|admin|member]
-                                          Invite a person into a team
-  mailserver user disable --email ADDR    End a person's sessions and revoke the keys they created
-  mailserver user delete --email ADDR     Delete a person, the mailboxes they linked, sessions, keys and invite
+  mailserver user disable --email ADDR [--force] [--bootstrap]
+                                          End a person's sessions and revoke the keys they created
+  mailserver user delete --email ADDR [--force] [--bootstrap]
+                                          Delete a person, the mailboxes they linked, sessions, keys and invites
   mailserver workspace list               List every workspace: personal, teams and the operator's
-  mailserver workspace create --name NAME --owner ADDR
-                                          Create a team owned by an existing person
   mailserver workspace rename --workspace ID --name NAME
                                           Rename a team
   mailserver workspace close --workspace ID
@@ -180,32 +190,17 @@ Usage:
   mailserver workspace reopen --workspace ID
                                           Reopen a closed team as it was
   mailserver member list --workspace ID   List a workspace's members
-  mailserver member role --workspace ID --email ADDR --role owner|admin|member
-                                          Change a member's role in a team
   mailserver member remove --workspace ID --email ADDR
                                           Remove a member from a team, with their access there
   mailserver access list --workspace ID   List a workspace's mailboxes and who holds what on each
-  mailserver access grant --account ID --email ADDR --manage
-                                          Let a member manage a mailbox (the operator grants nothing else)
   mailserver access revoke --account ID --email ADDR [--read] [--act] [--send] [--manage]
                                           Take flags away from a member's grant; none named: every flag
-  mailserver user password --bootstrap --email ADDR [--force]
-                                          Print a reset invitation: the person chooses a new password and
-                                          gets a new account key (daemon stopped; --force for the last reader
-                                          of a team mailbox)
   mailserver migrate [--dry-run]          Apply pending schema migrations
   mailserver rewrap-credentials           Re-seal the credentials, the send-hash root and the salt key under
                                           the active key (the KMS key, when MAIL_CREDENTIAL_KMS_KEY_ARN names one)
   mailserver rewrap-credentials [--new-send-hash-root] [--new-salt-key] [--kms-key-lost]
                                           Replace a send-hash root or a salt key no configured key opens (its key
                                           is lost); --kms-key-lost confirms the KMS key that sealed it is lost
-  mailserver mcp connect --url URL        Run a local stdio MCP server relaying to the Mailie server at URL,
-                                          with the key in MAILIE_API_KEY (for a client that launches one)
-  mailserver mcp install --client CLIENT --url URL [--name mailie] [--force]
-                                          Configure claude-desktop or cursor to reach the server at URL
-                                          (the key is typed, or piped; claude-code: prints the command)
-  mailserver mcp install --client CLIENT --uninstall [--name mailie]
-                                          Remove that server from the client's configuration
   mailserver backup                       Encrypt a snapshot of the database and upload it to S3
   mailserver backup restore --object s3://BUCKET/KEY --kms-key-arn ARN --out PATH
                                           Download, verify and decrypt a backup (the decrypting AWS principal)
@@ -221,31 +216,23 @@ hex key with:
 
   openssl rand -hex 32
 
-serve answers MCP over HTTP at /mcp unless MAIL_MCP_HTTP=false; --mcp-stdio
-speaks it on standard input and output either way.
-
-mcp connect and mcp install run where the MCP client runs, need no MAIL_*
-variable and read no .env. Neither takes the key as an argument: connect
-reads MAILIE_API_KEY, install asks for it (without echo) or reads one line of
-standard input, and checks it against the server before writing anything.
-Addresses are https://, or http:// for this machine only. See docs/mcp.md.
+By default the server has no people: its operator acts with instance keys,
+and this command line invites nobody and sets no password. The user,
+workspace, member and access commands are for a database that already holds
+people and teams, one an earlier release left: they list them, rename, close
+and reopen a team, and take people and what they hold away; they create and
+widen nothing.
 
 The administrative subcommands talk to a running daemon over its REST API using
 MAIL_ADMIN_KEY; apikey create, list and revoke use its /v1/apikeys routes, which
 it mounts only with MAIL_ADMIN_API=true (apikey hold and release do not need
-them). Before any key exists, or with those
-routes off, issue a key with the daemon stopped:
+them). Before any key exists, or with those routes off, issue a key with the
+daemon stopped:
 
   mailserver apikey create --bootstrap --scope admin --name cli
 
-and, for the web console, invite its first person, who administers it, with:
-
-  mailserver user invite --bootstrap --role owner --email you@example.com
-
-A forgotten console password is set again only that way, with the daemon
-stopped, since no route sets a password; it ends every session the person has:
-
-  mailserver user password --bootstrap --email you@example.com
+user disable and user delete also run with the daemon stopped, with
+--bootstrap, which opens the database directly.
 
 backup reads MAIL_ENV (the encryption context's env, dev when unset), and
 MAIL_BACKUP_BUCKET, MAIL_BACKUP_KMS_KEY_ARN and MAIL_BACKUP_REGION, all three

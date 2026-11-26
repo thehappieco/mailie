@@ -1,16 +1,12 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -26,7 +22,6 @@ import (
 	"github.com/thehappieco/mailie/internal/lockfile"
 	"github.com/thehappieco/mailie/internal/provider"
 	"github.com/thehappieco/mailie/internal/secrets"
-	"github.com/thehappieco/mailie/internal/store"
 	"github.com/thehappieco/mailie/internal/store/storetest"
 	"github.com/thehappieco/mailie/internal/workspace"
 )
@@ -317,6 +312,34 @@ func TestClosingTheLastReaderOfATeamThatOutlivesThemWithBootstrapNeedsForce(t *t
 	}
 }
 
+func TestTheCommandLineNeitherInvitesNorResetsAPassword(t *testing.T) {
+	// The server has no people of its own: nothing here invites one or
+	// makes a reset invitation, with the daemon up or stopped, and a script
+	// that still calls either is told so by name, with nothing asked of the
+	// daemon or written to the database.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the daemon was asked %s %s", r.Method, r.URL.Path)
+	}))
+	t.Cleanup(srv.Close)
+	cfg := localConfig(t)
+	cfg.HTTPAddr, cfg.AdminKey = strings.TrimPrefix(srv.URL, "http://"), "deadbeef.secret"
+	for _, args := range [][]string{
+		{"invite", "--email", "ana@example.com"},
+		{"invite", "--bootstrap", "--role", "owner", "--email", "ana@example.com"},
+		{"invite", "--email", "ana@example.com", "--workspace", "wsp_0000000000000001"},
+		{"password", "--bootstrap", "--email", "ana@example.com"},
+	} {
+		err := userCommand(t.Context(), cfg, args)
+		if err == nil || errors.Is(err, errUsage) || !strings.Contains(err.Error(), "invites nobody and resets no password") ||
+			!strings.Contains(err.Error(), "apikey create") {
+			t.Errorf("user %v: %v", args, err)
+		}
+	}
+	if _, err := os.Stat(cfg.DatabasePath()); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a database was opened: %v", err)
+	}
+}
+
 func TestClosingAnAccountAsksTheDaemonWithTheAddressInTheBody(t *testing.T) {
 	// A URL is logged by every proxy on its way; a body is not.
 	var mu sync.Mutex
@@ -369,8 +392,7 @@ func TestAnAddressCanComeFromStandardInputAndStayOffTheCommandLine(t *testing.T)
 		seen = append(seen, r.URL.Path+" "+string(raw))
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"usr_1","email":"ana@example.com","role":"member","url":"https://c.example/#invite=x",` +
-			`"expires_at":1790000000}`))
+		_, _ = w.Write([]byte(`{"id":"usr_1","email":"ana@example.com"}`))
 	}))
 	t.Cleanup(srv.Close)
 	cfg := config.Config{HTTPAddr: strings.TrimPrefix(srv.URL, "http://"), AdminKey: "deadbeef.secret"}
@@ -382,7 +404,7 @@ func TestAnAddressCanComeFromStandardInputAndStayOffTheCommandLine(t *testing.T)
 	}
 
 	for name, run := range map[string]func(context.Context, config.Config, []string) error{
-		"invite": userInvite, "disable": userDisable, "delete": userDelete,
+		"disable": userDisable, "delete": userDelete,
 	} {
 		withStdin("  ana@example.com\n")
 		if err := run(t.Context(), cfg, []string{"--email", "-"}); err != nil {
@@ -395,8 +417,8 @@ func TestAnAddressCanComeFromStandardInputAndStayOffTheCommandLine(t *testing.T)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 3 {
-		t.Fatalf("the daemon was asked %d times, want 3: %v", len(seen), seen)
+	if len(seen) != 2 {
+		t.Fatalf("the daemon was asked %d times, want 2: %v", len(seen), seen)
 	}
 	for _, request := range seen {
 		if !strings.Contains(request, `"email":"ana@example.com"`) {
@@ -459,345 +481,4 @@ func captureOutput(t *testing.T, fn func() error) (stdout, stderr string, err er
 		t.Fatal(cerr)
 	}
 	return stdout, stderr, err
-}
-
-// resetState is what a reset invitation changes for one person before it is
-// used: nothing of theirs, their sessions and keys included, and how many
-// reset invitations wait for them.
-func resetState(t *testing.T, db *store.Store, userID string) string {
-	t.Helper()
-	var verifier string
-	var live, keys, resets int
-	if err := db.Reader().QueryRowContext(t.Context(),
-		`SELECT auth_verifier, (SELECT count(*) FROM sessions WHERE user_id = users.id AND revoked_at = 0),
-		        (SELECT count(*) FROM api_keys WHERE created_by = users.id AND revoked_at = 0),
-		        (SELECT count(*) FROM reset_invites WHERE user_id = users.id)
-		   FROM users WHERE id = ?`, userID).Scan(&verifier, &live, &keys, &resets); err != nil {
-		t.Fatal(err)
-	}
-	return fmt.Sprintf("%s|%d live|%d keys|%d resets", verifier, live, keys, resets)
-}
-
-func TestAPasswordResetWithBootstrapPrintsAResetLinkThatChangesNothingUntilUsed(t *testing.T) {
-	cfg := localConfig(t)
-	cfg.PublicURL = "https://console.example"
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	users := auth.NewUsers(db)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	laptop := authtest.SignIn(t, users, "ana@example.com")
-	key := authtest.NewWorkspaceKey(t, db, auth.ScopeRead, authtest.Personal(t, db, ana.ID), ana.ID)
-	before := resetState(t, db, ana.ID)
-
-	// As an operator runs it: through the binary's entry, its configuration
-	// from the environment alone and the logger it builds, at the default
-	// level, which logs the operator's event.
-	onlyEnv(t, map[string]string{
-		"MAIL_DATA_DIR":           cfg.DataDir,
-		"MAIL_CREDENTIAL_KEY_HEX": strings.Repeat("5c", secrets.KeyLen),
-		"MAIL_PUBLIC_URL":         cfg.PublicURL,
-	})
-	t.Chdir(t.TempDir()) // and no .env
-	out, logs, err := captureOutput(t, func() error {
-		return run([]string{"user", "password", "--bootstrap", "--email", "Ana@Example.com"})
-	})
-	if err != nil {
-		t.Fatalf("user password --bootstrap: %v", err)
-	}
-	// Standard output is the link and nothing else, one line a script or a
-	// person takes whole; the log and the notes are on standard error.
-	if strings.Count(out, "\n") != 1 || !strings.HasSuffix(out, "\n") {
-		t.Fatalf("standard output is %q, want the link alone on one line", out)
-	}
-	link, err := url.Parse(strings.TrimSpace(out))
-	if err != nil || link.Host != "console.example" || link.RawQuery != "" {
-		t.Fatalf("printed %q (%v), want one link to the console", out, err)
-	}
-	fragment, err := url.ParseQuery(link.Fragment)
-	if err != nil || fragment.Get("reset") == "" || fragment.Get("email") != "ana@example.com" {
-		t.Fatalf("the link's fragment is %q, want the code and the address", link.Fragment)
-	}
-	// Nothing of hers changed yet: her sessions work, and the old password.
-	if after := resetState(t, db, ana.ID); after != strings.Replace(before, "0 resets", "1 resets", 1) {
-		t.Errorf("the invitation changed the person: %s, was %s", after, before)
-	}
-	if _, err := users.AuthenticateSession(t.Context(), laptop); err != nil {
-		t.Errorf("making the invitation ended a session: %v", err)
-	}
-	// The link is what the person uses.
-	in := authtest.EnrolmentWith(t, base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)), authtest.RecoveryProof)
-	if _, _, _, err := users.CompleteReset(t.Context(), fragment.Get("reset"), fragment.Get("email"), in, "test"); err != nil {
-		t.Fatalf("the printed link does not reset: %v", err)
-	}
-	if _, err := users.AuthenticateSession(t.Context(), laptop); !errors.Is(err, auth.ErrInvalidSession) {
-		t.Errorf("a session survived the reset: %v", err)
-	}
-	if _, err := auth.NewKeys(db).Authenticate(t.Context(), key, nil); !errors.Is(err, auth.ErrInvalidKey) {
-		t.Errorf("a key she created before survived the reset: %v", err)
-	}
-	// The operator's event is in the log, and the code nowhere in it; the
-	// notes said, before the link was used, that it stops her key.
-	if !strings.Contains(logs, "reset invitation made by the operator") || !strings.Contains(logs, ana.ID) ||
-		strings.Contains(logs, fragment.Get("reset")) {
-		t.Errorf("standard error says %q", logs)
-	}
-	if !strings.Contains(logs, "every API key they created stops") ||
-		!strings.Contains(logs, "They have a live API key now: using the link stops it") {
-		t.Errorf("standard error does not say the reset stops her key: %q", logs)
-	}
-}
-
-func TestAResetOfATeamMailboxsLastReaderWithBootstrapNeedsForce(t *testing.T) {
-	// Ana is the only one who reads the team's mailbox, Bea owns the team
-	// beside her: the test closing her uses.
-	cfg := localConfig(t)
-	cfg.PublicURL = "https://console.example"
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleOwner)
-	bea := authtest.NewUser(t, db, "bea@example.com", auth.RoleMember)
-	ws := workspace.NewRepository(db, nil)
-	team, err := ws.CreateTeam(t.Context(), "Support", ana.ID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Write(t.Context(), func(tx *sql.Tx) error {
-		return ws.AddMemberTx(t.Context(), tx, team.ID, bea.ID, workspace.RoleOwner, time.Now())
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := account.NewRepository(db, nil).Create(t.Context(), account.Account{
-		ID: "acc_00000000000000a1", Email: "support@mail.example", Provider: provider.KindIMAP, AuthKind: "password",
-		IMAPHost: "imap.mail.example", IMAPPort: 993, SMTPHost: "smtp.mail.example", SMTPPort: 465, SMTPTLS: "implicit",
-		LoginUser: "support", WorkspaceID: team.ID, State: account.StateActive,
-	}, ana.ID); err != nil {
-		t.Fatal(err)
-	}
-	// It has a key, which the reset takes from her with her grant.
-	authtest.KeyMailbox(t, db, "acc_00000000000000a1", ana.ID)
-	before := resetState(t, db, ana.ID)
-
-	_, err = captureStdout(t, func() error {
-		return userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
-	})
-	if err == nil || !strings.Contains(err.Error(), "acc_00000000000000a1") || !strings.Contains(err.Error(), "--force") {
-		t.Fatalf("a reset of the last reader without --force: %v", err)
-	}
-	if after := resetState(t, db, ana.ID); after != before {
-		t.Errorf("a refused reset changed the person: %s, was %s", after, before)
-	}
-	out, err := captureStdout(t, func() error {
-		return userPassword(t.Context(), cfg, []string{"--bootstrap", "--force", "--email", "ana@example.com"})
-	})
-	if err != nil || !strings.Contains(out, "#reset=") {
-		t.Fatalf("a forced reset: %q, %v", out, err)
-	}
-	var n int
-	if err := db.Reader().QueryRowContext(t.Context(),
-		`SELECT count(*) FROM reset_invites WHERE user_id = ? AND forced = 1`, ana.ID).Scan(&n); err != nil || n != 1 {
-		t.Errorf("%d forced reset invitations (%v), want the one", n, err)
-	}
-}
-
-func TestResettingAPasswordRefusesWithoutBootstrap(t *testing.T) {
-	// No route makes a reset invitation, so there is no daemon to ask.
-	cfg := localConfig(t)
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	before := resetState(t, db, ana.ID)
-
-	err := userPassword(t.Context(), cfg, []string{"--email", "ana@example.com"})
-	if err == nil || !strings.Contains(err.Error(), "--bootstrap") {
-		t.Errorf("user password without --bootstrap: %v", err)
-	}
-	if after := resetState(t, db, ana.ID); after != before {
-		t.Errorf("a refused reset changed the person: %s, was %s", after, before)
-	}
-}
-
-func TestResettingAPasswordRefusesWhileTheDaemonRuns(t *testing.T) {
-	cfg := localConfig(t)
-	lock, err := lockfile.Acquire(cfg.LockPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = lock.Release() })
-
-	err = userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "ana@example.com"})
-	if err == nil || !strings.Contains(err.Error(), "daemon is running") {
-		t.Errorf("user password --bootstrap beside the daemon: %v", err)
-	}
-}
-
-func TestResettingThePasswordOfAnUnknownAddressChangesNothing(t *testing.T) {
-	cfg := localConfig(t)
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	authtest.SignIn(t, auth.NewUsers(db), "ana@example.com")
-	before := resetState(t, db, ana.ID)
-
-	err := userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "nobody@example.com"})
-	if err == nil || !strings.Contains(err.Error(), "no person has that address") {
-		t.Errorf("user password for an unknown address: %v", err)
-	}
-	if after := resetState(t, db, ana.ID); after != before {
-		t.Errorf("a reset for nobody changed somebody: %s, was %s", after, before)
-	}
-}
-
-func TestAnAddressFromStandardInputMakesAResetInvitation(t *testing.T) {
-	cfg := localConfig(t)
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	ana := authtest.NewUser(t, db, "ana@example.com", auth.RoleMember)
-	pipeStdin(t, "ana@example.com\n")
-	out, err := captureStdout(t, func() error {
-		return userPassword(t.Context(), cfg, []string{"--bootstrap", "--email", "-"})
-	})
-	if err != nil || !strings.Contains(out, "#reset=") || strings.Contains(out, "\nana@example.com") {
-		t.Fatalf("user password --email -: %q, %v", out, err)
-	}
-	var n int
-	if err := db.Reader().QueryRowContext(t.Context(),
-		`SELECT count(*) FROM reset_invites WHERE user_id = ?`, ana.ID).Scan(&n); err != nil || n != 1 {
-		t.Errorf("%d reset invitations (%v), want one", n, err)
-	}
-}
-
-func TestNoPasswordIsEverAnArgument(t *testing.T) {
-	// An argument is in the process listing and the shell history; a
-	// stray one here may well be a password, so it is not quoted back.
-	const password = "a brand new password"
-	err := userPassword(t.Context(), localConfig(t), []string{"--bootstrap", "--email", "ana@example.com", password})
-	if err == nil || strings.Contains(err.Error(), password) {
-		t.Errorf("a password given as an argument: %v", err)
-	}
-	args := []string{"--bootstrap", "--email", "ana@example.com", "--password", password}
-	if err := userPassword(t.Context(), localConfig(t), args); err == nil {
-		t.Errorf("--password was accepted")
-	}
-}
-
-// fakeTerminal is a terminal for readHiddenFrom: it records whether it
-// echoes, and a line arrives when the test types one.
-type fakeTerminal struct {
-	mu     sync.Mutex
-	echo   bool
-	hidden chan struct{} // closed once echo is off
-	typed  chan []byte
-}
-
-func newFakeTerminal(t *testing.T) *fakeTerminal {
-	f := &fakeTerminal{echo: true, hidden: make(chan struct{}), typed: make(chan []byte)}
-	// A read nobody waits for any more ends with the test, as it ends with
-	// the process.
-	t.Cleanup(func() { close(f.typed) })
-	return f
-}
-
-func (f *fakeTerminal) hide() (func(), error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.echo = false
-	close(f.hidden)
-	return func() {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.echo = true
-	}, nil
-}
-
-func (f *fakeTerminal) readLine() ([]byte, error) {
-	line, ok := <-f.typed
-	if !ok {
-		return nil, io.EOF
-	}
-	return line, nil
-}
-
-func (f *fakeTerminal) echoing() bool {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.echo
-}
-
-func TestEchoComesBackWhicheverWayAHiddenEntryEnds(t *testing.T) {
-	t.Run("Return", func(t *testing.T) {
-		f := newFakeTerminal(t)
-		go func() { <-f.hidden; f.typed <- []byte("a secret") }()
-		line, err := readHiddenFrom(t.Context(), f)
-		if err != nil || string(line) != "a secret" || !f.echoing() {
-			t.Errorf("read %q, %v; echoing %v", line, err, f.echoing())
-		}
-	})
-	t.Run("an interrupt while typing", func(t *testing.T) {
-		f := newFakeTerminal(t)
-		ctx, cancel := context.WithCancel(t.Context())
-		go func() { <-f.hidden; cancel() }()
-		if _, err := readHiddenFrom(ctx, f); !errors.Is(err, context.Canceled) || !f.echoing() {
-			t.Errorf("%v; echoing %v", err, f.echoing())
-		}
-	})
-	t.Run("an interrupt before the prompt", func(t *testing.T) {
-		f := newFakeTerminal(t)
-		ctx, cancel := context.WithCancel(t.Context())
-		cancel()
-		if _, err := readHiddenFrom(ctx, f); !errors.Is(err, context.Canceled) || !f.echoing() {
-			t.Errorf("%v; echoing %v", err, f.echoing())
-		}
-	})
-}
-
-func TestAHiddenEntryReadsOneLineAndNothingPastIt(t *testing.T) {
-	r := strings.NewReader("secret\b\bxx\r\nthe next line")
-	if line, err := readTerminalLine(r); err != nil || string(line) != "secrxx" || r.Len() != len("the next line") {
-		t.Errorf("read %q, %v, leaving %d bytes", line, err, r.Len())
-	}
-	if line, err := readTerminalLine(strings.NewReader("no newline")); err != nil || string(line) != "no newline" {
-		t.Errorf("a line ended by the end of input: %q, %v", line, err)
-	}
-	if _, err := readTerminalLine(strings.NewReader("")); !errors.Is(err, io.EOF) {
-		t.Errorf("nothing typed before the end of input: %v", err)
-	}
-}
-
-func TestABootstrapInviteIsAnOwnersOnlyWhileTheServerHasNone(t *testing.T) {
-	// Signing up first no longer makes anyone an owner: the invite decides.
-	// The quick start's `user invite --bootstrap --email ADDRESS` still makes
-	// the first owner, and only the first.
-	cfg := localConfig(t)
-	cfg.PublicURL = "https://console.example"
-	db := storetest.NewAt(t, cfg.DatabasePath(), nil)
-	invite := func(args ...string) {
-		t.Helper()
-		if err := userInvite(t.Context(), cfg, append([]string{"--bootstrap"}, args...)); err != nil {
-			t.Fatalf("user invite %v: %v", args, err)
-		}
-	}
-	roles := func() string {
-		t.Helper()
-		rows, err := db.Reader().QueryContext(t.Context(), `SELECT email, role FROM invites ORDER BY rowid`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = rows.Close() }()
-		var out []string
-		for rows.Next() {
-			var email, role string
-			if err := rows.Scan(&email, &role); err != nil {
-				t.Fatal(err)
-			}
-			out = append(out, email+" "+role)
-		}
-		if err := rows.Err(); err != nil {
-			t.Fatal(err)
-		}
-		return strings.Join(out, ", ")
-	}
-
-	invite("--email", "colleague@example.com", "--role", "member")
-	invite("--email", "first@example.com")
-	invite("--email", "second@example.com")
-	invite("--email", "deputy@example.com", "--role", "owner")
-	want := "colleague@example.com member, first@example.com owner, second@example.com member, deputy@example.com owner"
-	if got := roles(); got != want {
-		t.Errorf("invites:\n%s\nwant:\n%s", got, want)
-	}
 }

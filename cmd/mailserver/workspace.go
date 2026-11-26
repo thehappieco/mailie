@@ -20,24 +20,25 @@ import (
 // Workspaces, their members, and who holds what on their mailboxes, for the
 // operator (docs/workspaces.md, "Command line"). Every command is a client of
 // the daemon with MAIL_ADMIN_KEY, an unrestricted instance admin key, and the
-// daemon decides what the operator may do: it administers every team's
-// people, closes and reopens a local team (which no person does), and holds
-// no flag on anyone's mailbox, so it grants manage to members and nothing
-// else, and revokes — read passes from an owner or an admin who reads the
-// mailbox, and act and send from an owner or an admin, in the console.
+// daemon decides what the operator may do.
+//
+// By default the server has no people, so teams, members and grants exist
+// only where a database already holds them, one the open console left for
+// one. These commands list them, rename, close and reopen a team (which no
+// person does), and take members and their flags away. None of them creates a
+// team, raises a role or gives a flag: those widen what people may do, and by
+// default nobody signs in here to do it.
 //
 // People are named by address, as everywhere on the command line; the routes
 // take ids, which these look up in the workspace's member list.
 
 func workspaceCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: workspace needs a subcommand: list, create, rename, close or reopen", errUsage)
+		return fmt.Errorf("%w: workspace needs a subcommand: list, rename, close or reopen", errUsage)
 	}
 	switch args[0] {
 	case "list":
 		return workspaceList(ctx, cfg, args[1:])
-	case "create":
-		return workspaceCreate(ctx, cfg, args[1:])
 	case "rename":
 		return workspaceRename(ctx, cfg, args[1:])
 	case "close":
@@ -51,13 +52,11 @@ func workspaceCommand(ctx context.Context, cfg config.Config, args []string) err
 
 func memberCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: member needs a subcommand: list, role or remove", errUsage)
+		return fmt.Errorf("%w: member needs a subcommand: list or remove", errUsage)
 	}
 	switch args[0] {
 	case "list":
 		return memberList(ctx, cfg, args[1:])
-	case "role":
-		return memberRole(ctx, cfg, args[1:])
 	case "remove":
 		return memberRemove(ctx, cfg, args[1:])
 	default:
@@ -67,13 +66,11 @@ func memberCommand(ctx context.Context, cfg config.Config, args []string) error 
 
 func accessCommand(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("%w: access needs a subcommand: list, grant or revoke", errUsage)
+		return fmt.Errorf("%w: access needs a subcommand: list or revoke", errUsage)
 	}
 	switch args[0] {
 	case "list":
 		return accessList(ctx, cfg, args[1:])
-	case "grant":
-		return accessGrant(ctx, cfg, args[1:])
 	case "revoke":
 		return accessRevoke(ctx, cfg, args[1:])
 	default:
@@ -113,29 +110,6 @@ func count(n *int) string {
 		return "-"
 	}
 	return fmt.Sprint(*n)
-}
-
-func workspaceCreate(ctx context.Context, cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("workspace create", flag.ContinueOnError)
-	name := fs.String("name", "", "the team's name, 1 to 80 characters")
-	owner := fs.String("owner", "", "the address of the existing person who will own the team"+emailFlagUsage)
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() > 0 {
-		return fmt.Errorf("workspace create: unexpected argument %q", fs.Arg(0))
-	}
-	email, err := emailArg("workspace create", *owner)
-	if err != nil {
-		return fmt.Errorf("%w (--owner)", err)
-	}
-	var created service.Workspace
-	if err := adminJSON(ctx, cfg, http.MethodPost, "/v1/workspaces",
-		map[string]any{"name": *name, "owner_email": email}, &created); err != nil {
-		return err
-	}
-	fmt.Printf("created the team %s (%s), owned by %s\n", created.ID, created.Name, email)
-	return nil
 }
 
 func workspaceRename(ctx context.Context, cfg config.Config, args []string) error {
@@ -225,31 +199,6 @@ func memberList(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", m.UserID, m.Email, m.Role, m.Status, orDash(strings.Join(notes, "; ")))
 	}
 	return w.Flush()
-}
-
-func memberRole(ctx context.Context, cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("member role", flag.ContinueOnError)
-	id := fs.String("workspace", "", "the team's id")
-	email := fs.String("email", "", "the member's address"+emailFlagUsage)
-	role := fs.String("role", "", "owner, admin or member")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *id == "" || *role == "" {
-		return errors.New("member role: --workspace and --role are required")
-	}
-	m, err := memberByEmail(ctx, cfg, "member role", *id, *email)
-	if err != nil {
-		return err
-	}
-	var changed service.Member
-	if err := adminJSON(ctx, cfg, http.MethodPatch,
-		"/v1/workspaces/"+url.PathEscape(*id)+"/members/"+url.PathEscape(m.UserID),
-		map[string]any{"role": *role}, &changed); err != nil {
-		return err
-	}
-	fmt.Printf("%s is now %s of %s\n", changed.Email, changed.Role, *id)
-	return nil
 }
 
 func memberRemove(ctx context.Context, cfg config.Config, args []string) error {
@@ -361,49 +310,6 @@ func flagList(g service.Grant) string {
 	return "(" + strings.Join(flags, ",") + ")"
 }
 
-func accessGrant(ctx context.Context, cfg config.Config, args []string) error {
-	fs := flag.NewFlagSet("access grant", flag.ContinueOnError)
-	accountID := fs.String("account", "", "the mailbox's account id")
-	email := fs.String("email", "", "the member's address"+emailFlagUsage)
-	manage := fs.Bool("manage", false, "grant manage to a member: the mailbox's card and re-authorizing it "+
-		"(required: the operator grants nothing else, and owners and admins manage by their role)")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *accountID == "" {
-		return errors.New("access grant: --account is required")
-	}
-	if !*manage {
-		return errors.New("access grant: the operator grants manage only, to members, so --manage is required; " +
-			"read passes from an owner or an admin who reads the mailbox, and act and send from an owner or an admin, " +
-			"in the console")
-	}
-	mb, workspaceID, err := mailboxAccess(ctx, cfg, *accountID)
-	if err != nil {
-		return err
-	}
-	m, err := memberByEmail(ctx, cfg, "access grant", workspaceID, *email)
-	if err != nil {
-		return err
-	}
-	// The grant is set to exactly what the request names: what the person
-	// holds already stays, and manage joins it.
-	var held service.Grant
-	for _, g := range mb.Grants {
-		if g.UserID == m.UserID {
-			held = g
-		}
-	}
-	var set service.Grant
-	if err := adminJSON(ctx, cfg, http.MethodPut,
-		"/v1/accounts/"+url.PathEscape(mb.AccountID)+"/access/"+url.PathEscape(m.UserID),
-		map[string]any{"read": held.Read, "act": held.Act, "send": held.Send, "manage": true}, &set); err != nil {
-		return err
-	}
-	fmt.Printf("%s now holds %s on %s (%s)\n", m.Email, flagList(set), mb.Email, mb.AccountID)
-	return nil
-}
-
 func accessRevoke(ctx context.Context, cfg config.Config, args []string) error {
 	fs := flag.NewFlagSet("access revoke", flag.ContinueOnError)
 	accountID := fs.String("account", "", "the mailbox's account id")
@@ -466,8 +372,7 @@ func membersOf(ctx context.Context, cfg config.Config, workspaceID string) ([]se
 	return members, err
 }
 
-// memberByEmail finds a member of a workspace by the address they sign in
-// with.
+// memberByEmail finds a member of a workspace by their address.
 func memberByEmail(ctx context.Context, cfg config.Config, command, workspaceID, flagValue string) (service.Member, error) {
 	email, err := emailArg(command, flagValue)
 	if err != nil {
