@@ -1,11 +1,12 @@
 {
-  "database_bytes": 1048576,
   "mailboxes": [
     {
       "account_id": "acc_0000000000000001",
       "bytes": 0,
       "email": "ana@gmail.com",
       "messages": 0,
+      "provider_bytes": 0,
+      "removed": false,
       "workspace_id": "wsp_0000000000000001"
     },
     {
@@ -13,6 +14,8 @@
       "bytes": 0,
       "email": "ana@icloud.com",
       "messages": 0,
+      "provider_bytes": 0,
+      "removed": false,
       "workspace_id": "wsp_0000000000000001"
     },
     {
@@ -20,26 +23,67 @@
       "bytes": 0,
       "email": "ana@mail.example",
       "messages": 0,
+      "provider_bytes": 0,
+      "removed": false,
       "workspace_id": "wsp_0000000000000001"
     },
     {
       "account_id": "acc_0000000000000004",
-      "bytes": 1037,
+      "bytes": 1757,
       "email": "ana@work.example",
       "messages": 2,
+      "provider_bytes": 1037,
+      "removed": false,
       "workspace_id": "wsp_0000000000000001"
+    },
+    {
+      "account_id": "acc_0000000000000006",
+      "bytes": 0,
+      "email": "billing@mail.example",
+      "messages": 0,
+      "provider_bytes": 0,
+      "removed": true,
+      "workspace_id": "wsp_0000000000000002"
+    },
+    {
+      "account_id": "acc_0000000000000007",
+      "bytes": 0,
+      "email": "orders@mail.example",
+      "messages": 0,
+      "provider_bytes": 0,
+      "removed": false,
+      "workspace_id": "wsp_0000000000000002"
+    },
+    {
+      "account_id": "acc_0000000000000005",
+      "bytes": 0,
+      "email": "support@mail.example",
+      "messages": 0,
+      "provider_bytes": 0,
+      "removed": false,
+      "workspace_id": "wsp_0000000000000002"
     }
   ],
+  "rule_version": 1,
   "total": {
-    "bytes": 1037,
-    "messages": 2
+    "bytes": 1757,
+    "messages": 2,
+    "provider_bytes": 1037
   },
   "workspaces": [
     {
-      "bytes": 1037,
+      "bytes": 1757,
       "mailboxes": 4,
       "messages": 2,
+      "provider_bytes": 1037,
       "workspace_id": "wsp_0000000000000001"
+    },
+    {
+      "bytes": 0,
+      "mailboxes": 3,
+      "messages": 0,
+      "provider_bytes": 0,
+      "workspace_id": "wsp_0000000000000002"
     }
   ]
 }

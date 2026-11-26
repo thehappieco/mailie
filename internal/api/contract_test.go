@@ -322,17 +322,12 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	}
 	capture("key_sends", http.StatusOK, http.MethodGet, keys+"/"+senderPrefix+"/sends", token, "")
 
-	// Storage, last, so its account ids take no number another fixture
-	// has: ana's mailboxes, as an owner signed in sees them, with the size
-	// of the whole database.
-	capture("storage", http.StatusOK, http.MethodGet, "/v1/me/storage", token, "")
-
-	// Workspaces, after everything else for the same reason: a team ana
-	// creates, which she lists beside her personal workspace and another
-	// team of hers the operator closed; a person she invites who signs up
-	// with the link, one who already has an account and accepts, and one
-	// still on the way; a mailbox she links into the team, what she grants
-	// on it, and who holds what.
+	// Workspaces, after everything else, so that their ids take no number
+	// another fixture has: a team ana creates, which she lists beside her
+	// personal workspace and another team of hers the operator closed; a
+	// person she invites who signs up with the link, one who already has an
+	// account and accepts, and one still on the way; a mailbox she links
+	// into the team, what she grants on it, and who holds what.
 	team := capture("workspace_created", http.StatusCreated, http.MethodPost, "/v1/workspaces", token,
 		`{"name":"Support"}`)
 	teamID, _ := team["id"].(string)
@@ -499,6 +494,12 @@ func TestTheContractFixturesMatchTheHandlers(t *testing.T) {
 	capture("removal", http.StatusOK, http.MethodDelete, "/v1/accounts/"+billingID+"?confirm="+billingID, token, "")
 	capture("notices", http.StatusOK, http.MethodGet, "/v1/me/notices", carolToken, "")
 	capture("removed_mailboxes", http.StatusOK, http.MethodGet, "/v1/workspaces/"+teamID+"/removed-mailboxes", token, "")
+	// Storage, while the billing mailbox is removed, so its account ids take
+	// no number another fixture has: ana's mailboxes, as she sees them
+	// signed in, in her personal workspace and the team's, the removed one
+	// among them, marked so and counted until it is deleted for good. An
+	// owner signed in is not told the database's size; the operator is.
+	capture("storage", http.StatusOK, http.MethodGet, "/v1/me/storage", token, "")
 	capture("account_recovered", http.StatusOK, http.MethodPost, "/v1/accounts/"+billingID+"/recover", token, "")
 	capture("removal_purged", http.StatusOK, http.MethodDelete, "/v1/accounts/"+gmail+"?confirm="+gmail, token, "")
 

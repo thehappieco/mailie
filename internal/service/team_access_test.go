@@ -150,7 +150,7 @@ func TestStorageCountsOnlyTheMailboxesTheCallerMayRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := mailboxes(st); len(got) != 1 || got[shared].Bytes != 4000 || st.Total.Bytes != 4000 {
+	if got := mailboxes(st); len(got) != 1 || got[shared].ProviderBytes != 4000 || st.Total.ProviderBytes != 4000 {
 		t.Errorf("with read, Bea's storage is %+v", st)
 	}
 }
