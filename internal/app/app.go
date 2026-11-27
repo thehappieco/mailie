@@ -238,6 +238,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		}
 	}()
 
+	// The bytes usage rule 1 keeps per mailbox and day (migration 0030) are
+	// checked against every mailbox's rows before anything else reads or
+	// writes them, the sync engine included: the first start after that
+	// migration fills them. A failure stops nothing; the daily check tries
+	// again.
+	reconcileUsageTotals(ctx, db, logger)
+
 	// A send still sending was cut off by the stop of the daemon that ran
 	// it, and nobody can say whether the server took the message: unknown,
 	// before anything can send again, so its key is never used twice.
@@ -575,8 +582,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 	housekeeping := make(chan struct{})
 	go func() {
 		defer close(housekeeping)
-		housekeep(houseCtx, users, db.SweepSends, svc.SweepRemovedMailboxes, svc.SweepDirectory, svc, svc, db.Scrub, logger,
-			housekeepingInterval)
+		housekeep(houseCtx, users, db.SweepSends, svc.SweepRemovedMailboxes, svc.SweepDirectory, svc, svc,
+			func(ctx context.Context) { reconcileUsageTotals(ctx, db, logger) }, db.Scrub, logger, housekeepingInterval)
 	}()
 	defer func() {
 		stopHousekeeping()

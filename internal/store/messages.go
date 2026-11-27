@@ -405,7 +405,9 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 		evs     []events.Event
 		claimed = map[int64]bool{}
 		settle  = map[string]bool{}
+		rows    = newRowWriter(tx)
 	)
+	defer rows.close()
 	announce := func(t events.Type, payload any) error {
 		ev, err := events.New(t, b.AccountID, now, payload)
 		if err != nil {
@@ -534,7 +536,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 		if err != nil {
 			return ApplyResult{}, err
 		}
-		id, err := insertRow(ctx, tx, b.AccountID, folder.ID, b.UIDValidity, m, now)
+		id, err := rows.insertRow(ctx, b.AccountID, folder.ID, b.UIDValidity, m, now)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -651,15 +653,63 @@ func refreshRow(ctx context.Context, tx *sql.Tx, r row, m meta, now time.Time, m
 	return changed, nil
 }
 
-func insertRow(ctx context.Context, tx *sql.Tx, accountID string, folderID int64, uidvalidity uint32, m meta, now time.Time) (int64, error) {
-	bits := bitsOf(m.flags)
-	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO messages(account_id, folder_id, uidvalidity, uid, modseq,
+// rowWriter writes new rows into the index through statements it prepares
+// once, on first use, in the caller's transaction, which closes them with
+// it: SQLite compiles the triggers a statement fires each time it prepares
+// it (migration 0030's usage totals among them, each spelling a whole row's
+// bytes), so a batch preparing its INSERT again for every message and every
+// part spent most of its time compiling the same programs.
+type rowWriter struct {
+	tx        *sql.Tx
+	row, part *sql.Stmt
+}
+
+func newRowWriter(tx *sql.Tx) *rowWriter { return &rowWriter{tx: tx} }
+
+const (
+	insertRowSQL = `INSERT INTO messages(account_id, folder_id, uidvalidity, uid, modseq,
 		message_id, group_key, in_reply_to, references_json, subject, from_json, to_json, cc_json, bcc_json,
 		reply_to_json, from_addr, from_text, to_text, date, internal_date, size, flags_json,
 		seen, flagged, answered, draft, deleted, has_attachments, first_seen_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		RETURNING id`,
+		RETURNING id`
+	insertPartSQL = `INSERT OR IGNORE INTO parts(msg_id, path, mime_type, charset, encoding,
+			disposition, filename, content_id, size, is_body, is_attachment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+)
+
+// prepare prepares query into *stmt, the first time only.
+func (w *rowWriter) prepare(ctx context.Context, stmt **sql.Stmt, query string) error {
+	if *stmt != nil {
+		return nil
+	}
+	//nolint:sqlclosecheck // kept for the batch: closed by close, and with the transaction at the latest
+	prepared, err := w.tx.PrepareContext(ctx, query)
+	if err != nil {
+		return err
+	}
+	*stmt = prepared
+	return nil
+}
+
+// close closes what it prepared; the transaction's end would too.
+func (w *rowWriter) close() {
+	for _, stmt := range []*sql.Stmt{w.row, w.part} {
+		if stmt != nil {
+			//nolint:errcheck // a statement of a transaction still open: nothing is lost
+			_ = stmt.Close()
+		}
+	}
+}
+
+// insertRow indexes a message the index has never held, with its parts (a
+// part listed twice under one path once), and returns its id.
+func (w *rowWriter) insertRow(ctx context.Context, accountID string, folderID int64, uidvalidity uint32, m meta, now time.Time) (int64, error) {
+	bits := bitsOf(m.flags)
+	if err := w.prepare(ctx, &w.row, insertRowSQL); err != nil {
+		return 0, fmt.Errorf("store: insert message: %w", err)
+	}
+	var id int64
+	err := w.row.QueryRowContext(ctx,
 		accountID, folderID, uidvalidity, uint32(m.uid), m.modseq,
 		m.messageID, m.groupKey, m.inReplyTo, m.references, m.subject, m.fromJSON, m.toJSON, m.ccJSON, m.bccJSON,
 		m.replyToJSON, m.fromAddr, m.fromText, m.toText, m.date, m.internalDate, m.size, m.flagsJSON(),
@@ -673,12 +723,13 @@ func insertRow(ctx context.Context, tx *sql.Tx, accountID string, folderID int64
 		if path == "" {
 			continue
 		}
-		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO parts(msg_id, path, mime_type, charset, encoding,
-			disposition, filename, content_id, size, is_body, is_attachment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		if err := w.prepare(ctx, &w.part, insertPartSQL); err != nil {
+			return 0, fmt.Errorf("store: insert part: %w", err)
+		}
+		if _, err := w.part.ExecContext(ctx,
 			id, path, strings.ToLower(p.MIMEType), paramValue(p.Params, "charset"), strings.ToLower(p.Encoding),
 			strings.ToLower(p.Disposition), p.Filename, BareID(p.ContentID), p.Size,
-			boolInt(p.IsBody), boolInt(p.IsAttachment))
-		if err != nil {
+			boolInt(p.IsBody), boolInt(p.IsAttachment)); err != nil {
 			return 0, fmt.Errorf("store: insert part: %w", err)
 		}
 	}

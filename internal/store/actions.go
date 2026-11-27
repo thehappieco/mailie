@@ -454,7 +454,9 @@ func (s *Store) ApplyActionReturn(ctx context.Context, tx *sql.Tx, b ActionRetur
 	if found {
 		return existing.id, nil, nil
 	}
-	id, err := insertRow(ctx, tx, b.AccountID, to.ID, b.UIDValidity, m, now)
+	rows := newRowWriter(tx)
+	defer rows.close()
+	id, err := rows.insertRow(ctx, b.AccountID, to.ID, b.UIDValidity, m, now)
 	if err != nil {
 		return 0, nil, err
 	}

@@ -275,6 +275,19 @@ func migrateCommand(ctx context.Context, cfg config.Config, args []string) error
 		return err
 	}
 	fmt.Printf("schema is at version %d\n", version)
+
+	// The bytes usage rule 1 keeps per mailbox and day (migration 0030),
+	// filled from every mailbox's rows the first time and checked against
+	// them every time: how many mailboxes it filled or repaired, never a
+	// figure. A second run says 0. A failure leaves the migrations as they
+	// are, and the daemon checks again when it starts.
+	start := time.Now()
+	n, err := db.ReconcileUsageTotals(ctx)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "usage totals: not checked (%v); the daemon checks them when it starts\n", err)
+		return nil
+	}
+	fmt.Printf("usage totals: %d accounts filled or repaired in %s\n", n, time.Since(start).Round(time.Millisecond))
 	return nil
 }
 

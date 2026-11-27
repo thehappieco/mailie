@@ -88,6 +88,14 @@ var (
 	usageTables = []usageTable{usageMessages, usageParts, usageFolders, usageDrafts}
 )
 
+// Which rows rule 1 counts, under the aliases its statements read them by: a
+// messages row (m) still in its folder, with its parts; every folders row;
+// a draft (d) still open.
+const (
+	countedMessageSQL = "m.vanished_at = 0"
+	countedDraftSQL   = "d.state = 'open'"
+)
+
 // rowBytesSQL is the expression of one row's bytes under the rule, for t
 // aliased alias: the sum over its columns of each value's bytes.
 func (t usageTable) rowBytesSQL(alias string) string {
@@ -108,14 +116,14 @@ func (t usageTable) rowBytesSQL(alias string) string {
 //nolint:gosec // G202: what is joined in is the rule's own column lists, fixed in this file, never input
 var usageSQL = `WITH ids(id) AS (SELECT DISTINCT value FROM json_each(?1)),
 	um AS (SELECT m.account_id AS id, count(*) AS n, sum(m.size) AS provider, sum(` + usageMessages.rowBytesSQL("m") + `) AS bytes
-	       FROM messages m WHERE m.account_id IN (SELECT id FROM ids) AND m.vanished_at = 0 GROUP BY m.account_id),
+	       FROM messages m WHERE m.account_id IN (SELECT id FROM ids) AND ` + countedMessageSQL + ` GROUP BY m.account_id),
 	up AS (SELECT m.account_id AS id, sum(` + usageParts.rowBytesSQL("p") + `) AS bytes
 	       FROM messages m JOIN parts p ON p.msg_id = m.id
-	       WHERE m.account_id IN (SELECT id FROM ids) AND m.vanished_at = 0 GROUP BY m.account_id),
+	       WHERE m.account_id IN (SELECT id FROM ids) AND ` + countedMessageSQL + ` GROUP BY m.account_id),
 	uf AS (SELECT f.account_id AS id, sum(` + usageFolders.rowBytesSQL("f") + `) AS bytes
 	       FROM folders f WHERE f.account_id IN (SELECT id FROM ids) GROUP BY f.account_id),
 	ud AS (SELECT d.account_id AS id, sum(` + usageDrafts.rowBytesSQL("d") + `) AS bytes
-	       FROM drafts d WHERE d.account_id IN (SELECT id FROM ids) AND d.state = 'open' GROUP BY d.account_id)
+	       FROM drafts d WHERE d.account_id IN (SELECT id FROM ids) AND ` + countedDraftSQL + ` GROUP BY d.account_id)
 	SELECT ids.id, coalesce(um.n, 0), coalesce(um.provider, 0),
 	       coalesce(um.bytes, 0) + coalesce(up.bytes, 0) + coalesce(uf.bytes, 0) + coalesce(ud.bytes, 0)
 	FROM ids LEFT JOIN um ON um.id = ids.id LEFT JOIN up ON up.id = ids.id

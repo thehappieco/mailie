@@ -223,7 +223,7 @@ func TestTheRetentionSweepRunsAtOnceThenOnScheduleAndStopsWithTheDaemon(t *testi
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			housekeep(ctx, users, db.SweepSends, noMailboxes, nil, nil, nil, db.Scrub, slog.New(slog.DiscardHandler), every)
+			housekeep(ctx, users, db.SweepSends, noMailboxes, nil, nil, nil, nil, db.Scrub, slog.New(slog.DiscardHandler), every)
 		}()
 		return func() {
 			t.Helper()
@@ -342,7 +342,7 @@ func TestHousekeepingPurgesRemovedMailboxesPastTheirThirtyDays(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, nil, nil, svc, db.Scrub, logger, time.Hour)
+		housekeep(sweepCtx, users, db.SweepSends, sweepMailboxes, nil, nil, svc, nil, db.Scrub, logger, time.Hour)
 	}()
 	select {
 	case <-swept:
@@ -401,7 +401,7 @@ func TestHousekeepingDeletesTheRecordOfARequestOnceItsTimeIsOver(t *testing.T) {
 		defer close(done)
 		housekeep(sweepCtx, users, db.SweepSends, func(context.Context, time.Duration) (int, int, error) {
 			return 0, 0, nil
-		}, nil, nil, sweptRequests{svc, swept}, db.Scrub, slog.New(slog.DiscardHandler), time.Hour)
+		}, nil, nil, sweptRequests{svc, swept}, nil, db.Scrub, slog.New(slog.DiscardHandler), time.Hour)
 	}()
 	select {
 	case <-swept:

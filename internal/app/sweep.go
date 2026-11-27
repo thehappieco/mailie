@@ -13,6 +13,7 @@ import (
 	"github.com/thehappieco/mailie/internal/account"
 	"github.com/thehappieco/mailie/internal/auth"
 	"github.com/thehappieco/mailie/internal/service"
+	"github.com/thehappieco/mailie/internal/store"
 )
 
 // issuedKeySweeper is what the housekeeping keeps of the keys an issuer
@@ -73,6 +74,32 @@ func sweepFlows(ctx context.Context, accounts *account.Registry, logger *slog.Lo
 // housekeepingInterval is how often the retention sweep runs.
 const housekeepingInterval = time.Hour
 
+// usageTotalsRounds is how many of the housekeeping's rounds pass between two
+// checks of the usage totals: one a day.
+const usageTotalsRounds = 24
+
+// reconcileUsageTotals checks the bytes usage rule 1 keeps per mailbox and day
+// (migration 0030) against every mailbox's rows, and repairs the mailboxes
+// whose totals drifted (store.ReconcileUsageTotals): the first time after
+// that migration, every mailbox that holds anything. A failure is logged and
+// stops nothing. What it logs is how many mailboxes and how long, never a
+// figure, a mailbox or an address.
+func reconcileUsageTotals(ctx context.Context, db *store.Store, logger *slog.Logger) {
+	start := time.Now()
+	n, err := db.ReconcileUsageTotals(ctx)
+	took := time.Since(start).Round(time.Millisecond)
+	switch {
+	case err != nil:
+		if ctx.Err() == nil {
+			logger.Error("checking the usage totals failed; the next check tries again", "err", err, "took", took)
+		}
+	case n > 0:
+		logger.Info("usage totals repaired", "accounts", n, "took", took)
+	default:
+		logger.Info("usage totals checked", "accounts", 0, "took", took)
+	}
+}
+
 // housekeep enforces retention: now, and then every interval until ctx ends.
 // Today that is the unused invites, deleted within auth.InviteRetention of
 // expiring; the keys pinned for an identity that never signed anyone in,
@@ -93,12 +120,17 @@ const housekeepingInterval = time.Hour
 // service.SweepRequests; nil sweeps none). The sweep at start is what
 // deletes at once a removed mailbox a restored backup brought back past its
 // 30 days. scrub then takes the deleted rows out of the write-ahead log too.
+// Every usageTotalsRounds-th round after the one at start, usageTotals checks
+// the bytes usage rule 1 keeps per mailbox against their rows (nil checks
+// nothing): daily, the start having checked them before anything ran.
 func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.Context, time.Duration) (int, int, error),
 	sweepMailboxes func(context.Context, time.Duration) (int, int, error),
 	sweepDirectory func(context.Context, time.Time) (int, error), issuedKeys issuedKeySweeper, requests requestSweeper,
-	scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
+	usageTotals func(context.Context), scrub func(context.Context) error, logger *slog.Logger, every time.Duration,
 ) {
+	round := 0
 	sweep := func() {
+		defer func() { round++ }()
 		// Told when the next sweep is, so nothing outlives its retention
 		// by waiting for it.
 		deleted := 0
@@ -186,6 +218,9 @@ func housekeep(ctx context.Context, users *auth.Users, sweepSends func(context.C
 			if err := scrub(ctx); err != nil && ctx.Err() == nil {
 				logger.Warn("emptying the write-ahead log after the sweep failed; a later checkpoint will", "err", err)
 			}
+		}
+		if usageTotals != nil && round > 0 && round%usageTotalsRounds == 0 {
+			usageTotals(ctx)
 		}
 	}
 	sweep()
