@@ -110,6 +110,9 @@ type Service struct {
 	// freshness is asked before an act that widens access or touches a
 	// team's shared data (freshness.go); nil asks nothing.
 	freshness Freshness
+	// linkGate is asked before a mailbox is linked, and told once it was
+	// (linkgate.go); nil asks and tells nothing.
+	linkGate LinkGate
 	// syncPauseOffered is an edition that offers a person's pause of one
 	// mailbox's sync (Deps.SyncPauseOffered).
 	syncPauseOffered bool
@@ -232,6 +235,11 @@ type Deps struct {
 	// (freshness.go). nil, the default, asks nothing. Only internal/app
 	// sets it, from its Options.
 	Freshness Freshness
+	// LinkGate, when set, is asked before a mailbox is linked into a
+	// workspace, and told once a link committed (linkgate.go). nil, the
+	// default, asks and tells nothing. Only internal/app sets it, from its
+	// Options.
+	LinkGate LinkGate
 	// SyncPauseOffered is an edition that offers a person's pause of one
 	// mailbox's sync: its people agree to a sync text that a pause makes no
 	// promise of false. Unset, PauseMailboxSync is not_authorized for
@@ -314,6 +322,7 @@ func New(d Deps) *Service {
 		teamsWithheld:       d.TeamsWithheld,
 		keysPersonalOnly:    d.KeysInPersonalWorkspaceOnly,
 		freshness:           d.Freshness,
+		linkGate:            d.LinkGate,
 		syncPauseOffered:    d.SyncPauseOffered,
 		issuer:              d.KeyIssuer,
 		keysIssuedElsewhere: d.KeysIssuedElsewhere,

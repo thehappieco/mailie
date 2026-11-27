@@ -154,9 +154,11 @@ const (
 // written: the mailbox's key goes with the return (CompleteOAuth).
 //
 // Who may link where is AddAccount's rule, asked now to fail early; so are
-// the person's account key and a fresh step-up. A person has at most
-// account.MaxLinksWaiting links waiting (rate_limited until the oldest
-// expires); a new one for the same provider and workspace replaces theirs.
+// the person's account key and a fresh step-up, and then the link gate
+// (linkgate.go), which is told once the return created the mailbox. A
+// person has at most account.MaxLinksWaiting links waiting (rate_limited
+// until the oldest expires); a new one for the same provider and workspace
+// replaces theirs.
 func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (LinkStarted, error) {
 	if err := refuseDelegated(p); err != nil {
 		return LinkStarted{}, err
@@ -197,6 +199,9 @@ func (s *Service) StartLink(ctx context.Context, p Principal, req LinkRequest) (
 		return LinkStarted{}, err
 	}
 	if err := s.requireStepUp(ctx, p); err != nil {
+		return LinkStarted{}, err
+	}
+	if err := s.beforeLink(ctx, p, into.workspaceID, into.team, LinkAtProvider); err != nil {
 		return LinkStarted{}, err
 	}
 	link, started, err := s.accounts.StartLink(ctx, account.LinkStart{
@@ -244,7 +249,8 @@ func (s *Service) GetLink(ctx context.Context, p Principal, id string) (Link, er
 // address, proves one login with it and creates the mailbox, its key and the
 // person's grant in one transaction, which asks who may link and the step-up
 // again under its own context. A take that could not get the writer in time
-// has taken nothing either: internal, with a Retry, for the same return.
+// has taken nothing either: internal, with a Retry, for the same return. A
+// mailbox created is told to the link gate once its transaction committed.
 func (s *Service) completeLink(ctx context.Context, p Principal, rd account.Redirect, req CompleteOAuthRequest,
 	pending account.PendingLink,
 ) (Account, error) {
@@ -280,6 +286,7 @@ func (s *Service) completeLink(ctx context.Context, p Principal, rd account.Redi
 		return Account{}, fromLink(err)
 	}
 	s.accessChanged()
+	s.linked(ctx, p, created, LinkAtProvider)
 	if created.SyncConsent.At != 0 {
 		s.log.Info("team mailbox linked with its workspace's consent to sync", "account", created.ID,
 			"workspace", created.WorkspaceID, "by", p.Actor(), "version", created.SyncConsent.Version)

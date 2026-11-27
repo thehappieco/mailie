@@ -98,6 +98,9 @@ type fixtureOptions struct {
 	// freshness is asked before an act that widens access; nil asks
 	// nothing.
 	freshness service.Freshness
+	// linkGate is asked before a mailbox is linked, and told once it was;
+	// nil asks and tells nothing.
+	linkGate service.LinkGate
 	// pauseWithheld is an edition that does not offer a person's pause of
 	// one mailbox's sync: every other fixture offers it, as serve does.
 	pauseWithheld bool
@@ -198,6 +201,7 @@ func (f *fixture) build(t *testing.T, registryOpts account.RegistryOptions) (*se
 		TeamsWithheld:               f.opts.teamsWithheld,
 		KeysInPersonalWorkspaceOnly: f.opts.keysPersonalOnly,
 		Freshness:                   f.opts.freshness,
+		LinkGate:                    f.opts.linkGate,
 		SyncPauseOffered:            !f.opts.pauseWithheld,
 		KeyIssuer:                   f.opts.keyIssuer,
 		KeysIssuedElsewhere:         f.opts.keysIssuedElsewhere,

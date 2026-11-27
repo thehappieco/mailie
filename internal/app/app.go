@@ -21,7 +21,8 @@
 // refuses a team's (KeysInPersonalWorkspaceOnly); for one whose sync text
 // says what pausing one mailbox's sync does, the one that offers it
 // (SyncPauseOffered, which `serve` sets); for a binary whose workspaces come from a directory elsewhere, the
-// question asked before an act that widens access (Freshness); and, for one
+// question asked before an act that widens access (Freshness) and the one
+// asked before a mailbox is linked (LinkGate); and, for one
 // whose API keys an issuer makes elsewhere, that issuer (KeyIssuer, only
 // beside ExternalSignInOnly), the end of this server's own workspace keys
 // (KeysIssuedElsewhere) and the refusal of every issued key
@@ -134,6 +135,15 @@ type Options struct {
 	// gates, never authorizes. Only a binary that embeds the daemon sets it:
 	// there is no environment variable, and `serve` never does.
 	Freshness service.Freshness
+	// LinkGate, when set, is asked before a mailbox is linked into a
+	// workspace — added by its address, linked at the provider, or
+	// authorized for the first time — and told once the link committed
+	// (service.LinkGate); a re-authorization asks and tells nothing. Its
+	// object exists before the extension that implements it starts, so it
+	// answers calls from the first request on. Only a binary that embeds the
+	// daemon sets it: there is no environment variable, and `serve` never
+	// does.
+	LinkGate service.LinkGate
 	// Pages is what the console's page documents carry besides the core's
 	// own headers, document by document, and the small files served beside
 	// them (webui.Pages): for pages of an edition's own that another site
@@ -407,6 +417,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger, opts Optio
 		KeysActUnderCreatorConsent: cfg.KeysActUnderCreatorConsent, TeamsWithheld: opts.TeamsWithheld,
 		KeysInPersonalWorkspaceOnly: opts.KeysInPersonalWorkspaceOnly,
 		Freshness:                   opts.Freshness, NameFollowsIdentity: opts.NameFollowsIdentity,
+		LinkGate:         opts.LinkGate,
 		SyncPauseOffered: opts.SyncPauseOffered,
 		KeyIssuer:        opts.KeyIssuer, KeysIssuedElsewhere: opts.KeysIssuedElsewhere,
 		IssuedKeysRefused: opts.IssuedKeysRefused,

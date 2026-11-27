@@ -301,6 +301,10 @@ func (s *Service) keysOf(ctx context.Context, p Principal, ids []string) (map[st
 // key of theirs (conflict without one) and a fresh step-up, asked before the
 // mail server is dialled and again in that transaction. An instance key links
 // an operator mailbox, which has no key.
+//
+// The link gate (linkgate.go) is asked last, before anything is dialled or
+// stored, and told once a password mailbox was stored; one added for OAuth
+// is linked at its first authorization, which tells it then.
 func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountRequest) (AddAccountResult, error) {
 	if err := refuseDelegated(p); err != nil {
 		return AddAccountResult{}, err
@@ -355,6 +359,11 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 			return s.stepUpTx(ctx, tx, p)
 		}
 	}
+	// The last question before anything is dialled or stored, by its
+	// address on the password and the OAuth paths alike.
+	if err := s.beforeLink(ctx, p, link.workspaceID, link.team, LinkByAddress); err != nil {
+		return AddAccountResult{}, err
+	}
 
 	created, flow, err := s.accounts.Add(ctx, add)
 	if created.ID != "" {
@@ -370,6 +379,12 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 		// The account row may exist in pending_auth even when consent could
 		// not be started; that is recoverable through oauth/start.
 		return AddAccountResult{}, fromAccount(err, "adding the account failed")
+	}
+	if !created.UsesOAuth() {
+		// A password mailbox is stored with its password, after one login
+		// worked: linked. One added for OAuth is linked at its first
+		// authorization (CompleteOAuth).
+		s.linked(ctx, p, created, LinkByAddress)
 	}
 
 	result := AddAccountResult{Account: s.present(ctx, p, created)[0]}
@@ -679,7 +694,10 @@ func (s *Service) managesTx(ctx context.Context, tx *sql.Tx, p Principal, a acco
 }
 
 // StartOAuth begins consent again, for an account that needs it: whoever
-// manages it may re-authorise it, and the attempt is theirs alone.
+// manages it may re-authorise it, and the attempt is theirs alone. The first
+// authorization of a mailbox that never connected is its link, which the
+// link gate (linkgate.go) is asked about first; a re-authorization asks it
+// nothing.
 func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind string) (*AuthFlow, error) {
 	if err := refuseDelegated(p); err != nil {
 		return nil, err
@@ -706,6 +724,13 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 			return nil, err
 		}
 	}
+	if !a.Connected {
+		// A mailbox never authorized is linked at its first authorization;
+		// one that connected once is re-authorized, which is no link.
+		if err := s.beforeLink(ctx, p, a.WorkspaceID, teamMailbox(a), LinkFirstAuthorization); err != nil {
+			return nil, err
+		}
+	}
 	flow, err := s.accounts.StartAuth(ctx, id, kind, p.UserID)
 	if err != nil {
 		return nil, fromAccount(err, "starting consent failed")
@@ -727,7 +752,8 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 // A state that names no consent of the caller's may name a link at the
 // provider they started (links.go), whose return creates its mailbox: its
 // key comes with the request then. A consent for a mailbox that exists
-// carries none.
+// carries none. Either one that linked a mailbox — the link's return, or a
+// mailbox's first authorization — tells the link gate once it committed.
 func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOAuthRequest) (Account, error) {
 	if err := refuseDelegated(p); err != nil {
 		return Account{}, err
@@ -762,13 +788,20 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOA
 	if req.carriesKey() {
 		return Account{}, errLinkKey
 	}
-	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage); err != nil {
+	before, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage)
+	if err != nil {
 		return Account{}, err
 	}
 
 	a, err := s.accounts.CompleteFlow(ctx, redirect, p.UserID)
 	if err != nil {
 		return Account{}, fromCompletion(err)
+	}
+	if !before.Connected && a.Connected {
+		// Its first grant, stored: a mailbox added by its address is linked
+		// now. A credential is never deleted but with its mailbox, so this
+		// is said once.
+		s.linked(ctx, p, a, LinkFirstAuthorization)
 	}
 	return s.present(ctx, p, a)[0], nil
 }
