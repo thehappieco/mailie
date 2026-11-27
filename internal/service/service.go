@@ -307,7 +307,7 @@ func New(d Deps) *Service {
 	if workspaces == nil && d.Store != nil {
 		workspaces = workspace.NewRepository(d.Store, nil)
 	}
-	return &Service{
+	s := &Service{
 		accounts: d.Accounts, keys: d.Keys, users: d.Users, workspaces: workspaces,
 		store: d.Store, bus: d.Bus, sync: d.Sync, log: log, now: now,
 		publicURL: d.PublicURL, localConsole: local,
@@ -328,6 +328,14 @@ func New(d Deps) *Service {
 		keysIssuedElsewhere: d.KeysIssuedElsewhere,
 		issuedKeysRefused:   d.IssuedKeysRefused,
 	}
+	if d.Accounts != nil && d.LinkGate != nil {
+		// A mailbox's first authorization is its link, and the registry is
+		// what stores its grant, on every path: a redirect the console
+		// posts, or a loopback listener or device poll it completes by
+		// itself, which no request here sees end.
+		d.Accounts.OnFirstGrant(s.firstGranted)
+	}
+	return s
 }
 
 // Principal is the authenticated caller.

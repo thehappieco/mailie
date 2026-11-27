@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
 	"strings"
@@ -98,6 +99,8 @@ func newGateWorld(t *testing.T, gate service.LinkGate) *gateWorld {
 	logins := &atomic.Int64{}
 	icloud.OnLogin(func() { logins.Add(1) })
 	registry := linkRegistry(idp)
+	// Microsoft's device flow, which only an instance key is offered.
+	registry.DeviceCode = true
 	// Gmail's and Microsoft's servers and Apple's: the fixture redirects
 	// the first two only when it is given one server for both.
 	registry.RedirectIMAP = map[string]string{"imap.mail.me.com:993": icloud.Addr}
@@ -572,4 +575,159 @@ func TestTheLinkGateIsToldOfEveryLinkOnceItCommitted(t *testing.T) {
 	}
 	once("an instance key's mailbox", service.LinkAttempt{WorkspaceID: workspace.OperatorID,
 		Way: service.LinkByAddress}, 1)
+}
+
+func TestTheLinkGateIsToldOfAFirstAuthorizationTheDaemonCompletesByItself(t *testing.T) {
+	// A loopback listener and a device poll store a mailbox's first grant on
+	// the daemon's own goroutines, with no request to see them end: the CLI's
+	// `account add` and `account authorize` only watch the mailbox's state.
+	// Their first authorization is a link all the same.
+	gate := &linkGateHook{}
+	w := newGateWorld(t, gate)
+	ctx := t.Context()
+	// What the gate sees when it is told, on the goroutine that told it:
+	// the workspace's mailboxes that connected, read on the reader pool,
+	// which sees only what committed.
+	var (
+		seenMu sync.Mutex
+		seen   []int
+	)
+	seenSoFar := func() []int {
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		return slices.Clone(seen)
+	}
+	gate.whenTold(func(ctx context.Context, link service.LinkAttempt) {
+		var n int
+		if err := w.db.Reader().QueryRowContext(ctx, `SELECT count(*) FROM accounts a WHERE a.workspace_id = ?
+			AND EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id)`, link.WorkspaceID).Scan(&n); err != nil {
+			t.Errorf("reading what committed: %v", err)
+		}
+		seenMu.Lock()
+		defer seenMu.Unlock()
+		seen = append(seen, n)
+	})
+	operator := func(way service.LinkWay) service.LinkAttempt {
+		return service.LinkAttempt{WorkspaceID: workspace.OperatorID, Way: way}
+	}
+	// firstOnce waits until the gate was told of a first authorization and
+	// looked, then fails the test unless that is all it was told, after its
+	// commit.
+	firstOnce := func(what string, connected int) {
+		t.Helper()
+		eventually(t, what+" to be told", func() bool { return len(seenSoFar()) > 0 })
+		tells(t, gate, what, operator(service.LinkFirstAuthorization))
+		if got := seenSoFar(); len(got) != 1 || got[0] != connected {
+			t.Errorf("%s: the gate saw %v connected mailboxes, want %d: told before the commit", what, got, connected)
+		}
+		seenMu.Lock()
+		seen = nil
+		seenMu.Unlock()
+	}
+	complete := func(flow *service.AuthFlow) {
+		t.Helper()
+		reply := getRedirect(t, flow, url.Values{"code": {"granted"}, "state": {stateOf(t, flow)}})
+		if reply.status != http.StatusOK {
+			t.Fatalf("the loopback listener answered %d %q", reply.status, reply.body)
+		}
+	}
+
+	// Added by its address on a loopback listener, the CLI's default.
+	loop, err := w.svc.AddAccount(ctx, admin(), service.AddAccountRequest{Email: "person@gmail.com", Flow: "loopback"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks(t, gate, "a mailbox added on a loopback listener", operator(service.LinkByAddress))
+	complete(loop.Auth)
+	firstOnce("its first authorization on the listener", 1)
+
+	// Added by its address with Microsoft's device flow.
+	device, err := w.svc.AddAccount(ctx, admin(), service.AddAccountRequest{Email: "person@outlook.com", Flow: "device"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks(t, gate, "a mailbox added with the device flow", operator(service.LinkByAddress))
+	w.idp.set(func(f *fakeIDP) { f.deviceAnswer = "" })
+	firstOnce("its first authorization by the device poll", 2)
+	if a := w.stateOfAccount(t, device.Account.ID); !a.Connected {
+		t.Fatalf("the device poll left the mailbox %s %q", a.State, a.StateReason)
+	}
+
+	// A mailbox waiting for its first authorization, authorized on a
+	// listener: the CLI's `account authorize`.
+	waiting, err := w.svc.AddAccount(ctx, admin(), service.AddAccountRequest{Email: "other@gmail.com", Flow: "pasted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate.take()
+	first, err := w.svc.StartOAuth(ctx, admin(), waiting.Account.ID, "loopback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks(t, gate, "a first authorization started on a listener", operator(service.LinkFirstAuthorization))
+	complete(first)
+	firstOnce("a first authorization completed on a listener", 3)
+
+	// Its re-authorization, on a listener too: no link.
+	again, err := w.svc.StartOAuth(ctx, admin(), waiting.Account.ID, "loopback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete(again)
+	asks(t, gate, "a re-authorization completed on a listener")
+}
+
+func TestTheLinkGateIsToldOfAFirstAuthorizationOnceWhenTwoAttemptsFinishTogether(t *testing.T) {
+	// A second consent attempt started while the first one's code was being
+	// exchanged finds no attempt to replace, and both store a grant: the
+	// mailbox connected once, and whichever stored second re-authorized it.
+	gate := &linkGateHook{}
+	w := newGateWorld(t, gate)
+	ctx := t.Context()
+	added := w.byAddress(t, "ana.lima@gmail.com")
+	gate.take()
+
+	inExchange, release := make(chan struct{}), make(chan struct{})
+	var exchanges atomic.Int64
+	w.idp.set(func(f *fakeIDP) {
+		f.onExchange = func() {
+			if exchanges.Add(1) == 1 {
+				close(inExchange)
+				<-release
+			}
+		}
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := w.svc.CompleteOAuth(ctx, w.ana, returnTo(linkConsole+"/oauth/return?code=granted&state="+
+			stateIn(added.Auth)))
+		done <- err
+	}()
+	select {
+	case <-inExchange:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first attempt never exchanged its code")
+	}
+
+	second, err := w.svc.StartOAuth(ctx, w.ana, added.Account.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.authorize(t, second); err != nil {
+		t.Fatalf("the second attempt: %v", err)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the first attempt: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the first attempt never finished")
+	}
+	if n := w.count(t, `SELECT count(*) FROM credentials WHERE account_id = ?`, added.Account.ID); n != 1 {
+		t.Fatalf("%d credentials stored, want the one grant", n)
+	}
+	tells(t, gate, "two first attempts finished together",
+		service.LinkAttempt{ActorID: w.ana.UserID, WorkspaceID: w.personal, Way: service.LinkFirstAuthorization})
 }

@@ -94,6 +94,9 @@ type Registry struct {
 	// grantSlot is where a new grant's login check runs; see CheckGrantsIn.
 	// Guarded by mu.
 	grantSlot ConnectionSlot
+	// firstGrant is told of a mailbox's first grant; see OnFirstGrant.
+	// Guarded by mu.
+	firstGrant FirstGrant
 
 	// redirect dials another IMAP address in place of an account's. Nothing
 	// in the daemon sets it: the package's own tests do, through
@@ -291,6 +294,30 @@ func (r *Registry) CheckGrantsIn(slot ConnectionSlot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.grantSlot = slot
+}
+
+// FirstGrant is told of a consent whose grant was the first credential its
+// mailbox ever stored: a mailbox added by its address, authorized for the
+// first time. a is the mailbox as read before the grant was stored (its
+// workspace and its person never change); owner is who started the
+// attempt, empty for an instance key.
+type FirstGrant func(ctx context.Context, a Account, owner string)
+
+// OnFirstGrant installs who is told of a mailbox's first grant, once the
+// write that stored it committed, whichever path finished its consent: a
+// redirect posted or pasted (CompleteFlow), or a loopback listener or a
+// device poll the daemon completes by itself, which no request sees end.
+// Whether a grant is the first is read in that write, before its credential
+// is stored, so two attempts finishing together tell it once: the one whose
+// write came second stored over a credential and is a re-authorization.
+// internal/service installs it once, before anything can run, for its link
+// gate. fn runs on the goroutine that stored the grant, outside every write
+// and every lock of the registry's; nothing it does changes the consent's
+// outcome. Without one, nobody is told.
+func (r *Registry) OnFirstGrant(fn FirstGrant) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.firstGrant = fn
 }
 
 // Repo exposes the repository for read-only callers.
@@ -848,7 +875,7 @@ func (r *Registry) awaitDevice(ctx context.Context, accountID, state string, con
 		r.fail(ctx, accountID, err)
 		return
 	}
-	if err := r.storeGrant(ctx, pending.AccountID, token, ClientInstalled, pending.OwnerUserID); err != nil {
+	if err := r.storeGrant(ctx, a, token, ClientInstalled, pending.OwnerUserID); err != nil {
 		r.fail(ctx, accountID, err)
 	}
 }
@@ -1008,7 +1035,7 @@ func (r *Registry) finish(ctx context.Context, pending PendingFlow, rd Redirect)
 		r.fail(ctx, a.ID, err)
 		return Account{}, err
 	}
-	if err := r.storeGrant(ctx, a.ID, token, client, pending.OwnerUserID); err != nil {
+	if err := r.storeGrant(ctx, a, token, client, pending.OwnerUserID); err != nil {
 		return Account{}, err
 	}
 	return r.repo.Get(ctx, a.ID)
@@ -1199,9 +1226,30 @@ func (r *Registry) fail(ctx context.Context, accountID string, cause error) {
 	}
 }
 
-// storeGrant stores what a consent produced, unless owner — who started it —
-// has been disabled or deleted since, or no longer manages the account.
-func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oauth2.Token, client, owner string) error {
+// storeGrant stores what a consent produced for a, unless owner — who
+// started it — has been disabled or deleted since, or no longer manages the
+// account; and, once that write committed, tells OnFirstGrant's hook when
+// the grant was the mailbox's first credential.
+func (r *Registry) storeGrant(ctx context.Context, a Account, token *oauth2.Token, client, owner string) error {
+	first, err := r.saveGrant(ctx, a.ID, token, client, owner)
+	if err != nil {
+		return err
+	}
+	if !first {
+		return nil
+	}
+	r.mu.Lock()
+	tell := r.firstGrant
+	r.mu.Unlock()
+	if tell != nil {
+		tell(ctx, a, owner)
+	}
+	return nil
+}
+
+// saveGrant is storeGrant's write, under grantMu: whether it stored the
+// mailbox's first credential.
+func (r *Registry) saveGrant(ctx context.Context, accountID string, token *oauth2.Token, client, owner string) (bool, error) {
 	r.grantMu.Lock()
 	defer r.grantMu.Unlock()
 	// The cached mailbox, if any, holds a token source built around the old
@@ -1210,12 +1258,13 @@ func (r *Registry) storeGrant(ctx context.Context, accountID string, token *oaut
 	// cannot write a refreshed token over it, and again after, so the next
 	// use picks up both.
 	r.forget(accountID)
-	if err := r.repo.saveGrant(ctx, accountID, token, client,
-		both(r.ownerStillActive(owner), r.flowStillAllowed(accountID, owner))); err != nil {
-		return err
+	first, err := r.repo.saveGrant(ctx, accountID, token, client,
+		both(r.ownerStillActive(owner), r.flowStillAllowed(accountID, owner)))
+	if err != nil {
+		return false, err
 	}
 	r.forget(accountID)
-	return nil
+	return first, nil
 }
 
 // Mailbox returns the provider mailbox for an account, building it once.

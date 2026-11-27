@@ -21,10 +21,16 @@ import (
 // It is asked after the act's own read-only authorization and the freshness
 // hook, so it is never asked about a link that cannot happen, and before
 // anything is dialled or stored; and told after the write that made the link
-// committed. Both outside every write: the extension may write. A person
-// acting through an extension (ActFor) links nothing, so neither is ever
-// called for one. Neither names the mailbox: a mailbox that was never
-// authorized has an id, and no more, and nothing of it reaches the gate.
+// committed. Both outside every write: the extension may write. A first
+// authorization is told by whichever path stored its grant — a redirect the
+// console posts or a person pastes, or a loopback listener or a device poll
+// the daemon completes by itself — through the registry
+// (account.Registry.OnFirstGrant), which reads in that write whether the
+// grant is the mailbox's first credential: two attempts finishing together
+// tell it once. A person acting through an extension (ActFor) links
+// nothing, so neither is ever called for one. Neither names the mailbox: a
+// mailbox that was never authorized has an id, and no more, and nothing of
+// it reaches the gate.
 
 // LinkWay is how a mailbox is linked.
 type LinkWay string
@@ -38,7 +44,8 @@ const (
 	// names at its return (StartLink, CompleteOAuth).
 	LinkAtProvider LinkWay = "provider"
 	// LinkFirstAuthorization: the first authorization of a mailbox added by
-	// its address that was never authorized (StartOAuth, CompleteOAuth).
+	// its address that was never authorized: asked at StartOAuth, told once
+	// its first grant is stored, on whichever path.
 	LinkFirstAuthorization LinkWay = "first_authorization"
 )
 
@@ -119,11 +126,25 @@ func (s *Service) beforeLink(ctx context.Context, p Principal, workspaceID strin
 // a write, under a context the caller's end does not cancel: the link is
 // done whether or not anybody still waits for its answer.
 func (s *Service) linked(ctx context.Context, p Principal, a account.Account, way LinkWay) {
+	s.tellLinked(ctx, linkActor(p), a, way)
+}
+
+// firstGranted is the registry's account.FirstGrant: a mailbox's first
+// grant, stored, is its first authorization, linked, whichever path
+// finished its consent. owner, who started the attempt, is the person who
+// links (a person's user id), or nobody for a key, whose attempts carry none.
+func (s *Service) firstGranted(ctx context.Context, a account.Account, owner string) {
+	s.tellLinked(ctx, owner, a, LinkFirstAuthorization)
+}
+
+// tellLinked tells the link gate, when there is one, of a link by actor of
+// a, as linked says.
+func (s *Service) tellLinked(ctx context.Context, actor string, a account.Account, way LinkWay) {
 	if s.linkGate == nil {
 		return
 	}
 	s.linkGate.Linked(context.WithoutCancel(ctx), LinkAttempt{
-		ActorID: linkActor(p), WorkspaceID: a.WorkspaceID, Team: teamMailbox(a), Way: way,
+		ActorID: actor, WorkspaceID: a.WorkspaceID, Team: teamMailbox(a), Way: way,
 	})
 }
 

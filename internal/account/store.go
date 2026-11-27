@@ -1552,26 +1552,34 @@ func (r *Repository) SweepFlows(ctx context.Context) ([]string, error) {
 // is another thing: it records a rotated token on a removed account too
 // (SaveToken), which a recovery needs.
 func (r *Repository) SaveGrant(ctx context.Context, id string, token *oauth2.Token, client string) error {
-	return r.saveGrant(ctx, id, token, client, nil)
+	_, err := r.saveGrant(ctx, id, token, client, nil)
+	return err
 }
 
 // saveGrant is SaveGrant with a check run first in its transaction, under
-// ctx, the write's own context; nil checks nothing.
+// ctx, the write's own context; nil checks nothing. It answers whether the
+// grant is the first credential the mailbox stored, read in its write
+// before the credential is: a credential goes only with its mailbox, so a
+// mailbox has a first grant once, and of two writes the second never sees
+// itself as one.
 func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Token, client string,
 	also func(context.Context, *sql.Tx) error,
-) error {
+) (bool, error) {
 	//nolint:gosec // G117: the result is encrypted before it reaches disk
 	encoded, err := json.Marshal(token)
 	if err != nil {
-		return fmt.Errorf("account: encode token: %w", err)
+		return false, fmt.Errorf("account: encode token: %w", err)
 	}
 	sealed, err := r.sealer.Seal(ctx, secrets.Credential(id, "oauth_token"), encoded)
 	if err != nil {
-		return fmt.Errorf("account: seal oauth_token: %w", err)
+		return false, fmt.Errorf("account: seal oauth_token: %w", err)
 	}
 	at := r.now()
 	now := at.Unix()
-	var evs []events.Event
+	var (
+		evs   []events.Event
+		first bool
+	)
 	err = r.store.Write(ctx, func(tx *sql.Tx) error {
 		if also != nil {
 			if err := also(ctx, tx); err != nil {
@@ -1581,6 +1589,10 @@ func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Tok
 		previous, err := liveStateTx(ctx, tx, id)
 		if err != nil {
 			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT NOT EXISTS (SELECT 1 FROM credentials WHERE account_id = ?)`,
+			id).Scan(&first); err != nil {
+			return fmt.Errorf("account: read whether a mailbox connected: %w", err)
 		}
 		if err := r.putCredential(ctx, tx, id, "oauth_token", sealed, now); err != nil {
 			return err
@@ -1594,13 +1606,13 @@ func (r *Repository) saveGrant(ctx context.Context, id string, token *oauth2.Tok
 		return err
 	})
 	if err != nil {
-		return err
+		return false, err
 	}
 	// Told even when the account was already active: the grant under it is
 	// new, and a worker holding a connection opened with the old one should
 	// know.
 	r.committed(evs, id)
-	return nil
+	return first, nil
 }
 
 // Transition moves an account to a new state, but only from one of the

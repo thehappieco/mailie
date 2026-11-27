@@ -429,10 +429,14 @@ the long form of this file.
   recovery and a sign-out everywhere). A finished link keeps no verifier, a connected one no
   address; a failed one its reason and the address named (a duplicate's only while the workspace
   still holds a mailbox under it), which a purge of that mailbox deletes.
-  Re-authorizing keeps the mailbox's scopes and `login_hint`. What a login found the IMAP server to
-  be (`ServerKind`, `ServerKindOf`: the send path's `provider.IsGmailServer`) is kept with the
-  mailbox (`accounts.server_kind`, migration 0027): a password mailbox's login check records it
-  when it is added, and every sync login when it changes (`SetServerKind`); only a report reads it.
+  Re-authorizing keeps the mailbox's scopes and `login_hint`. A consent's grant that is its
+  mailbox's first credential (read in the write that stores it, `saveGrant`) is told, once that
+  write committed and outside the registry's locks, to `OnFirstGrant`'s hook, on every path that
+  stores one (`storeGrant`: `CompleteFlow`, the loopback listener, the device poll). What a login
+  found the IMAP server to be (`ServerKind`, `ServerKindOf`: the send path's
+  `provider.IsGmailServer`) is kept with the mailbox (`accounts.server_kind`, migration 0027): a
+  password mailbox's login check records it when it is added, and every sync login when it changes
+  (`SetServerKind`); only a report reads it.
 - `internal/workspace` — workspaces (personal, team, the one operator workspace), members and
   per-mailbox grants (`read`, `act`, `send`, `manage`, which owners and admins hold by their role
   and members only as a stored flag), the protections each write keeps (last owner, last reader)
@@ -614,8 +618,11 @@ the long form of this file.
   `Retry` of 30 s, its cause `errLinkGateUnasked` beside the gate's); and `Linked`, a notification
   under `context.WithoutCancel`, called once the write that linked committed, its return changing
   nothing: a password mailbox stored (`address`), a link at the provider whose return created its
-  mailbox (`provider`), a first authorization that connected a mailbox never connected
-  (`first_authorization`, read as `!before.Connected && after.Connected` around `CompleteFlow`). An
+  mailbox (`provider`), a first authorization that stored a mailbox's first credential
+  (`first_authorization`: the registry's `OnFirstGrant` hook, which `New` installs where there is
+  a gate, called by whichever path stored the grant, a redirect posted or pasted, a loopback
+  listener or a device poll the daemon completes by itself, the first read in the write that
+  stores it, so two attempts finishing together tell it once, the attempt's starter its actor). An
   address-first OAuth add tells nothing until its first authorization; a failed link and a
   re-authorization tell nothing. A `LinkAttempt` names the actor (empty for a key), the workspace
   (a person's personal one resolved, `PersonalOf`, the operator's for an instance key), whether it

@@ -2174,14 +2174,18 @@ of each link once it committed. No transport calls any of them, and none takes a
   after the write that made the link committed, never inside one, under a context the caller's end
   does not cancel, and nothing it does changes the answer: a password mailbox stored (once a login
   with it worked), a link at the provider whose return created its mailbox, a first authorization
-  that stored a mailbox's first grant. A mailbox added by its address for OAuth is told at its
-  first authorization, never at its add; a link that failed (declined at the provider, a grant or
-  a password the mail server refused) is told nothing. What it is given (`service.LinkAttempt`) is
-  the person who links (nobody for a key), the workspace (a person's personal one resolved when
-  the request names none; the operator's for an instance key, local and followed by nothing, but
-  asked all the same), whether it is a team's, and the way: never the mailbox, whose id is all a
-  mailbox never authorized has. A person acting through an extension links nothing, so neither is
-  called for one.
+  that stored a mailbox's first grant, whichever path finished it: a redirect the console posts or
+  a person pastes, or a loopback listener or a device poll the daemon completes by itself, which
+  the command line only watches (`account.Registry.OnFirstGrant`). Whether a grant is the first is
+  read in the write that stores it, so two attempts finishing together tell it once: the one whose
+  write came second re-authorized a mailbox that had connected. A mailbox added by its address for
+  OAuth is told at its first authorization, never at its add; a link that failed (declined at the
+  provider, a grant or a password the mail server refused) is told nothing. What it is given
+  (`service.LinkAttempt`) is the person who links (nobody for a key), the workspace (a person's
+  personal one resolved when the request names none; the operator's for an instance key, local and
+  followed by nothing, but asked all the same), whether it is a team's, and the way: never the
+  mailbox, whose id is all a mailbox never authorized has. A person acting through an extension
+  links nothing, so neither is called for one.
 
 ### Acts an extension runs for a person
 
@@ -3375,8 +3379,11 @@ Test names state the guarantee. At least:
   `TestTheLinkGateIsAskedBeforeEveryLinkAndFirstAuthorization`,
   `TestALinkGatesRefusalStopsTheLinkBeforeAnythingIsStored`, `TestANilLinkGateAsksNothing`,
   `TestTheLinkGateIsAskedOutsideEveryWrite` (a gate that writes through the store, whether asked or
-  told) and `TestTheLinkGateIsToldOfEveryLinkOnceItCommitted` (each way once, after its commit; a
-  re-authorization and a failed link never).
+  told), `TestTheLinkGateIsToldOfEveryLinkOnceItCommitted` (each way once, after its commit; a
+  re-authorization and a failed link never),
+  `TestTheLinkGateIsToldOfAFirstAuthorizationTheDaemonCompletesByItself` (a loopback listener and
+  a device poll, an add's and a waiting mailbox's, and a re-authorization on a listener told
+  nothing) and `TestTheLinkGateIsToldOfAFirstAuthorizationOnceWhenTwoAttemptsFinishTogether`.
 
 ## Conflicts and resolutions
 
@@ -3682,4 +3689,4 @@ Test names state the guarantee. At least:
 | Pausing one mailbox's sync | `internal/store/migrations/0025_paused_mailboxes.sql` (a rebuild) and its tests; `store/eligibility.go` (the index rule and the engine's rule, `IndexFollows`, `PausedAccounts`, `ConsentStandsSQL`, `PausePaused` last in `PauseSQL`), `syncpause.go` (`PauseSync`, `ResumeSync`, `EndPauseTx`), `consent.go` (`agreeSyncTx`; every end of a consent ends a pause; `StopSync` holds a removed personal mailbox too), `mailboxevents.go` (`paused`, `resumed`), `actions.go` (the action recordings on the index rule); `account/store.go` (`SyncPausedAt`, `SyncPausedBy`), `removal.go` (a removal ends a pause, a recovery pauses); `workspace/grants.go` (`Pause` in the directory), `people.go` (who paused, forgotten); `service/syncpause.go` (`PauseMailboxSync`, `ResumeMailboxSync`, `SyncResumeRequest`, the gate `Deps.SyncPauseOffered`), `sync.go` (`paused`, `paused_since`; Sync now refused), `actions.go` and `messages.go` (`indexFollows` on the index rule; `busy`, `errPausedBehind`), `removed.go` (a recovery reconciles), `notices.go` (`paused`), `snapshot.go` (`PausePaused`, `SnapshotPauses`), `workspaces.go` (`paused_at`, `paused_by`), `freshness.go`; `sync/manager.go` and `interactive.go` (the paused set, the kept slot); `app` (`Options.SyncPauseOffered`); `api` (`…/sync/pause`, `…/sync/resume`) and the fixtures; `cmd/mailserver` (`serveOptions`, `account sync ID pause|resume`, the recover, list and held lines, `access list`); `mcp/text.go`; the console's (implementer B: `web/src/components/SyncPause.vue`, `TeamSyncAgreement.vue` and the rest, [`console.md`](console.md)) |
 | Teams ready behind an edition's gate | `service/workspacekeys.go` (`Deps.KeysInPersonalWorkspaceOnly`, `errTeamKeys`), `service.go` (`visibility`, `authorizeAccount`: no key reaches a team's mailbox), `access.go` (`keyWorkspace`) and `app` (`Options.KeysInPersonalWorkspaceOnly`); `service/freshness.go` (`FreshPurge`, `FreshRemovedSyncOff`), `removed.go` (`PurgeAccount`, `removedTeamOpen`: a team withheld or closed refused before the hook is asked) and `consent.go` (`syncOffRemoved`); `store/consent.go` (`StopSync`), `store/mailboxevents.go` (`ActorOperator`), `service/consent.go` (`StopMailboxSync`), `api` (`POST /v1/accounts/{id}/sync/stop`) and `cmd/mailserver` (`account sync ID off`); `account/registry.go` (`checkGrant`: `ErrGrantUnproved`, `ReasonUnproved`) and `service/accounts.go` (`fromCompletion`); `web/src/edition.ts` (`sync` drawn with `team`, `copy.keysSection`, `personalKeysOnly`), `ui/sync.ts` (`heldText`, which claims no recovery) and `StoragePanel.vue`, `TeamMailboxSync.vue`, `AddAccountDialog.vue`, `AccessPanel.vue`, `open/SyncText.vue`, `ui/reasons.ts` and the catalogs (`concordância da equipe`, `acuerdo del equipo`) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |
-| 0030 (what each mailbox holds, kept by day; pending; the link gate) | `internal/store/migrations/0030_usage_totals.sql` (the index `messages_dup_of`, `usage_days`, `usage_fixed`, the `usage_*` triggers) and `migrate_thirty_test.go`; `store/usagetotals.go` (`CheckUsageTotals`, `RepairUsageTotals`, `ReconcileUsageTotals`, `UTCDay`, `WorkspaceBytesTx`, `FollowedWorkspaceBytes`), `usage.go` (the row filters shared with the scans), `messages.go`, `actions.go` and `folders.go` (`rowWriter`: what a batch writes per row prepared once in its transaction); `account/usagetotals_test.go`; `workspace/snapshot.go` (`SnapshotMailbox.Pending`); `service/usage.go` (`WorkspaceBytes`, `FollowedWorkspaceBytes`), `snapshot.go` (`reportedSource`, `Pending` copied), `linkgate.go` (`LinkGate`, `LinkAttempt`, `LinkWay`), `accounts.go` and `links.go` (where it is asked and told), `service.go` (`Deps.LinkGate`); `app` (`Options.LinkGate`, the reconcile at start and daily, `sweep.go`); `cmd/mailserver/admin.go` (`migrate`'s reconcile) |
+| 0030 (what each mailbox holds, kept by day; pending; the link gate) | `internal/store/migrations/0030_usage_totals.sql` (the index `messages_dup_of`, `usage_days`, `usage_fixed`, the `usage_*` triggers) and `migrate_thirty_test.go`; `store/usagetotals.go` (`CheckUsageTotals`, `RepairUsageTotals`, `ReconcileUsageTotals`, `UTCDay`, `WorkspaceBytesTx`, `FollowedWorkspaceBytes`), `usage.go` (the row filters shared with the scans), `messages.go`, `actions.go` and `folders.go` (`rowWriter`: what a batch writes per row prepared once in its transaction); `account/usagetotals_test.go`; `workspace/snapshot.go` (`SnapshotMailbox.Pending`); `service/usage.go` (`WorkspaceBytes`, `FollowedWorkspaceBytes`), `snapshot.go` (`reportedSource`, `Pending` copied), `linkgate.go` (`LinkGate`, `LinkAttempt`, `LinkWay`, `firstGranted`), `accounts.go` and `links.go` (where it is asked and told), `service.go` (`Deps.LinkGate`, the registry's `OnFirstGrant` installed); `account/registry.go` and `store.go` (`OnFirstGrant`, `storeGrant`, `saveGrant`'s first credential); `app` (`Options.LinkGate`, the reconcile at start and daily, `sweep.go`); `cmd/mailserver/admin.go` (`migrate`'s reconcile) |

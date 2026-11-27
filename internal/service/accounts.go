@@ -383,7 +383,8 @@ func (s *Service) AddAccount(ctx context.Context, p Principal, req AddAccountReq
 	if !created.UsesOAuth() {
 		// A password mailbox is stored with its password, after one login
 		// worked: linked. One added for OAuth is linked at its first
-		// authorization (CompleteOAuth).
+		// authorization, which the registry tells on whichever path stored
+		// its grant (firstGranted).
 		s.linked(ctx, p, created, LinkByAddress)
 	}
 
@@ -752,8 +753,9 @@ func (s *Service) StartOAuth(ctx context.Context, p Principal, id, flowKind stri
 // A state that names no consent of the caller's may name a link at the
 // provider they started (links.go), whose return creates its mailbox: its
 // key comes with the request then. A consent for a mailbox that exists
-// carries none. Either one that linked a mailbox — the link's return, or a
-// mailbox's first authorization — tells the link gate once it committed.
+// carries none. Either one that linked a mailbox tells the link gate once it
+// committed: the link's return here, a mailbox's first authorization from
+// the registry, which stores its grant (firstGranted).
 func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOAuthRequest) (Account, error) {
 	if err := refuseDelegated(p); err != nil {
 		return Account{}, err
@@ -788,20 +790,13 @@ func (s *Service) CompleteOAuth(ctx context.Context, p Principal, req CompleteOA
 	if req.carriesKey() {
 		return Account{}, errLinkKey
 	}
-	before, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage)
-	if err != nil {
+	if _, err := s.authorizeAccount(ctx, p, auth.ScopeAdmin, pending.AccountID, needManage); err != nil {
 		return Account{}, err
 	}
 
 	a, err := s.accounts.CompleteFlow(ctx, redirect, p.UserID)
 	if err != nil {
 		return Account{}, fromCompletion(err)
-	}
-	if !before.Connected && a.Connected {
-		// Its first grant, stored: a mailbox added by its address is linked
-		// now. A credential is never deleted but with its mailbox, so this
-		// is said once.
-		s.linked(ctx, p, a, LinkFirstAuthorization)
 	}
 	return s.present(ctx, p, a)[0], nil
 }
