@@ -76,6 +76,11 @@ type SnapshotMailbox struct {
 	PurgeAfter time.Time
 	// Pause is why a live mailbox does not sync; empty on a removed one.
 	Pause SnapshotPause
+	// Pending is a mailbox never authorized: it holds no credential yet,
+	// whether it waits for its first consent or that consent failed. Its
+	// first credential ends it for good; a re-authorization never makes a
+	// mailbox pending.
+	Pending bool
 	// People hold a flag on it or a sealed grant.
 	People []SnapshotPerson
 	// Protected are the people a team mailbox cannot lose: each the only
@@ -189,7 +194,7 @@ func (s *Service) accessSnapshotTx(ctx context.Context, tx *sql.Tx, workspaceID 
 	for _, mb := range read.Mailboxes {
 		m := SnapshotMailbox{
 			ID: mb.ID, Label: mb.Label, Hint: mb.Hint, Removed: mb.Removed, Pause: SnapshotPause(mb.Pause),
-			People: make([]SnapshotPerson, 0, len(mb.People)), Protected: mb.Protected,
+			Pending: mb.Pending, People: make([]SnapshotPerson, 0, len(mb.People)), Protected: mb.Protected,
 			Keys: keys[mb.ID],
 		}
 		if m.Keys == nil {

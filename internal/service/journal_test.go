@@ -28,9 +28,12 @@ type directoryTeam struct {
 func newDirectoryTeam(t *testing.T, o fixtureOptions) directoryTeam {
 	t.Helper()
 	o.source = workspace.Platform()
-	o.registry = account.RegistryOptions{
-		Google:    account.OAuthClient{ClientID: "google-client"},
-		Microsoft: account.OAuthClient{ClientID: "ms-client", Tenant: "common"},
+	if o.registry.Google.ClientID == "" {
+		// A test that names its OAuth clients keeps them.
+		o.registry = account.RegistryOptions{
+			Google:    account.OAuthClient{ClientID: "google-client"},
+			Microsoft: account.OAuthClient{ClientID: "ms-client", Tenant: "common"},
+		}
 	}
 	f := newFixtureWith(t, o)
 	d := directoryTeam{fixture: f}

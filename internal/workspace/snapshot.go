@@ -13,14 +13,14 @@ import (
 // A snapshot of who holds what on a workspace's mailboxes, for an extension
 // that reports it elsewhere (docs/workspaces.md, "Following an external
 // directory"): every mailbox, live and removed until it is deleted for good,
-// with why it does not sync, its label and masked hint (never its address),
-// and every person who holds a flag on it or a sealed grant, with what the
-// one reading rule says of them. A removed mailbox is reported as for a
-// live one until it is deleted for good: who would read it, wait for its
-// key and hold its key once recovered, and its kept last readers as
-// protected, which they are here too (the last reader, reader.go). It
-// decides nothing: the rules are internal/store's fragments and the last
-// reader's, read in one transaction.
+// with why it does not sync, whether it was ever authorized, its label and
+// masked hint (never its address), and every person who holds a flag on it
+// or a sealed grant, with what the one reading rule says of them. A removed
+// mailbox is reported as for a live one until it is deleted for good: who
+// would read it, wait for its key and hold its key once recovered, and its
+// kept last readers as protected, which they are here too (the last
+// reader, reader.go). It decides nothing: the rules are internal/store's
+// fragments and the last reader's, read in one transaction.
 
 // The bounds of a snapshot: more mailboxes in the workspace, or more people
 // on one mailbox, is ErrSnapshotTooLarge.
@@ -61,6 +61,12 @@ type SnapshotMailbox struct {
 	// Pause is why a live mailbox does not sync (store.Pause*), empty when
 	// it does and on a removed one.
 	Pause string
+	// Pending is a mailbox never authorized: it holds no credential yet,
+	// whatever its state (pending_auth, or error once its first consent
+	// failed). Its first credential ends it, and nothing makes it pending
+	// again: a credential goes only with its mailbox, so a
+	// re-authorization's pending_auth is never pending.
+	Pending bool
 	// People hold a flag on it or a sealed grant, by id.
 	People []SnapshotPerson
 	// Protected are the people a team mailbox cannot lose: each the only
@@ -120,7 +126,8 @@ func SnapshotTx(ctx context.Context, tx *sql.Tx, workspaceID string, o SnapshotO
 func snapshotMailboxes(ctx context.Context, tx *sql.Tx, workspaceID string, o SnapshotOptions) ([]SnapshotMailbox, error) {
 	//nolint:gosec // G202: PauseSQL is built from constants alone; every value is bound
 	rows, err := tx.QueryContext(ctx, `SELECT a.id, a.display_name, a.email, a.removed_at <> 0, a.purge_after,
-		  `+store.PauseSQL(o.Withheld)+`
+		  `+store.PauseSQL(o.Withheld)+`,
+		  NOT EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id)
 		  FROM accounts a WHERE a.workspace_id = ? ORDER BY a.created_at, a.rowid LIMIT ?`,
 		workspaceID, SnapshotMaxMailboxes+1)
 	if err != nil {
@@ -134,7 +141,7 @@ func snapshotMailboxes(ctx context.Context, tx *sql.Tx, workspaceID string, o Sn
 			mb          SnapshotMailbox
 			name, email string
 		)
-		if err := rows.Scan(&mb.ID, &name, &email, &mb.Removed, &mb.PurgeAfter, &mb.Pause); err != nil {
+		if err := rows.Scan(&mb.ID, &name, &email, &mb.Removed, &mb.PurgeAfter, &mb.Pause, &mb.Pending); err != nil {
 			return nil, fmt.Errorf("workspace: read the snapshot's mailboxes: %w", err)
 		}
 		mb.Label, mb.Hint = store.MailboxLabel(name, email), store.MailboxHint(email)
