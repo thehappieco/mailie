@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 )
 
 // The totals usage rule 1 keeps per mailbox (migration 0030): usage_days, the
@@ -160,4 +161,137 @@ func (s *Store) ReconcileUsageTotals(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return len(ids), nil
+}
+
+// UTCDay is the UTC day of a moment, by floor division of its unix time, as
+// the totals keep a row under it (utcDaySQL): a moment before 1970 falls on
+// its own day, never on day 0.
+func UTCDay(t time.Time) int64 {
+	unix := t.Unix()
+	day := unix / 86400
+	if unix%86400 < 0 {
+		day--
+	}
+	return day
+}
+
+// MailboxBytes is what one mailbox of a workspace holds under usage rule 1,
+// read from its kept totals, beside what a snapshot says of it.
+type MailboxBytes struct {
+	AccountID string
+	// Removed is a mailbox removed and kept until PurgeAfter (unix seconds,
+	// 0 on a live one).
+	Removed    bool
+	PurgeAfter int64
+	// Pause is why a live mailbox does not sync (PauseSQL), empty when it
+	// does and on a removed one, as the snapshot reads it.
+	Pause string
+	// Pending is a mailbox never authorized: it holds no credential yet.
+	// Its first credential ends it, and nothing makes it pending again.
+	Pending bool
+	// Bytes is the mailbox's figure under the rule: its dated bytes and its
+	// fixed bytes.
+	Bytes int64
+	// DatedSince is, of Bytes, what its message rows and their parts hold
+	// whose internal_date falls on the UTC day asked for or after it, a
+	// date ahead of today included.
+	DatedSince int64
+	// Fixed is, of Bytes, what its folders rows and open drafts hold, which
+	// take no date.
+	Fixed int64
+}
+
+// workspaceBytesSQL reads every mailbox of the workspace ?1, live and
+// removed alike until it is deleted for good, the oldest first as the
+// snapshot orders them, with its kept totals: every day, the days from ?2
+// on, and its fixed bytes. A total that is NULL counts nothing.
+//
+//nolint:gosec // G202: PauseSQL is built from constants alone; every value is bound
+func workspaceBytesSQL(withheld bool) string {
+	return `SELECT a.id, a.removed_at <> 0, a.purge_after, ` + PauseSQL(withheld) + `,
+		NOT EXISTS (SELECT 1 FROM credentials c WHERE c.account_id = a.id),
+		coalesce((SELECT sum(coalesce(d.bytes, 0)) FROM usage_days d WHERE d.account_id = a.id), 0),
+		coalesce((SELECT sum(coalesce(d.bytes, 0)) FROM usage_days d WHERE d.account_id = a.id AND d.day >= ?2), 0),
+		coalesce((SELECT coalesce(f.bytes, 0) FROM usage_fixed f WHERE f.account_id = a.id), 0)
+	  FROM accounts a WHERE a.workspace_id = ?1 ORDER BY a.created_at, a.rowid`
+}
+
+// WorkspaceBytesTx reads, inside the caller's transaction, which a read-only
+// one keeps to one moment (ReadTx), every mailbox of a workspace with what
+// it holds under usage rule 1, from the totals kept as its rows change,
+// never a scan of the rows themselves: live and removed mailboxes alike,
+// until they are deleted for good, the oldest first. Of each, the bytes
+// dated on sinceDay (a UTC day, UTCDay) or after it are DatedSince. withheld
+// is the edition withholding teams, as PauseSQL reads it. A workspace that
+// holds no mailbox, or that nobody knows, has none; the caller asks which.
+func (s *Store) WorkspaceBytesTx(ctx context.Context, tx *sql.Tx, workspaceID string, sinceDay int64, withheld bool,
+) ([]MailboxBytes, error) {
+	rows, err := tx.QueryContext(ctx, workspaceBytesSQL(withheld), workspaceID, sinceDay)
+	if err != nil {
+		return nil, fmt.Errorf("store: read a workspace's bytes: %w", err)
+	}
+	//nolint:errcheck // read to the end below
+	defer func() { _ = rows.Close() }()
+	out := []MailboxBytes{}
+	for rows.Next() {
+		var (
+			mb   MailboxBytes
+			days int64
+		)
+		if err := rows.Scan(&mb.AccountID, &mb.Removed, &mb.PurgeAfter, &mb.Pause, &mb.Pending, &days, &mb.DatedSince,
+			&mb.Fixed); err != nil {
+			return nil, fmt.Errorf("store: read a workspace's bytes: %w", err)
+		}
+		if mb.Removed {
+			// A removed mailbox is what it is: kept until PurgeAfter.
+			mb.Pause = ""
+		} else {
+			mb.PurgeAfter = 0
+		}
+		mb.Bytes = days + mb.Fixed
+		out = append(out, mb)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read a workspace's bytes: %w", err)
+	}
+	return out, nil
+}
+
+// followedWorkspaceBytesSQL sums the kept totals of every mailbox, live and
+// removed alike, per workspace whose source is not the local one: 0 for one
+// that holds nothing.
+const followedWorkspaceBytesSQL = `WITH kept(workspace_id, bytes) AS (
+		SELECT a.workspace_id, coalesce(d.bytes, 0) FROM accounts a JOIN usage_days d ON d.account_id = a.id
+		UNION ALL
+		SELECT a.workspace_id, coalesce(f.bytes, 0) FROM accounts a JOIN usage_fixed f ON f.account_id = a.id),
+	per(workspace_id, bytes) AS (SELECT workspace_id, sum(bytes) FROM kept GROUP BY workspace_id)
+	SELECT w.id, coalesce(p.bytes, 0) FROM workspaces w LEFT JOIN per p ON p.workspace_id = w.id
+	 WHERE w.source <> 'local'`
+
+// FollowedWorkspaceBytes sums, in one statement, every mailbox's kept total
+// per workspace whose source is not local, live and removed mailboxes
+// alike: what each followed workspace holds under usage rule 1, 0 for one
+// that holds nothing. A local workspace is absent.
+func (s *Store) FollowedWorkspaceBytes(ctx context.Context) (map[string]int64, error) {
+	rows, err := s.r.QueryContext(ctx, followedWorkspaceBytesSQL)
+	if err != nil {
+		return nil, fmt.Errorf("store: sum the followed workspaces' bytes: %w", err)
+	}
+	//nolint:errcheck // read-only query
+	defer func() { _ = rows.Close() }()
+	out := map[string]int64{}
+	for rows.Next() {
+		var (
+			id    string
+			bytes int64
+		)
+		if err := rows.Scan(&id, &bytes); err != nil {
+			return nil, fmt.Errorf("store: sum the followed workspaces' bytes: %w", err)
+		}
+		out[id] = bytes
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: sum the followed workspaces' bytes: %w", err)
+	}
+	return out, nil
 }

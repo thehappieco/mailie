@@ -148,7 +148,13 @@ func (s *Service) reportedWorkspace(ctx context.Context, workspaceID string) err
 	if err := s.following(); err != nil {
 		return err
 	}
-	w, err := s.workspaces.Get(ctx, workspaceID)
+	return reportedSource(s.workspaces.Get(ctx, workspaceID))
+}
+
+// reportedSource refuses a workspace read as nobody knows it, or as one that
+// is not from the directory's source (not_found): what reportedWorkspace
+// asks of a workspace once the server follows a directory.
+func reportedSource(w workspace.Workspace, err error) error {
 	switch {
 	case errors.Is(err, workspace.ErrNotFound):
 		return errNoSnapshotWorkspace

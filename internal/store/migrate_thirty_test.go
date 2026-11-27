@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Migration 0030: each mailbox's bytes under usage rule 1, kept by UTC day in
@@ -175,6 +176,26 @@ func TestTheUsageTriggersCountEveryColumnTheRuleCounts(t *testing.T) {
 		}
 		if extra := slices.Sorted(maps.Keys(listed)); len(extra) != len(need) {
 			t.Errorf("%s's update triggers name %v, want exactly %v", table, extra, slices.Sorted(maps.Keys(need)))
+		}
+	}
+}
+
+// TestAMomentsUTCDayIsTheDayItsRowsAreKeptUnder holds UTCDay, which a reader
+// of the totals asks a day of, to utcDaySQL, which the triggers and the scan
+// keep a row under: the same floor division, before 1970 and around each
+// day's edge, whatever zone the moment is written in.
+func TestAMomentsUTCDayIsTheDayItsRowsAreKeptUnder(t *testing.T) {
+	s, _ := latestUsageTriggers(t)
+	west := time.FixedZone("-03", -3*3600)
+	for _, unix := range []int64{-86401, -86400, -86399, -1, 0, 1, 86399, 86400, 1792022400 - 1, 1792022400, 1792108799} {
+		var want int64
+		if err := s.Reader().QueryRowContext(t.Context(), `SELECT `+utcDaySQL("?1"), unix).Scan(&want); err != nil {
+			t.Fatal(err)
+		}
+		for _, at := range []time.Time{time.Unix(unix, 0).UTC(), time.Unix(unix, 0).In(west)} {
+			if got := UTCDay(at); got != want {
+				t.Errorf("UTCDay(%s) = %d, and the triggers keep it under day %d", at.Format(time.RFC3339), got, want)
+			}
 		}
 	}
 }
