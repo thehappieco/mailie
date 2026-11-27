@@ -273,8 +273,10 @@ BEGIN
 END;
 
 -- A live row whose values change, on its day: the difference of its bytes. Every TEXT column
--- but account_id, and dup_of, which ON DELETE SET NULL changes from 8 bytes to none; an INTEGER
--- column NOT NULL counts 8 whatever it holds. A value written again as it was counts nothing.
+-- but account_id, and dup_of, which moves between 8 bytes and none: settling a group points a
+-- new copy at its primary and a copy that becomes the primary at nothing, and ON DELETE SET NULL
+-- takes a deleted primary's copies to none. An INTEGER column NOT NULL counts 8 whatever it
+-- holds. A value written again as it was counts nothing.
 CREATE TRIGGER usage_messages_resize AFTER UPDATE OF
   message_id, group_key, dup_of, in_reply_to, references_json, subject,
   from_json, to_json, cc_json, bcc_json, reply_to_json, from_addr,

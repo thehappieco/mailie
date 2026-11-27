@@ -244,8 +244,9 @@ the long form of this file.
   (`TestTheUsageTriggersCountEveryColumnTheRuleCounts`): liveness counted on its flip only (a
   refresh writes `vanished_at = 0` again), a message's parts counted out before they go (`BEFORE
   DELETE`, the one place a cascade still finds them), a changed value by the row's difference
-  (`dup_of`'s `ON DELETE SET NULL` included), a draft while open; none marks a workspace or a
-  person (`TestTheUsageTriggersMarkNoWorkspaceOrPerson`). No foreign key: an upsert into a table
+  (`dup_of` between a number and `NULL` both ways, `settleGroup`'s and `ON DELETE SET NULL`'s, and
+  a folder's texts included), a draft while open; none marks a workspace or a person
+  (`TestTheUsageTriggersMarkNoWorkspaceOrPerson`). No foreign key: an upsert into a table
   bound to `accounts`, run inside its delete's cascade, would fail every deletion for good;
   `usage_accounts_delete`, after every trigger of the cascade, takes a mailbox's rows instead. No
   CHECK, and `bytes` nullable, read as 0: a delta never refuses a write, and a drifted total is

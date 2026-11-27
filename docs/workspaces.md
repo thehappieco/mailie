@@ -2710,12 +2710,16 @@ read without scanning them.
   finds its message, and an `AFTER DELETE` on the message finds no parts. Liveness counts on its
   flip, never on every write of `vanished_at` (a refresh writes 0 again on a live row). A value
   that changes counts by the row's difference, and only where a column changed: today the length
-  of `flags_json`, and `dup_of` going from a number (8 bytes) to `NULL` (none) under `ON DELETE SET
-  NULL`. An integer column that may not be `NULL` counts 8 whatever it holds, so the folder
-  counters the 0001 triggers move at every message's insert, delete and change of `seen` fire
-  nothing. A row moved to another mailbox or day moves its bytes, with its parts'. A draft counts
-  while it is open. None marks a workspace or a person: what a sync writes is measured, never
-  marked ([migration 0027](#migration-0027)).
+  of a message's `flags_json`; its `dup_of` between a number (8 bytes) and `NULL` (none), both ways
+  when a group is settled (a new copy pointed at its primary, a copy that becomes the primary
+  pointed at nothing) and to `NULL` under `ON DELETE SET NULL`; and the length of a folder's texts,
+  its `display_name`, `delim`, `attrs_json`, `role` and `role_source` as a listing writes them and
+  its `sync_state`, `sync_error` and `resync_from` as a pass, a resync or a listing moves them. An
+  integer column that may not be `NULL` counts 8 whatever it holds, so the folder counters the
+  0001 triggers move at every message's insert, delete and change of `seen` fire nothing. A row
+  moved to another mailbox or day moves its bytes, with its parts'. A draft counts while it is
+  open. None marks a workspace or a person: what a sync writes is measured, never marked
+  ([migration 0027](#migration-0027)).
 - **No foreign key.** An upsert into a table bound to `accounts`, run by a trigger of a row the
   account's delete cascades to, fails that delete, and every deletion for good with it.
   `usage_accounts_delete`, `AFTER DELETE ON accounts`, which fires after every trigger of the
