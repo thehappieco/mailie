@@ -1235,6 +1235,29 @@ sudo systemctl start mailie
 
 Remove the last upgrade's copies first: `cp` into a directory that exists puts the copy inside it.
 
+### What each mailbox holds, kept as it changes (migration 0030)
+
+An ordinary migration: one index, two tables and their triggers, and no row of a schema-29
+database changes (`mailserver migrate --dry-run` names it, with no rebuild). An older binary
+refuses schema 30, so **back up first**, with the commands above; going back is that copy.
+
+- **The first start fills the totals before it syncs.** The database keeps what each mailbox holds
+  under usage rule 1 by day, moved in the same write as its messages, folders and drafts
+  ([`workspaces.md`](workspaces.md#migration-0030)). The migration leaves those totals empty, and
+  the first start after it fills them, right after it opens the database and before the sync
+  engine and the listener start: a scan of every mailbox's index, which takes a moment on a large
+  one. It logs `usage totals repaired` with `accounts` (how many mailboxes it filled) and `took`;
+  a later start logs `usage totals checked`, with `accounts` 0. To fill them beforehand, with the
+  daemon stopped, run `mailserver migrate`: it applies the migration, fills the totals and prints
+  `usage totals: N accounts filled or repaired in …`; run again, it prints 0.
+- **Checked daily.** The daemon compares the totals with the rows once a day and repairs a mailbox
+  whose totals drifted, saying how many; a check that fails is logged at error and stops nothing,
+  and none of these lines names a mailbox, an address or a size.
+- **Turning a mailbox's sync off and deleting one for good are faster** on a large mailbox: each
+  delete of a message used to scan every message for its copies, and an index now finds them.
+- **For scripts:** nothing changes. `GET /v1/me/storage` answers as before, by its own scan of the
+  rows.
+
 ### Going back
 
 Stop the daemon, put the copy back as the daemon's own (without the newer version's `mail.db-wal`

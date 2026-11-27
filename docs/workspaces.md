@@ -2031,7 +2031,8 @@ every gone row), `DirectorySubjects` and `IdentityUser`.
 
 An extension reports a followed workspace to the directory it comes from, and asks it, before some
 acts, whether the actor still stands where this server thinks; the core gives it reads that decide
-nothing, and one question it asks. No transport calls any of them, and none takes a principal.
+nothing, and two questions it asks: the freshness of an act, and the link gate, which also hears
+of each link once it committed. No transport calls any of them, and none takes a principal.
 
 - **The journal as an outbox** (`service.MailboxJournal`): a workspace's entries after a seq, oldest
   first, 1 to 500 at a time, each with who read the mailbox then (`mailbox_event_readers`), its
@@ -2103,6 +2104,27 @@ nothing, and one question it asks. No transport calls any of them, and none take
   reported as it would be once recovered — who would read it, wait for its key and hold its key, and
   its kept last readers as protected, which they are in what this server refuses too — until it is
   deleted for good, when it leaves the snapshot ([conflict 31](#conflicts-and-resolutions)).
+  Each mailbox also says whether it is **pending**, never authorized: it holds no credential yet,
+  whatever its state (`pending_auth` while it waits for its first consent, `error` once that
+  consent failed). Its first credential ends it, and nothing makes it pending again: a credential
+  goes only with its mailbox, so a re-authorization's `pending_auth` is not pending, nor is an
+  OAuth mailbox whose first connection is not known (`connected_at` 0, [migration
+  0027](#migration-0027)). Only a mailbox added by its address for OAuth is ever pending: a link at
+  the provider and a password mailbox are stored with their first credential.
+- **What each mailbox holds** (`service.WorkspaceBytes`, in one read-only transaction with the
+  workspace's own check, so a workspace gone meanwhile is `not_found`, never an empty list): every
+  mailbox of a followed workspace, live and removed until it is deleted for good, in the
+  snapshot's order, with whether it is removed and its end, its pause as the snapshot says it,
+  whether it is pending, and what it holds under usage rule 1, read from the totals [migration
+  0030](#migration-0030) keeps, never a scan of its rows: the whole (`Bytes`); of it, the bytes of
+  its messages and their parts whose `internal_date` falls on the UTC day of a moment the caller
+  names or after it, a date ahead of today included (`DatedSince`); and the bytes of its folders
+  and open drafts, which take no date (`Fixed`). It refuses what `AccessSnapshot` refuses —
+  `not_found` for a workspace not from the directory's source or that nobody knows, `conflict`
+  (`service.ErrNotFollowing`) on a server that follows no directory — and has no bound on the
+  mailboxes. `service.FollowedWorkspaceBytes` sums the same totals, in one statement, per followed
+  workspace, live and removed mailboxes alike, 0 for one that holds nothing; a local workspace is
+  absent.
 - **Its own state** (`app.Deps.State(name)`, over `extension_state`): a few keys of at most 256
   bytes and values of a mebibyte at most, per extension name (1 to 64 of `a-z`, `0-9`, `_`, `-`),
   written in one transaction each, kept in the database it describes, so that a restore takes it
@@ -2136,6 +2158,30 @@ nothing, and one question it asks. No transport calls any of them, and none take
   carries `service.ErrActorInactive` when the actor may no longer act where it asked, or
   `service.ErrFreshUnconfirmed` when it could not confirm the act now; the core's own "upstream"
   answer carries the second, so `service.RefusalOf` names both for an extension.
+- **The link gate** (`service.LinkGate`, `app.Options.LinkGate`, never set by `serve`): asked
+  before a mailbox is linked into a workspace (`BeforeLink`), and told once a link committed
+  (`Linked`). A link is a mailbox added by its address, with a password or for OAuth (`address`),
+  a link at the provider (`provider`), and the first authorization of a mailbox added by its
+  address for OAuth (`first_authorization`, asked when its consent is started while it never
+  connected); a re-authorization of a mailbox that connected once is no link, and neither asks nor
+  tells anything. It is asked after the act's own read-only checks — who may link where (who
+  manages the mailbox, for a first authorization), the freshness hook for a team, and, for an add
+  or a link at the provider by a person signed in, their account key and a fresh step-up —
+  and before anything is dialled or stored, outside every write, so it may write, and is never
+  asked about a link that cannot happen. Its answer is the freshness hook's: nil lets the link go
+  on; a `*service.Error` is the caller's answer as it is; a context's end is passed on; any other
+  error is `internal`, "upstream: …", with `Retry-After: 30`, and nothing is linked. It is told
+  after the write that made the link committed, never inside one, under a context the caller's end
+  does not cancel, and nothing it does changes the answer: a password mailbox stored (once a login
+  with it worked), a link at the provider whose return created its mailbox, a first authorization
+  that stored a mailbox's first grant. A mailbox added by its address for OAuth is told at its
+  first authorization, never at its add; a link that failed (declined at the provider, a grant or
+  a password the mail server refused) is told nothing. What it is given (`service.LinkAttempt`) is
+  the person who links (nobody for a key), the workspace (a person's personal one resolved when
+  the request names none; the operator's for an instance key, local and followed by nothing, but
+  asked all the same), whether it is a team's, and the way: never the mailbox, whose id is all a
+  mailbox never authorized has. A person acting through an extension links nothing, so neither is
+  called for one.
 
 ### Acts an extension runs for a person
 
@@ -2635,6 +2681,72 @@ An extension's state is listed by prefix as a range of its primary key from this
 (`ExtensionStateKeys`, no migration), which lists the same keys, in the same order, as the
 substring compare before it, reading only those.
 
+## Migration 0030
+
+`0030_usage_totals.sql`, an ordinary migration (`mailserver migrate --dry-run` names it, with no
+rebuild): one index, two tables and seventeen triggers, which keep what each mailbox holds under
+usage rule 1 ([Storage](#storage); `store.RuleVersion` stays 1) as its rows change, so that it is
+read without scanning them.
+
+- `messages_dup_of`, on `messages(dup_of)` where `dup_of` is not `NULL`: what every delete of a
+  message runs its `ON DELETE SET NULL` by, finding the copies that name it. Without it each delete
+  scanned every message, and deleting a mailbox's index (a turn-off, a deletion for good) took a
+  time quadratic in its messages. An index counts nothing under rule 1.
+- `usage_days`: per mailbox and UTC day of `internal_date`, by floor division (a date before 1970
+  falls on its own day, never on day 0), the bytes of its message rows still in their folder
+  (`vanished_at = 0`) and of their parts, each value counted as rule 1 counts it. `usage_fixed`:
+  per mailbox, the bytes of its folders rows and open drafts, which take no date. Both are
+  `WITHOUT ROWID`.
+- The triggers (`usage_*`) add or take away a row's bytes in the transaction of every write to
+  `messages`, `parts`, `folders` and `drafts`, each expression written out over exactly the
+  columns rule 1 counts, in their order (`usageTables`, which a test holds the text to). A message
+  counts from its insert while it is live, and a part while its message exists and is live, so a
+  cascade from a message never counts a part twice. A message's delete takes its own bytes and its
+  parts' away before the row goes (`BEFORE DELETE`): inside a cascade a part's own delete no longer
+  finds its message, and an `AFTER DELETE` on the message finds no parts. Liveness counts on its
+  flip, never on every write of `vanished_at` (a refresh writes 0 again on a live row). A value
+  that changes counts by the row's difference, and only where a column changed: today the length
+  of `flags_json`, and `dup_of` going from a number (8 bytes) to `NULL` (none) under `ON DELETE SET
+  NULL`. An integer column that may not be `NULL` counts 8 whatever it holds, so the folder
+  counters the 0001 triggers move at every message's insert, delete and change of `seen` fire
+  nothing. A row moved to another mailbox or day moves its bytes, with its parts'. A draft counts
+  while it is open. None marks a workspace or a person: what a sync writes is measured, never
+  marked ([migration 0027](#migration-0027)).
+- **No foreign key.** An upsert into a table bound to `accounts`, run by a trigger of a row the
+  account's delete cascades to, fails that delete, and every deletion for good with it.
+  `usage_accounts_delete`, `AFTER DELETE ON accounts`, which fires after every trigger of the
+  cascade, takes the mailbox's rows instead. **No `CHECK`**, and `bytes` may be `NULL`, read as 0:
+  a constraint a delta could break would refuse the write that moved it, a sync batch, an action,
+  a turn-off or a deletion for good.
+- **Never `INSERT OR REPLACE`** into `messages`, `parts`, `folders` or `drafts`: it fires the
+  insert's trigger and not the delete's, and the totals drift. **A rebuild** of one of them, or of
+  `accounts`, drops its triggers with the old table, silently, and must create its `usage_*`
+  triggers again after its copy ([Rebuilding a table safely](#rebuilding-a-table-safely)).
+
+No row of a schema-29 database changes, and both tables start empty: migrations run SQL alone, and
+rule 1's terms are built in Go from `usageTables`, spelt once. `store.ReconcileUsageTotals` fills
+them from every mailbox's rows at the daemon's first start after the migration, right after the
+database opens and before the sync engine, the extensions and the listener, and in `mailserver
+migrate` (never with `--dry-run`), which prints how many mailboxes it filled and how long it took;
+run again, it says 0. The daemon checks them again daily, every 24th round of its hourly
+housekeeping: `CheckUsageTotals` reads, in one read-only transaction on the reader pool, the totals
+against the rule's scan of the rows, both ways and day by day (a total of 0 or `NULL` is none; a
+total under the wrong day, or of a mailbox that is gone, differs), and `RepairUsageTotals`
+recomputes each mailbox that differs inside the one short write that replaces its totals. A total
+that drifted never stops a write: the check finds it, and says how many mailboxes and how long,
+never a byte, an id, a label or an address; a check that failed is logged at error and stops
+nothing. `GET /v1/me/storage` keeps its own scan, the reference the totals are checked against,
+and answers as before.
+
+A batch of new rows (a sync's, an action's return) prepares its message and part `INSERT` once in
+its transaction: SQLite compiles the triggers a statement fires each time it prepares it, and the
+full-row expressions made that compilation the larger part of a batch.
+
+The tests in `internal/store/migrate_thirty_test.go` hold every row and object of a schema-29
+database as they were, the index, the two tables and the triggers as all the migration adds, the
+triggers' text to `usageTables`, every trigger on its table, and the first reconcile to
+`store.Usage`, mailbox by mailbox; [Tests](#tests) lists the rest.
+
 ## Going back
 
 Schemas 10 to 14 are refused by an older binary like any newer one: going back past 0012 is the
@@ -2674,7 +2786,9 @@ for "other kinds of table schema changes", for a migration whose first line is
 4. Count the rows of every table in `sqlite_schema` (FTS5's shadow tables included).
 5. Run the migration: create the new table, copy with every column named, drop the old one, rename
    the new one into its place, recreate indexes and triggers (and views, were there any; the runner
-   refuses a rebuild while a view names the table).
+   refuses a rebuild while a view names the table). For `messages`, `parts`, `folders`, `drafts`
+   and `accounts`, that includes their `usage_*` triggers ([migration 0030](#migration-0030)),
+   which a test fails without.
 6. `PRAGMA foreign_key_check`: any row fails the migration.
 7. Count again: every table that existed before must hold exactly as many rows. A rebuild adds
    tables and rows; it never loses one.
@@ -3221,6 +3335,39 @@ Test names state the guarantee. At least:
   (an original, an attachment and a message's body; the same, and the mailbox removed),
   `TestADownloadStopsAtItsKeysExpiry`, `TestAnIssuedKeyEndedAtItsExpiryChecksOpenRequestsAgain`
   (`internal/service`) and `TestADownloadOfAKeyStillReadingIsSentWhole`.
+- What each mailbox holds, kept by day (migration 0030): the migration's in
+  `internal/store/migrate_thirty_test.go` (`TestMigration0030ChangesNothingElse`,
+  `TestTheFirstReconcileAfterMigration0030FillsEveryMailboxsTotals`,
+  `TestTheUsageTriggersAreOnEveryTableTheRuleCounts`,
+  `TestTheUsageTriggersCountEveryColumnTheRuleCounts` and
+  `TestAMomentsUTCDayIsTheDayItsRowsAreKeptUnder`); the totals' in `usagetotals_test.go`
+  (`TestTheKeptTotalsEqualTheUsageRuleAfterEveryWrite`: every write the index makes, through the
+  store's own methods, then a fixed-seed run of raw inserts, updates and deletes over the four
+  tables, drafts changing state, a real number, a blob and a direct write of `vanished_at` among
+  them, each checked against the rule; `TestTheUsageTriggersMarkNoWorkspaceOrPerson`,
+  `TestAMailboxsBytesAreDatedByTheUTCDayOfItsInternalDate`,
+  `TestADriftedTotalNeverStopsAWriteAndIsRepaired` and `TestTheDupOfIndexServesTheCopiesLookup`);
+  a mailbox's life in `internal/account/usagetotals_test.go`
+  (`TestEveryDeletionForGoodSucceedsAndLeavesNoTotals`, the five ways a mailbox is deleted for
+  good, and `TestRemovalRecoveryPauseAndHoldsLeaveTheTotalsAsTheyWere`); the daemon's in
+  `internal/app/usagetotals_test.go` (`TestAStartFillsTheUsageTotalsAndSaysOnlyHowManyMailboxes`,
+  `TestAFailedCheckOfTheUsageTotalsIsLoggedAndStopsNothing` and
+  `TestHousekeepingChecksTheUsageTotalsDailyAndNeverAtStart`); the command line's,
+  `TestMigrateFillsTheUsageTotalsAndSaysOnlyHowMany` (`cmd/mailserver`); and what an extension
+  reads of them, in `internal/service/usage_test.go`
+  (`TestTheWorkspaceBytesListLiveAndRemovedMailboxesUntilTheirPurge`,
+  `TestTheWorkspaceBytesAnswerOnlyAFollowedWorkspace`, `TestTheWorkspaceBytesCountFutureDatesAsRecent`
+  and `TestTheWorkspaceBytesAreTheUsageRulesFigureOfEachMailbox`).
+- A mailbox never authorized, and the link gate (`internal/service`):
+  `TestAMailboxIsPendingOnlyUntilItsFirstCredential` (`pending_test.go`: one mailbox added by its
+  address for OAuth, through its first consent declined and asked again, its first credential, an
+  unknown first connection, and a re-authorization started and declined, with the snapshot,
+  `AccessSnapshot` and `WorkspaceBytes` saying the same at each step); in `linkgate_test.go`,
+  `TestTheLinkGateIsAskedBeforeEveryLinkAndFirstAuthorization`,
+  `TestALinkGatesRefusalStopsTheLinkBeforeAnythingIsStored`, `TestANilLinkGateAsksNothing`,
+  `TestTheLinkGateIsAskedOutsideEveryWrite` (a gate that writes through the store, whether asked or
+  told) and `TestTheLinkGateIsToldOfEveryLinkOnceItCommitted` (each way once, after its commit; a
+  re-authorization and a failed link never).
 
 ## Conflicts and resolutions
 
@@ -3526,3 +3673,4 @@ Test names state the guarantee. At least:
 | Pausing one mailbox's sync | `internal/store/migrations/0025_paused_mailboxes.sql` (a rebuild) and its tests; `store/eligibility.go` (the index rule and the engine's rule, `IndexFollows`, `PausedAccounts`, `ConsentStandsSQL`, `PausePaused` last in `PauseSQL`), `syncpause.go` (`PauseSync`, `ResumeSync`, `EndPauseTx`), `consent.go` (`agreeSyncTx`; every end of a consent ends a pause; `StopSync` holds a removed personal mailbox too), `mailboxevents.go` (`paused`, `resumed`), `actions.go` (the action recordings on the index rule); `account/store.go` (`SyncPausedAt`, `SyncPausedBy`), `removal.go` (a removal ends a pause, a recovery pauses); `workspace/grants.go` (`Pause` in the directory), `people.go` (who paused, forgotten); `service/syncpause.go` (`PauseMailboxSync`, `ResumeMailboxSync`, `SyncResumeRequest`, the gate `Deps.SyncPauseOffered`), `sync.go` (`paused`, `paused_since`; Sync now refused), `actions.go` and `messages.go` (`indexFollows` on the index rule; `busy`, `errPausedBehind`), `removed.go` (a recovery reconciles), `notices.go` (`paused`), `snapshot.go` (`PausePaused`, `SnapshotPauses`), `workspaces.go` (`paused_at`, `paused_by`), `freshness.go`; `sync/manager.go` and `interactive.go` (the paused set, the kept slot); `app` (`Options.SyncPauseOffered`); `api` (`…/sync/pause`, `…/sync/resume`) and the fixtures; `cmd/mailserver` (`serveOptions`, `account sync ID pause|resume`, the recover, list and held lines, `access list`); `mcp/text.go`; the console's (implementer B: `web/src/components/SyncPause.vue`, `TeamSyncAgreement.vue` and the rest, [`console.md`](console.md)) |
 | Teams ready behind an edition's gate | `service/workspacekeys.go` (`Deps.KeysInPersonalWorkspaceOnly`, `errTeamKeys`), `service.go` (`visibility`, `authorizeAccount`: no key reaches a team's mailbox), `access.go` (`keyWorkspace`) and `app` (`Options.KeysInPersonalWorkspaceOnly`); `service/freshness.go` (`FreshPurge`, `FreshRemovedSyncOff`), `removed.go` (`PurgeAccount`, `removedTeamOpen`: a team withheld or closed refused before the hook is asked) and `consent.go` (`syncOffRemoved`); `store/consent.go` (`StopSync`), `store/mailboxevents.go` (`ActorOperator`), `service/consent.go` (`StopMailboxSync`), `api` (`POST /v1/accounts/{id}/sync/stop`) and `cmd/mailserver` (`account sync ID off`); `account/registry.go` (`checkGrant`: `ErrGrantUnproved`, `ReasonUnproved`) and `service/accounts.go` (`fromCompletion`); `web/src/edition.ts` (`sync` drawn with `team`, `copy.keysSection`, `personalKeysOnly`), `ui/sync.ts` (`heldText`, which claims no recovery) and `StoragePanel.vue`, `TeamMailboxSync.vue`, `AddAccountDialog.vue`, `AccessPanel.vue`, `open/SyncText.vue`, `ui/reasons.ts` and the catalogs (`concordância da equipe`, `acuerdo del equipo`) |
 | 0011 (2026-10-06, step 1) | `internal/store/migrations/0011_team_mailboxes.sql` and `migrate_eleven_test.go`; `store/eligibility.go` (a team mailbox's consent and a reader), `store/consent.go` (`SetMailboxSync`, `StopBoundTx`, a person's withdrawal personal only); `workspace/reader.go` (the last reader, `HasReaderTx`), `grants.go` (effective manage, the directory), `members.go` (invites expire, no linker), `people.go` (blocks: last owner, last reader of a team that outlives them, a bound consent someone else reads; attribution blanked); `account/store.go` (the person of a personal mailbox, `linked_by`, the team's consent at the link, `Visibility` by role) and `registry.go` (`LinkerID`, `RemoveChecked`, a sole member's teams removed with them); `auth/closure.go` (a disable changes nothing for someone already disabled); the service's grant rules, `RemoveAccount` with `confirm`, `SetMailboxSync` (never on for a mailbox nobody reads), closure (`team_syncs_stopped`); the API's routes and fixtures; MCP's `list_accounts` text (read access marked); the command line; the open texts `-3` and `-2` |
+| 0030 (what each mailbox holds, kept by day; pending; the link gate) | `internal/store/migrations/0030_usage_totals.sql` (the index `messages_dup_of`, `usage_days`, `usage_fixed`, the `usage_*` triggers) and `migrate_thirty_test.go`; `store/usagetotals.go` (`CheckUsageTotals`, `RepairUsageTotals`, `ReconcileUsageTotals`, `UTCDay`, `WorkspaceBytesTx`, `FollowedWorkspaceBytes`), `usage.go` (the row filters shared with the scans), `messages.go` and `actions.go` (`rowWriter`: a batch's `INSERT`s prepared once); `account/usagetotals_test.go`; `workspace/snapshot.go` (`SnapshotMailbox.Pending`); `service/usage.go` (`WorkspaceBytes`, `FollowedWorkspaceBytes`), `snapshot.go` (`reportedSource`, `Pending` copied), `linkgate.go` (`LinkGate`, `LinkAttempt`, `LinkWay`), `accounts.go` and `links.go` (where it is asked and told), `service.go` (`Deps.LinkGate`); `app` (`Options.LinkGate`, the reconcile at start and daily, `sweep.go`); `cmd/mailserver/admin.go` (`migrate`'s reconcile) |

@@ -35,7 +35,12 @@ the long form of this file.
   of a mailbox that is `active` never says authorised: a working mailbox's new grant changes no
   state the daemon exposes, so loopback opens the consent page and returns (`showConsentPage`) and
   `--device` is refused before anything starts; `--paste` and a failed or pending mailbox wait as
-  before.
+  before. `migrate`, once its migrations ran and never with `--dry-run`, fills and checks the usage
+  totals of migration 0030 (`store.ReconcileUsageTotals`, below) and prints how many mailboxes it
+  filled or repaired and how long it took (`usage totals: N accounts filled or repaired in …`),
+  never a figure, a mailbox or an address; a second run says 0, the data check of an upgrade. A
+  failure is said on standard error and the command still exits 0: the migrations stand, and the
+  daemon checks the totals again when it starts.
 - `internal/app` — the daemon's assembly (`app.Run`), which `serve` calls and another binary may
   too; `Options.Extensions` mounts routes before the console's catch-all, refused at start if one
   names a host, duplicates or would take a request from a core route. An extension signs people in
@@ -55,8 +60,12 @@ the long form of this file.
   `webui.Fallback`, the API's JSON 404 under `/v1`, `/mcp` and `/.well-known` and a plain 404
   elsewhere, never nil). `Options.Freshness` (never set by `serve`) is asked, outside every write,
   before a person's act that widens access or touches a team's shared data
-  (`service.Freshness`, below). Under a source that mirrors a directory the daemon names at start
-  the local personal workspaces a document would not replace (`PersonalReplacementBlocks`).
+  (`service.Freshness`, below). `Options.LinkGate` (never set by `serve`) is asked, outside every
+  write, before a mailbox is linked into a workspace, and told once a link committed
+  (`service.LinkGate`, below); its object exists before the extension that implements it starts,
+  so it answers from the first request on. Under a source that mirrors a directory the daemon
+  names at start the local personal workspaces a document would not replace
+  (`PersonalReplacementBlocks`).
   `Options.ExternalSignInOnly` (never set by `serve`) has the service
   refuse every password and invitation route (`errExternalSignInOnly`) and take its extension's
   sessions whatever `MAIL_PASSWORD_SIGN_IN` says; without it, `cfg.PasswordSignIn` decides whether
@@ -96,7 +105,14 @@ the long form of this file.
   `serve`) refuses every issued key, at authentication and every re-check, while their records
   still apply, and reports each live one stopped (`withdrawn`). The hourly housekeeping, at start
   too, records the end of the issued keys that expired and deletes what is no longer kept of them
-  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`). It serves no MCP (no `Options.MCPStdio`, no
+  (`EndExpiredIssuedKeys`, `SweepIssuedKeys`). Right after `store.Open`, before anything else
+  reads or writes them (the sync engine, the extensions, the listener), the start checks
+  the usage totals of migration 0030 against every mailbox's rows and repairs what differs
+  (`reconcileUsageTotals`, `store.ReconcileUsageTotals`: the first start after that migration fills
+  them), and the housekeeping checks again every 24th round, daily, never in its round at start
+  (`usageTotalsRounds`): `usage totals repaired` or `usage totals checked` at info, with `accounts`
+  (a count) and `took`, never a byte, an id, a label or an address; a failure is logged at error
+  and stops nothing. It serves no MCP (no `Options.MCPStdio`, no
   `mcp.New`): `coreRoutes` mounts `/mcp` and `/mcp/` as `webui.NotFound()`, the API's JSON 404 for
   every method, with a console or without, and the start says once at warn which retired
   variables still ask for MCP (`cfg.RetiredMCP`, names only, `variables`). With no key it warns
@@ -218,9 +234,46 @@ the long form of this file.
   it `ProviderBytes`, the `RFC822.SIZE` sum. The columns it counts are written out
   (`usageTables`) and held to the schema by `TestTheUsageRuleCoversEveryColumnOfTheTablesItCounts`:
   a migration that touches `messages`, `parts`, `folders` or `drafts` lists its columns there and
-  decides whether `RuleVersion` moves. `CountWorkspaceMailboxes` (`workspacemailboxes.go`) counts
-  the mailboxes outside the operator workspace, personal and team, live and removed, whatever their
-  state, for the start-up warning.
+  decides whether `RuleVersion` moves. Migration 0030 (`usagetotals.go`; `docs/workspaces.md`,
+  "Migration 0030") keeps that figure per mailbox as its rows change: `usage_days` (per account and
+  UTC day of `internal_date`, by floor division, `utcDaySQL` and `UTCDay`, so a date before 1970
+  falls on its own day: its messages still in their folder and their parts) and `usage_fixed` (per
+  account: its folders and open drafts), both `WITHOUT ROWID`, moved by seventeen `usage_*`
+  triggers in the transaction of every write to `messages`, `parts`, `folders` and `drafts`, each
+  row's bytes written out over exactly `usageTables`' columns
+  (`TestTheUsageTriggersCountEveryColumnTheRuleCounts`): liveness counted on its flip only (a
+  refresh writes `vanished_at = 0` again), a message's parts counted out before they go (`BEFORE
+  DELETE`, the one place a cascade still finds them), a changed value by the row's difference
+  (`dup_of`'s `ON DELETE SET NULL` included), a draft while open; none marks a workspace or a
+  person (`TestTheUsageTriggersMarkNoWorkspaceOrPerson`). No foreign key: an upsert into a table
+  bound to `accounts`, run inside its delete's cascade, would fail every deletion for good;
+  `usage_accounts_delete`, after every trigger of the cascade, takes a mailbox's rows instead. No
+  CHECK, and `bytes` nullable, read as 0: a delta never refuses a write, and a drifted total is
+  found outside the write path. Never `INSERT OR REPLACE` into the four counted tables (it fires
+  the insert's trigger and not the delete's), and a rebuild of any of them, or of `accounts`,
+  creates its `usage_*` triggers again after its copy (`DROP TABLE` takes them silently;
+  `TestTheUsageTriggersAreOnEveryTableTheRuleCounts`). 0030 also adds `messages_dup_of` (`WHERE
+  dup_of IS NOT NULL`), which every delete of a message runs its `ON DELETE SET NULL` by: without
+  it a turn-off or a purge was quadratic in the mailbox's messages. It leaves both tables empty
+  (migrations run SQL alone, and the rule is spelt once, in Go: `usageDaysScan`, `usageFixedScan`,
+  the row filters `countedMessageSQL` and `countedDraftSQL` shared with `usageSQL`):
+  `CheckUsageTotals` (one `ReadTx` on the reader pool, the totals against the rule's scan both ways
+  and day by day, a total of 0 or NULL as none: the accounts that differ, an account gone
+  included), `RepairUsageTotals` (the scan inside the write that replaces an account's totals, one
+  short write each) and `ReconcileUsageTotals` (both, answering how many it repaired; nothing to
+  repair takes no write lock) fill them at the daemon's first start after it, before the engine,
+  and in `mailserver migrate`, and check them daily (`internal/app`). A batch of new rows prepares
+  its message and part `INSERT` once in its transaction (`rowWriter`, `ApplySummaries`,
+  `ApplyActionReturn`): SQLite compiles a statement's trigger programs at every prepare. What a
+  followed workspace holds is read from the totals, never scanned: `WorkspaceBytesTx` (in the
+  caller's `ReadTx`: every mailbox of the workspace, live and removed until deleted for good, in
+  the snapshot's order, with its removal and `purge_after`, its `PauseSQL` (blank on a removed
+  one), whether it is pending (no `credentials` row), its bytes, of them those dated on a UTC day
+  or after it, a date ahead of today included, and its fixed bytes; a NULL total counts nothing)
+  and `FollowedWorkspaceBytes` (one statement on the reader pool: per workspace whose source is not
+  local, its mailboxes' kept totals, live and removed, 0 for one that holds nothing).
+  `CountWorkspaceMailboxes` (`workspacemailboxes.go`) counts the mailboxes outside the operator
+  workspace, personal and team, live and removed, whatever their state, for the start-up warning.
 - `internal/secrets` — the `Sealer` interface (seal and open with a context and a `Binding`: one of
   five purposes, `credential/oauth-token`, `credential/password`, `send/hash-root`,
   `auth/kdf-salt-key` and `extension/secret` (`ExtensionSecret(ref)`: an extension's secret outside
@@ -404,9 +457,12 @@ the long form of this file.
   removed one as once it is recovered, until it is deleted for good.
   `snapshot.go` reads who holds what on a workspace's mailboxes for an extension (`SnapshotTx`, in
   one read transaction): every mailbox, live and removed until deleted for good, its pause, label
-  and masked hint, never its address; each person with a flag or a sealed grant, whether they read,
-  wait, are enrolled and hold the key at its epoch; the people a team mailbox cannot lose. It
-  decides nothing. `settings.go` reads, beside it and with bounds of its own, a workspace's
+  and masked hint, never its address, and whether it was ever authorized (`Pending`: no
+  `credentials` row, whatever its state, `pending_auth` or `error` once its first consent failed;
+  its first credential ends it, and a re-authorization's `pending_auth` is never pending, nor is an
+  OAuth mailbox's `connected_at` of 0 a sign of it); each person with a flag or a sealed grant,
+  whether they read, wait, are enrolled and hold the key at its epoch; the people a team mailbox
+  cannot lose. It decides nothing. `settings.go` reads, beside it and with bounds of its own, a workspace's
   settings (`SettingsTx`): each mailbox's row (provider, sign-in, state and reason, first
   connection, attribution, key epoch, sent copy and server, consent, agreement, pause, hold, index
   and last sync, removal and whether any index is kept) and each member's status, never an
@@ -535,6 +591,33 @@ the long form of this file.
   person, a team's active owners of an open team not withheld, the operator for the operator
   workspace's), each `removed` until deleted for good; `database_bytes` the operator's alone. The
   refusals of a tool's credential (`errToolNeedsKey`, `errKeyNotAgreed`) name no console.
+  `usage.go`: what each mailbox of a followed workspace holds under usage rule 1, read from the
+  totals migration 0030 keeps, for an extension, with no principal and from no transport
+  (`WorkspaceBytes`: `following()` first, `conflict` `ErrNotFollowing` on a server that follows
+  nothing, then in one `ReadTx` the workspace judged as `AccessSnapshot` judges it,
+  `reportedSource`, `not_found` when unknown or local, and `store.WorkspaceBytesTx` at
+  `store.UTCDay(since)`: each mailbox's removal and end, its pause as the snapshot maps it,
+  `Pending`, `Bytes`, `DatedSince` and `Fixed`, with no bound on the mailboxes;
+  `FollowedWorkspaceBytes`: the kept total per followed workspace, 0 for one that holds nothing);
+  `GET /v1/me/storage` keeps its scan, the reference the totals are checked against. A snapshot's
+  mailbox carries `Pending` too (`SnapshotMailbox.Pending`, from `internal/workspace`), which
+  `AccessSnapshot` and `WorkspaceReport` report alike. `linkgate.go`: the link gate
+  (`Deps.LinkGate`, `LinkGate`), `BeforeLink` asked before a mailbox is linked into a workspace —
+  `AddAccount` (`address`, OAuth and password alike: last, after `linkInto`, the freshness hook,
+  the account key and the step-up, right before `accounts.Add`), `StartLink` (`provider`, after the
+  step-up) and `StartOAuth` of a mailbox never connected (`first_authorization`; a
+  re-authorization asks nothing) — after the read-only authorization, outside every write and
+  before anything is dialled or stored, its answer `fresh`'s (nil goes on, a `*service.Error`
+  passes as it is, a context's end is passed on, anything else `internal` "upstream: …" with a
+  `Retry` of 30 s, its cause `errLinkGateUnasked` beside the gate's); and `Linked`, a notification
+  under `context.WithoutCancel`, called once the write that linked committed, its return changing
+  nothing: a password mailbox stored (`address`), a link at the provider whose return created its
+  mailbox (`provider`), a first authorization that connected a mailbox never connected
+  (`first_authorization`, read as `!before.Connected && after.Connected` around `CompleteFlow`). An
+  address-first OAuth add tells nothing until its first authorization; a failed link and a
+  re-authorization tell nothing. A `LinkAttempt` names the actor (empty for a key), the workspace
+  (a person's personal one resolved, `PersonalOf`, the operator's for an instance key), whether it
+  is a team's and the way, never the mailbox. `ActFor` never links, so neither is called for one.
 - `internal/api` — REST `/v1/...`, SSE and the long poll, each checking its caller again at
   `Service.AccessChanged`, and downloads checking before the first byte and between chunks, refused
   or cut off (never ended whole) once the caller may no longer read; the operator's hold of an
