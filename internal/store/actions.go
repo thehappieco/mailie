@@ -69,7 +69,9 @@ func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags)
 		// the server echoed for each: a pass's answer read before it must
 		// not put the old flags back (moves.go).
 		marked = map[int64]int64{}
+		rows   = newRowWriter(tx)
 	)
+	defer rows.close()
 	announce := func(id, folderID int64, flags []string) error {
 		ev, err := events.New(events.TypeMessageFlags, b.AccountID, now, flagsPayload(b.AccountID, id, folderID, flags))
 		if err != nil {
@@ -90,7 +92,7 @@ func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags)
 			continue
 		}
 		m := meta{flags: NormalizeFlags(u.Flags), modseq: clampInt64(u.ModSeq)}
-		changed, err := refreshRow(ctx, tx, r, m, now, nil)
+		changed, err := rows.refreshRow(ctx, r, m, now, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -123,7 +125,7 @@ func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags)
 			}
 			// The flags only: the copy's modification sequence is its own
 			// folder's, which its next pass reads.
-			if _, err := refreshRow(ctx, tx, c, meta{flags: m.flags}, now, nil); err != nil {
+			if _, err := rows.refreshRow(ctx, c, meta{flags: m.flags}, now, nil); err != nil {
 				return nil, err
 			}
 			if err := announce(c.id, c.folderID, m.flags); err != nil {
@@ -132,7 +134,7 @@ func (s *Store) ApplyActionFlags(ctx context.Context, tx *sql.Tx, b ActionFlags)
 		}
 	}
 	for key := range settle {
-		if _, _, err := settleGroup(ctx, tx, b.AccountID, key); err != nil {
+		if _, _, err := rows.settleGroup(ctx, b.AccountID, key); err != nil {
 			return nil, err
 		}
 	}
@@ -280,7 +282,9 @@ func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (
 		evs    []events.Event
 		gone   []row
 		landed = map[imap.UID]bool{}
+		rows   = newRowWriter(tx)
 	)
+	defer rows.close()
 	announce := func(r row, folder Folder, dest *int64, newPrimary int64) error {
 		payload := ActionMoved{
 			AccountID: b.AccountID, MessageID: r.id, FolderID: folder.ID, FolderRole: string(folder.Role),
@@ -328,11 +332,11 @@ func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (
 			// The same message, already indexed there: a pass saw it arrive
 			// before the index followed it, or it already had the label. The
 			// row that moved takes its place.
-			if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, raced.id); err != nil {
+			if _, err := rows.exec(ctx, deleteRowSQL, raced.id); err != nil {
 				return ActionMoveResult{}, fmt.Errorf("store: drop a row a pass raced in: %w", err)
 			}
 			if raced.groupKey != r.groupKey {
-				if _, _, err := settleGroup(ctx, tx, b.AccountID, raced.groupKey); err != nil {
+				if _, _, err := rows.settleGroup(ctx, b.AccountID, raced.groupKey); err != nil {
 					return ActionMoveResult{}, err
 				}
 			}
@@ -352,12 +356,10 @@ func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (
 				ID: r.id, AccountID: b.AccountID, FromFolderID: from.ID, ToFolderID: to.ID,
 			}, s.now())
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE messages SET folder_id = ?, uidvalidity = ?, uid = ?, modseq = 0,
-			vanished_at = 0, stale = 0, updated_at = ? WHERE id = ?`,
-			to.ID, to.UIDValidity, uint32(mv.DestUID), now.Unix(), r.id); err != nil {
+		if _, err := rows.exec(ctx, moveRowSQL, to.ID, to.UIDValidity, uint32(mv.DestUID), now.Unix(), r.id); err != nil {
 			return ActionMoveResult{}, fmt.Errorf("store: move a row: %w", err)
 		}
-		primary, _, err := settleGroup(ctx, tx, b.AccountID, r.groupKey)
+		primary, _, err := rows.settleGroup(ctx, b.AccountID, r.groupKey)
 		if err != nil {
 			return ActionMoveResult{}, err
 		}
@@ -370,12 +372,12 @@ func (s *Store) ApplyActionMove(ctx context.Context, tx *sql.Tx, b ActionMove) (
 	}
 
 	for _, r := range gone {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, r.id); err != nil {
+		if _, err := rows.exec(ctx, deleteRowSQL, r.id); err != nil {
 			return ActionMoveResult{}, fmt.Errorf("store: take a moved row out of the index: %w", err)
 		}
 	}
 	for _, r := range gone {
-		primary, _, err := settleGroup(ctx, tx, b.AccountID, r.groupKey)
+		primary, _, err := rows.settleGroup(ctx, b.AccountID, r.groupKey)
 		if err != nil {
 			return ActionMoveResult{}, err
 		}
@@ -460,7 +462,7 @@ func (s *Store) ApplyActionReturn(ctx context.Context, tx *sql.Tx, b ActionRetur
 	if err != nil {
 		return 0, nil, err
 	}
-	primary, _, err := settleGroup(ctx, tx, b.AccountID, m.groupKey)
+	primary, _, err := rows.settleGroup(ctx, b.AccountID, m.groupKey)
 	if err != nil {
 		return 0, nil, err
 	}

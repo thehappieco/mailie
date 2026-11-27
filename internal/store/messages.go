@@ -450,7 +450,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 			continue
 		}
 		if found {
-			changed, err := refreshRow(ctx, tx, existing, m, now, nil)
+			changed, err := rows.refreshRow(ctx, existing, m, now, nil)
 			if err != nil {
 				return ApplyResult{}, err
 			}
@@ -477,7 +477,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 			if found {
 				claimed[rowID] = true
 				uid := m.uid
-				changed, err := refreshRow(ctx, tx, old, m, now, &rowMove{uidvalidity: b.UIDValidity, uid: uid})
+				changed, err := rows.refreshRow(ctx, old, m, now, &rowMove{uidvalidity: b.UIDValidity, uid: uid})
 				if err != nil {
 					return ApplyResult{}, err
 				}
@@ -511,7 +511,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 				return ApplyResult{}, err
 			}
 			if found {
-				changed, err := refreshRow(ctx, tx, stale, m, now, &rowMove{uidvalidity: b.UIDValidity, uid: m.uid})
+				changed, err := rows.refreshRow(ctx, stale, m, now, &rowMove{uidvalidity: b.UIDValidity, uid: m.uid})
 				if err != nil {
 					return ApplyResult{}, err
 				}
@@ -541,7 +541,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 			return ApplyResult{}, err
 		}
 		res.Inserted++
-		primary, _, err := settleGroup(ctx, tx, b.AccountID, m.groupKey)
+		primary, _, err := rows.settleGroup(ctx, b.AccountID, m.groupKey)
 		if err != nil {
 			return ApplyResult{}, err
 		}
@@ -599,7 +599,7 @@ func (s *Store) ApplySummaries(ctx context.Context, tx *sql.Tx, b SummaryBatch) 
 	}
 
 	for key := range settle {
-		if _, _, err := settleGroup(ctx, tx, b.AccountID, key); err != nil {
+		if _, _, err := rows.settleGroup(ctx, b.AccountID, key); err != nil {
 			return ApplyResult{}, err
 		}
 	}
@@ -632,7 +632,7 @@ type rowMove struct {
 // refreshRow updates an existing row from a fresh summary or flag fetch and
 // reports whether its flags changed. It always lifts a tombstone and a stale
 // mark: the server has just shown the message exists.
-func refreshRow(ctx context.Context, tx *sql.Tx, r row, m meta, now time.Time, move *rowMove) (bool, error) {
+func (w *rowWriter) refreshRow(ctx context.Context, r row, m meta, now time.Time, move *rowMove) (bool, error) {
 	changed := !equalStrings(r.flags, m.flags)
 	bits := bitsOf(m.flags)
 	uidvalidity, uid := r.uidvalidity, r.uid
@@ -643,9 +643,7 @@ func refreshRow(ctx context.Context, tx *sql.Tx, r row, m meta, now time.Time, m
 	if modseq == 0 {
 		modseq = r.modseq
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE messages SET uidvalidity = ?, uid = ?, modseq = ?, flags_json = ?,
-		seen = ?, flagged = ?, answered = ?, draft = ?, deleted = ?, vanished_at = 0, stale = 0, updated_at = ?
-		WHERE id = ?`, uidvalidity, uint32(uid), modseq, m.flagsJSON(),
+	_, err := w.exec(ctx, refreshRowSQL, uidvalidity, uint32(uid), modseq, m.flagsJSON(),
 		bits.seen, bits.flagged, bits.answered, bits.draft, bits.deleted, now.Unix(), r.id)
 	if err != nil {
 		return false, fmt.Errorf("store: update message: %w", err)
@@ -653,19 +651,23 @@ func refreshRow(ctx context.Context, tx *sql.Tx, r row, m meta, now time.Time, m
 	return changed, nil
 }
 
-// rowWriter writes new rows into the index through statements it prepares
-// once, on first use, in the caller's transaction, which closes them with
-// it: SQLite compiles the triggers a statement fires each time it prepares
-// it (migration 0030's usage totals among them, each spelling a whole row's
-// bytes), so a batch preparing its INSERT again for every message and every
-// part spent most of its time compiling the same programs.
+// rowWriter writes the index's rows through statements it prepares once,
+// on first use, in the caller's transaction, which closes them with it.
+// SQLite compiles the triggers a statement fires each time it prepares it —
+// migration 0030's usage totals among them, each spelling a whole row's
+// bytes — so a batch that prepared its INSERT, UPDATE or DELETE again for
+// every row it wrote spent most of its time compiling the same programs,
+// holding the single writer meanwhile: a mass flag change, a mass delete,
+// a resync. Every statement a batch runs once per row of messages, parts or
+// folders goes through one, shared by everything the batch calls.
 type rowWriter struct {
-	tx        *sql.Tx
-	row, part *sql.Stmt
+	tx    *sql.Tx
+	stmts map[string]*sql.Stmt
 }
 
-func newRowWriter(tx *sql.Tx) *rowWriter { return &rowWriter{tx: tx} }
+func newRowWriter(tx *sql.Tx) *rowWriter { return &rowWriter{tx: tx, stmts: map[string]*sql.Stmt{}} }
 
+// The statements a batch runs per row.
 const (
 	insertRowSQL = `INSERT INTO messages(account_id, folder_id, uidvalidity, uid, modseq,
 		message_id, group_key, in_reply_to, references_json, subject, from_json, to_json, cc_json, bcc_json,
@@ -675,41 +677,63 @@ const (
 		RETURNING id`
 	insertPartSQL = `INSERT OR IGNORE INTO parts(msg_id, path, mime_type, charset, encoding,
 			disposition, filename, content_id, size, is_body, is_attachment) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	refreshRowSQL = `UPDATE messages SET uidvalidity = ?, uid = ?, modseq = ?, flags_json = ?,
+		seen = ?, flagged = ?, answered = ?, draft = ?, deleted = ?, vanished_at = 0, stale = 0, updated_at = ?
+		WHERE id = ?`
+	reviveRowSQL    = `UPDATE messages SET vanished_at = 0, updated_at = ? WHERE id = ?`
+	tombstoneRowSQL = `UPDATE messages SET vanished_at = ?, updated_at = ? WHERE id = ?`
+	deleteRowSQL    = `DELETE FROM messages WHERE id = ?`
+	primaryRowSQL   = `UPDATE messages SET dup_of = NULL WHERE id = ?`
+	copyRowSQL      = `UPDATE messages SET dup_of = ? WHERE id = ?`
+	moveRowSQL      = `UPDATE messages SET folder_id = ?, uidvalidity = ?, uid = ?, modseq = 0,
+			vanished_at = 0, stale = 0, updated_at = ? WHERE id = ?`
 )
 
-// prepare prepares query into *stmt, the first time only.
-func (w *rowWriter) prepare(ctx context.Context, stmt **sql.Stmt, query string) error {
-	if *stmt != nil {
-		return nil
+// prepared is query prepared in the writer's transaction, the first time
+// only.
+func (w *rowWriter) prepared(ctx context.Context, query string) (*sql.Stmt, error) {
+	if stmt, ok := w.stmts[query]; ok {
+		return stmt, nil
 	}
 	//nolint:sqlclosecheck // kept for the batch: closed by close, and with the transaction at the latest
-	prepared, err := w.tx.PrepareContext(ctx, query)
+	stmt, err := w.tx.PrepareContext(ctx, query)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	*stmt = prepared
-	return nil
+	w.stmts[query] = stmt
+	return stmt, nil
+}
+
+// exec runs query, prepared once, with args.
+func (w *rowWriter) exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	//nolint:sqlclosecheck // the writer's: closed by its close
+	stmt, err := w.prepared(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	return stmt.ExecContext(ctx, args...)
 }
 
 // close closes what it prepared; the transaction's end would too.
 func (w *rowWriter) close() {
-	for _, stmt := range []*sql.Stmt{w.row, w.part} {
-		if stmt != nil {
-			//nolint:errcheck // a statement of a transaction still open: nothing is lost
-			_ = stmt.Close()
-		}
+	for _, stmt := range w.stmts {
+		//nolint:errcheck // a statement of a transaction still open: nothing is lost
+		_ = stmt.Close()
 	}
+	clear(w.stmts)
 }
 
 // insertRow indexes a message the index has never held, with its parts (a
 // part listed twice under one path once), and returns its id.
 func (w *rowWriter) insertRow(ctx context.Context, accountID string, folderID int64, uidvalidity uint32, m meta, now time.Time) (int64, error) {
 	bits := bitsOf(m.flags)
-	if err := w.prepare(ctx, &w.row, insertRowSQL); err != nil {
+	//nolint:sqlclosecheck // the writer's: closed by its close
+	insert, err := w.prepared(ctx, insertRowSQL)
+	if err != nil {
 		return 0, fmt.Errorf("store: insert message: %w", err)
 	}
 	var id int64
-	err := w.row.QueryRowContext(ctx,
+	err = insert.QueryRowContext(ctx,
 		accountID, folderID, uidvalidity, uint32(m.uid), m.modseq,
 		m.messageID, m.groupKey, m.inReplyTo, m.references, m.subject, m.fromJSON, m.toJSON, m.ccJSON, m.bccJSON,
 		m.replyToJSON, m.fromAddr, m.fromText, m.toText, m.date, m.internalDate, m.size, m.flagsJSON(),
@@ -723,10 +747,7 @@ func (w *rowWriter) insertRow(ctx context.Context, accountID string, folderID in
 		if path == "" {
 			continue
 		}
-		if err := w.prepare(ctx, &w.part, insertPartSQL); err != nil {
-			return 0, fmt.Errorf("store: insert part: %w", err)
-		}
-		if _, err := w.part.ExecContext(ctx,
+		if _, err := w.exec(ctx, insertPartSQL,
 			id, path, strings.ToLower(p.MIMEType), paramValue(p.Params, "charset"), strings.ToLower(p.Encoding),
 			strings.ToLower(p.Disposition), p.Filename, BareID(p.ContentID), p.Size,
 			boolInt(p.IsBody), boolInt(p.IsAttachment)); err != nil {
@@ -781,8 +802,8 @@ func arrivedSince(internalDate int64, lastPass time.Time) bool {
 // with such a copy must never be represented by one that has vanished — that
 // would hide the message until the tombstone is swept — or by one waiting for
 // its folder's resync, which would hide it for as long as the resync takes.
-func settleGroup(ctx context.Context, tx *sql.Tx, accountID, groupKey string) (primary int64, live int, err error) {
-	members, err := groupMembers(ctx, tx, accountID, groupKey)
+func (w *rowWriter) settleGroup(ctx context.Context, accountID, groupKey string) (primary int64, live int, err error) {
+	members, err := groupMembers(ctx, w.tx, accountID, groupKey)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -797,9 +818,9 @@ func settleGroup(ctx context.Context, tx *sql.Tx, accountID, groupKey string) (p
 		var err error
 		switch {
 		case i == 0 && m.dupOf.Valid:
-			_, err = tx.ExecContext(ctx, `UPDATE messages SET dup_of = NULL WHERE id = ?`, m.id)
+			_, err = w.exec(ctx, primaryRowSQL, m.id)
 		case i > 0 && (!m.dupOf.Valid || m.dupOf.Int64 != primary):
-			_, err = tx.ExecContext(ctx, `UPDATE messages SET dup_of = ? WHERE id = ?`, primary, m.id)
+			_, err = w.exec(ctx, copyRowSQL, primary, m.id)
 		}
 		if err != nil {
 			return 0, 0, fmt.Errorf("store: settle a message group: %w", err)
@@ -844,12 +865,12 @@ func groupMembers(ctx context.Context, tx *sql.Tx, accountID, groupKey string) (
 // person's move may have taken away (MayHaveMoved): the message left for
 // another folder, it was not deleted. Groups are settled after, so the
 // surviving copy becomes the primary.
-func (s *Store) deleteRowsTx(ctx context.Context, tx *sql.Tx, accountID string, rows []row, folders map[int64]Folder, now time.Time) ([]events.Event, error) {
+func (s *Store) deleteRowsTx(ctx context.Context, w *rowWriter, accountID string, rows []row, folders map[int64]Folder, now time.Time) ([]events.Event, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
 	for _, r := range rows {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM messages WHERE id = ?`, r.id); err != nil {
+		if _, err := w.exec(ctx, deleteRowSQL, r.id); err != nil {
 			return nil, fmt.Errorf("store: delete message: %w", err)
 		}
 	}
@@ -859,7 +880,7 @@ func (s *Store) deleteRowsTx(ctx context.Context, tx *sql.Tx, accountID string, 
 		if _, done := groups[r.groupKey]; done {
 			continue
 		}
-		primary, live, err := settleGroup(ctx, tx, accountID, r.groupKey)
+		primary, live, err := w.settleGroup(ctx, accountID, r.groupKey)
 		if err != nil {
 			return nil, err
 		}
@@ -870,7 +891,7 @@ func (s *Store) deleteRowsTx(ctx context.Context, tx *sql.Tx, accountID string, 
 		f, ok := folders[r.folderID]
 		if !ok {
 			var err error
-			if f, err = folderOn(ctx, tx, accountID, r.folderID); err != nil {
+			if f, err = folderOn(ctx, w.tx, accountID, r.folderID); err != nil {
 				return nil, err
 			}
 			folders[r.folderID] = f
@@ -997,7 +1018,9 @@ func (s *Store) ApplyFlags(ctx context.Context, tx *sql.Tx, b FlagBatch) (FlagRe
 		res    FlagResult
 		evs    []events.Event
 		settle = map[string]bool{}
+		rows   = newRowWriter(tx)
 	)
+	defer rows.close()
 	for _, u := range b.Updates {
 		if u.UID == 0 || s.moves.isGone(folder.ID, b.UIDValidity, u.UID, s.now()) {
 			// A UID a person moved away since this was read: known, and gone.
@@ -1021,7 +1044,7 @@ func (s *Store) ApplyFlags(ctx context.Context, tx *sql.Tx, b FlagBatch) (FlagRe
 		if !changed && r.vanishedAt == 0 && (m.modseq == 0 || m.modseq == r.modseq) {
 			continue
 		}
-		if _, err := refreshRow(ctx, tx, r, m, now, nil); err != nil {
+		if _, err := rows.refreshRow(ctx, r, m, now, nil); err != nil {
 			return FlagResult{}, err
 		}
 		if r.vanishedAt != 0 {
@@ -1037,7 +1060,7 @@ func (s *Store) ApplyFlags(ctx context.Context, tx *sql.Tx, b FlagBatch) (FlagRe
 		}
 	}
 	for key := range settle {
-		if _, _, err := settleGroup(ctx, tx, b.AccountID, key); err != nil {
+		if _, _, err := rows.settleGroup(ctx, b.AccountID, key); err != nil {
 			return FlagResult{}, err
 		}
 	}
@@ -1145,18 +1168,20 @@ func (s *Store) ApplyUIDDiff(ctx context.Context, tx *sql.Tx, d UIDDiff) (DiffRe
 		gone   []row
 		held   = make(map[imap.UID]bool, len(local))
 		settle = map[string]bool{}
+		rows   = newRowWriter(tx)
 	)
+	defer rows.close()
 	for _, r := range local {
 		held[r.uid] = true
 		switch present := server[r.uid]; {
 		case present && r.vanishedAt != 0:
-			if _, err := tx.ExecContext(ctx, `UPDATE messages SET vanished_at = 0, updated_at = ? WHERE id = ?`, now.Unix(), r.id); err != nil {
+			if _, err := rows.exec(ctx, reviveRowSQL, now.Unix(), r.id); err != nil {
 				return DiffResult{}, fmt.Errorf("store: revive message: %w", err)
 			}
 			settle[r.groupKey] = true
 			res.Revived++
 		case !present && r.vanishedAt == 0:
-			if _, err := tx.ExecContext(ctx, `UPDATE messages SET vanished_at = ?, updated_at = ? WHERE id = ?`, now.Unix(), now.Unix(), r.id); err != nil {
+			if _, err := rows.exec(ctx, tombstoneRowSQL, now.Unix(), now.Unix(), r.id); err != nil {
 				return DiffResult{}, fmt.Errorf("store: tombstone message: %w", err)
 			}
 			settle[r.groupKey] = true
@@ -1184,7 +1209,7 @@ func (s *Store) ApplyUIDDiff(ctx context.Context, tx *sql.Tx, d UIDDiff) (DiffRe
 	}
 	sort.Slice(res.Missing, func(i, j int) bool { return res.Missing[i] < res.Missing[j] })
 
-	evs, err := s.deleteRowsTx(ctx, tx, d.AccountID, gone, map[int64]Folder{folder.ID: folder}, now)
+	evs, err := s.deleteRowsTx(ctx, rows, d.AccountID, gone, map[int64]Folder{folder.ID: folder}, now)
 	if err != nil {
 		return DiffResult{}, err
 	}
@@ -1193,7 +1218,7 @@ func (s *Store) ApplyUIDDiff(ctx context.Context, tx *sql.Tx, d UIDDiff) (DiffRe
 		delete(settle, r.groupKey) // deleteRowsTx settled it
 	}
 	for key := range settle {
-		if _, _, err := settleGroup(ctx, tx, d.AccountID, key); err != nil {
+		if _, _, err := rows.settleGroup(ctx, d.AccountID, key); err != nil {
 			return DiffResult{}, err
 		}
 	}
@@ -1278,8 +1303,10 @@ func unstalePrimaries(ctx context.Context, tx *sql.Tx, accountID string, folderI
 	if err != nil {
 		return err
 	}
+	rows := newRowWriter(tx)
+	defer rows.close()
 	for _, key := range keys {
-		if _, _, err := settleGroup(ctx, tx, accountID, key); err != nil {
+		if _, _, err := rows.settleGroup(ctx, accountID, key); err != nil {
 			return err
 		}
 	}
@@ -1333,7 +1360,9 @@ func (s *Store) FinishResync(ctx context.Context, tx *sql.Tx, accountID string, 
 	if err != nil {
 		return nil, err
 	}
-	evs, err := s.deleteRowsTx(ctx, tx, accountID, stale, map[int64]Folder{folder.ID: folder}, now)
+	rows := newRowWriter(tx)
+	defer rows.close()
+	evs, err := s.deleteRowsTx(ctx, rows, accountID, stale, map[int64]Folder{folder.ID: folder}, now)
 	if err != nil {
 		return nil, err
 	}

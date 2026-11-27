@@ -238,6 +238,11 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 	if now.IsZero() {
 		now = s.now()
 	}
+	// A listing writes each folder, and a folder's rows when it goes, with
+	// the statements a batch prepares once (rowWriter): a Gmail account
+	// lists a folder per label.
+	rows := newRowWriter(tx)
+	defer rows.close()
 
 	resolved := resolveUnique(d.Folders, d.Profile, d.Overrides)
 	existing, err := foldersOn(ctx, tx, d.AccountID)
@@ -270,7 +275,7 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 			continue
 		}
 		if f.Role != next && f.Role != provider.RoleNone {
-			if _, err := tx.ExecContext(ctx, `UPDATE folders SET role = '', role_source = '' WHERE id = ?`, f.ID); err != nil {
+			if _, err := rows.exec(ctx, releaseRoleSQL, f.ID); err != nil {
 				return DiscoveryResult{}, fmt.Errorf("store: release a folder role: %w", err)
 			}
 		}
@@ -298,15 +303,13 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 		display := displayName(r.Name, r.Delim)
 
 		prev, had := byName[r.Name]
+		//nolint:sqlclosecheck // the listing's writer's: closed with it
+		upsert, err := rows.prepared(ctx, upsertFolderSQL)
+		if err != nil {
+			return DiscoveryResult{}, fmt.Errorf("store: record folder: %w", err)
+		}
 		var id int64
-		err = tx.QueryRowContext(ctx,
-			`INSERT INTO folders(account_id, name, display_name, delim, attrs_json, role, role_source, selectable, synced)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(account_id, name) DO UPDATE SET
-			   display_name = excluded.display_name, delim = excluded.delim, attrs_json = excluded.attrs_json,
-			   role = excluded.role, role_source = excluded.role_source, selectable = excluded.selectable,
-			   synced = excluded.synced, missing_since = 0
-			 RETURNING id`,
+		err = upsert.QueryRowContext(ctx,
 			d.AccountID, r.Name, display, delim, string(attrsJSON), string(r.role), r.source,
 			boolInt(r.Selectable), boolInt(synced)).Scan(&id)
 		if err != nil {
@@ -315,7 +318,7 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 		if had && prev.Synced && prev.Selectable && (!synced || !r.Selectable) {
 			f := prev
 			f.Role = r.role
-			gone, err := s.unsyncFolderTx(ctx, tx, f, now)
+			gone, err := s.unsyncFolderTx(ctx, rows, f, now)
 			if err != nil {
 				return DiscoveryResult{}, err
 			}
@@ -347,13 +350,13 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 			continue
 		}
 		if f.MissingSince.IsZero() {
-			if _, err := tx.ExecContext(ctx, `UPDATE folders SET missing_since = ? WHERE id = ?`, nowSec, f.ID); err != nil {
+			if _, err := rows.exec(ctx, missingFolderSQL, nowSec, f.ID); err != nil {
 				return DiscoveryResult{}, fmt.Errorf("store: mark a folder missing: %w", err)
 			}
 			res.Missing = append(res.Missing, f.ID)
 			continue
 		}
-		gone, err := s.deleteFolderTx(ctx, tx, f, now)
+		gone, err := s.deleteFolderTx(ctx, rows, f, now)
 		if err != nil {
 			return DiscoveryResult{}, err
 		}
@@ -369,6 +372,24 @@ func (s *Store) SyncFolders(ctx context.Context, tx *sql.Tx, d FolderDiscovery) 
 	}
 	return res, nil
 }
+
+// The statements a listing runs per folder.
+const (
+	releaseRoleSQL  = `UPDATE folders SET role = '', role_source = '' WHERE id = ?`
+	upsertFolderSQL = `INSERT INTO folders(account_id, name, display_name, delim, attrs_json, role, role_source, selectable, synced)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(account_id, name) DO UPDATE SET
+			   display_name = excluded.display_name, delim = excluded.delim, attrs_json = excluded.attrs_json,
+			   role = excluded.role, role_source = excluded.role_source, selectable = excluded.selectable,
+			   synced = excluded.synced, missing_since = 0
+			 RETURNING id`
+	missingFolderSQL = `UPDATE folders SET missing_since = ? WHERE id = ?`
+	deleteFolderSQL  = `DELETE FROM folders WHERE id = ?`
+	unsyncFolderSQL  = `UPDATE folders SET uidvalidity = 0, uidnext = 0, max_seen_uid = 0, highest_modseq = 0,
+		backfill_floor = 0, backfill_cursor = 0, last_full_uid_scan_at = 0, last_flag_scan_at = 0, server_count = 0,
+		sync_state = 'new', sync_error = '', last_synced_at = 0, initial_total = 0, initial_fetched = 0,
+		initial_since = 0, resync_from = '' WHERE id = ?`
+)
 
 func findResolved(rs []resolvedFolder, name string) resolvedFolder {
 	for _, r := range rs {
@@ -434,16 +455,16 @@ func displayName(name string, delim rune) string {
 
 // deleteFolderTx removes a folder and its rows, announcing each message as
 // deleted or, when another folder still holds it, as a copy removed.
-func (s *Store) deleteFolderTx(ctx context.Context, tx *sql.Tx, f Folder, now time.Time) ([]events.Event, error) {
-	rows, err := loadRows(ctx, tx, `SELECT `+rowColumns+` FROM messages WHERE folder_id = ?`, f.ID)
+func (s *Store) deleteFolderTx(ctx context.Context, w *rowWriter, f Folder, now time.Time) ([]events.Event, error) {
+	rows, err := loadRows(ctx, w.tx, `SELECT `+rowColumns+` FROM messages WHERE folder_id = ?`, f.ID)
 	if err != nil {
 		return nil, err
 	}
-	evs, err := s.deleteRowsTx(ctx, tx, f.AccountID, rows, map[int64]Folder{f.ID: f}, now)
+	evs, err := s.deleteRowsTx(ctx, w, f.AccountID, rows, map[int64]Folder{f.ID: f}, now)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM folders WHERE id = ?`, f.ID); err != nil {
+	if _, err := w.exec(ctx, deleteFolderSQL, f.ID); err != nil {
 		return nil, fmt.Errorf("store: delete folder: %w", err)
 	}
 	ev, err := events.New(events.TypeFolderChanged, f.AccountID, now, FolderChanged{
@@ -460,20 +481,16 @@ func (s *Store) deleteFolderTx(ctx context.Context, tx *sql.Tx, f Folder, now ti
 // holds the message, as a copy removed, and its sync position is reset, so
 // syncing it again starts from scratch. What is stored is the synced folders'
 // metadata; rows of a folder nobody keeps up to date would be neither.
-func (s *Store) unsyncFolderTx(ctx context.Context, tx *sql.Tx, f Folder, now time.Time) ([]events.Event, error) {
-	rows, err := loadRows(ctx, tx, `SELECT `+rowColumns+` FROM messages WHERE folder_id = ?`, f.ID)
+func (s *Store) unsyncFolderTx(ctx context.Context, w *rowWriter, f Folder, now time.Time) ([]events.Event, error) {
+	rows, err := loadRows(ctx, w.tx, `SELECT `+rowColumns+` FROM messages WHERE folder_id = ?`, f.ID)
 	if err != nil {
 		return nil, err
 	}
-	evs, err := s.deleteRowsTx(ctx, tx, f.AccountID, rows, map[int64]Folder{f.ID: f}, now)
+	evs, err := s.deleteRowsTx(ctx, w, f.AccountID, rows, map[int64]Folder{f.ID: f}, now)
 	if err != nil {
 		return nil, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE folders SET uidvalidity = 0, uidnext = 0, max_seen_uid = 0, highest_modseq = 0,
-		backfill_floor = 0, backfill_cursor = 0, last_full_uid_scan_at = 0, last_flag_scan_at = 0, server_count = 0,
-		sync_state = 'new', sync_error = '', last_synced_at = 0, initial_total = 0, initial_fetched = 0,
-		initial_since = 0, resync_from = '' WHERE id = ?`, f.ID)
-	if err != nil {
+	if _, err = w.exec(ctx, unsyncFolderSQL, f.ID); err != nil {
 		return nil, fmt.Errorf("store: reset an unsynced folder: %w", err)
 	}
 	return evs, nil

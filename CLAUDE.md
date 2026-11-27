@@ -262,13 +262,15 @@ the long form of this file.
   included), `RepairUsageTotals` (the scan inside the write that replaces an account's totals, one
   short write each) and `ReconcileUsageTotals` (both, answering how many it repaired; nothing to
   repair takes no write lock) fill them at the daemon's first start after it, before the engine,
-  and in `mailserver migrate`, and check them daily (`internal/app`). A batch of new rows prepares
-  its message and part `INSERT` once in its transaction (`rowWriter`, `ApplySummaries`,
-  `ApplyActionReturn`): SQLite compiles a statement's trigger programs at every prepare. What a
-  followed workspace holds is read from the totals, never scanned: `WorkspaceBytesTx` (in the
-  caller's `ReadTx`: every mailbox of the workspace, live and removed until deleted for good, in
-  the snapshot's order, with its removal and `purge_after`, its `PauseSQL` (blank on a removed
-  one), whether it is pending (no `credentials` row), its bytes, of them those dated on a UTC day
+  and in `mailserver migrate`, and check them daily (`internal/app`). A batch prepares, once in its
+  transaction, each statement it runs for every row (`rowWriter`: the inserts of rows and parts, a
+  row's refresh, tombstone, revival, delete and move, `settleGroup`'s `dup_of`, a listing's
+  per-folder writes; `TestAnIndexBatchPreparesEachOfItsWritesOnceWhateverItsSize`): SQLite compiles
+  every trigger a statement fires at each prepare, and prepared per row a 7 000-row flag change held
+  the writer about 5 s. What a followed workspace holds is read from the totals, never scanned:
+  `WorkspaceBytesTx` (in the caller's `ReadTx`: every mailbox of the workspace, live and removed
+  until deleted for good, in the snapshot's order, with its removal and `purge_after`, its
+  `PauseSQL` (blank on a removed one), whether it is pending (no `credentials` row), its bytes, of them those dated on a UTC day
   or after it, a date ahead of today included, and its fixed bytes; a NULL total counts nothing)
   and `FollowedWorkspaceBytes` (one statement on the reader pool: per workspace whose source is not
   local, its mailboxes' kept totals, live and removed, 0 for one that holds nothing).
